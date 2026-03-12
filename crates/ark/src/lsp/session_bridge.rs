@@ -3,9 +3,12 @@ use std::io::Write;
 use std::net::Shutdown;
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use anyhow::anyhow;
+use harp::syntax::sym_quote_invalid;
+use regex::Regex;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -32,6 +35,8 @@ use crate::treesitter::ExtractOperatorType;
 use crate::treesitter::NamespaceOperatorType;
 use crate::treesitter::NodeType;
 use crate::treesitter::NodeTypeExt;
+use crate::treesitter::node_find_parent_call;
+use crate::treesitter::node_find_string;
 
 #[derive(Clone, Debug)]
 pub(crate) struct SessionBridge {
@@ -151,7 +156,16 @@ enum CompletionFlavor {
     Extractor,
     Namespace,
     Package,
+    Subset,
     Symbol,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SubsetCompletionKind {
+    Subset,
+    Subset2,
+    StringSubset,
+    StringSubset2,
 }
 
 #[derive(Clone, Debug)]
@@ -160,6 +174,7 @@ struct CompletionRequest {
     flavor: CompletionFlavor,
     prefix: Option<String>,
     accessor: Option<String>,
+    subset_kind: Option<SubsetCompletionKind>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -208,11 +223,13 @@ impl SessionBridge {
             return Ok(None);
         }
 
+        let object_meta = payload.object_meta.as_ref();
+
         let items = payload
             .members
             .into_iter()
             .enumerate()
-            .map(|(index, member)| completion_item(member, &request, index))
+            .map(|(index, member)| completion_item(member, &request, object_meta, index))
             .collect::<Vec<_>>();
 
         Ok(Some(CompletionResponse::Array(items)))
@@ -438,6 +455,12 @@ impl SessionBridge {
         if let Some(request) = completion_request_from_namespace(context)? {
             return Ok(Some(request));
         }
+        if let Some(request) = completion_request_from_string_subset(context)? {
+            return Ok(Some(request));
+        }
+        if let Some(request) = completion_request_from_subset(context)? {
+            return Ok(Some(request));
+        }
         if let Some(request) = completion_request_from_library_call(context)? {
             return Ok(Some(request));
         }
@@ -485,6 +508,10 @@ impl SessionBridge {
     }
 
     fn completion_payload(&self, request: &CompletionRequest) -> anyhow::Result<InspectResponse> {
+        if request.subset_kind.is_some() {
+            return self.subset_completion_payload(request);
+        }
+
         let payload = self.inspect(
             request.expr.as_str(),
             Some(InspectOptions {
@@ -502,6 +529,37 @@ impl SessionBridge {
         }
 
         self.browser_symbol_completion_payload(request)
+    }
+
+    fn subset_completion_payload(
+        &self,
+        request: &CompletionRequest,
+    ) -> anyhow::Result<InspectResponse> {
+        let payload = self.inspect(
+            request.expr.as_str(),
+            Some(InspectOptions {
+                include_member_stats: Some(false),
+                max_members: Some(200),
+                member_name_prefix: request.prefix.clone(),
+                request_profile: Some(String::from("completion_lean")),
+                ..Default::default()
+            }),
+        )?;
+
+        if payload.members.is_empty() && is_matrix_like(payload.object_meta.as_ref()) {
+            return self.inspect(
+                matrix_subset_completion_expr(request.expr.as_str()).as_str(),
+                Some(InspectOptions {
+                    include_member_stats: Some(false),
+                    max_members: Some(200),
+                    member_name_prefix: request.prefix.clone(),
+                    request_profile: Some(String::from("completion_lean")),
+                    ..Default::default()
+                }),
+            );
+        }
+
+        Ok(payload)
     }
 
     fn browser_symbol_completion_payload(
@@ -566,6 +624,7 @@ impl SessionBridge {
 fn completion_item(
     member: BridgeMember,
     request: &CompletionRequest,
+    object_meta: Option<&ObjectMeta>,
     index: usize,
 ) -> CompletionItem {
     let insert_text = match request.flavor {
@@ -579,15 +638,19 @@ fn completion_item(
         CompletionFlavor::Extractor
         | CompletionFlavor::Namespace
         | CompletionFlavor::Package
-        | CompletionFlavor::Symbol => {
-            member.name_raw.clone()
-        },
+        | CompletionFlavor::Symbol => member.name_raw.clone(),
+        CompletionFlavor::Subset => subset_insert_text(
+            member.name_raw.as_str(),
+            request.subset_kind,
+            object_meta.map(|meta| meta.class.as_slice()),
+        ),
     };
 
     let kind = match request.flavor {
         CompletionFlavor::Argument => CompletionItemKind::VARIABLE,
         CompletionFlavor::Extractor | CompletionFlavor::Namespace => CompletionItemKind::FIELD,
         CompletionFlavor::Package => CompletionItemKind::MODULE,
+        CompletionFlavor::Subset => CompletionItemKind::VARIABLE,
         CompletionFlavor::Symbol => CompletionItemKind::VARIABLE,
     };
 
@@ -632,6 +695,12 @@ fn completion_item_data(
             expr: member.name_raw.clone(),
             accessor: None,
             member_name: None,
+        }),
+        CompletionFlavor::Subset => Some(BridgeCompletionData {
+            kind: String::from("session_bridge_inspect"),
+            expr: request.expr.clone(),
+            accessor: Some(String::from("$")),
+            member_name: Some(member.name_raw.clone()),
         }),
         CompletionFlavor::Namespace | CompletionFlavor::Package => None,
     }
@@ -713,6 +782,7 @@ fn completion_request_from_extractor(
         flavor: CompletionFlavor::Extractor,
         prefix,
         accessor,
+        subset_kind: None,
     }))
 }
 
@@ -756,7 +826,146 @@ fn completion_request_from_namespace(
         flavor: CompletionFlavor::Namespace,
         prefix,
         accessor: None,
+        subset_kind: None,
     }))
+}
+
+fn completion_request_from_string_subset(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<CompletionRequest>> {
+    let Some(string_node) = node_find_string(&context.node) else {
+        return Ok(completion_request_from_string_subset_text(context));
+    };
+
+    let Some((object_node, subset_kind)) = find_string_subset_object(&string_node, context) else {
+        return Ok(completion_request_from_string_subset_text(context));
+    };
+
+    let expr = object_node.node_to_string(context.document.contents.as_str())?;
+
+    Ok(Some(CompletionRequest {
+        expr,
+        flavor: CompletionFlavor::Subset,
+        prefix: None,
+        accessor: None,
+        subset_kind: Some(subset_kind),
+    }))
+}
+
+fn completion_request_from_subset(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<CompletionRequest>> {
+    let Some((subset_node, subset_kind)) = find_subset_node(context) else {
+        return Ok(completion_request_from_subset_text(context));
+    };
+
+    let Some(object_node) = subset_node.child_by_field_name("function") else {
+        return Ok(None);
+    };
+
+    let expr = object_node.node_to_string(context.document.contents.as_str())?;
+
+    Ok(Some(CompletionRequest {
+        expr,
+        flavor: CompletionFlavor::Subset,
+        prefix: symbol_prefix(context)?,
+        accessor: None,
+        subset_kind: Some(subset_kind),
+    }))
+}
+
+fn completion_request_from_string_subset_text(
+    context: &DocumentContext,
+) -> Option<CompletionRequest> {
+    static STRING_SUBSET2_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*\[\[\s*"(?P<prefix>[^"]*)$"#)
+            .unwrap()
+    });
+    static STRING_SUBSET_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*\[\s*(?:[^,\]]*,\s*(?:c\s*\(\s*)?)?"(?P<prefix>[^"]*)$"#,
+        )
+        .unwrap()
+    });
+
+    let line = context.document.get_line(context.point.row)?;
+    let prefix = line.chars().take(context.point.column).collect::<String>();
+
+    if let Some(captures) = STRING_SUBSET2_RE.captures(prefix.as_str()) {
+        return Some(CompletionRequest {
+            expr: captures.name("expr")?.as_str().to_string(),
+            flavor: CompletionFlavor::Subset,
+            prefix: None,
+            accessor: None,
+            subset_kind: Some(SubsetCompletionKind::StringSubset2),
+        });
+    }
+
+    let captures = STRING_SUBSET_RE.captures(prefix.as_str())?;
+    Some(CompletionRequest {
+        expr: captures.name("expr")?.as_str().to_string(),
+        flavor: CompletionFlavor::Subset,
+        prefix: None,
+        accessor: None,
+        subset_kind: Some(SubsetCompletionKind::StringSubset),
+    })
+}
+
+fn completion_request_from_subset_text(context: &DocumentContext) -> Option<CompletionRequest> {
+    static SUBSET2_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*\[\[\s*(?P<prefix>[A-Za-z0-9._]*)$"#)
+            .unwrap()
+    });
+    static SUBSET_C_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*\[\s*[^,\]]*,\s*c\s*\(\s*(?P<prefix>[A-Za-z0-9._]*)$"#,
+        )
+        .unwrap()
+    });
+    static SUBSET_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*\[\s*(?P<prefix>[A-Za-z0-9._]*)$"#)
+            .unwrap()
+    });
+
+    let line = context.document.get_line(context.point.row)?;
+    let prefix = line.chars().take(context.point.column).collect::<String>();
+
+    if let Some(captures) = SUBSET2_RE.captures(prefix.as_str()) {
+        return Some(CompletionRequest {
+            expr: captures.name("expr")?.as_str().to_string(),
+            flavor: CompletionFlavor::Subset,
+            prefix: capture_prefix(&captures, "prefix"),
+            accessor: None,
+            subset_kind: Some(SubsetCompletionKind::Subset2),
+        });
+    }
+
+    if let Some(captures) = SUBSET_C_RE.captures(prefix.as_str()) {
+        return Some(CompletionRequest {
+            expr: captures.name("expr")?.as_str().to_string(),
+            flavor: CompletionFlavor::Subset,
+            prefix: capture_prefix(&captures, "prefix"),
+            accessor: None,
+            subset_kind: Some(SubsetCompletionKind::Subset),
+        });
+    }
+
+    let captures = SUBSET_RE.captures(prefix.as_str())?;
+    Some(CompletionRequest {
+        expr: captures.name("expr")?.as_str().to_string(),
+        flavor: CompletionFlavor::Subset,
+        prefix: capture_prefix(&captures, "prefix"),
+        accessor: None,
+        subset_kind: Some(SubsetCompletionKind::Subset),
+    })
+}
+
+fn capture_prefix(captures: &regex::Captures, name: &str) -> Option<String> {
+    captures
+        .name(name)
+        .map(|capture| capture.as_str())
+        .filter(|prefix| !prefix.is_empty())
+        .map(String::from)
 }
 
 fn completion_request_from_call(
@@ -773,6 +982,7 @@ fn completion_request_from_call(
         flavor: CompletionFlavor::Argument,
         prefix,
         accessor: Some(String::from("arg")),
+        subset_kind: None,
     }))
 }
 
@@ -801,6 +1011,7 @@ fn completion_request_from_library_call(
         flavor: CompletionFlavor::Package,
         prefix,
         accessor: None,
+        subset_kind: None,
     }))
 }
 
@@ -817,6 +1028,7 @@ fn completion_request_from_search_path(
         flavor: CompletionFlavor::Symbol,
         prefix,
         accessor: None,
+        subset_kind: None,
     }))
 }
 
@@ -951,6 +1163,106 @@ fn symbol_prefix(context: &DocumentContext) -> anyhow::Result<Option<String>> {
     Ok(Some(prefix))
 }
 
+fn find_string_subset_object<'tree>(
+    string_node: &Node<'tree>,
+    context: &DocumentContext,
+) -> Option<(Node<'tree>, SubsetCompletionKind)> {
+    if !string_node.is_string() {
+        return None;
+    }
+
+    let mut node = node_find_parent_call(string_node)?;
+
+    if node.is_call() {
+        if !node_is_c_call(&node, context.document.contents.as_str()) {
+            return None;
+        }
+
+        node = node_find_parent_call(&node)?;
+        if !node.is_subset() && !node.is_subset2() {
+            return None;
+        }
+    }
+
+    if !subset_contains_point(&context.point, &node) {
+        return None;
+    }
+
+    let subset_kind = if node.is_subset2() {
+        SubsetCompletionKind::StringSubset2
+    } else {
+        SubsetCompletionKind::StringSubset
+    };
+
+    let object = node.child_by_field_name("function")?;
+    Some((object, subset_kind))
+}
+
+fn find_subset_node<'tree>(
+    context: &'tree DocumentContext,
+) -> Option<(Node<'tree>, SubsetCompletionKind)> {
+    let mut node = context.node;
+
+    loop {
+        if node.is_subset() || node.is_subset2() {
+            break;
+        }
+
+        if node.is_braced_expression() {
+            return None;
+        }
+
+        node = node.parent()?;
+    }
+
+    if !subset_contains_point(&context.point, &node) {
+        return None;
+    }
+
+    let subset_kind = if node.is_subset2() {
+        SubsetCompletionKind::Subset2
+    } else {
+        SubsetCompletionKind::Subset
+    };
+
+    Some((node, subset_kind))
+}
+
+fn node_is_c_call(node: &Node, contents: &str) -> bool {
+    if !node.is_call() {
+        return false;
+    }
+
+    let Some(function) = node.child_by_field_name("function") else {
+        return false;
+    };
+
+    if !function.is_identifier() {
+        return false;
+    }
+
+    let Ok(text) = function.node_as_str(contents) else {
+        return false;
+    };
+
+    text == "c"
+}
+
+fn subset_contains_point(point: &Point, subset_node: &Node) -> bool {
+    let Some(arguments) = subset_node.child_by_field_name("arguments") else {
+        return false;
+    };
+
+    let Some(open) = arguments.child_by_field_name("open") else {
+        return false;
+    };
+    let Some(close) = arguments.child_by_field_name("close") else {
+        return false;
+    };
+
+    point.is_after_or_equal(open.end_position()) && point.is_before_or_equal(close.start_position())
+}
+
 fn locate_bridge_hover_node<'tree>(context: &'tree DocumentContext) -> Option<Node<'tree>> {
     let root = context.document.ast.root_node();
     let Some(mut node) = root.find_closest_node_to_point(context.point) else {
@@ -1040,6 +1352,13 @@ fn search_path_completion_expr() -> String {
     )
 }
 
+fn matrix_subset_completion_expr(expr: &str) -> String {
+    let expr = expr.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "local({{ .x <- tryCatch(colnames(({expr})), error = function(e) NULL); if (is.null(.x)) .x <- character(); stats::setNames(vector(\"list\", length(.x)), .x) }})"
+    )
+}
+
 fn installed_packages_completion_expr() -> String {
     String::from(
         "local({ .x <- base::.packages(all.available = TRUE); stats::setNames(vector(\"list\", length(.x)), .x) })",
@@ -1062,6 +1381,52 @@ fn browser_locals_completion_expr(prefix: &str) -> String {
 
 fn escape_r_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn escape_r_double_quoted(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn subset_insert_text(
+    name: &str,
+    subset_kind: Option<SubsetCompletionKind>,
+    classes: Option<&[String]>,
+) -> String {
+    let Some(subset_kind) = subset_kind else {
+        return name.to_string();
+    };
+
+    match subset_kind {
+        SubsetCompletionKind::StringSubset | SubsetCompletionKind::StringSubset2 => {
+            escape_r_double_quoted(name)
+        },
+        SubsetCompletionKind::Subset2 => format!("\"{}\"", escape_r_double_quoted(name)),
+        SubsetCompletionKind::Subset => {
+            if is_data_table_like(classes) {
+                sym_quote_invalid(name)
+            } else {
+                format!("\"{}\"", escape_r_double_quoted(name))
+            }
+        },
+    }
+}
+
+fn is_data_table_like(classes: Option<&[String]>) -> bool {
+    classes
+        .into_iter()
+        .flatten()
+        .any(|class| class == "data.table")
+}
+
+fn is_matrix_like(object_meta: Option<&ObjectMeta>) -> bool {
+    let Some(object_meta) = object_meta else {
+        return false;
+    };
+
+    object_meta
+        .class
+        .iter()
+        .any(|class| matches!(class.as_str(), "matrix" | "array"))
 }
 
 fn is_internal_browser_name(name: &str) -> bool {
