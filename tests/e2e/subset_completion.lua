@@ -9,6 +9,7 @@ local pane_id, client = ark_test.setup_managed_buffer(test_file, {
   "dt_ark[",
   "dt_ark[as.char",
   "dt_ark[, .(m",
+  "dt_ark[, .(m)]",
 })
 
 local has_data_table = ark_test.probe_data_table_available(
@@ -84,10 +85,21 @@ if has_data_table then
     ark_test.fail("dt_ark[, .(m completion inserted unexpected text: " .. vim.inspect(dt_j))
   end
   result.dt_j = ark_test.insert_text(dt_j)
+
+  local dt_closed_j_items = completion_at(7, 12)
+  local dt_closed_j = ark_test.find_item(dt_closed_j_items, "mpg")
+  if not dt_closed_j then
+    ark_test.fail("dt_ark[, .(m)] completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_closed_j_items)))
+  end
+  if ark_test.insert_text(dt_closed_j) ~= "mpg" then
+    ark_test.fail("dt_ark[, .(m)] completion inserted unexpected text: " .. vim.inspect(dt_closed_j))
+  end
+  result.dt_closed_j = ark_test.insert_text(dt_closed_j)
 else
   result.dt_subset = "skipped"
   result.dt_symbol = "skipped"
   result.dt_j = "skipped"
+  result.dt_closed_j = "skipped"
 end
 
 vim.print(result)
