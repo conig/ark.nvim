@@ -51,14 +51,10 @@ function M.defaults()
 
   local launcher = first_executable(compact(
     vim.env.ARK_NVIM_LAUNCHER,
-    "~/repos/rscope.nvim/nvim/scripts/rscope_r_launcher.sh",
     root .. "/scripts/ark-r-launcher.sh"
   )) or (root .. "/scripts/ark-r-launcher.sh")
 
-  local session_kind = vim.env.ARK_NVIM_SESSION_KIND
-  if not session_kind and launcher:match("rscope_r_launcher%.sh$") then
-    session_kind = "rscope"
-  end
+  local session_kind = vim.env.ARK_NVIM_SESSION_KIND or "ark"
 
   return {
     auto_start_pane = true,
@@ -80,7 +76,11 @@ function M.defaults()
         "GOOTABS_JOIN_WIDTH",
       },
       session_kind = session_kind,
-      startup_status_dir = vim.env.RSCOPE_STATUS_DIR or ((vim.fn.stdpath("state") or "/tmp") .. "/rscope-status"),
+      startup_status_dir = vim.env.ARK_STATUS_DIR
+        or vim.env.RSCOPE_STATUS_DIR
+        or ((vim.fn.stdpath("state") or "/tmp") .. "/ark-status"),
+      session_pkg_path = root .. "/packages/rscope",
+      session_lib_path = (vim.fn.stdpath("data") or "/tmp") .. "/ark/r-lib",
       bridge_wait_ms = 5000,
       session_timeout_ms = 1000,
     },

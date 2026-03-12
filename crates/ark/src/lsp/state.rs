@@ -131,7 +131,7 @@ fn session_bridge_from_env() -> anyhow::Result<Option<SessionBridge>> {
         return Ok(None);
     };
 
-    if kind != "rscope" {
+    if kind != "ark" && kind != "rscope" {
         return Err(anyhow!("unsupported session bridge kind: {kind}"));
     }
 

@@ -95,6 +95,8 @@ wait_for("ark lsp client", 15000, function()
   return client ~= nil and client.initialized == true and not client:is_stopped()
 end)
 
+vim.wait(250)
+
 local pane_id = require("ark").status().pane_id
 if type(pane_id) ~= "string" or pane_id == "" then
   fail("managed pane id missing")

@@ -147,10 +147,13 @@ end
 local function status_root(config)
   local root = config.startup_status_dir
   if type(root) ~= "string" or root == "" then
+    root = vim.env.ARK_STATUS_DIR
+  end
+  if type(root) ~= "string" or root == "" then
     root = vim.env.RSCOPE_STATUS_DIR
   end
   if type(root) ~= "string" or root == "" then
-    root = (vim.fn.stdpath("state") or "/tmp") .. "/rscope-status"
+    root = (vim.fn.stdpath("state") or "/tmp") .. "/ark-status"
   end
   return vim.fs.normalize(root)
 end
@@ -383,7 +386,16 @@ local function update_state_session(session)
 end
 
 function M.pane_command(config)
-  return "clear && " .. shellescape(config.launcher)
+  local exports = {
+    "ARK_STATUS_DIR=" .. shellescape(config.startup_status_dir),
+    "RSCOPE_STATUS_DIR=" .. shellescape(config.startup_status_dir),
+    "ARK_NVIM_SESSION_PKG_PATH=" .. shellescape(config.session_pkg_path),
+    "ARK_NVIM_SESSION_LIB=" .. shellescape(config.session_lib_path),
+  }
+
+  return "export " .. table.concat(exports, " ")
+    .. "; clear && exec "
+    .. shellescape(config.launcher)
 end
 
 function M.session()
