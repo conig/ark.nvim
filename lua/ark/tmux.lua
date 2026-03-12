@@ -238,11 +238,127 @@ local function read_startup_status(session, config)
   return payload
 end
 
+local function same_session(lhs, rhs)
+  if type(lhs) ~= "table" or type(rhs) ~= "table" then
+    return false
+  end
+
+  return lhs.tmux_socket == rhs.tmux_socket
+    and lhs.tmux_session == rhs.tmux_session
+    and lhs.tmux_pane == rhs.tmux_pane
+end
+
+local function ping_bridge(session, status, timeout_ms)
+  if not uv or not uv.new_tcp then
+    return false
+  end
+
+  local port = tonumber(status and status.port)
+  if not port then
+    return false
+  end
+
+  local request = vim.json.encode({
+    request_id = string.format("ark-ping-%d", math.floor((uv.hrtime and uv.hrtime() or 0) / 1e6)),
+    auth_token = status.auth_token or "",
+    command = "ping",
+    session = {
+      tmux_socket = session.tmux_socket,
+      tmux_session = session.tmux_session,
+      tmux_pane = session.tmux_pane,
+    },
+  })
+
+  local client = uv.new_tcp()
+  if not client then
+    return false
+  end
+
+  local chunks = {}
+  local done = false
+  local err_msg = nil
+  local closed = false
+
+  local function close_client()
+    if closed then
+      return
+    end
+    closed = true
+    pcall(client.read_stop, client)
+    pcall(client.close, client)
+  end
+
+  client:connect("127.0.0.1", port, function(connect_err)
+    if connect_err then
+      err_msg = tostring(connect_err)
+      done = true
+      close_client()
+      return
+    end
+
+    client:read_start(function(read_err, chunk)
+      if read_err then
+        err_msg = tostring(read_err)
+        done = true
+        close_client()
+        return
+      end
+
+      if chunk then
+        chunks[#chunks + 1] = chunk
+        return
+      end
+
+      done = true
+      close_client()
+    end)
+
+    client:write(request .. "\n", function(write_err)
+      if write_err then
+        err_msg = tostring(write_err)
+        done = true
+        close_client()
+        return
+      end
+
+      client:shutdown(function(shutdown_err)
+        if shutdown_err then
+          err_msg = tostring(shutdown_err)
+          done = true
+          close_client()
+        end
+      end)
+    end)
+  end)
+
+  local ok = vim.wait(timeout_ms or 250, function()
+    return done
+  end, 10, false)
+
+  if not ok or err_msg then
+    close_client()
+    return false
+  end
+
+  local decoded_ok, payload = pcall(vim.json.decode, table.concat(chunks, ""))
+  if not decoded_ok or type(payload) ~= "table" then
+    return false
+  end
+  if payload.status ~= "ok" then
+    return false
+  end
+  if payload.session and not same_session(session, payload.session) then
+    return false
+  end
+
+  return true
+end
+
 local function wait_for_ready_status(session, config)
   local wait_ms = tonumber(config.bridge_wait_ms) or 0
   if wait_ms <= 0 then
     local status = read_startup_status(session, config)
-    if status and status.status == "ready" and status.port then
+    if status and status.status == "ready" and status.port and ping_bridge(session, status, 250) then
       return status
     end
     return nil
@@ -251,7 +367,7 @@ local function wait_for_ready_status(session, config)
   local ready = nil
   vim.wait(wait_ms, function()
     local status = read_startup_status(session, config)
-    if status and status.status == "ready" and status.port then
+    if status and status.status == "ready" and status.port and ping_bridge(session, status, 250) then
       ready = status
       return true
     end
@@ -329,6 +445,9 @@ end
 function M.status(config)
   local session = M.session()
   local startup_status = session and read_startup_status(session, config or {}) or nil
+  local bridge_ready = session and startup_status and startup_status.status == "ready"
+    and startup_status.port ~= nil and ping_bridge(session, startup_status, 150)
+    or false
 
   return {
     inside_tmux = vim.env.TMUX ~= nil and vim.env.TMUX ~= "",
@@ -338,7 +457,7 @@ function M.status(config)
     session = session,
     startup_status = startup_status,
     startup_status_path = session and status_file_path(session, config or {}) or nil,
-    bridge_ready = startup_status and startup_status.status == "ready" and startup_status.port ~= nil or false,
+    bridge_ready = bridge_ready,
   }
 end
 

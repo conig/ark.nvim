@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::anyhow;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Value;
 use tower_lsp::lsp_types::CompletionItem;
 use tower_lsp::lsp_types::CompletionItemKind;
 use tower_lsp::lsp_types::CompletionResponse;
@@ -52,7 +53,6 @@ pub(crate) struct SessionBridgeConfig {
 }
 
 #[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct InspectRequest {
     request_id: String,
     auth_token: String,
@@ -63,7 +63,6 @@ struct InspectRequest {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct InspectOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     accessor: Option<String>,
@@ -78,7 +77,6 @@ struct InspectOptions {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct BridgeSession {
     tmux_socket: String,
     tmux_session: String,
@@ -86,7 +84,6 @@ struct BridgeSession {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct InspectResponse {
     #[serde(default)]
     error: Option<BridgeError>,
@@ -97,7 +94,6 @@ struct InspectResponse {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct BridgeError {
     #[serde(default)]
     code: String,
@@ -106,9 +102,8 @@ struct BridgeError {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct ObjectMeta {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_string_vec")]
     class: Vec<String>,
     #[serde(default)]
     length: usize,
@@ -119,7 +114,6 @@ struct ObjectMeta {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct BridgeMember {
     #[serde(default)]
     insert_text: String,
@@ -777,6 +771,30 @@ fn signature_parameter_label(member: &BridgeMember) -> String {
     }
 
     format!("{} = {}", member.name_display, member.summary)
+}
+
+fn deserialize_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+
+    match value {
+        Value::Null => Ok(vec![]),
+        Value::String(value) => Ok(vec![value]),
+        Value::Array(values) => values
+            .into_iter()
+            .map(|value| match value {
+                Value::String(value) => Ok(value),
+                other => Err(serde::de::Error::custom(format!(
+                    "expected string in array, got {other}"
+                ))),
+            })
+            .collect(),
+        other => Err(serde::de::Error::custom(format!(
+            "expected string or array of strings, got {other}"
+        ))),
+    }
 }
 
 fn is_within_call_parentheses(point: &Point, node: &Node) -> bool {
