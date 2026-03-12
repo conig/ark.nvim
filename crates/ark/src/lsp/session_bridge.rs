@@ -181,16 +181,7 @@ impl SessionBridge {
             return Ok(None);
         };
 
-        let payload = self.inspect(
-            request.expr.as_str(),
-            Some(InspectOptions {
-                accessor: request.accessor,
-                include_member_stats: Some(false),
-                max_members: Some(200),
-                member_name_prefix: request.prefix,
-                request_profile: Some(String::from("completion_lean")),
-            }),
-        )?;
+        let payload = self.completion_payload(&request)?;
 
         if payload.members.is_empty() {
             return Ok(None);
@@ -400,6 +391,57 @@ impl SessionBridge {
 
         Ok(payload)
     }
+
+    fn completion_payload(&self, request: &CompletionRequest) -> anyhow::Result<InspectResponse> {
+        let payload = self.inspect(
+            request.expr.as_str(),
+            Some(InspectOptions {
+                accessor: request.accessor.clone(),
+                include_member_stats: Some(false),
+                max_members: Some(200),
+                member_name_prefix: request.prefix.clone(),
+                request_profile: Some(String::from("completion_lean")),
+            }),
+        )?;
+
+        if !payload.members.is_empty() || !matches!(request.flavor, CompletionFlavor::Symbol) {
+            return Ok(payload);
+        }
+
+        self.browser_symbol_completion_payload(request)
+    }
+
+    fn browser_symbol_completion_payload(
+        &self,
+        request: &CompletionRequest,
+    ) -> anyhow::Result<InspectResponse> {
+        let Some(prefix) = request.prefix.as_deref().filter(|prefix| !prefix.is_empty()) else {
+            return Ok(InspectResponse::default());
+        };
+
+        let expr = browser_locals_completion_expr(prefix);
+        let mut payload = self.inspect(
+            expr.as_str(),
+            Some(InspectOptions {
+                include_member_stats: Some(false),
+                max_members: Some(200),
+                member_name_prefix: request.prefix.clone(),
+                request_profile: Some(String::from("completion_lean")),
+                ..Default::default()
+            }),
+        )?;
+
+        payload.members.retain(|member| {
+            let name = if member.name_raw.is_empty() {
+                member.name_display.as_str()
+            } else {
+                member.name_raw.as_str()
+            };
+            !is_internal_browser_name(name)
+        });
+
+        Ok(payload)
+    }
 }
 
 fn completion_item(member: BridgeMember, flavor: CompletionFlavor, index: usize) -> CompletionItem {
@@ -550,9 +592,7 @@ fn completion_request_from_search_path(
     }
 
     Ok(Some(CompletionRequest {
-        expr: String::from(
-            "local({ .envs <- lapply(search(), as.environment); .names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); stats::setNames(vector(\"list\", length(.names)), .names) })",
-        ),
+        expr: search_path_completion_expr(),
         flavor: CompletionFlavor::Symbol,
         prefix,
         accessor: None,
@@ -771,6 +811,28 @@ fn signature_parameter_label(member: &BridgeMember) -> String {
     }
 
     format!("{} = {}", member.name_display, member.summary)
+}
+
+fn search_path_completion_expr() -> String {
+    String::from(
+        "local({ .envs <- lapply(search(), as.environment); .names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); stats::setNames(vector(\"list\", length(.names)), .names) })",
+    )
+}
+
+fn browser_locals_completion_expr(prefix: &str) -> String {
+    let prefix = escape_r_string(prefix);
+
+    format!(
+        "local({{ .prefix <- \"{prefix}\"; .frames <- sys.frames(); .target <- NULL; for (.env in .frames) {{ .names <- tryCatch(ls(envir = .env, all.names = TRUE), error = function(e) character()); if (length(.names) && any(startsWith(tolower(.names), tolower(.prefix)))) {{ .target <- .env; break }} }}; if (is.null(.target)) {{ stats::setNames(list(), character()) }} else {{ .names <- ls(envir = .target, all.names = TRUE); stats::setNames(vector(\"list\", length(.names)), .names) }} }})"
+    )
+}
+
+fn escape_r_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn is_internal_browser_name(name: &str) -> bool {
+    name.starts_with('.') || name.contains("rscope")
 }
 
 fn deserialize_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
