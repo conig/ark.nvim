@@ -69,6 +69,7 @@ function M.defaults()
       name = "ark_lsp",
       cmd = { lsp_bin, "--runtime-mode", "detached" },
       root_markers = { ".git", ".Rproj", "DESCRIPTION", "renv.lock" },
+      restart_wait_ms = 2000,
     },
     tmux = {
       launcher = launcher,

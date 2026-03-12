@@ -90,7 +90,7 @@ require("ark").refresh(0)
 
 wait_for("ark lsp client", 15000, function()
   local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
-  return client ~= nil and client.initialized == true
+  return client ~= nil and client.initialized == true and not client:is_stopped()
 end)
 
 local pane_id = require("ark").status().pane_id
