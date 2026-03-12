@@ -1077,6 +1077,12 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
         Regex::new(r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*\[\[\s*(?P<prefix>[A-Za-z0-9._]*)$"#)
             .unwrap()
     });
+    static SUBSET_DOT_CALL_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*\[\s*[^,\]]*,\s*\.\(\s*(?P<prefix>[A-Za-z0-9._]*)$"#,
+        )
+        .unwrap()
+    });
     static SUBSET_C_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
             r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*\[\s*[^,\]]*,\s*c\s*\(\s*(?P<prefix>[A-Za-z0-9._]*)$"#,
@@ -1098,6 +1104,16 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
             prefix: capture_prefix(&captures, "prefix"),
             accessor: None,
             subset_kind: Some(SubsetCompletionKind::Subset2),
+        });
+    }
+
+    if let Some(captures) = SUBSET_DOT_CALL_RE.captures(prefix.as_str()) {
+        return Some(CompletionRequest {
+            expr: captures.name("expr")?.as_str().to_string(),
+            flavor: CompletionFlavor::Subset,
+            prefix: capture_prefix(&captures, "prefix"),
+            accessor: None,
+            subset_kind: Some(SubsetCompletionKind::Subset),
         });
     }
 
@@ -1795,5 +1811,29 @@ mod tests {
         assert_eq!(request.expr, "dt_ark");
         assert_eq!(request.prefix, Some(String::from("as.char")));
         assert_eq!(request.subset_kind, Some(SubsetCompletionKind::Subset));
+    }
+
+    #[test]
+    fn test_data_table_j_completion_prefers_subset_context() {
+        let (text, point) = point_from_cursor("dt_ark[, .(m@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_subset(&context)
+            .unwrap()
+            .expect("expected subset completion request");
+
+        assert_eq!(request.expr, "dt_ark");
+        assert_eq!(request.prefix, Some(String::from("m")));
+        assert_eq!(request.subset_kind, Some(SubsetCompletionKind::Subset));
+    }
+
+    #[test]
+    fn test_data_table_j_completion_does_not_use_dot_call_context() {
+        let (text, point) = point_from_cursor("dt_ark[, .(m@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        assert!(completion_request_from_call(&context).unwrap().is_none());
     }
 }

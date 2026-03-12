@@ -114,8 +114,7 @@ tmux({
 
 wait_for("comparison fixture setup", 10000, function()
   local capture = tmux({ "capture-pane", "-p", "-t", pane_id })
-  return capture:find("ark_dt_available", 1, true) ~= nil
-    and (capture:find("%[1%] TRUE") ~= nil or capture:find("%[1%] FALSE") ~= nil)
+  return capture:find("%[1%] TRUE") ~= nil or capture:find("%[1%] FALSE") ~= nil
 end)
 
 local capture = tmux({ "capture-pane", "-p", "-t", pane_id })

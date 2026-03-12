@@ -66,8 +66,9 @@ local function insert_text(item)
 end
 
 require("ark").setup({
-  auto_start_pane = true,
-  auto_start_lsp = true,
+  auto_start_pane = false,
+  auto_start_lsp = false,
+  async_startup = false,
   configure_slime = true,
 })
 
@@ -79,20 +80,28 @@ vim.fn.writefile({
   'mtcars[["',
   "dt_ark[",
   "dt_ark[as.char",
+  "dt_ark[, .(m",
 }, test_file)
 
 vim.cmd("edit " .. test_file)
 vim.cmd("setfiletype r")
 
+require("ark").start_pane()
+
 wait_for("ark bridge ready", 20000, function()
   return require("ark").status().bridge_ready == true
 end)
 
-require("ark").refresh(0)
+require("ark").start_lsp(0)
 
 wait_for("ark lsp client", 15000, function()
   local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
   return client ~= nil and client.initialized == true and not client:is_stopped()
+end)
+
+wait_for("managed R prompt", 10000, function()
+  local capture = tmux({ "capture-pane", "-p", "-t", require("ark").status().pane_id })
+  return capture:find("\n>", 1, true) ~= nil or capture:find("^>", 1) ~= nil
 end)
 
 local pane_id = require("ark").status().pane_id
@@ -112,8 +121,7 @@ tmux({
 
 wait_for("data.table availability probe", 10000, function()
   local capture = tmux({ "capture-pane", "-p", "-t", pane_id })
-  return capture:find("ark_dt_available", 1, true) ~= nil
-    and (capture:find("%[1%] TRUE") ~= nil or capture:find("%[1%] FALSE") ~= nil)
+  return capture:find("%[1%] TRUE") ~= nil or capture:find("%[1%] FALSE") ~= nil
 end)
 
 local capture = tmux({ "capture-pane", "-p", "-t", pane_id })
@@ -180,9 +188,20 @@ if has_data_table then
     fail("dt_ark[as.char completion missing as.character: " .. vim.inspect(item_labels(dt_symbol_items)))
   end
   result.dt_symbol = insert_text(dt_symbol)
+
+  local dt_j_items = completion_at(6, 12)
+  local dt_j = find_item(dt_j_items, "mpg")
+  if not dt_j then
+    fail("dt_ark[, .(m completion missing mpg: " .. vim.inspect(item_labels(dt_j_items)))
+  end
+  if insert_text(dt_j) ~= "mpg" then
+    fail("dt_ark[, .(m completion inserted unexpected text: " .. vim.inspect(dt_j))
+  end
+  result.dt_j = insert_text(dt_j)
 else
   result.dt_subset = "skipped"
   result.dt_symbol = "skipped"
+  result.dt_j = "skipped"
 end
 
 vim.print(result)
