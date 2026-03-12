@@ -86,6 +86,8 @@ Do not expand new work in the Jupyter / Positron direction.
 
 The key architectural constraint is that the real interactive R session lives in tmux, not inside the LSP process.
 
+Today the detached Neovim path uses the local `rscope` IPC runtime as that bridge when it is available, with `ark.nvim` responsible for passing trusted session metadata into `ark-lsp`.
+
 That means `ark.nvim` v1 needs three layers:
 
 1. `ark-lsp`:

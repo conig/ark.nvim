@@ -26,9 +26,9 @@ Today the repo contains:
 - `crates/ark/src/bin/ark-lsp.rs`
   - a standalone stdio LSP entrypoint for Neovim
 - `lua/ark/` and `plugin/ark.lua`
-  - the Neovim plugin skeleton
+  - the Neovim plugin and managed-pane integration
 - `scripts/ark-r-launcher.sh`
-  - the default managed-pane launcher
+  - the fallback managed-pane launcher when no richer session launcher is available
 
 The upstream kernel, DAP, and Positron/Jupyter code are still present as migration material.
 
@@ -47,6 +47,7 @@ Useful commands:
 - `:ArkPaneRestart`
 - `:ArkPaneStop`
 - `:ArkLspStart`
+- `:ArkRefresh`
 - `:ArkStatus`
 - `:ArkPaneCommand`
 
@@ -62,11 +63,18 @@ Current default launch args:
 ark-lsp --runtime-mode detached
 ```
 
-`detached` mode is the safe default for Neovim while the live-session bridge is being extracted from upstream Ark's kernel-coupled runtime.
+`detached` mode is the safe default for Neovim because the editor-facing LSP runs out of process from the managed tmux R session.
+`ark-lsp` now also accepts managed-session bridge metadata through environment variables so detached mode can query the tmux R session for completions, hover, and signature help.
 
 ## Managed tmux Pane
 
-The default launcher is:
+The plugin prefers the existing `rscope.nvim` launcher when it is available locally:
+
+```sh
+~/repos/rscope.nvim/nvim/scripts/rscope_r_launcher.sh
+```
+
+If that launcher is not present, it falls back to:
 
 ```sh
 scripts/ark-r-launcher.sh
@@ -95,8 +103,9 @@ The current implementation gives the repo:
 - a documented Neovim-only scope
 - a standalone LSP entrypoint
 - a real plugin surface for pane management and LSP startup
+- a detached live-session bridge for completions, hover, and signature help against the managed tmux R pane
 
-The remaining major milestone is the live-session bridge that lets `ark-lsp` query the tmux-managed R process for runtime-aware completions, hover, and signatures.
+Remaining work is now in depth and polish rather than basic architecture extraction: expanding test coverage, replacing the remaining external `rscope` launcher dependency, and tightening Neovim-facing docs and health tooling.
 
 ## License
 

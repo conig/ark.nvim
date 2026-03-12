@@ -1,10 +1,10 @@
 local M = {}
 
 local function compact(...)
-  local values = { ... }
   local out = {}
 
-  for _, value in ipairs(values) do
+  for index = 1, select("#", ...) do
+    local value = select(index, ...)
     if type(value) == "string" and value ~= "" then
       table.insert(out, value)
     end
