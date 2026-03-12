@@ -472,6 +472,16 @@ impl SessionBridge {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_subset(context)? {
+            if request.prefix.is_some() {
+                let mut requests = vec![request];
+
+                if let Some(search_path) = completion_request_from_search_path(context)? {
+                    requests.push(search_path);
+                }
+
+                return Ok(Some(CompletionPlan::Composite(requests)));
+            }
+
             return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_library_string(context)? {
@@ -1755,4 +1765,35 @@ fn is_within_call_parentheses(point: &Point, node: &Node) -> bool {
     };
 
     point.is_after_or_equal(open.end_position()) && point.is_before_or_equal(close.start_position())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::point_from_cursor;
+    use crate::lsp::document::Document;
+
+    #[test]
+    fn test_symbol_prefix_prefers_typed_subset_identifier() {
+        let (text, point) = point_from_cursor("dt_ark[as.char@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        assert_eq!(symbol_prefix(&context).unwrap(), Some(String::from("as.char")));
+    }
+
+    #[test]
+    fn test_subset_completion_request_uses_typed_prefix() {
+        let (text, point) = point_from_cursor("dt_ark[as.char@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_subset(&context)
+            .unwrap()
+            .expect("expected subset completion request");
+
+        assert_eq!(request.expr, "dt_ark");
+        assert_eq!(request.prefix, Some(String::from("as.char")));
+        assert_eq!(request.subset_kind, Some(SubsetCompletionKind::Subset));
+    }
 }

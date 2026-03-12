@@ -78,6 +78,7 @@ vim.fn.writefile({
   'mtcars[, c("',
   'mtcars[["',
   "dt_ark[",
+  "dt_ark[as.char",
 }, test_file)
 
 vim.cmd("edit " .. test_file)
@@ -172,8 +173,16 @@ if has_data_table then
     fail("dt_ark[ completion inserted unexpected text: " .. vim.inspect(dt_subset))
   end
   result.dt_subset = insert_text(dt_subset)
+
+  local dt_symbol_items = completion_at(5, 14)
+  local dt_symbol = find_item(dt_symbol_items, "as.character")
+  if not dt_symbol then
+    fail("dt_ark[as.char completion missing as.character: " .. vim.inspect(item_labels(dt_symbol_items)))
+  end
+  result.dt_symbol = insert_text(dt_symbol)
 else
   result.dt_subset = "skipped"
+  result.dt_symbol = "skipped"
 end
 
 vim.print(result)
