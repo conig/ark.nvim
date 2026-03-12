@@ -17,20 +17,21 @@ local function tmux(args)
   return output
 end
 
-local function request(method, params, timeout_ms)
-  local responses = vim.lsp.buf_request_sync(0, method, params, timeout_ms or 10000)
-  if not responses or next(responses) == nil then
+local function request(client, method, params, timeout_ms)
+  local response, err = client:request_sync(method, params, timeout_ms or 10000, 0)
+  if err then
+    fail(method .. " error: " .. err)
+  end
+  if not response then
     fail("no response for " .. method)
   end
-
-  for _, response in pairs(responses) do
-    if response.error then
-      fail(method .. " error: " .. vim.inspect(response.error))
-    end
-    return response.result
+  if response.error then
+    fail(method .. " error: " .. vim.inspect(response.error))
   end
-
-  fail("empty response table for " .. method)
+  if response.err then
+    fail(method .. " error: " .. vim.inspect(response.err))
+  end
+  return response.result
 end
 
 local function completion_items(result)
@@ -124,7 +125,7 @@ local function completion_at(line, column)
     textDocument = vim.lsp.util.make_text_document_params(0),
     position = { line = line - 1, character = column },
   }
-  return completion_items(request("textDocument/completion", params))
+  return completion_items(request(client, "textDocument/completion", params))
 end
 
 local df_subset_items = completion_at(1, 7)

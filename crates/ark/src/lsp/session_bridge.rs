@@ -14,7 +14,6 @@ use serde::Serialize;
 use serde_json::Value;
 use tower_lsp::lsp_types::CompletionItem;
 use tower_lsp::lsp_types::CompletionItemKind;
-use tower_lsp::lsp_types::CompletionResponse;
 use tower_lsp::lsp_types::Documentation;
 use tower_lsp::lsp_types::Hover;
 use tower_lsp::lsp_types::HoverContents;
@@ -28,6 +27,8 @@ use tree_sitter::Node;
 use tree_sitter::Point;
 use uuid::Uuid;
 
+use crate::lsp::completions::dedupe_and_sort_completion_items;
+use crate::lsp::completions::find_pipe_root_name;
 use crate::lsp::document_context::DocumentContext;
 use crate::lsp::traits::node::NodeExt;
 use crate::lsp::traits::point::PointExt;
@@ -35,6 +36,7 @@ use crate::treesitter::ExtractOperatorType;
 use crate::treesitter::NamespaceOperatorType;
 use crate::treesitter::NodeType;
 use crate::treesitter::NodeTypeExt;
+use crate::treesitter::node_find_containing_call;
 use crate::treesitter::node_find_parent_call;
 use crate::treesitter::node_find_string;
 
@@ -156,6 +158,7 @@ enum CompletionFlavor {
     Extractor,
     Namespace,
     Package,
+    Pipe,
     Subset,
     Symbol,
 }
@@ -187,6 +190,12 @@ struct BridgeCompletionData {
     member_name: Option<String>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SessionBridgeCompletion {
+    pub items: Vec<CompletionItem>,
+    pub merge_static: bool,
+}
+
 impl SessionBridge {
     pub(crate) fn new(config: SessionBridgeConfig) -> anyhow::Result<Self> {
         if config.host.is_empty() {
@@ -209,30 +218,37 @@ impl SessionBridge {
         })
     }
 
-    pub(crate) fn completion_response(
+    pub(crate) fn completion_items(
         &self,
         context: &DocumentContext,
-    ) -> anyhow::Result<Option<CompletionResponse>> {
-        let Some(request) = self.completion_request(context)? else {
+    ) -> anyhow::Result<Option<SessionBridgeCompletion>> {
+        let Some(plan) = self.completion_plan(context)? else {
             return Ok(None);
         };
 
-        let payload = self.completion_payload(&request)?;
+        let merge_static = matches!(plan, CompletionPlan::Composite(_));
 
-        if payload.members.is_empty() {
+        let items = match plan {
+            CompletionPlan::Unique(request) => self.completion_items_for_request(&request)?,
+            CompletionPlan::Composite(requests) => {
+                let mut items = Vec::new();
+
+                for request in requests {
+                    items.extend(self.completion_items_for_request(&request)?);
+                }
+
+                dedupe_and_sort_completion_items(items)
+            },
+        };
+
+        if items.is_empty() {
             return Ok(None);
         }
 
-        let object_meta = payload.object_meta.as_ref();
-
-        let items = payload
-            .members
-            .into_iter()
-            .enumerate()
-            .map(|(index, member)| completion_item(member, &request, object_meta, index))
-            .collect::<Vec<_>>();
-
-        Ok(Some(CompletionResponse::Array(items)))
+        Ok(Some(SessionBridgeCompletion {
+            merge_static,
+            items,
+        }))
     }
 
     pub(crate) fn bootstrap(&self) -> anyhow::Result<SessionBootstrap> {
@@ -445,29 +461,65 @@ impl SessionBridge {
         Ok(item)
     }
 
-    fn completion_request(
+    fn completion_plan(
         &self,
         context: &DocumentContext,
-    ) -> anyhow::Result<Option<CompletionRequest>> {
+    ) -> anyhow::Result<Option<CompletionPlan>> {
         if let Some(request) = completion_request_from_extractor(context)? {
-            return Ok(Some(request));
+            return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_namespace(context)? {
-            return Ok(Some(request));
+            return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_string_subset(context)? {
-            return Ok(Some(request));
+            return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_subset(context)? {
-            return Ok(Some(request));
+            return Ok(Some(CompletionPlan::Unique(request)));
+        }
+        if let Some(request) = completion_request_from_library_string(context)? {
+            return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_library_call(context)? {
-            return Ok(Some(request));
+            return Ok(Some(CompletionPlan::Unique(request)));
         }
+
+        let mut requests = Vec::new();
+
         if let Some(request) = completion_request_from_call(context)? {
-            return Ok(Some(request));
+            requests.push(request);
         }
-        completion_request_from_search_path(context)
+        if let Some(request) = completion_request_from_pipe(context)? {
+            requests.push(request);
+        }
+        if let Some(request) = completion_request_from_search_path(context)? {
+            requests.push(request);
+        }
+
+        if requests.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(CompletionPlan::Composite(requests)))
+        }
+    }
+
+    fn completion_items_for_request(
+        &self,
+        request: &CompletionRequest,
+    ) -> anyhow::Result<Vec<CompletionItem>> {
+        let payload = self.completion_payload(request)?;
+        if payload.members.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let object_meta = payload.object_meta.as_ref();
+
+        Ok(payload
+            .members
+            .into_iter()
+            .enumerate()
+            .map(|(index, member)| completion_item(member, request, object_meta, index))
+            .collect())
     }
 
     fn inspect(
@@ -639,6 +691,7 @@ fn completion_item(
         | CompletionFlavor::Namespace
         | CompletionFlavor::Package
         | CompletionFlavor::Symbol => member.name_raw.clone(),
+        CompletionFlavor::Pipe => sym_quote_invalid(member.name_raw.as_str()),
         CompletionFlavor::Subset => subset_insert_text(
             member.name_raw.as_str(),
             request.subset_kind,
@@ -650,6 +703,7 @@ fn completion_item(
         CompletionFlavor::Argument => CompletionItemKind::VARIABLE,
         CompletionFlavor::Extractor | CompletionFlavor::Namespace => CompletionItemKind::FIELD,
         CompletionFlavor::Package => CompletionItemKind::MODULE,
+        CompletionFlavor::Pipe => CompletionItemKind::VARIABLE,
         CompletionFlavor::Subset => CompletionItemKind::VARIABLE,
         CompletionFlavor::Symbol => CompletionItemKind::VARIABLE,
     };
@@ -702,8 +756,20 @@ fn completion_item_data(
             accessor: Some(String::from("$")),
             member_name: Some(member.name_raw.clone()),
         }),
+        CompletionFlavor::Pipe => Some(BridgeCompletionData {
+            kind: String::from("session_bridge_inspect"),
+            expr: request.expr.clone(),
+            accessor: Some(String::from("$")),
+            member_name: Some(member.name_raw.clone()),
+        }),
         CompletionFlavor::Namespace | CompletionFlavor::Package => None,
     }
+}
+
+#[derive(Clone, Debug)]
+enum CompletionPlan {
+    Unique(CompletionRequest),
+    Composite(Vec<CompletionRequest>),
 }
 
 fn apply_member_completion_docs(item: &mut CompletionItem, member: &BridgeMember) {
@@ -874,6 +940,58 @@ fn completion_request_from_subset(
     }))
 }
 
+fn completion_request_from_library_string(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<CompletionRequest>> {
+    let Some(string_node) = node_find_string(&context.node) else {
+        return Ok(completion_request_from_library_string_text(context));
+    };
+
+    let Some(call) = analyze_call_context(context)? else {
+        return Ok(completion_request_from_library_string_text(context));
+    };
+
+    if !matches!(call.callee.as_str(), "library" | "require") || call.num_unnamed_arguments > 0 {
+        return Ok(completion_request_from_library_string_text(context));
+    }
+
+    let prefix = string_prefix(&string_node, context)?;
+    if prefix.is_none() && context.trigger.is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(CompletionRequest {
+        expr: installed_packages_completion_expr(),
+        flavor: CompletionFlavor::Package,
+        prefix,
+        accessor: None,
+        subset_kind: None,
+    }))
+}
+
+fn completion_request_from_library_string_text(
+    context: &DocumentContext,
+) -> Option<CompletionRequest> {
+    static LIBRARY_STRING_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)^\s*(?:library|require)\s*\(\s*"(?P<prefix>[^"]*)$"#,
+        )
+        .unwrap()
+    });
+
+    let line = context.document.get_line(context.point.row)?;
+    let prefix = line.chars().take(context.point.column).collect::<String>();
+    let captures = LIBRARY_STRING_RE.captures(prefix.as_str())?;
+
+    Some(CompletionRequest {
+        expr: installed_packages_completion_expr(),
+        flavor: CompletionFlavor::Package,
+        prefix: captures.name("prefix").map(|capture| capture.as_str().to_string()),
+        accessor: None,
+        subset_kind: None,
+    })
+}
+
 fn completion_request_from_string_subset_text(
     context: &DocumentContext,
 ) -> Option<CompletionRequest> {
@@ -984,6 +1102,47 @@ fn completion_request_from_call(
         accessor: Some(String::from("arg")),
         subset_kind: None,
     }))
+}
+
+fn completion_request_from_pipe(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<CompletionRequest>> {
+    let Some(call_node) = node_find_containing_call(context.node) else {
+        return Ok(completion_request_from_pipe_text(context));
+    };
+
+    let Some(expr) = find_pipe_root_name(context, &call_node)? else {
+        return Ok(completion_request_from_pipe_text(context));
+    };
+
+    Ok(Some(CompletionRequest {
+        expr,
+        flavor: CompletionFlavor::Pipe,
+        prefix: symbol_prefix(context)?,
+        accessor: None,
+        subset_kind: None,
+    }))
+}
+
+fn completion_request_from_pipe_text(context: &DocumentContext) -> Option<CompletionRequest> {
+    static PIPE_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)^\s*(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*(?:\|>|%>%).*[,(]\s*(?P<prefix>[A-Za-z0-9._]*)$"#,
+        )
+        .unwrap()
+    });
+
+    let line = context.document.get_line(context.point.row)?;
+    let prefix = line.chars().take(context.point.column).collect::<String>();
+    let captures = PIPE_RE.captures(prefix.as_str())?;
+
+    Some(CompletionRequest {
+        expr: captures.name("expr")?.as_str().to_string(),
+        flavor: CompletionFlavor::Pipe,
+        prefix: capture_prefix(&captures, "prefix"),
+        accessor: None,
+        subset_kind: None,
+    })
 }
 
 fn completion_request_from_library_call(
@@ -1159,6 +1318,34 @@ fn symbol_prefix(context: &DocumentContext) -> anyhow::Result<Option<String>> {
     if prefix.is_empty() {
         return Ok(None);
     }
+
+    Ok(Some(prefix))
+}
+
+fn string_prefix(
+    string_node: &Node,
+    context: &DocumentContext,
+) -> anyhow::Result<Option<String>> {
+    let contents = string_node.node_to_string(context.document.contents.as_str())?;
+    if contents.len() < 2 {
+        return Ok(None);
+    }
+
+    let offset = context
+        .point
+        .column
+        .saturating_sub(string_node.start_position().column)
+        .min(contents.len());
+
+    if offset <= 1 {
+        return Ok(Some(String::new()));
+    }
+
+    let prefix = contents
+        .chars()
+        .skip(1)
+        .take(offset.saturating_sub(1))
+        .collect::<String>();
 
     Ok(Some(prefix))
 }

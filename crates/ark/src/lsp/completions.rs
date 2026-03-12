@@ -17,4 +17,9 @@ mod types;
 mod tests;
 
 pub(crate) use provide::provide_completions;
+pub(crate) use provide::provide_detached_post_bridge_completions;
+pub(crate) use provide::provide_detached_pre_bridge_completions;
+pub(crate) use provide::provide_detached_static_completions;
 pub(crate) use resolve::resolve_completion;
+pub(crate) use sources::composite::dedupe_and_sort_completion_items;
+pub(crate) use sources::composite::find_pipe_root_name;

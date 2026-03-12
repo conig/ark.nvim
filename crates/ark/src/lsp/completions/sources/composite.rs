@@ -27,6 +27,8 @@ use crate::lsp::completions::sources::CompletionSource;
 use crate::treesitter::NodeType;
 use crate::treesitter::NodeTypeExt;
 
+pub(crate) use pipe::find_pipe_root_name;
+
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct CompletionItemKey {
     label: String,
@@ -103,6 +105,50 @@ pub(crate) fn get_completions(
     let completions = finalize_completions(completions);
 
     Ok(Some(completions))
+}
+
+pub(crate) fn get_detached_static_completions(
+    completion_context: &CompletionContext,
+) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    let mut completions = HashMap::new();
+
+    if completion_context.document_context.node.is_program() ||
+        is_identifier_like(completion_context.document_context.node)
+    {
+        push_completions(keyword::KeywordSource, completion_context, &mut completions)?;
+
+        push_completions(
+            document::DocumentSource,
+            completion_context,
+            &mut completions,
+        )?;
+
+        push_completions(
+            workspace::WorkspaceSource,
+            completion_context,
+            &mut completions,
+        )?;
+    }
+
+    Ok(Some(finalize_completions(completions)))
+}
+
+pub(crate) fn dedupe_and_sort_completion_items(
+    items: impl IntoIterator<Item = CompletionItem>,
+) -> Vec<CompletionItem> {
+    let mut completions = HashMap::new();
+
+    for item in items {
+        let key = CompletionItemKey::new(&item);
+        completions
+            .entry(key)
+            .or_insert_with(|| CompletionItemWithSource {
+                item,
+                source: String::from("detached"),
+            });
+    }
+
+    finalize_completions(completions)
 }
 
 fn push_completions<S>(

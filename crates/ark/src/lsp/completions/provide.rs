@@ -41,3 +41,27 @@ pub(crate) fn provide_completions(
     // set of reasonable completions from composite sources
     Ok(composite::get_completions(&completion_context)?.unwrap_or_default())
 }
+
+pub(crate) fn provide_detached_pre_bridge_completions(
+    document_context: &DocumentContext,
+    state: &WorldState,
+) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    let completion_context = CompletionContext::new(document_context, state);
+    unique::get_detached_pre_bridge_completions(&completion_context)
+}
+
+pub(crate) fn provide_detached_post_bridge_completions(
+    document_context: &DocumentContext,
+    state: &WorldState,
+) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    let completion_context = CompletionContext::new(document_context, state);
+    unique::get_detached_post_bridge_completions(&completion_context)
+}
+
+pub(crate) fn provide_detached_static_completions(
+    document_context: &DocumentContext,
+    state: &WorldState,
+) -> anyhow::Result<Vec<CompletionItem>> {
+    let completion_context = CompletionContext::new(document_context, state);
+    Ok(composite::get_detached_static_completions(&completion_context)?.unwrap_or_default())
+}

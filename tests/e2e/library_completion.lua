@@ -9,20 +9,21 @@ local function wait_for(label, timeout_ms, predicate)
   end
 end
 
-local function request(method, params, timeout_ms)
-  local responses = vim.lsp.buf_request_sync(0, method, params, timeout_ms or 10000)
-  if not responses or next(responses) == nil then
+local function request(client, method, params, timeout_ms)
+  local response, err = client:request_sync(method, params, timeout_ms or 10000, 0)
+  if err then
+    fail(method .. " error: " .. err)
+  end
+  if not response then
     fail("no response for " .. method)
   end
-
-  for _, response in pairs(responses) do
-    if response.error then
-      fail(method .. " error: " .. vim.inspect(response.error))
-    end
-    return response.result
+  if response.error then
+    fail(method .. " error: " .. vim.inspect(response.error))
   end
-
-  fail("empty response table for " .. method)
+  if response.err then
+    fail(method .. " error: " .. vim.inspect(response.err))
+  end
+  return response.result
 end
 
 local function completion_items(result)
@@ -80,8 +81,11 @@ wait_for("ark lsp client", 15000, function()
 end)
 
 local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
-local params = vim.lsp.util.make_position_params(0, client.offset_encoding)
-local completion = request("textDocument/completion", params)
+local params = {
+  textDocument = vim.lsp.util.make_text_document_params(0),
+  position = { line = 0, character = 11 },
+}
+local completion = request(client, "textDocument/completion", params)
 local labels = item_labels(completion_items(completion))
 
 if not contains(labels, "utils") then

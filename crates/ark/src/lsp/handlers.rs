@@ -44,7 +44,11 @@ use crate::lsp;
 use crate::lsp::backend::LspError;
 use crate::lsp::backend::LspResult;
 use crate::lsp::code_action::code_actions;
+use crate::lsp::completions::dedupe_and_sort_completion_items;
 use crate::lsp::completions::provide_completions;
+use crate::lsp::completions::provide_detached_post_bridge_completions;
+use crate::lsp::completions::provide_detached_pre_bridge_completions;
+use crate::lsp::completions::provide_detached_static_completions;
 use crate::lsp::completions::resolve_completion;
 use crate::lsp::definitions::goto_definition;
 use crate::lsp::document_context::DocumentContext;
@@ -203,10 +207,37 @@ pub(crate) fn handle_completion(
     lsp::log_info!("Completion context: {:#?}", context);
 
     if !state.has_attached_runtime() {
+        if let Some(completions) =
+            provide_detached_pre_bridge_completions(&context, state).map_err(LspError::Anyhow)?
+        {
+            return Ok(completion_response_from_items(completions));
+        }
+
         if let Some(session_bridge) = state.session_bridge.as_ref() {
-            return session_bridge
-                .completion_response(&context)
-                .map_err(LspError::Anyhow);
+            let detached = session_bridge
+                .completion_items(&context)
+                .map_err(LspError::Anyhow)?;
+
+            if detached.is_none() {
+                if let Some(completions) = provide_detached_post_bridge_completions(&context, state)
+                    .map_err(LspError::Anyhow)?
+                {
+                    return Ok(completion_response_from_items(completions));
+                }
+            }
+
+            let detached = detached.unwrap_or_default();
+            if !detached.merge_static {
+                return Ok(completion_response_from_items(detached.items));
+            }
+
+            let static_items =
+                provide_detached_static_completions(&context, state).map_err(LspError::Anyhow)?;
+            let items = dedupe_and_sort_completion_items(
+                detached.items.into_iter().chain(static_items),
+            );
+
+            return Ok(completion_response_from_items(items));
         }
         return runtime_required(state);
     }
@@ -240,6 +271,14 @@ pub(crate) fn handle_completion_resolve(
 
     r_task(|| resolve_completion(&mut item))?;
     Ok(item)
+}
+
+fn completion_response_from_items(items: Vec<CompletionItem>) -> Option<CompletionResponse> {
+    if items.is_empty() {
+        None
+    } else {
+        Some(CompletionResponse::Array(items))
+    }
 }
 
 #[tracing::instrument(level = "info", skip_all)]

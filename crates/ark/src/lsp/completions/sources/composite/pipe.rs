@@ -116,7 +116,10 @@ fn eval_pipe_root(name: &str) -> Option<RObject> {
     Some(value)
 }
 
-fn find_pipe_root_name(context: &DocumentContext, node: &Node) -> anyhow::Result<Option<String>> {
+pub(crate) fn find_pipe_root_name(
+    context: &DocumentContext,
+    node: &Node,
+) -> anyhow::Result<Option<String>> {
     // Try to figure out the code associated with the 'root' of the pipe expression
     let Some(root) = find_pipe_root_node(context, *node)? else {
         return Ok(None);

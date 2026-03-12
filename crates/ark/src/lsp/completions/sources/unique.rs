@@ -71,3 +71,27 @@ pub(crate) fn get_completions(
     log::info!("No unique source provided completions");
     Ok(None)
 }
+
+pub(crate) fn get_detached_pre_bridge_completions(
+    completion_context: &CompletionContext,
+) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    if let Some(completions) = collect_completions(SingleColonSource, completion_context)? {
+        return Ok(Some(completions));
+    }
+
+    if let Some(completions) = collect_completions(CommentSource, completion_context)? {
+        return Ok(Some(completions));
+    }
+
+    Ok(None)
+}
+
+pub(crate) fn get_detached_post_bridge_completions(
+    completion_context: &CompletionContext,
+) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    if let Some(completions) = collect_completions(StringSource, completion_context)? {
+        return Ok(Some(completions));
+    }
+
+    Ok(None)
+}

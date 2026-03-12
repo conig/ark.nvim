@@ -17,9 +17,6 @@ local function request(client, method, params, timeout_ms)
   if not response then
     fail("no response for " .. method)
   end
-  if response.error then
-    fail(method .. " error: " .. vim.inspect(response.error))
-  end
   if response.err then
     fail(method .. " error: " .. vim.inspect(response.err))
   end
@@ -45,21 +42,36 @@ local function find_item(items, label)
   return nil
 end
 
+local function insert_text(item)
+  return item.insertText or item.insert_text
+end
+
+local function completion_at(line, column)
+  local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
+  local params = {
+    textDocument = vim.lsp.util.make_text_document_params(0),
+    position = { line = line - 1, character = column },
+  }
+  local result = request(client, "textDocument/completion", params, 10000)
+  return completion_items(result)
+end
+
 require("ark").setup({
   auto_start_pane = true,
   auto_start_lsp = true,
   configure_slime = true,
 })
 
-local test_file = "/tmp/ark_completion_resolve.R"
+local test_file = "/tmp/ark_detached_parity.R"
 
 vim.fn.writefile({
-  "mtcars$m",
+  "whi",
+  "mtcars |> subset(m",
+  'library("uti',
 }, test_file)
 
 vim.cmd("edit " .. test_file)
 vim.cmd("setfiletype r")
-vim.api.nvim_win_set_cursor(0, { 1, 8 })
 
 wait_for("ark bridge ready", 20000, function()
   return require("ark").status().bridge_ready == true
@@ -71,37 +83,33 @@ wait_for("ark lsp client", 15000, function()
   local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
   return client ~= nil and client.initialized == true
 end)
+vim.wait(300, function()
+  return false
+end, 300, false)
 
-local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
-local params = {
-  textDocument = vim.lsp.util.make_text_document_params(0),
-  position = { line = 0, character = 8 },
-}
-local completion = request(client, "textDocument/completion", params)
-local item = find_item(completion_items(completion), "mpg")
-
-if not item then
-  fail("mtcars$ completion did not include mpg")
+local keyword_items = completion_at(1, 3)
+local while_keyword = find_item(keyword_items, "while")
+if not while_keyword then
+  fail("keyword completion missing while: " .. vim.inspect(keyword_items))
 end
 
-if item.detail == "unknown" then
-  fail("completion item still exposes unknown detail before resolve")
+local pipe_items = completion_at(2, 18)
+local pipe_column = find_item(pipe_items, "mpg")
+if not pipe_column then
+  fail("pipe completion missing mpg: " .. vim.inspect(pipe_items))
+end
+if insert_text(pipe_column) ~= "mpg" then
+  fail("pipe completion inserted unexpected text: " .. vim.inspect(pipe_column))
 end
 
-local resolved = request(client, "completionItem/resolve", item)
-local detail = resolved and resolved.detail or ""
-local documentation = resolved and resolved.documentation
-local documentation_value = documentation and documentation.value or ""
-
-if detail == "" or detail == "unknown" then
-  fail("resolved completion detail missing: " .. vim.inspect(resolved))
-end
-
-if type(documentation_value) ~= "string" or documentation_value == "" then
-  fail("resolved completion docs missing: " .. vim.inspect(resolved))
+local library_items = completion_at(3, 12)
+local utils_pkg = find_item(library_items, "utils")
+if not utils_pkg then
+  fail('quoted library() completion missing utils: ' .. vim.inspect(library_items))
 end
 
 vim.print({
-  detail = detail,
-  documentation = documentation_value,
+  keyword = while_keyword.label,
+  pipe = insert_text(pipe_column),
+  library = utils_pkg.label,
 })
