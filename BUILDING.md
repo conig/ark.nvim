@@ -1,77 +1,41 @@
 ## Building
 
-Install Rust. If you don't already have it, use `rustup`, following the [installation instructions at rustup.rs](https://rustup.rs/). In brief:
+The workspace currently declares `rust-version = "1.89"`.
 
-```bash
-$ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-$ source $HOME/.cargo/env
-```
-
-Assuming you have a working Rust toolchain, you can just run `cargo build` at the top-level of this repository:
+On this machine, `stable` is `1.88.0`, so the practical development path is:
 
 ```sh
-$ cargo build
+cargo +nightly check -p ark --bin ark-lsp
 ```
 
+If your stable toolchain is already `1.89+`, ordinary `cargo` commands are fine.
 
-## Standalone usage
+## Useful Commands
 
-To use ARK as a standalone kernel (outside Positron), install the kernelspec. From the repository root after running `cargo build`:
+Build or check the standalone LSP:
 
 ```sh
-$ ./target/debug/ark --install
+cargo +nightly check -p ark --bin ark-lsp
 ```
 
-This installs a JSON file to the Jupyter kernel registry. After it completes, the Ark R kernel will be available on all Jupyter frontends on your system (Notebook, Lab, etc.).
+Headless-load the Neovim plugin:
 
-You will usually want to tweak the **ark** environment for development; add this to `~/Library/Jupyter/kernels/ark/kernel.json`:
-
-```json
-  "env": {
-    "RUST_BACKTRACE": "1",
-    "RUST_LOG": "warn,ark=trace",
-  }
+```sh
+nvim --headless -u NONE \
+  -c "set rtp+=/path/to/ark.nvim" \
+  -c "lua require('ark').setup({ auto_start_pane = false, auto_start_lsp = false })" \
+  -c "lua vim.print(require('ark').status())" \
+  -c "qa!"
 ```
 
-This enables backtrace capturing in [anyhow](https://docs.rs/anyhow) errors and sets internal crates to log at TRACE level and external dependencies to log at WARN. Setting the latter to more verbose levels can dramatically decrease performance. See the documentation in the [tracing_subscriber](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) crate for more fine-grained tuning of the `RUST_LOG` environment variable.
+Print the pane launcher command from Neovim:
 
-## Test with Release Positron
-
-To test the dev build of ARK on Release Positron, you can open Positron's user settings
-and change option `Positron > R > Kernel: Path` (ID: `positron.r.kernel.path`)
-to the location of the binary.
-
-```json
-{
-    "positron.r.kernel.path": "/path/to/ark/target/debug/ark",
-}
+```vim
+:ArkPaneCommand
 ```
 
-With a development version of Positron, a development version of Ark is automatically detected as long as the `positron/` and `ark/` folders are at the same depth, i.e.:
+## Notes
 
-```
-| files/
-| |- ark/
-| |- positron/
-```
-
-## Testing
-
-We use [nextest](https://nexte.st/) for testing rather than a standard `cargo test`, primarily because nextest runs each test in its own process rather than in its own thread.
-This is critical for us, as Ark has global objects that can only be set up once per process (such as setup around the R process itself).
-Additionally, using one process per test means that it is impossible for one test to interfere with another (so you don't have to worry about test cleanup, particularly if you add objects to R's global environment).
-Tests are still run in parallel, using multiple processes, and this ends up being quite fast and reliable.
-
-Install the nextest cli tool using a [prebuilt binary](https://nexte.st/docs/installation/pre-built-binaries/).
-
-Run tests locally with `just test` (which runs `cargo nextest run`) or `Tasks: Run Test Task` in VS Code (which you can bind to a keyboard shortcut).
-Run insta snapshot tests in "update" mode with `just test-insta` (which runs `cargo insta test --test-runner nextest`).
-
-On CI we use the nextest profile found in `.config/nextest.toml`.
-
-## Just
-
-We use [just](https://github.com/casey/just) as a simple command runner, and the shortcuts live in `justfile`.
-On macOS, install just with `brew install just`.
-On Windows, we've used `cargo install just` with success.
-For more installation tips, see the just README.
+- The repo still contains upstream Ark crates that are not part of the intended v1 Neovim product.
+- `ark-lsp` currently defaults to `--runtime-mode detached`.
+- The managed-pane launcher lives at `scripts/ark-r-launcher.sh`.

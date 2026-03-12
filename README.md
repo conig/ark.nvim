@@ -1,77 +1,103 @@
-Ark, an R Kernel <img src="doc/logo.png" align="right" height=160 />
-============================================================================
+ark.nvim
+========
 
-Ark is an [R](https://www.r-project.org) kernel for Jupyter applications. It was created to serve as the interface between R and the [Positron](https://github.com/posit-dev/positron) IDE and is compatible with all frontends implementing the Jupyter protocol.
+`ark.nvim` is a Neovim-only refactor of Ark for R development with:
 
-Ark aims to provide a complete set of reusable and interoperable tools for implementing IDEs for R:
+- a native Rust LSP server
+- a Neovim plugin
+- a managed tmux pane running interactive `R`
+- `nvim-slimetree` + `vim-slime` as the execution path
 
-- It is a [Jupyter kernel](https://jupyter.org) that provides structured interaction (inputs and outputs) between R and a frontend.
+## Direction
 
-- It is an [LSP server](https://microsoft.github.io/language-server-protocol) that powers intellisense features such as completions, jump-to-definition, find-references, diagnostics, etc. It also has some formatting capabilities that we plan to develop over time.
+The intended workflow is:
 
-- It is a [DAP server](https://microsoft.github.io/debug-adapter-protocol) for sophisticated step-debugging of R functions. It manages source references, creating them on the spot if needed, and integrates tightly with the Jupyter kernel to step through R code transparently and inspect local variables. Note: Support for breakpoints is currently missing but you can use `debug()`, `debugonce()`, or `browser()` to drop into the debugger.
+1. Open an `r`, `rmd`, `qmd`, or `quarto` buffer.
+2. `ark.nvim` starts or reuses one tmux pane running `R`.
+3. You keep sending code with `nvim-slimetree` / `vim-slime`.
+4. Neovim language features come from `ark-lsp`.
 
-The LSP and DAP features are currently only available in Positron but will be made available to other frontends in the future.
+This repository still contains large parts of upstream Ark while the refactor is in progress, but the product scope is now Neovim-only. See [AGENTS.md](AGENTS.md) and [SPEC.md](SPEC.md) for the project contract.
 
+## Current Repo Surface
 
-## Usage
+Today the repo contains:
 
-### In Positron
+- `crates/ark/src/bin/ark-lsp.rs`
+  - a standalone stdio LSP entrypoint for Neovim
+- `lua/ark/` and `plugin/ark.lua`
+  - the Neovim plugin skeleton
+- `scripts/ark-r-launcher.sh`
+  - the default managed-pane launcher
 
-The easiest way to try Ark without any installation or configuration is by running it in Positron. This is currently the only practical way to use the more advanced features of Ark that are provided by our LSP and DAP; this will change in the future as we continue to invest in Ark.
+The upstream kernel, DAP, and Positron/Jupyter code are still present as migration material.
 
-<p align="center">
-    <img src="doc/positron.png" />
-</p>
+## Minimal Neovim Setup
 
-
-### In Jupyter applications
-
-Download a [release](https://github.com/posit-dev/ark/releases) of Ark to a location of your choice, such as `/usr/local/bin/ark` on macOS or Linux. Then install the Jupyter kernel specification file with:
-
-```sh
-$ ark --install
+```lua
+require("ark").setup({
+  auto_start_pane = true,
+  auto_start_lsp = true,
+})
 ```
 
-> [!NOTE]
-> Ark is currently not signed and notarized, so on macOS you will likely need to go to `System Settings -> Privacy and Security -> Click Allow Anyways for ark`, otherwise macOS will prevent you from running it. We are working on improving this. This does not apply when using the version of ark bundled within Positron.
+Useful commands:
 
-Ark should now be available in jupyter applications, e.g. in Jupyter Lab:
+- `:ArkPaneStart`
+- `:ArkPaneRestart`
+- `:ArkPaneStop`
+- `:ArkLspStart`
+- `:ArkStatus`
+- `:ArkPaneCommand`
 
-<p align="center">
-    <img src="doc/lab.png" width=400/>
-</p>
+To integrate with `vim-slime`, leave `configure_slime = true` in setup.
 
-Or at the command line (if Jupyter Console is installed):
+## LSP
+
+The repo now provides `ark-lsp`, a stdio LSP binary intended for Neovim.
+
+Current default launch args:
 
 ```sh
-$ jupyter console --kernel=ark
+ark-lsp --runtime-mode detached
 ```
 
+`detached` mode is the safe default for Neovim while the live-session bridge is being extracted from upstream Ark's kernel-coupled runtime.
 
-## Reporting issues
+## Managed tmux Pane
 
-We currently use the issue tracker of [Positron](https://github.com/posit-dev/positron). Please report bugs and feature requests at <https://github.com/posit-dev/positron/issues>.
+The default launcher is:
 
+```sh
+scripts/ark-r-launcher.sh
+```
 
-## Related Projects
+Environment knobs:
 
-- [Positron](https://github.com/posit-dev/positron), a next-generation data science IDE. The R language pack in Positron interfaces with the Ark kernel for interactive evaluation of R code and collecting outputs and plots. It also connects to the Ark LSP for intellisense features like completions, jump-to-definition, find-references, etc, and to the Ark DAP for transparent debugging.
+- `ARK_NVIM_R_BIN`
+- `ARK_NVIM_R_ARGS`
+- `ARK_NVIM_LSP_BIN`
 
-- [IRKernel](https://github.com/IRkernel/IRkernel), a Jupyter kernel for R written primarily in R itself. IRkernel is an R package easily installable from CRAN that provides a level of integration to R similar to [R Markdown](https://rmarkdown.rstudio.com) or [Quarto](https://quarto.org). As our main goal for Ark was to be used in Console mode in addition to Notebook mode, we implemented it as a native frontend to R. Ark binds natively to the exported C API of R intended for frontends like RStudio, providing an experience very close to what you get when running R in the terminal or RStudio.
+Pane width respects the first available tmux/global setting from:
 
-- [languageserver](https://github.com/REditorSupport/languageserver), a server that implements the [LSP protocol](https://microsoft.github.io/language-server-protocol/) for R, written primarily in R itself. We decided to create our own LSP written in Rust for two reasons. Initially, we needed to tightly integrate with the Jupyter kernel to provide introspective features based on the current state of the R session. In the longer term, we plan to move towards sophisticated static analysis of R code. The Rust ecosystem is a great place for implementing powerful language servers thanks to frameworks like [Tower-LSP](https://github.com/ebkalderon/tower-lsp) or the libraries for static analysis and incremental computation such as those contributed by the authors of [Rust Analyzer](https://github.com/rust-lang/rust-analyzer).
+- `TMUX_CODING_PANE_WIDTH`
+- `TMUX_JOIN_WIDTH`
+- `GOOTABS_JOIN_WIDTH`
 
-- [vscDebugger](https://manuelhentschel.github.io/vscDebugger), a server that implements the [DAP protocol](https://microsoft.github.io/debug-adapter-protocol) for R, also written in R as an R package. By comparison, our DAP server is tightly integrated into our Jupyter kernel. This makes it possible to smoothly integrate with the currently running R session and start debugging at any time without any prerequisite steps.
+## Building
 
-## Code of Conduct
+See [BUILDING.md](BUILDING.md).
 
-Please note that this project is released with a [Contributor Code of
-Conduct](https://github.com/posit-dev/ark?tab=coc-ov-file). By participating
-in this project you agree to abide by its terms.
+## Status
+
+The current implementation gives the repo:
+
+- a documented Neovim-only scope
+- a standalone LSP entrypoint
+- a real plugin surface for pane management and LSP startup
+
+The remaining major milestone is the live-session bridge that lets `ark-lsp` query the tmux-managed R process for runtime-aware completions, hover, and signatures.
 
 ## License
 
-Copyright (C) Posit Software, PBC. All rights reserved.
-
-Ark is licensed under the [MIT License](https://github.com/posit-dev/ark?tab=MIT-1-ov-file).
+The repository remains under the MIT license inherited from upstream Ark.
