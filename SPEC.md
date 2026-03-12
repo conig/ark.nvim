@@ -445,6 +445,10 @@ At minimum, every serious milestone should be checked with:
   - attach
   - completion from live session
 
+Verification should mirror the real editing environment.
+Because the target config uses automatic delimiter closing, completion and signature tests should default to cursor-before-close shapes like `foo(bar|)` or `dt[, .(m|)]`, not only truly unclosed forms.
+Open-delimiter-only cases are still worth testing, but they are secondary unless the bug explicitly depends on missing closers.
+
 The eventual target command set should include:
 
 - a Rust test command for the LSP core

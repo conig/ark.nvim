@@ -258,6 +258,10 @@ Recommended verification pattern:
 2. rerun with the user's real `~/.config/nvim/init.lua`
 3. only then widen into adjacent regressions
 
+Assume realistic editor conditions when writing those tests.
+This config uses automatic delimiter closing, so the common bug shape is often "cursor before an already-inserted `)` / `]` / `}`" rather than a truly unclosed form.
+For completion and signature regressions, prefer reproducing the closed-delimiter shape first and only add open-form coverage when it is specifically relevant.
+
 Do not run the tmux-backed full-config E2Es in parallel.
 They share one managed tmux/session contract and will interfere with each other.
 
