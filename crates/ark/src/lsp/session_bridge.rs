@@ -32,13 +32,13 @@ use crate::lsp::completions::find_pipe_root_name;
 use crate::lsp::document_context::DocumentContext;
 use crate::lsp::traits::node::NodeExt;
 use crate::lsp::traits::point::PointExt;
+use crate::treesitter::node_find_containing_call;
+use crate::treesitter::node_find_parent_call;
+use crate::treesitter::node_find_string;
 use crate::treesitter::ExtractOperatorType;
 use crate::treesitter::NamespaceOperatorType;
 use crate::treesitter::NodeType;
 use crate::treesitter::NodeTypeExt;
-use crate::treesitter::node_find_containing_call;
-use crate::treesitter::node_find_parent_call;
-use crate::treesitter::node_find_string;
 
 #[derive(Clone, Debug)]
 pub(crate) struct SessionBridge {
@@ -155,6 +155,7 @@ struct CallContext {
 #[derive(Clone, Copy, Debug)]
 enum CompletionFlavor {
     Argument,
+    ComparisonString,
     Extractor,
     Namespace,
     Package,
@@ -253,7 +254,8 @@ impl SessionBridge {
 
     pub(crate) fn bootstrap(&self) -> anyhow::Result<SessionBootstrap> {
         let search_path_symbols = self.inspect_names(search_path_completion_expr().as_str())?;
-        let installed_packages = self.inspect_names(installed_packages_completion_expr().as_str())?;
+        let installed_packages =
+            self.inspect_names(installed_packages_completion_expr().as_str())?;
         let library_paths = self
             .inspect_names(library_paths_completion_expr().as_str())?
             .into_iter()
@@ -393,8 +395,7 @@ impl SessionBridge {
         }
 
         if active_parameter.is_none() {
-            active_parameter =
-                Some(u32::try_from(payload.members.len() + 1).unwrap_or_default());
+            active_parameter = Some(u32::try_from(payload.members.len() + 1).unwrap_or_default());
         }
 
         Ok(Some(SignatureHelp {
@@ -461,10 +462,7 @@ impl SessionBridge {
         Ok(item)
     }
 
-    fn completion_plan(
-        &self,
-        context: &DocumentContext,
-    ) -> anyhow::Result<Option<CompletionPlan>> {
+    fn completion_plan(&self, context: &DocumentContext) -> anyhow::Result<Option<CompletionPlan>> {
         if let Some(request) = completion_request_from_extractor(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
@@ -475,6 +473,9 @@ impl SessionBridge {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_subset(context)? {
+            return Ok(Some(CompletionPlan::Unique(request)));
+        }
+        if let Some(request) = completion_request_from_comparison_string(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_library_string(context)? {
@@ -618,7 +619,11 @@ impl SessionBridge {
         &self,
         request: &CompletionRequest,
     ) -> anyhow::Result<InspectResponse> {
-        let Some(prefix) = request.prefix.as_deref().filter(|prefix| !prefix.is_empty()) else {
+        let Some(prefix) = request
+            .prefix
+            .as_deref()
+            .filter(|prefix| !prefix.is_empty())
+        else {
             return Ok(InspectResponse::default());
         };
 
@@ -687,10 +692,11 @@ fn completion_item(
                 format!("{} = ", member.name_raw)
             }
         },
-        CompletionFlavor::Extractor
-        | CompletionFlavor::Namespace
-        | CompletionFlavor::Package
-        | CompletionFlavor::Symbol => member.name_raw.clone(),
+        CompletionFlavor::ComparisonString => escape_r_double_quoted(member.name_raw.as_str()),
+        CompletionFlavor::Extractor |
+        CompletionFlavor::Namespace |
+        CompletionFlavor::Package |
+        CompletionFlavor::Symbol => member.name_raw.clone(),
         CompletionFlavor::Pipe => sym_quote_invalid(member.name_raw.as_str()),
         CompletionFlavor::Subset => subset_insert_text(
             member.name_raw.as_str(),
@@ -701,6 +707,7 @@ fn completion_item(
 
     let kind = match request.flavor {
         CompletionFlavor::Argument => CompletionItemKind::VARIABLE,
+        CompletionFlavor::ComparisonString => CompletionItemKind::VALUE,
         CompletionFlavor::Extractor | CompletionFlavor::Namespace => CompletionItemKind::FIELD,
         CompletionFlavor::Package => CompletionItemKind::MODULE,
         CompletionFlavor::Pipe => CompletionItemKind::VARIABLE,
@@ -744,6 +751,7 @@ fn completion_item_data(
             accessor: request.accessor.clone(),
             member_name: Some(member.name_raw.clone()),
         }),
+        CompletionFlavor::ComparisonString => None,
         CompletionFlavor::Symbol => Some(BridgeCompletionData {
             kind: String::from("session_bridge_inspect"),
             expr: member.name_raw.clone(),
@@ -940,6 +948,37 @@ fn completion_request_from_subset(
     }))
 }
 
+fn completion_request_from_comparison_string(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<CompletionRequest>> {
+    let Some(line) = context.document.get_line(context.point.row) else {
+        return Ok(None);
+    };
+    let prefix = line.chars().take(context.point.column).collect::<String>();
+
+    if let Some((expr, value_prefix)) = comparison_string_data_table_expr(prefix.as_str()) {
+        return Ok(Some(CompletionRequest {
+            expr,
+            flavor: CompletionFlavor::ComparisonString,
+            prefix: Some(value_prefix),
+            accessor: None,
+            subset_kind: None,
+        }));
+    }
+
+    if let Some((expr, value_prefix)) = comparison_string_expr(prefix.as_str()) {
+        return Ok(Some(CompletionRequest {
+            expr,
+            flavor: CompletionFlavor::ComparisonString,
+            prefix: Some(value_prefix),
+            accessor: None,
+            subset_kind: None,
+        }));
+    }
+
+    Ok(None)
+}
+
 fn completion_request_from_library_string(
     context: &DocumentContext,
 ) -> anyhow::Result<Option<CompletionRequest>> {
@@ -973,10 +1012,7 @@ fn completion_request_from_library_string_text(
     context: &DocumentContext,
 ) -> Option<CompletionRequest> {
     static LIBRARY_STRING_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r#"(?x)^\s*(?:library|require)\s*\(\s*"(?P<prefix>[^"]*)$"#,
-        )
-        .unwrap()
+        Regex::new(r#"(?x)^\s*(?:library|require)\s*\(\s*"(?P<prefix>[^"]*)$"#).unwrap()
     });
 
     let line = context.document.get_line(context.point.row)?;
@@ -986,7 +1022,9 @@ fn completion_request_from_library_string_text(
     Some(CompletionRequest {
         expr: installed_packages_completion_expr(),
         flavor: CompletionFlavor::Package,
-        prefix: captures.name("prefix").map(|capture| capture.as_str().to_string()),
+        prefix: captures
+            .name("prefix")
+            .map(|capture| capture.as_str().to_string()),
         accessor: None,
         subset_kind: None,
     })
@@ -996,8 +1034,7 @@ fn completion_request_from_string_subset_text(
     context: &DocumentContext,
 ) -> Option<CompletionRequest> {
     static STRING_SUBSET2_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*\[\[\s*"(?P<prefix>[^"]*)$"#)
-            .unwrap()
+        Regex::new(r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*\[\[\s*"(?P<prefix>[^"]*)$"#).unwrap()
     });
     static STRING_SUBSET_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
@@ -1289,13 +1326,17 @@ fn argument_prefix(context: &DocumentContext) -> anyhow::Result<Option<String>> 
         return Ok(None);
     }
 
-    Ok(Some(node.node_to_string(context.document.contents.as_str())?))
+    Ok(Some(
+        node.node_to_string(context.document.contents.as_str())?,
+    ))
 }
 
 fn symbol_prefix(context: &DocumentContext) -> anyhow::Result<Option<String>> {
     if context.node.is_identifier() {
         return Ok(Some(
-            context.node.node_to_string(context.document.contents.as_str())?,
+            context
+                .node
+                .node_to_string(context.document.contents.as_str())?,
         ));
     }
 
@@ -1322,10 +1363,7 @@ fn symbol_prefix(context: &DocumentContext) -> anyhow::Result<Option<String>> {
     Ok(Some(prefix))
 }
 
-fn string_prefix(
-    string_node: &Node,
-    context: &DocumentContext,
-) -> anyhow::Result<Option<String>> {
+fn string_prefix(string_node: &Node, context: &DocumentContext) -> anyhow::Result<Option<String>> {
     let contents = string_node.node_to_string(context.document.contents.as_str())?;
     if contents.len() < 2 {
         return Ok(None);
@@ -1348,6 +1386,59 @@ fn string_prefix(
         .collect::<String>();
 
     Ok(Some(prefix))
+}
+
+fn comparison_string_expr(line_prefix: &str) -> Option<(String, String)> {
+    static COMPARISON_STRING_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)
+            (?P<expr>
+                [A-Za-z.][A-Za-z0-9._]*
+                (?:
+                    \$[A-Za-z.][A-Za-z0-9._]*
+                    |
+                    \[\[\s*(?:"[^"]+"|'[^']+'|[A-Za-z.][A-Za-z0-9._]*)\s*\]\]
+                )*
+            )
+            \s*(?:==|!=)\s*"(?P<prefix>[^"]*)$
+            "#,
+        )
+        .unwrap()
+    });
+
+    let captures = COMPARISON_STRING_RE.captures(line_prefix)?;
+    let expr = captures.name("expr")?.as_str();
+    let value_prefix = captures.name("prefix")?.as_str();
+
+    Some((
+        comparison_values_completion_expr(expr),
+        String::from(value_prefix),
+    ))
+}
+
+fn comparison_string_data_table_expr(line_prefix: &str) -> Option<(String, String)> {
+    static DATA_TABLE_COMPARISON_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)
+            (?P<table>[A-Za-z.][A-Za-z0-9._]*)\s*
+            \[
+            \s*(?P<column>[A-Za-z.][A-Za-z0-9._]*)\s*(?:==|!=)\s*"(?P<prefix>[^"]*)$
+            "#,
+        )
+        .unwrap()
+    });
+
+    let captures = DATA_TABLE_COMPARISON_RE.captures(line_prefix)?;
+    let table = captures.name("table")?.as_str();
+    let column = captures.name("column")?.as_str();
+    let value_prefix = captures.name("prefix")?.as_str();
+
+    let expr = format!("({})[[\"{}\"]]", table, escape_r_string(column),);
+
+    Some((
+        comparison_values_completion_expr(expr.as_str()),
+        String::from(value_prefix),
+    ))
 }
 
 fn find_string_subset_object<'tree>(
@@ -1467,7 +1558,9 @@ fn locate_bridge_hover_node<'tree>(context: &'tree DocumentContext) -> Option<No
     }
 
     match node.parent() {
-        Some(parent) if matches!(parent.node_type(), NodeType::NamespaceOperator(_)) => Some(parent),
+        Some(parent) if matches!(parent.node_type(), NodeType::NamespaceOperator(_)) => {
+            Some(parent)
+        },
         Some(parent) if matches!(parent.node_type(), NodeType::ExtractOperator(_)) => Some(parent),
         Some(parent) if parent.is_call() => Some(node),
         Some(_) => Some(node),
@@ -1543,6 +1636,12 @@ fn matrix_subset_completion_expr(expr: &str) -> String {
     let expr = expr.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
         "local({{ .x <- tryCatch(colnames(({expr})), error = function(e) NULL); if (is.null(.x)) .x <- character(); stats::setNames(vector(\"list\", length(.x)), .x) }})"
+    )
+}
+
+fn comparison_values_completion_expr(expr: &str) -> String {
+    format!(
+        "local({{ .x <- tryCatch(({expr}), error = function(e) NULL); if (is.null(.x)) {{ stats::setNames(list(), character()) }} else {{ .vals <- if (is.factor(.x)) {{ levels(.x) }} else if (is.character(.x)) {{ unique(.x) }} else {{ character() }}; .vals <- .vals[!is.na(.vals)]; .vals <- unique(as.character(.vals)); .vals <- utils::head(.vals, 200L); stats::setNames(vector(\"list\", length(.vals)), .vals) }} }})"
     )
 }
 
