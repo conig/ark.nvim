@@ -1,3 +1,4 @@
+local blink = require("ark.blink")
 local config = require("ark.config")
 local lsp = require("ark.lsp")
 local tmux = require("ark.tmux")
@@ -67,6 +68,37 @@ function M.setup(opts)
       end
     end,
     desc = "Start ark.nvim pane and LSP for R-family buffers",
+  })
+
+  vim.api.nvim_create_autocmd("InsertCharPre", {
+    group = group,
+    pattern = options.filetypes,
+    callback = function(args)
+      blink.record_insert_char(args.buf)
+    end,
+    desc = "Track opening-pair insertions for Ark completion recovery",
+  })
+
+  vim.api.nvim_create_autocmd("CursorMovedI", {
+    group = group,
+    pattern = options.filetypes,
+    callback = function(args)
+      blink.maybe_show_after_pair(args.buf)
+    end,
+    desc = "Re-show Blink completion after autopairs inserts closing delimiters",
+  })
+
+  vim.api.nvim_create_autocmd("TextChangedI", {
+    group = group,
+    pattern = options.filetypes,
+    callback = function(args)
+      vim.schedule(function()
+        if vim.api.nvim_buf_is_valid(args.buf) then
+          blink.maybe_show_after_pair(args.buf)
+        end
+      end)
+    end,
+    desc = "Recover Blink completion after autopairs text changes in R buffers",
   })
 
   vim.api.nvim_create_autocmd("VimLeavePre", {
