@@ -62,6 +62,17 @@ TMUX_SESSION=""
 if [ "$TMUX_SOCKET" != "" ] && command -v tmux >/dev/null 2>&1; then
   TMUX_SESSION=$(tmux -S "$TMUX_SOCKET" display-message -p "#{session_name}" 2>/dev/null || true)
 fi
+TMUX_PANE="${TMUX_PANE:-}"
+PROMPT_WATCH_TIMEOUT_MS="${ARK_PROMPT_WATCH_TIMEOUT_MS:-${RSCOPE_PROMPT_WATCH_TIMEOUT_MS:-10000}}"
+
+encode_status_component() {
+  printf '%s' "$1" | perl -CSDA -pe 's/([^A-Za-z0-9._-])/sprintf("%%%02X", ord($1))/ge' | tr -d '\n'
+}
+
+STATUS_FILE=""
+if [ -n "$STATUS_DIR" ] && [ -n "$TMUX_SOCKET" ] && [ -n "$TMUX_SESSION" ] && [ -n "$TMUX_PANE" ]; then
+  STATUS_FILE="$STATUS_DIR/$(encode_status_component "$TMUX_SOCKET")__$(encode_status_component "$TMUX_SESSION")__$(encode_status_component "$TMUX_PANE").json"
+fi
 
 PROFILE_FILE=$(mktemp)
 PKG_PATH_R=$(escape_r_string "$PKG_PATH")
@@ -160,12 +171,14 @@ local({
     dir.create(.dir, recursive = TRUE, showWarnings = FALSE)
     suppressWarnings(Sys.chmod(.dir, mode = "700", use_umask = FALSE))
 
-    .payload <- c(
+    .payload <- utils::modifyList(
       list(
         status = as.character(status),
         ts = as.integer(Sys.time()),
         pid = as.integer(Sys.getpid()),
-        log_path = normalizePath(.quiet_log, winslash = "/", mustWork = FALSE)
+        log_path = normalizePath(.quiet_log, winslash = "/", mustWork = FALSE),
+        repl_ready = FALSE,
+        repl_ts = NULL
       ),
       fields
     )
@@ -552,6 +565,15 @@ cleanup() {
   rm -f "$PROFILE_FILE"
 }
 trap cleanup EXIT INT TERM
+
+if [ -n "$STATUS_FILE" ] && [ -n "$TMUX_SOCKET" ] && [ -n "$TMUX_PANE" ] && [ -x "$SCRIPT_DIR/ark-wait-for-repl.sh" ]; then
+  "$SCRIPT_DIR/ark-wait-for-repl.sh" \
+    --socket "$TMUX_SOCKET" \
+    --pane "$TMUX_PANE" \
+    --status-file "$STATUS_FILE" \
+    --timeout-ms "$PROMPT_WATCH_TIMEOUT_MS" \
+    >/dev/null 2>&1 &
+fi
 
 ARK_STATUS_DIR="$STATUS_DIR" \
 ARK_IPC_MAX_REQUEST_BYTES="$IPC_MAX_REQUEST_BYTES" \

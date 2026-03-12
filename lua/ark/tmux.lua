@@ -235,7 +235,9 @@ local function read_startup_status(session, config)
   payload.port = tonumber(payload.port)
   payload.pid = tonumber(payload.pid)
   payload.ts = tonumber(payload.ts)
+  payload.repl_ts = tonumber(payload.repl_ts)
   payload.auth_token = type(payload.auth_token) == "string" and payload.auth_token or ""
+  payload.repl_ready = payload.repl_ready == true or payload.repl_ready == 1
   payload.log_path = type(payload.log_path) == "string" and payload.log_path or nil
   payload._status_path = path
   return payload
@@ -471,6 +473,7 @@ function M.status(config)
     startup_status = startup_status,
     startup_status_path = session and status_file_path(session, config or {}) or nil,
     bridge_ready = bridge_ready,
+    repl_ready = bridge_ready and startup_status and startup_status.repl_ready == true or false,
   }
 end
 
