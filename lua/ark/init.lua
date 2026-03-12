@@ -12,8 +12,8 @@ local function notify(message, level)
   vim.notify(message, level or vim.log.levels.INFO, { title = "ark.nvim" })
 end
 
-local function merged_opts(opts)
-  return vim.tbl_deep_extend("force", config.defaults(), opts or {})
+local function merged_opts(base, opts)
+  return vim.tbl_deep_extend("force", config.defaults(), base or {}, opts or {})
 end
 
 local function ensure_setup()
@@ -23,7 +23,7 @@ local function ensure_setup()
 end
 
 function M.setup(opts)
-  options = merged_opts(opts)
+  options = merged_opts(options, opts)
 
   local group = vim.api.nvim_create_augroup("ArkNvim", { clear = true })
   vim.api.nvim_create_autocmd("FileType", {
