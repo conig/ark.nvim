@@ -146,6 +146,7 @@ enum CompletionFlavor {
     Argument,
     Extractor,
     Namespace,
+    Symbol,
 }
 
 #[derive(Clone, Debug)]
@@ -363,7 +364,10 @@ impl SessionBridge {
         if let Some(request) = completion_request_from_namespace(context)? {
             return Ok(Some(request));
         }
-        completion_request_from_call(context)
+        if let Some(request) = completion_request_from_call(context)? {
+            return Ok(Some(request));
+        }
+        completion_request_from_search_path(context)
     }
 
     fn inspect(
@@ -413,12 +417,15 @@ fn completion_item(member: BridgeMember, flavor: CompletionFlavor, index: usize)
                 format!("{} = ", member.name_raw)
             }
         },
-        CompletionFlavor::Extractor | CompletionFlavor::Namespace => member.name_raw.clone(),
+        CompletionFlavor::Extractor | CompletionFlavor::Namespace | CompletionFlavor::Symbol => {
+            member.name_raw.clone()
+        },
     };
 
     let kind = match flavor {
         CompletionFlavor::Argument => CompletionItemKind::VARIABLE,
         CompletionFlavor::Extractor | CompletionFlavor::Namespace => CompletionItemKind::FIELD,
+        CompletionFlavor::Symbol => CompletionItemKind::VARIABLE,
     };
 
     CompletionItem {
@@ -540,6 +547,24 @@ fn completion_request_from_call(
     }))
 }
 
+fn completion_request_from_search_path(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<CompletionRequest>> {
+    let prefix = symbol_prefix(context)?;
+    if prefix.is_none() && context.trigger.is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(CompletionRequest {
+        expr: String::from(
+            "local({ .envs <- lapply(search(), as.environment); .names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); stats::setNames(vector(\"list\", length(.names)), .names) })",
+        ),
+        flavor: CompletionFlavor::Symbol,
+        prefix,
+        accessor: None,
+    }))
+}
+
 fn analyze_call_context(context: &DocumentContext) -> anyhow::Result<Option<CallContext>> {
     let ast = &context.document.ast;
     let Some(mut node) = ast.root_node().find_closest_node_to_point(context.point) else {
@@ -639,6 +664,36 @@ fn argument_prefix(context: &DocumentContext) -> anyhow::Result<Option<String>> 
     }
 
     Ok(Some(node.node_to_string(context.document.contents.as_str())?))
+}
+
+fn symbol_prefix(context: &DocumentContext) -> anyhow::Result<Option<String>> {
+    if context.node.is_identifier() {
+        return Ok(Some(
+            context.node.node_to_string(context.document.contents.as_str())?,
+        ));
+    }
+
+    let Some(line) = context.document.get_line(context.point.row) else {
+        return Ok(None);
+    };
+
+    let prefix = line
+        .chars()
+        .take(context.point.column)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.'))
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+
+    if prefix.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(prefix))
 }
 
 fn locate_bridge_hover_node<'tree>(context: &'tree DocumentContext) -> Option<Node<'tree>> {
