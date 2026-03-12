@@ -79,6 +79,8 @@ struct InspectOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_members: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    member_name_filter: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     member_name_prefix: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     request_profile: Option<String>,
@@ -160,6 +162,16 @@ struct CompletionRequest {
     accessor: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct BridgeCompletionData {
+    kind: String,
+    expr: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accessor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    member_name: Option<String>,
+}
+
 impl SessionBridge {
     pub(crate) fn new(config: SessionBridgeConfig) -> anyhow::Result<Self> {
         if config.host.is_empty() {
@@ -200,7 +212,7 @@ impl SessionBridge {
             .members
             .into_iter()
             .enumerate()
-            .map(|(index, member)| completion_item(member, request.flavor, index))
+            .map(|(index, member)| completion_item(member, &request, index))
             .collect::<Vec<_>>();
 
         Ok(Some(CompletionResponse::Array(items)))
@@ -364,6 +376,58 @@ impl SessionBridge {
         }))
     }
 
+    pub(crate) fn resolve_completion_item(
+        &self,
+        mut item: CompletionItem,
+    ) -> anyhow::Result<CompletionItem> {
+        let Some(data) = item.data.clone() else {
+            return Ok(item);
+        };
+
+        let Ok(data) = serde_json::from_value::<BridgeCompletionData>(data) else {
+            return Ok(item);
+        };
+
+        if data.kind != "session_bridge_inspect" {
+            return Ok(item);
+        }
+
+        if let Some(member_name) = data.member_name.as_deref() {
+            let payload = self.inspect(
+                data.expr.as_str(),
+                Some(InspectOptions {
+                    accessor: data.accessor.clone(),
+                    include_member_stats: Some(false),
+                    max_members: Some(1),
+                    member_name_filter: Some(String::from(member_name)),
+                    request_profile: Some(String::from("interactive_rich")),
+                    ..Default::default()
+                }),
+            )?;
+
+            if let Some(member) = payload.members.into_iter().next() {
+                apply_member_completion_docs(&mut item, &member);
+            }
+
+            return Ok(item);
+        }
+
+        let payload = self.inspect(
+            data.expr.as_str(),
+            Some(InspectOptions {
+                include_member_stats: Some(false),
+                request_profile: Some(String::from("meta_only")),
+                ..Default::default()
+            }),
+        )?;
+
+        if let Some(object_meta) = payload.object_meta.as_ref() {
+            apply_object_completion_docs(&mut item, object_meta, data.expr.as_str());
+        }
+
+        Ok(item)
+    }
+
     fn completion_request(
         &self,
         context: &DocumentContext,
@@ -429,6 +493,7 @@ impl SessionBridge {
                 max_members: Some(200),
                 member_name_prefix: request.prefix.clone(),
                 request_profile: Some(String::from("completion_lean")),
+                ..Default::default()
             }),
         )?;
 
@@ -498,8 +563,12 @@ impl SessionBridge {
     }
 }
 
-fn completion_item(member: BridgeMember, flavor: CompletionFlavor, index: usize) -> CompletionItem {
-    let insert_text = match flavor {
+fn completion_item(
+    member: BridgeMember,
+    request: &CompletionRequest,
+    index: usize,
+) -> CompletionItem {
+    let insert_text = match request.flavor {
         CompletionFlavor::Argument => {
             if !member.insert_text.is_empty() {
                 member.insert_text.clone()
@@ -515,7 +584,7 @@ fn completion_item(member: BridgeMember, flavor: CompletionFlavor, index: usize)
         },
     };
 
-    let kind = match flavor {
+    let kind = match request.flavor {
         CompletionFlavor::Argument => CompletionItemKind::VARIABLE,
         CompletionFlavor::Extractor | CompletionFlavor::Namespace => CompletionItemKind::FIELD,
         CompletionFlavor::Package => CompletionItemKind::MODULE,
@@ -524,25 +593,91 @@ fn completion_item(member: BridgeMember, flavor: CompletionFlavor, index: usize)
 
     CompletionItem {
         label: member.name_display.clone(),
-        detail: if member.r#type.is_empty() {
+        detail: if member.r#type.is_empty() || member.r#type == "unknown" {
             None
         } else {
-            Some(member.r#type)
+            Some(member.r#type.clone())
         },
         documentation: if member.summary.is_empty() {
             None
         } else {
             Some(Documentation::MarkupContent(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: member.summary,
+                value: member.summary.clone(),
             }))
         },
         filter_text: Some(member.name_raw.clone()),
         insert_text: Some(insert_text),
         kind: Some(kind),
         sort_text: Some(format!("{index:04}")),
+        data: completion_item_data(request, &member)
+            .and_then(|data| serde_json::to_value(data).ok()),
         ..Default::default()
     }
+}
+
+fn completion_item_data(
+    request: &CompletionRequest,
+    member: &BridgeMember,
+) -> Option<BridgeCompletionData> {
+    match request.flavor {
+        CompletionFlavor::Argument | CompletionFlavor::Extractor => Some(BridgeCompletionData {
+            kind: String::from("session_bridge_inspect"),
+            expr: request.expr.clone(),
+            accessor: request.accessor.clone(),
+            member_name: Some(member.name_raw.clone()),
+        }),
+        CompletionFlavor::Symbol => Some(BridgeCompletionData {
+            kind: String::from("session_bridge_inspect"),
+            expr: member.name_raw.clone(),
+            accessor: None,
+            member_name: None,
+        }),
+        CompletionFlavor::Namespace | CompletionFlavor::Package => None,
+    }
+}
+
+fn apply_member_completion_docs(item: &mut CompletionItem, member: &BridgeMember) {
+    if !member.r#type.is_empty() && member.r#type != "unknown" {
+        item.detail = Some(member.r#type.clone());
+    }
+
+    if !member.summary.is_empty() {
+        item.documentation = Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: member.summary.clone(),
+        }));
+    }
+}
+
+fn apply_object_completion_docs(item: &mut CompletionItem, object_meta: &ObjectMeta, expr: &str) {
+    if !object_meta.r#type.is_empty() && object_meta.r#type != "unknown" {
+        item.detail = Some(object_meta.r#type.clone());
+    }
+
+    let mut sections = vec![format!("```r\n{expr}\n```")];
+    if !object_meta.summary.is_empty() {
+        sections.push(object_meta.summary.clone());
+    }
+
+    let mut details = vec![];
+    if !object_meta.r#type.is_empty() {
+        details.push(format!("Type: `{}`", object_meta.r#type));
+    }
+    if !object_meta.class.is_empty() {
+        details.push(format!("Class: `{}`", object_meta.class.join(", ")));
+    }
+    if object_meta.length > 0 {
+        details.push(format!("Length: `{}`", object_meta.length));
+    }
+    if !details.is_empty() {
+        sections.push(details.join("\n"));
+    }
+
+    item.documentation = Some(Documentation::MarkupContent(MarkupContent {
+        kind: MarkupKind::Markdown,
+        value: sections.join("\n\n"),
+    }));
 }
 
 fn completion_request_from_extractor(

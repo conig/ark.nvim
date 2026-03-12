@@ -375,7 +375,7 @@ impl GlobalState {
                             respond(tx, || handlers::handle_completion(params, &self.world), LspResponse::Completion)?;
                         },
                         LspRequest::CompletionResolve(params) => {
-                            respond(tx, || handlers::handle_completion_resolve(params), LspResponse::CompletionResolve)?;
+                            respond(tx, || handlers::handle_completion_resolve(params, &self.world), LspResponse::CompletionResolve)?;
                         },
                         LspRequest::Hover(params) => {
                             respond(tx, || handlers::handle_hover(params, &self.world), LspResponse::Hover)?;

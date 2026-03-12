@@ -221,7 +221,19 @@ pub(crate) fn handle_completion(
 }
 
 #[tracing::instrument(level = "info", skip_all)]
-pub(crate) fn handle_completion_resolve(mut item: CompletionItem) -> LspResult<CompletionItem> {
+pub(crate) fn handle_completion_resolve(
+    mut item: CompletionItem,
+    state: &WorldState,
+) -> LspResult<CompletionItem> {
+    if !state.has_attached_runtime() {
+        if let Some(session_bridge) = state.session_bridge.as_ref() {
+            return session_bridge
+                .resolve_completion_item(item)
+                .map_err(LspError::Anyhow);
+        }
+        return Ok(item);
+    }
+
     if !crate::console::Console::is_initialized() {
         return Ok(item);
     }
