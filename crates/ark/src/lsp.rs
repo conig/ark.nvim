@@ -33,6 +33,7 @@ pub mod markdown;
 
 pub mod references;
 pub mod selection_range;
+pub mod session_bridge;
 pub mod signature_help;
 pub mod state;
 pub mod state_handlers;

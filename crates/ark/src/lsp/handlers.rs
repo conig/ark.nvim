@@ -190,11 +190,6 @@ pub(crate) fn handle_completion(
     params: CompletionParams,
     state: &WorldState,
 ) -> LspResult<Option<CompletionResponse>> {
-    if !state.has_attached_runtime() {
-        return runtime_required(state);
-    }
-
-    // Get reference to document.
     let uri = params.text_document_position.text_document.uri;
     let document = state.get_document(&uri)?;
 
@@ -206,6 +201,15 @@ pub(crate) fn handle_completion(
     // Build the document context.
     let context = DocumentContext::new(document, point, trigger);
     lsp::log_info!("Completion context: {:#?}", context);
+
+    if !state.has_attached_runtime() {
+        if let Some(session_bridge) = state.session_bridge.as_ref() {
+            return session_bridge
+                .completion_response(&context)
+                .map_err(LspError::Anyhow);
+        }
+        return runtime_required(state);
+    }
 
     let completions = r_task(|| provide_completions(&context, state))?;
 
@@ -228,10 +232,6 @@ pub(crate) fn handle_completion_resolve(mut item: CompletionItem) -> LspResult<C
 
 #[tracing::instrument(level = "info", skip_all)]
 pub(crate) fn handle_hover(params: HoverParams, state: &WorldState) -> LspResult<Option<Hover>> {
-    if !state.has_attached_runtime() {
-        return runtime_required(state);
-    }
-
     let uri = params.text_document_position_params.text_document.uri;
     let document = state.get_document(&uri)?;
 
@@ -240,6 +240,13 @@ pub(crate) fn handle_hover(params: HoverParams, state: &WorldState) -> LspResult
 
     // build document context
     let context = DocumentContext::new(document, point, None);
+
+    if !state.has_attached_runtime() {
+        if let Some(session_bridge) = state.session_bridge.as_ref() {
+            return session_bridge.hover(&context).map_err(LspError::Anyhow);
+        }
+        return runtime_required(state);
+    }
 
     // request hover information
     let result = r_task(|| r_hover(&context));
@@ -267,10 +274,6 @@ pub(crate) fn handle_signature_help(
     params: SignatureHelpParams,
     state: &WorldState,
 ) -> LspResult<Option<SignatureHelp>> {
-    if !state.has_attached_runtime() {
-        return runtime_required(state);
-    }
-
     let uri = params.text_document_position_params.text_document.uri;
     let document = state.get_document(&uri)?;
 
@@ -278,6 +281,13 @@ pub(crate) fn handle_signature_help(
     let point = document.tree_sitter_point_from_lsp_position(position)?;
 
     let context = DocumentContext::new(document, point, None);
+
+    if !state.has_attached_runtime() {
+        if let Some(session_bridge) = state.session_bridge.as_ref() {
+            return session_bridge.signature_help(&context).map_err(LspError::Anyhow);
+        }
+        return runtime_required(state);
+    }
 
     // request signature help
     let result = r_task(|| r_signature_help(&context));
