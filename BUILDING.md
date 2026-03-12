@@ -38,5 +38,6 @@ Print the pane launcher command from Neovim:
 
 - The repo still contains upstream Ark crates that are not part of the intended v1 Neovim product.
 - `ark-lsp` currently defaults to `--runtime-mode detached`.
-- The Neovim plugin prefers `~/repos/rscope.nvim/nvim/scripts/rscope_r_launcher.sh` when present, and otherwise falls back to `scripts/ark-r-launcher.sh`.
+- The Neovim plugin uses the repo-local `scripts/ark-r-launcher.sh` launcher.
+- The managed pane bootstraps the vendored `packages/rscope` runtime into `stdpath("data") .. "/ark/r-lib"` by default.
 - Use `:ArkRefresh` after the managed pane becomes ready if you want to restart the buffer LSP with fresh session bridge metadata.

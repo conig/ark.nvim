@@ -297,16 +297,21 @@ while keeping:
 
 Future work should preserve that model unless the user explicitly changes product direction.
 
-### 9. The external launcher dependency is still a known seam
+### 9. The launcher/runtime is now owned locally
 
-The Neovim config no longer depends on the `rscope.nvim` plugin, but the managed-pane runtime still prefers the local `rscope` launcher/runtime when available.
+The external `rscope.nvim` repo is no longer part of the runtime path.
 
-That is currently an implementation dependency, not a product-direction dependency.
+Ark now owns:
 
-If work touches launcher/bootstrap behavior, check both:
+- `scripts/ark-r-launcher.sh`
+- trusted status files under `ark-status`
+- the vendored bridge runtime in `packages/rscope`
 
-- the Ark-side launcher fallback
-- the local `rscope`-backed path used for session bridging
+If work touches launcher/bootstrap behavior, verify all three layers together:
+
+- tmux pane startup from `lua/ark/tmux.lua`
+- launcher/bootstrap behavior in `scripts/ark-r-launcher.sh`
+- bridge/runtime behavior in `packages/rscope`
 
 ### 10. Current performance baseline
 

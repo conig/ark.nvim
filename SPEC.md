@@ -28,7 +28,7 @@ The user's Neovim config already has the desired execution model:
 
 - `~/.config/nvim/lua/r_tmux_pane.lua`
   - creates or reuses one managed tmux pane
-  - currently launches R via `~/repos/rscope.nvim/nvim/scripts/rscope_r_launcher.sh`
+  - now launches R via Ark's repo-local `scripts/ark-r-launcher.sh`
 - `~/.config/nvim/lua/plugins/slime.lua`
   - keeps `vim-slime` as transport
   - uses local `~/repos/nvim-slimetree/` for AST-aware send motions

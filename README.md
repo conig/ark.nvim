@@ -28,7 +28,9 @@ Today the repo contains:
 - `lua/ark/` and `plugin/ark.lua`
   - the Neovim plugin and managed-pane integration
 - `scripts/ark-r-launcher.sh`
-  - the fallback managed-pane launcher when no richer session launcher is available
+  - the managed-pane launcher and live-session bootstrap
+- `packages/rscope`
+  - a vendored local R runtime package used for session IPC inside the managed pane
 
 The upstream kernel, DAP, and Positron/Jupyter code are still present as migration material.
 
@@ -68,23 +70,21 @@ ark-lsp --runtime-mode detached
 
 ## Managed tmux Pane
 
-The plugin prefers the existing `rscope.nvim` launcher when it is available locally:
-
-```sh
-~/repos/rscope.nvim/nvim/scripts/rscope_r_launcher.sh
-```
-
-If that launcher is not present, it falls back to:
+The plugin launches the managed R pane through the repo-local launcher:
 
 ```sh
 scripts/ark-r-launcher.sh
 ```
+
+That launcher bootstraps the vendored `packages/rscope` runtime into a writable user library under Neovim's data directory and writes trusted readiness metadata to `stdpath("state") .. "/ark-status"`.
 
 Environment knobs:
 
 - `ARK_NVIM_R_BIN`
 - `ARK_NVIM_R_ARGS`
 - `ARK_NVIM_LSP_BIN`
+- `ARK_NVIM_SESSION_LIB`
+- `ARK_NVIM_SESSION_PKG_PATH`
 
 Pane width respects the first available tmux/global setting from:
 
@@ -105,7 +105,7 @@ The current implementation gives the repo:
 - a real plugin surface for pane management and LSP startup
 - a detached live-session bridge for completions, hover, and signature help against the managed tmux R pane
 
-Remaining work is now in depth and polish rather than basic architecture extraction: expanding test coverage, replacing the remaining external `rscope` launcher dependency, and tightening Neovim-facing docs and health tooling.
+Remaining work is now in depth and polish rather than basic architecture extraction: expanding test coverage and tightening Neovim-facing docs and health tooling.
 
 ## License
 
