@@ -100,6 +100,19 @@ function M.start_lsp(bufnr)
   return lsp.start(options, bufnr)
 end
 
+function M.refresh(bufnr)
+  ensure_setup()
+
+  if options.auto_start_pane then
+    local _, pane_err = tmux.start(options)
+    if pane_err then
+      notify(pane_err, vim.log.levels.WARN)
+    end
+  end
+
+  return lsp.restart(options, bufnr)
+end
+
 function M.lsp_config(bufnr)
   ensure_setup()
   return lsp.config(options, bufnr)
@@ -107,7 +120,7 @@ end
 
 function M.status()
   ensure_setup()
-  local status = tmux.status()
+  local status = tmux.status(options.tmux)
   status.lsp_cmd = options.lsp.cmd
   status.launcher = options.tmux.launcher
   return status

@@ -1,4 +1,5 @@
 local M = {}
+local tmux = require("ark.tmux")
 
 local function filetype_enabled(filetypes, filetype)
   return vim.tbl_contains(filetypes or {}, filetype)
@@ -20,6 +21,7 @@ function M.config(opts, bufnr)
   return {
     name = opts.lsp.name,
     cmd = opts.lsp.cmd,
+    cmd_env = tmux.bridge_env(opts.tmux),
     root_dir = root_dir(bufnr, opts.lsp.root_markers),
   }
 end
@@ -31,6 +33,16 @@ function M.start(opts, bufnr)
   end
 
   return vim.lsp.start(M.config(opts, bufnr), { bufnr = bufnr })
+end
+
+function M.restart(opts, bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+  for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr, name = opts.lsp.name })) do
+    vim.lsp.stop_client(client.id)
+  end
+
+  return M.start(opts, bufnr)
 end
 
 return M
