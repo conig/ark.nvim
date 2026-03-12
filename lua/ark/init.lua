@@ -25,6 +25,7 @@ end
 
 function M.setup(opts)
   options = merged_opts(options, opts)
+  blink.register_lsp_commands()
 
   local group = vim.api.nvim_create_augroup("ArkNvim", { clear = true })
   vim.api.nvim_create_autocmd("FileType", {

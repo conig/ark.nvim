@@ -14,6 +14,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tower_lsp::lsp_types::CompletionItem;
 use tower_lsp::lsp_types::CompletionItemKind;
+use tower_lsp::lsp_types::Command;
 use tower_lsp::lsp_types::Documentation;
 use tower_lsp::lsp_types::Hover;
 use tower_lsp::lsp_types::HoverContents;
@@ -178,6 +179,7 @@ struct CompletionRequest {
     flavor: CompletionFlavor,
     prefix: Option<String>,
     accessor: Option<String>,
+    close_string: bool,
     subset_kind: Option<SubsetCompletionKind>,
 }
 
@@ -743,10 +745,38 @@ fn completion_item(
         insert_text: Some(insert_text),
         kind: Some(kind),
         sort_text: Some(completion_sort_text(request, index)),
+        command: completion_item_command(request),
         data: completion_item_data(request, &member)
             .and_then(|data| serde_json::to_value(data).ok()),
         ..Default::default()
     }
+}
+
+fn completion_item_command(request: &CompletionRequest) -> Option<Command> {
+    if !completion_needs_string_delimiter(request) {
+        return None;
+    }
+
+    Some(Command {
+        title: String::from("Complete String Delimiter"),
+        command: String::from("ark.completeStringDelimiter"),
+        ..Default::default()
+    })
+}
+
+fn completion_needs_string_delimiter(request: &CompletionRequest) -> bool {
+    if matches!(request.flavor, CompletionFlavor::ComparisonString) {
+        return true;
+    }
+
+    if request.close_string {
+        return true;
+    }
+
+    matches!(
+        request.subset_kind,
+        Some(SubsetCompletionKind::StringSubset | SubsetCompletionKind::StringSubset2)
+    )
 }
 
 fn completion_sort_text(request: &CompletionRequest, index: usize) -> String {
@@ -875,6 +905,7 @@ fn completion_request_from_extractor(
         flavor: CompletionFlavor::Extractor,
         prefix,
         accessor,
+        close_string: false,
         subset_kind: None,
     }))
 }
@@ -919,6 +950,7 @@ fn completion_request_from_namespace(
         flavor: CompletionFlavor::Namespace,
         prefix,
         accessor: None,
+        close_string: false,
         subset_kind: None,
     }))
 }
@@ -941,6 +973,7 @@ fn completion_request_from_string_subset(
         flavor: CompletionFlavor::Subset,
         prefix: None,
         accessor: None,
+        close_string: false,
         subset_kind: Some(subset_kind),
     }))
 }
@@ -963,6 +996,7 @@ fn completion_request_from_subset(
         flavor: CompletionFlavor::Subset,
         prefix: symbol_prefix(context)?,
         accessor: None,
+        close_string: false,
         subset_kind: Some(subset_kind),
     }))
 }
@@ -981,6 +1015,7 @@ fn completion_request_from_comparison_string(
             flavor: CompletionFlavor::ComparisonString,
             prefix: Some(value_prefix),
             accessor: None,
+            close_string: false,
             subset_kind: None,
         }));
     }
@@ -991,6 +1026,7 @@ fn completion_request_from_comparison_string(
             flavor: CompletionFlavor::ComparisonString,
             prefix: Some(value_prefix),
             accessor: None,
+            close_string: false,
             subset_kind: None,
         }));
     }
@@ -1023,6 +1059,7 @@ fn completion_request_from_library_string(
         flavor: CompletionFlavor::Package,
         prefix,
         accessor: None,
+        close_string: true,
         subset_kind: None,
     }))
 }
@@ -1045,6 +1082,7 @@ fn completion_request_from_library_string_text(
             .name("prefix")
             .map(|capture| capture.as_str().to_string()),
         accessor: None,
+        close_string: true,
         subset_kind: None,
     })
 }
@@ -1071,6 +1109,7 @@ fn completion_request_from_string_subset_text(
             flavor: CompletionFlavor::Subset,
             prefix: None,
             accessor: None,
+            close_string: false,
             subset_kind: Some(SubsetCompletionKind::StringSubset2),
         });
     }
@@ -1081,6 +1120,7 @@ fn completion_request_from_string_subset_text(
         flavor: CompletionFlavor::Subset,
         prefix: None,
         accessor: None,
+        close_string: false,
         subset_kind: Some(SubsetCompletionKind::StringSubset),
     })
 }
@@ -1116,6 +1156,7 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
             flavor: CompletionFlavor::Subset,
             prefix: capture_prefix(&captures, "prefix"),
             accessor: None,
+            close_string: false,
             subset_kind: Some(SubsetCompletionKind::Subset2),
         });
     }
@@ -1126,6 +1167,7 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
             flavor: CompletionFlavor::Subset,
             prefix: capture_prefix(&captures, "prefix"),
             accessor: None,
+            close_string: false,
             subset_kind: Some(SubsetCompletionKind::Subset),
         });
     }
@@ -1136,6 +1178,7 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
             flavor: CompletionFlavor::Subset,
             prefix: capture_prefix(&captures, "prefix"),
             accessor: None,
+            close_string: false,
             subset_kind: Some(SubsetCompletionKind::Subset),
         });
     }
@@ -1146,6 +1189,7 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
         flavor: CompletionFlavor::Subset,
         prefix: capture_prefix(&captures, "prefix"),
         accessor: None,
+        close_string: false,
         subset_kind: Some(SubsetCompletionKind::Subset),
     })
 }
@@ -1175,6 +1219,7 @@ fn completion_request_from_call(
         flavor: CompletionFlavor::Argument,
         prefix,
         accessor: Some(String::from("arg")),
+        close_string: false,
         subset_kind: None,
     }))
 }
@@ -1195,6 +1240,7 @@ fn completion_request_from_pipe(
         flavor: CompletionFlavor::Pipe,
         prefix: symbol_prefix(context)?,
         accessor: None,
+        close_string: false,
         subset_kind: None,
     }))
 }
@@ -1216,6 +1262,7 @@ fn completion_request_from_pipe_text(context: &DocumentContext) -> Option<Comple
         flavor: CompletionFlavor::Pipe,
         prefix: capture_prefix(&captures, "prefix"),
         accessor: None,
+        close_string: false,
         subset_kind: None,
     })
 }
@@ -1245,6 +1292,7 @@ fn completion_request_from_library_call(
         flavor: CompletionFlavor::Package,
         prefix,
         accessor: None,
+        close_string: false,
         subset_kind: None,
     }))
 }
@@ -1262,6 +1310,7 @@ fn completion_request_from_search_path(
         flavor: CompletionFlavor::Symbol,
         prefix,
         accessor: None,
+        close_string: false,
         subset_kind: None,
     }))
 }
@@ -1935,6 +1984,7 @@ mod tests {
                 flavor: CompletionFlavor::Subset,
                 prefix: Some(String::from("m")),
                 accessor: None,
+                close_string: false,
                 subset_kind: Some(SubsetCompletionKind::Subset),
             },
             None,
@@ -1942,5 +1992,31 @@ mod tests {
         );
 
         assert_eq!(item.sort_text, Some(String::from("0-0000")));
+    }
+
+    #[test]
+    fn test_string_subset_completion_adds_delimiter_command() {
+        let item = completion_item(
+            BridgeMember {
+                name_display: String::from("mpg"),
+                name_raw: String::from("mpg"),
+                ..Default::default()
+            },
+            &CompletionRequest {
+                expr: String::from("mtcars"),
+                flavor: CompletionFlavor::Subset,
+                prefix: None,
+                accessor: None,
+                close_string: false,
+                subset_kind: Some(SubsetCompletionKind::StringSubset2),
+            },
+            None,
+            0,
+        );
+
+        assert_eq!(
+            item.command.map(|command| command.command),
+            Some(String::from("ark.completeStringDelimiter"))
+        );
     }
 }

@@ -1,4 +1,5 @@
 local M = {}
+local commands_registered = false
 
 local function active_ark_client(bufnr)
   local clients = vim.lsp.get_clients({ bufnr = bufnr, name = "ark_lsp" })
@@ -38,6 +39,30 @@ function M.maybe_show_after_pair(bufnr)
     trigger_kind = "trigger_character",
     trigger_character = trigger_character,
   })
+end
+
+function M.register_lsp_commands()
+  if commands_registered then
+    return
+  end
+
+  vim.lsp.commands["ark.completeStringDelimiter"] = function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local row = cursor[1] - 1
+    local col = cursor[2]
+    local line = vim.api.nvim_get_current_line()
+    local char_under_cursor = line:sub(col + 1, col + 1)
+
+    if char_under_cursor == '"' then
+      vim.api.nvim_win_set_cursor(0, { cursor[1], col + 1 })
+      return
+    end
+
+    vim.api.nvim_buf_set_text(0, row, col, row, col, { '"' })
+    vim.api.nvim_win_set_cursor(0, { cursor[1], col + 1 })
+  end
+
+  commands_registered = true
 end
 
 return M
