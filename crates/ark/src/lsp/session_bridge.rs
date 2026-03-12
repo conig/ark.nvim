@@ -2,6 +2,7 @@ use std::io::Read;
 use std::io::Write;
 use std::net::Shutdown;
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -39,6 +40,13 @@ pub(crate) struct SessionBridge {
     auth_token: String,
     session: BridgeSession,
     timeout: Duration,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SessionBootstrap {
+    pub search_path_symbols: Vec<String>,
+    pub installed_packages: Vec<String>,
+    pub library_paths: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -140,6 +148,7 @@ enum CompletionFlavor {
     Argument,
     Extractor,
     Namespace,
+    Package,
     Symbol,
 }
 
@@ -195,6 +204,22 @@ impl SessionBridge {
             .collect::<Vec<_>>();
 
         Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    pub(crate) fn bootstrap(&self) -> anyhow::Result<SessionBootstrap> {
+        let search_path_symbols = self.inspect_names(search_path_completion_expr().as_str())?;
+        let installed_packages = self.inspect_names(installed_packages_completion_expr().as_str())?;
+        let library_paths = self
+            .inspect_names(library_paths_completion_expr().as_str())?
+            .into_iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+
+        Ok(SessionBootstrap {
+            search_path_symbols,
+            installed_packages,
+            library_paths,
+        })
     }
 
     pub(crate) fn hover(&self, context: &DocumentContext) -> anyhow::Result<Option<Hover>> {
@@ -349,6 +374,9 @@ impl SessionBridge {
         if let Some(request) = completion_request_from_namespace(context)? {
             return Ok(Some(request));
         }
+        if let Some(request) = completion_request_from_library_call(context)? {
+            return Ok(Some(request));
+        }
         if let Some(request) = completion_request_from_call(context)? {
             return Ok(Some(request));
         }
@@ -442,6 +470,32 @@ impl SessionBridge {
 
         Ok(payload)
     }
+
+    fn inspect_names(&self, expr: &str) -> anyhow::Result<Vec<String>> {
+        let payload = self.inspect(
+            expr,
+            Some(InspectOptions {
+                include_member_stats: Some(false),
+                max_members: Some(50_000),
+                request_profile: Some(String::from("completion_lean")),
+                ..Default::default()
+            }),
+        )?;
+
+        Ok(payload
+            .members
+            .into_iter()
+            .filter_map(|member| {
+                if !member.name_raw.is_empty() {
+                    Some(member.name_raw)
+                } else if !member.name_display.is_empty() {
+                    Some(member.name_display)
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
 }
 
 fn completion_item(member: BridgeMember, flavor: CompletionFlavor, index: usize) -> CompletionItem {
@@ -453,7 +507,10 @@ fn completion_item(member: BridgeMember, flavor: CompletionFlavor, index: usize)
                 format!("{} = ", member.name_raw)
             }
         },
-        CompletionFlavor::Extractor | CompletionFlavor::Namespace | CompletionFlavor::Symbol => {
+        CompletionFlavor::Extractor
+        | CompletionFlavor::Namespace
+        | CompletionFlavor::Package
+        | CompletionFlavor::Symbol => {
             member.name_raw.clone()
         },
     };
@@ -461,6 +518,7 @@ fn completion_item(member: BridgeMember, flavor: CompletionFlavor, index: usize)
     let kind = match flavor {
         CompletionFlavor::Argument => CompletionItemKind::VARIABLE,
         CompletionFlavor::Extractor | CompletionFlavor::Namespace => CompletionItemKind::FIELD,
+        CompletionFlavor::Package => CompletionItemKind::MODULE,
         CompletionFlavor::Symbol => CompletionItemKind::VARIABLE,
     };
 
@@ -580,6 +638,34 @@ fn completion_request_from_call(
         flavor: CompletionFlavor::Argument,
         prefix,
         accessor: Some(String::from("arg")),
+    }))
+}
+
+fn completion_request_from_library_call(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<CompletionRequest>> {
+    let Some(call) = analyze_call_context(context)? else {
+        return Ok(None);
+    };
+
+    if !matches!(call.callee.as_str(), "library" | "require") {
+        return Ok(None);
+    }
+
+    if call.num_unnamed_arguments > 0 {
+        return Ok(None);
+    }
+
+    let prefix = symbol_prefix(context)?;
+    if prefix.is_none() && context.trigger.is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(CompletionRequest {
+        expr: installed_packages_completion_expr(),
+        flavor: CompletionFlavor::Package,
+        prefix,
+        accessor: None,
     }))
 }
 
@@ -816,6 +902,18 @@ fn signature_parameter_label(member: &BridgeMember) -> String {
 fn search_path_completion_expr() -> String {
     String::from(
         "local({ .envs <- lapply(search(), as.environment); .names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); stats::setNames(vector(\"list\", length(.names)), .names) })",
+    )
+}
+
+fn installed_packages_completion_expr() -> String {
+    String::from(
+        "local({ .x <- base::.packages(all.available = TRUE); stats::setNames(vector(\"list\", length(.x)), .x) })",
+    )
+}
+
+fn library_paths_completion_expr() -> String {
+    String::from(
+        "local({ .x <- base::.libPaths(); stats::setNames(vector(\"list\", length(.x)), .x) })",
     )
 }
 

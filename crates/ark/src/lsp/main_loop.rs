@@ -216,21 +216,37 @@ impl GlobalState {
             events_rx,
         };
 
-        if runtime_mode == RuntimeMode::Attached {
-            // FIXME: We shouldn't call R code in the kernel to figure this out
-            if let Err(err) = crate::r_task(|| -> anyhow::Result<()> {
-                let paths: Vec<String> = harp::RFunction::new("base", ".libPaths")
-                    .call()?
-                    .try_into()?;
+        match runtime_mode {
+            RuntimeMode::Attached => {
+                // FIXME: We shouldn't call R code in the kernel to figure this out
+                if let Err(err) = crate::r_task(|| -> anyhow::Result<()> {
+                    let paths: Vec<String> = harp::RFunction::new("base", ".libPaths")
+                        .call()?
+                        .try_into()?;
 
-                log::info!("Using library paths: {paths:#?}");
-                let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-                state.world.library = Library::new(paths);
+                    log::info!("Using library paths: {paths:#?}");
+                    let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+                    state.world.library = Library::new(paths);
 
-                Ok(())
-            }) {
-                log::error!("Can't evaluate `libPaths()`: {err:?}");
-            };
+                    Ok(())
+                }) {
+                    log::error!("Can't evaluate `libPaths()`: {err:?}");
+                };
+            },
+            RuntimeMode::Detached => {
+                if let Some(session_bridge) = state.world.session_bridge.as_ref() {
+                    match session_bridge.bootstrap() {
+                        Ok(bootstrap) => {
+                            state.world.console_scopes = vec![bootstrap.search_path_symbols];
+                            state.world.installed_packages = bootstrap.installed_packages;
+                            state.world.library = Library::new(bootstrap.library_paths);
+                        },
+                        Err(err) => {
+                            log::error!("Can't bootstrap detached session inputs: {err:?}");
+                        },
+                    }
+                }
+            },
         }
 
         state
