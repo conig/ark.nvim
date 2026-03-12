@@ -258,6 +258,9 @@ Recommended verification pattern:
 2. rerun with the user's real `~/.config/nvim/init.lua`
 3. only then widen into adjacent regressions
 
+Do not run the tmux-backed full-config E2Es in parallel.
+They share one managed tmux/session contract and will interfere with each other.
+
 ### 6. Use the real config when the issue smells like integration
 
 `-u NONE` is best for isolating Ark.
@@ -312,6 +315,13 @@ If work touches launcher/bootstrap behavior, verify all three layers together:
 - tmux pane startup from `lua/ark/tmux.lua`
 - launcher/bootstrap behavior in `scripts/ark-r-launcher.sh`
 - bridge/runtime behavior in `packages/rscope`
+
+Also keep the readiness split straight:
+
+- `bridge_ready` means the local IPC service is up and answers Ark pings
+- `repl_ready` means the tmux pane also shows a stable R prompt and is safe for send-keys style workflows
+
+These states are related but not interchangeable.
 
 ### 10. Current performance baseline
 
