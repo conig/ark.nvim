@@ -33,7 +33,7 @@ function M.setup(opts)
       local token = (startup_tokens[args.buf] or 0) + 1
       startup_tokens[args.buf] = token
 
-      vim.defer_fn(function()
+      local function start_buffer()
         if startup_tokens[args.buf] ~= token then
           return
         end
@@ -52,9 +52,19 @@ function M.setup(opts)
         end
 
         if options.auto_start_lsp then
-          lsp.start_async(options, args.buf)
+          if options.async_startup then
+            lsp.start_async(options, args.buf)
+          else
+            lsp.start(options, args.buf)
+          end
         end
-      end, 20)
+      end
+
+      if options.async_startup then
+        vim.defer_fn(start_buffer, 20)
+      else
+        start_buffer()
+      end
     end,
     desc = "Start ark.nvim pane and LSP for R-family buffers",
   })

@@ -59,6 +59,7 @@ function M.defaults()
   return {
     auto_start_pane = true,
     auto_start_lsp = true,
+    async_startup = false,
     configure_slime = true,
     filetypes = { "r", "rmd", "qmd", "quarto" },
     lsp = {
