@@ -424,7 +424,7 @@ function M.startup_status(config)
   return read_startup_status(session, config)
 end
 
-function M.bridge_env(config)
+function M.bridge_env(config, opts)
   if type(config.session_kind) ~= "string" or config.session_kind == "" then
     return nil
   end
@@ -434,8 +434,9 @@ function M.bridge_env(config)
     return nil
   end
 
+  local wait_for_ready = opts == nil or opts.wait ~= false
   local status = read_startup_status(session, config)
-  if not (status and status.status == "ready" and status.port) then
+  if wait_for_ready and not (status and status.status == "ready" and status.port) then
     status = wait_for_ready_status(session, config)
   end
   if not (status and status.status == "ready" and status.port) then

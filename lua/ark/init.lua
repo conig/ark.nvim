@@ -6,6 +6,7 @@ local M = {}
 
 local did_setup = false
 local options = nil
+local startup_tokens = {}
 
 local function notify(message, level)
   vim.notify(message, level or vim.log.levels.INFO, { title = "ark.nvim" })
@@ -29,16 +30,31 @@ function M.setup(opts)
     group = group,
     pattern = options.filetypes,
     callback = function(args)
-      if options.auto_start_pane then
-        local _, pane_err = tmux.start(options)
-        if pane_err then
-          notify(pane_err, vim.log.levels.WARN)
-        end
-      end
+      local token = (startup_tokens[args.buf] or 0) + 1
+      startup_tokens[args.buf] = token
 
-      if options.auto_start_lsp then
-        lsp.start(options, args.buf)
-      end
+      vim.defer_fn(function()
+        if startup_tokens[args.buf] ~= token then
+          return
+        end
+        if not vim.api.nvim_buf_is_valid(args.buf) then
+          return
+        end
+        if not vim.tbl_contains(options.filetypes, vim.bo[args.buf].filetype) then
+          return
+        end
+
+        if options.auto_start_pane then
+          local _, pane_err = tmux.start(options)
+          if pane_err then
+            notify(pane_err, vim.log.levels.WARN)
+          end
+        end
+
+        if options.auto_start_lsp then
+          lsp.start_async(options, args.buf)
+        end
+      end, 20)
     end,
     desc = "Start ark.nvim pane and LSP for R-family buffers",
   })
