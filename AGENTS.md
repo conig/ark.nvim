@@ -169,6 +169,157 @@ For v1 work, verification should trend toward:
 - static diagnostics and symbols without a live session
 - fallback behavior when tmux / R session is unavailable
 
+## Working Effectively In This Repo
+
+These are the highest-value practical discoveries from the current Neovim refactor.
+
+### 1. Distinguish detached LSP work from live-session work
+
+`ark.nvim` runs `ark-lsp` in detached stdio mode.
+The interactive R runtime does not live inside the LSP process.
+
+That means most editor features now fall into one of three buckets:
+
+- static-only LSP behavior
+- detached LSP behavior augmented by bootstrap/session metadata
+- live-session behavior routed through the managed-session bridge
+
+When a feature seems broken, first identify which bucket it belongs to before changing code.
+
+### 2. The session bridge is the runtime boundary
+
+Runtime-aware completions, hover, and signature help should flow through `crates/ark/src/lsp/session_bridge.rs`.
+
+Important rule:
+
+- if a detached request is a real bridge-owned context, returning zero items must still count as "handled"
+
+Otherwise detached fallback sources may run afterward and accidentally touch embedded-R code paths that only make sense in attached/runtime mode.
+
+### 3. Auto-popup issues are often capability issues, not completion logic issues
+
+If a completion works through an explicit `textDocument/completion` request but not while typing, inspect:
+
+- `crates/ark/src/lsp/state_handlers.rs`
+- the server's advertised `completionProvider.triggerCharacters`
+- the user's Blink trigger configuration
+
+Current trigger characters intentionally include:
+
+- `$`
+- `@`
+- `:`
+- `"`
+
+The double quote trigger matters for:
+
+- comparison-string completions like `x == "`
+- subset-string completions like `mtcars[["`
+
+### 4. Subset and comparison precedence matters
+
+Some syntax forms look like multiple completion contexts at once.
+
+Important current rule:
+
+- comparison-string handling must run before generic subset handling
+
+This is required so cases like `DT[col == "` are treated as comparison-value completion instead of generic `[` completion.
+
+### 5. Use the existing E2E harnesses first
+
+The fastest reliable path is usually a headless Neovim test, not a unit test.
+
+High-value harnesses:
+
+- `tests/e2e/comparison_string_completion.lua`
+  - comparison values
+  - empty-prefix quote-trigger cases
+  - factor / character / numeric-no-crash coverage
+- `tests/e2e/subset_completion.lua`
+  - `mtcars[`
+  - `mtcars[, c("`
+  - `mtcars[["`
+  - `data.table` `[` completion
+- `tests/e2e/detached_parity.lua`
+  - detached static + bridge parity sanity checks
+- `tests/e2e/browser_completion.lua`
+  - `browser()` frame symbol completion
+- `tests/e2e/library_completion.lua`
+  - installed-package completion
+- `tests/e2e/completion_resolve.lua`
+  - docs/detail resolution
+- `tests/e2e/base_diagnostics.lua`
+  - detached diagnostics sanity
+
+Recommended verification pattern:
+
+1. run the relevant test with `-u NONE`
+2. rerun with the user's real `~/.config/nvim/init.lua`
+3. only then widen into adjacent regressions
+
+### 6. Use the real config when the issue smells like integration
+
+`-u NONE` is best for isolating Ark.
+The real config is best for issues involving:
+
+- Blink trigger behavior
+- LSP restart behavior
+- managed-pane startup timing
+- plugin interaction regressions
+
+Do not assume a passing `-u NONE` run means the UX is fixed.
+
+### 7. One-off startup timeouts are not always product bugs
+
+Headless full-config runs have occasionally hit one-off `ark bridge ready` timeouts.
+If the failure is a startup timeout and not a semantic regression:
+
+1. retry once cleanly
+2. if the rerun passes, treat the timeout as environmental noise unless it becomes reproducible
+
+Do not turn every isolated startup timeout into architecture churn.
+
+### 8. Current Neovim slot-in is already real
+
+The intended integration path is no longer speculative.
+This repo is already wired around replacing:
+
+- `r_language_server`
+- `rscope.nvim`
+
+while keeping:
+
+- `vim-slime`
+- `nvim-slimetree`
+- one managed tmux R pane
+- Blink's normal `lsp` source
+
+Future work should preserve that model unless the user explicitly changes product direction.
+
+### 9. The external launcher dependency is still a known seam
+
+The Neovim config no longer depends on the `rscope.nvim` plugin, but the managed-pane runtime still prefers the local `rscope` launcher/runtime when available.
+
+That is currently an implementation dependency, not a product-direction dependency.
+
+If work touches launcher/bootstrap behavior, check both:
+
+- the Ark-side launcher fallback
+- the local `rscope`-backed path used for session bridging
+
+### 10. Current performance baseline
+
+Measured rough timings from the real config:
+
+- cold bridge readiness: about 426 to 427 ms
+- cold pane + live LSP readiness: about 1079 to 1091 ms
+- warm `:ArkRefresh` after restart-fix work: about 121 ms
+
+There may be small wins left, but the current cold path is mostly dominated by tmux split, R startup, bridge readiness, and LSP initialization.
+
+Treat claims of "easy big startup wins" skeptically unless you can measure them.
+
 ## Legacy Notes From Upstream Ark
 
 Some upstream conventions remain useful unless and until the code moves:
