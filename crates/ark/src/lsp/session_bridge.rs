@@ -242,10 +242,6 @@ impl SessionBridge {
             },
         };
 
-        if items.is_empty() {
-            return Ok(None);
-        }
-
         Ok(Some(SessionBridgeCompletion {
             merge_static,
             items,
@@ -469,13 +465,13 @@ impl SessionBridge {
         if let Some(request) = completion_request_from_namespace(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
+        if let Some(request) = completion_request_from_comparison_string(context)? {
+            return Ok(Some(CompletionPlan::Unique(request)));
+        }
         if let Some(request) = completion_request_from_string_subset(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_subset(context)? {
-            return Ok(Some(CompletionPlan::Unique(request)));
-        }
-        if let Some(request) = completion_request_from_comparison_string(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_library_string(context)? {

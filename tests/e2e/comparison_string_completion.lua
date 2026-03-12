@@ -77,6 +77,7 @@ vim.fn.writefile({
   'colors_ark == "a',
   'levels_ark != "b',
   'dt_cmp_ark[color == "a',
+  'mtcars$cyl == "4',
 }, test_file)
 
 vim.cmd("edit " .. test_file)
@@ -164,5 +165,11 @@ if has_data_table then
 else
   result.data_table = "skipped"
 end
+
+local numeric_items = completion_at(4, #lines[4])
+if #numeric_items ~= 0 then
+  fail('mtcars$cyl == " completion expected no string completions: ' .. vim.inspect(item_labels(numeric_items)))
+end
+result.numeric = "ok"
 
 vim.print(result)
