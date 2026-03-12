@@ -742,10 +742,20 @@ fn completion_item(
         filter_text: Some(member.name_raw.clone()),
         insert_text: Some(insert_text),
         kind: Some(kind),
-        sort_text: Some(format!("{index:04}")),
+        sort_text: Some(completion_sort_text(request, index)),
         data: completion_item_data(request, &member)
             .and_then(|data| serde_json::to_value(data).ok()),
         ..Default::default()
+    }
+}
+
+fn completion_sort_text(request: &CompletionRequest, index: usize) -> String {
+    match request.flavor {
+        // Keep live subset completions above merged static items in contexts
+        // like `dt[, .(m)]`, where the user is almost always asking for
+        // columns rather than generic `m...` symbols from the search path.
+        CompletionFlavor::Subset => format!("0-{index:04}"),
+        _ => format!("{index:04}"),
     }
 }
 
@@ -1865,5 +1875,27 @@ mod tests {
         let context = DocumentContext::new(&document, point, None);
 
         assert!(completion_request_from_call(&context).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_subset_completion_items_use_priority_sort_text() {
+        let item = completion_item(
+            BridgeMember {
+                name_display: String::from("mpg"),
+                name_raw: String::from("mpg"),
+                ..Default::default()
+            },
+            &CompletionRequest {
+                expr: String::from("dt_ark"),
+                flavor: CompletionFlavor::Subset,
+                prefix: Some(String::from("m")),
+                accessor: None,
+                subset_kind: Some(SubsetCompletionKind::Subset),
+            },
+            None,
+            0,
+        );
+
+        assert_eq!(item.sort_text, Some(String::from("0-0000")));
     }
 }

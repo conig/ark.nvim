@@ -81,6 +81,9 @@ if has_data_table then
   if not dt_j then
     ark_test.fail("dt_ark[, .(m completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_j_items)))
   end
+  if type(dt_j.sortText) ~= "string" or not dt_j.sortText:match("^0%-") then
+    ark_test.fail("dt_ark[, .(m completion did not hoist mpg with priority sortText: " .. vim.inspect(dt_j))
+  end
   if ark_test.insert_text(dt_j) ~= "mpg" then
     ark_test.fail("dt_ark[, .(m completion inserted unexpected text: " .. vim.inspect(dt_j))
   end
@@ -90,6 +93,9 @@ if has_data_table then
   local dt_closed_j = ark_test.find_item(dt_closed_j_items, "mpg")
   if not dt_closed_j then
     ark_test.fail("dt_ark[, .(m)] completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_closed_j_items)))
+  end
+  if type(dt_closed_j.sortText) ~= "string" or not dt_closed_j.sortText:match("^0%-") then
+    ark_test.fail("dt_ark[, .(m)] completion did not hoist mpg with priority sortText: " .. vim.inspect(dt_closed_j))
   end
   if ark_test.insert_text(dt_closed_j) ~= "mpg" then
     ark_test.fail("dt_ark[, .(m)] completion inserted unexpected text: " .. vim.inspect(dt_closed_j))
