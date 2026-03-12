@@ -76,6 +76,7 @@ local test_file = "/tmp/ark_subset_completion.R"
 vim.fn.writefile({
   "mtcars[",
   'mtcars[, c("',
+  'mtcars[["',
   "dt_ark[",
 }, test_file)
 
@@ -146,13 +147,23 @@ if insert_text(df_string_subset) ~= "mpg" then
   fail('mtcars[, c(" completion inserted unexpected text: ' .. vim.inspect(df_string_subset))
 end
 
+local df_subset2_items = completion_at(3, 9)
+local df_subset2 = find_item(df_subset2_items, "mpg")
+if not df_subset2 then
+  fail('mtcars[[" completion missing mpg: ' .. vim.inspect(item_labels(df_subset2_items)))
+end
+if insert_text(df_subset2) ~= "mpg" then
+  fail('mtcars[[" completion inserted unexpected text: ' .. vim.inspect(df_subset2))
+end
+
 local result = {
   mtcars_subset = insert_text(df_subset),
   mtcars_string_subset = insert_text(df_string_subset),
+  mtcars_subset2 = insert_text(df_subset2),
 }
 
 if has_data_table then
-  local dt_subset_items = completion_at(3, 7)
+  local dt_subset_items = completion_at(4, 7)
   local dt_subset = find_item(dt_subset_items, "mpg")
   if not dt_subset then
     fail("dt_ark[ completion missing mpg: " .. vim.inspect(item_labels(dt_subset_items)))
