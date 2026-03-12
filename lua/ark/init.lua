@@ -1,0 +1,116 @@
+local config = require("ark.config")
+local lsp = require("ark.lsp")
+local tmux = require("ark.tmux")
+
+local M = {}
+
+local did_setup = false
+local options = nil
+
+local function notify(message, level)
+  vim.notify(message, level or vim.log.levels.INFO, { title = "ark.nvim" })
+end
+
+local function merged_opts(opts)
+  return vim.tbl_deep_extend("force", config.defaults(), opts or {})
+end
+
+local function ensure_setup()
+  if not did_setup then
+    M.setup({})
+  end
+end
+
+function M.setup(opts)
+  options = merged_opts(opts)
+
+  local group = vim.api.nvim_create_augroup("ArkNvim", { clear = true })
+  vim.api.nvim_create_autocmd("FileType", {
+    group = group,
+    pattern = options.filetypes,
+    callback = function(args)
+      if options.auto_start_pane then
+        local _, pane_err = tmux.start(options)
+        if pane_err then
+          notify(pane_err, vim.log.levels.WARN)
+        end
+      end
+
+      if options.auto_start_lsp then
+        lsp.start(options, args.buf)
+      end
+    end,
+    desc = "Start ark.nvim pane and LSP for R-family buffers",
+  })
+
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = group,
+    callback = function()
+      tmux.stop()
+    end,
+    desc = "Stop ark.nvim managed tmux pane on exit",
+  })
+
+  did_setup = true
+  return options
+end
+
+function M.options()
+  ensure_setup()
+  return options
+end
+
+function M.pane_command()
+  ensure_setup()
+  return tmux.pane_command(options.tmux)
+end
+
+function M.start_pane()
+  ensure_setup()
+  local pane_id, err = tmux.start(options)
+  if not pane_id then
+    notify(err, vim.log.levels.ERROR)
+    return nil, err
+  end
+
+  notify("managed R pane ready: " .. pane_id)
+  return pane_id
+end
+
+function M.restart_pane()
+  ensure_setup()
+  local pane_id, err = tmux.restart(options)
+  if not pane_id then
+    notify(err, vim.log.levels.ERROR)
+    return nil, err
+  end
+
+  notify("managed R pane restarted: " .. pane_id)
+  return pane_id
+end
+
+function M.stop_pane()
+  ensure_setup()
+  tmux.stop()
+  notify("managed R pane stopped")
+end
+
+function M.start_lsp(bufnr)
+  ensure_setup()
+  return lsp.start(options, bufnr)
+end
+
+function M.lsp_config(bufnr)
+  ensure_setup()
+  return lsp.config(options, bufnr)
+end
+
+function M.status()
+  ensure_setup()
+  local status = tmux.status()
+  status.lsp_cmd = options.lsp.cmd
+  status.launcher = options.tmux.launcher
+  return status
+end
+
+return M
