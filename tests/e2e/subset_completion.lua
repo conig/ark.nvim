@@ -8,8 +8,11 @@ local pane_id, client = ark_test.setup_managed_buffer(test_file, {
   'mtcars[["',
   "dt_ark[",
   "dt_ark[as.char",
+  "dt_ark[, .()]",
   "dt_ark[, .(m",
   "dt_ark[, .(m)]",
+  "dt_ark[, list()]",
+  "dt_ark[, list(mpg,)]",
 })
 
 local has_data_table = ark_test.probe_data_table_available(
@@ -23,6 +26,15 @@ local function completion_at(line, column)
     position = { line = line - 1, character = column },
   }
   return ark_test.completion_items(ark_test.request(client, "textDocument/completion", params))
+end
+
+local trigger_characters = (((client.server_capabilities or {}).completionProvider or {}).triggerCharacters) or {}
+
+if not vim.tbl_contains(trigger_characters, "(") then
+  ark_test.fail('ark_lsp completion triggers missing left paren: ' .. vim.inspect(trigger_characters))
+end
+if not vim.tbl_contains(trigger_characters, ",") then
+  ark_test.fail('ark_lsp completion triggers missing comma: ' .. vim.inspect(trigger_characters))
 end
 
 local df_subset_items = completion_at(1, 7)
@@ -76,7 +88,20 @@ if has_data_table then
   end
   result.dt_symbol = ark_test.insert_text(dt_symbol)
 
-  local dt_j_items = completion_at(6, 12)
+  local dt_open_j_items = completion_at(6, 11)
+  local dt_open_j = ark_test.find_item(dt_open_j_items, "mpg")
+  if not dt_open_j then
+    ark_test.fail("dt_ark[, .()] completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_open_j_items)))
+  end
+  if type(dt_open_j.sortText) ~= "string" or not dt_open_j.sortText:match("^0%-") then
+    ark_test.fail("dt_ark[, .()] completion did not hoist mpg with priority sortText: " .. vim.inspect(dt_open_j))
+  end
+  if ark_test.insert_text(dt_open_j) ~= "mpg" then
+    ark_test.fail("dt_ark[, .()] completion inserted unexpected text: " .. vim.inspect(dt_open_j))
+  end
+  result.dt_open_j = ark_test.insert_text(dt_open_j)
+
+  local dt_j_items = completion_at(7, 12)
   local dt_j = ark_test.find_item(dt_j_items, "mpg")
   if not dt_j then
     ark_test.fail("dt_ark[, .(m completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_j_items)))
@@ -89,7 +114,7 @@ if has_data_table then
   end
   result.dt_j = ark_test.insert_text(dt_j)
 
-  local dt_closed_j_items = completion_at(7, 12)
+  local dt_closed_j_items = completion_at(8, 12)
   local dt_closed_j = ark_test.find_item(dt_closed_j_items, "mpg")
   if not dt_closed_j then
     ark_test.fail("dt_ark[, .(m)] completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_closed_j_items)))
@@ -101,11 +126,40 @@ if has_data_table then
     ark_test.fail("dt_ark[, .(m)] completion inserted unexpected text: " .. vim.inspect(dt_closed_j))
   end
   result.dt_closed_j = ark_test.insert_text(dt_closed_j)
+
+  local dt_list_open_items = completion_at(9, 14)
+  local dt_list_open = ark_test.find_item(dt_list_open_items, "mpg")
+  if not dt_list_open then
+    ark_test.fail("dt_ark[, list()] completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_list_open_items)))
+  end
+  if type(dt_list_open.sortText) ~= "string" or not dt_list_open.sortText:match("^0%-") then
+    ark_test.fail("dt_ark[, list()] completion did not hoist mpg with priority sortText: " .. vim.inspect(dt_list_open))
+  end
+  if ark_test.insert_text(dt_list_open) ~= "mpg" then
+    ark_test.fail("dt_ark[, list()] completion inserted unexpected text: " .. vim.inspect(dt_list_open))
+  end
+  result.dt_list_open = ark_test.insert_text(dt_list_open)
+
+  local dt_list_after_items = completion_at(10, 18)
+  local dt_list_after = ark_test.find_item(dt_list_after_items, "cyl")
+  if not dt_list_after then
+    ark_test.fail("dt_ark[, list(mpg,)] completion missing cyl: " .. vim.inspect(ark_test.item_labels(dt_list_after_items)))
+  end
+  if type(dt_list_after.sortText) ~= "string" or not dt_list_after.sortText:match("^0%-") then
+    ark_test.fail("dt_ark[, list(mpg,)] completion did not hoist cyl with priority sortText: " .. vim.inspect(dt_list_after))
+  end
+  if ark_test.insert_text(dt_list_after) ~= "cyl" then
+    ark_test.fail("dt_ark[, list(mpg,)] completion inserted unexpected text: " .. vim.inspect(dt_list_after))
+  end
+  result.dt_list_after = ark_test.insert_text(dt_list_after)
 else
   result.dt_subset = "skipped"
   result.dt_symbol = "skipped"
+  result.dt_open_j = "skipped"
   result.dt_j = "skipped"
   result.dt_closed_j = "skipped"
+  result.dt_list_open = "skipped"
+  result.dt_list_after = "skipped"
 end
 
 vim.print(result)

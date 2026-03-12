@@ -1854,6 +1854,51 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_data_table_dot_j_completion_prefers_subset_context() {
+        let (text, point) = point_from_cursor("dt_ark[, .(@)]");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_subset(&context)
+            .unwrap()
+            .expect("expected subset completion request");
+
+        assert_eq!(request.expr, "dt_ark");
+        assert_eq!(request.prefix, None);
+        assert_eq!(request.subset_kind, Some(SubsetCompletionKind::Subset));
+    }
+
+    #[test]
+    fn test_empty_data_table_list_j_completion_prefers_subset_context() {
+        let (text, point) = point_from_cursor("dt_ark[, list(@)]");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_subset(&context)
+            .unwrap()
+            .expect("expected subset completion request");
+
+        assert_eq!(request.expr, "dt_ark");
+        assert_eq!(request.prefix, None);
+        assert_eq!(request.subset_kind, Some(SubsetCompletionKind::Subset));
+    }
+
+    #[test]
+    fn test_data_table_list_j_after_comma_prefers_subset_context() {
+        let (text, point) = point_from_cursor("dt_ark[, list(mpg,@)]");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_subset(&context)
+            .unwrap()
+            .expect("expected subset completion request");
+
+        assert_eq!(request.expr, "dt_ark");
+        assert_eq!(request.prefix, None);
+        assert_eq!(request.subset_kind, Some(SubsetCompletionKind::Subset));
+    }
+
+    #[test]
     fn test_closed_data_table_j_completion_prefers_subset_context() {
         let (text, point) = point_from_cursor("dt_ark[, .(m@)]");
         let document = Document::new(text.as_str(), None);
