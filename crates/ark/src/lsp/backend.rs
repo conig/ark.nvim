@@ -49,6 +49,7 @@ use crate::lsp::input_boundaries::InputBoundariesResponse;
 use crate::lsp::main_loop::Event;
 use crate::lsp::main_loop::GlobalState;
 use crate::lsp::main_loop::TokioUnboundedSender;
+use crate::lsp::state::RuntimeMode;
 use crate::lsp::statement_range;
 use crate::lsp::statement_range::StatementRangeParams;
 use crate::lsp::statement_range::StatementRangeResponse;
@@ -100,6 +101,11 @@ macro_rules! cast_response {
 }
 
 fn report_crash() {
+    if !Console::is_initialized() {
+        log::error!("The R language server has crashed and has been disabled.");
+        return;
+    }
+
     let user_message = concat!(
         "The R language server has crashed and has been disabled. ",
         "Smart features such as completions will no longer work in this session. ",
@@ -621,6 +627,53 @@ pub(crate) fn start_lsp(
             }
         });
     })
+}
+
+pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let (console_notification_tx, _console_notification_rx) =
+        tokio_unbounded_channel::<ConsoleNotification>();
+
+    let init = move |client: Client| {
+        let state = GlobalState::new_with_runtime_mode(
+            client,
+            console_notification_tx.clone(),
+            runtime_mode,
+        );
+        let events_tx = state.events_tx();
+        let main_loop = state.start();
+
+        Backend {
+            shutdown_tx,
+            events_tx,
+            _main_loop: main_loop,
+        }
+    };
+
+    let (service, socket) = LspService::build(init)
+        .custom_method(
+            statement_range::POSITRON_STATEMENT_RANGE_REQUEST,
+            Backend::statement_range,
+        )
+        .custom_method(help_topic::POSITRON_HELP_TOPIC_REQUEST, Backend::help_topic)
+        .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
+        .custom_method(
+            input_boundaries::POSITRON_INPUT_BOUNDARIES_REQUEST,
+            Backend::input_boundaries,
+        )
+        .custom_method("positron/notification", Backend::notification)
+        .finish();
+
+    let server = Server::new(stdin, stdout, socket);
+
+    tokio::select! {
+        _ = server.serve(service) => {},
+        _ = shutdown_rx.recv() => {},
+    }
+
+    Ok(())
 }
 
 fn new_jsonrpc_error(message: String) -> jsonrpc::Error {

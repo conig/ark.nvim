@@ -9,7 +9,14 @@ use crate::lsp::document::Document;
 use crate::lsp::inputs::library::Library;
 use crate::lsp::inputs::source_root::SourceRoot;
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RuntimeMode {
+    #[default]
+    Attached,
+    Detached,
+}
+
+#[derive(Clone, Debug)]
 /// The world state, i.e. all the inputs necessary for analysing or refactoring
 /// code. This is a pure value. There is no interior mutability in this data
 /// structure. It can be cloned and safely sent to other threads.
@@ -57,6 +64,8 @@ pub(crate) struct WorldState {
     pub(crate) library: Library,
 
     pub(crate) config: LspConfig,
+
+    pub(crate) runtime_mode: RuntimeMode,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -65,6 +74,13 @@ pub(crate) struct Workspace {
 }
 
 impl WorldState {
+    pub(crate) fn detached() -> Self {
+        Self {
+            runtime_mode: RuntimeMode::Detached,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn get_document(&self, uri: &Url) -> anyhow::Result<&Document> {
         if let Some(doc) = self.documents.get(uri) {
             Ok(doc)
@@ -78,6 +94,26 @@ impl WorldState {
             Ok(doc)
         } else {
             Err(anyhow!("Can't find document for URI {uri}"))
+        }
+    }
+
+    pub(crate) fn has_attached_runtime(&self) -> bool {
+        self.runtime_mode == RuntimeMode::Attached
+    }
+}
+
+impl Default for WorldState {
+    fn default() -> Self {
+        Self {
+            documents: HashMap::new(),
+            workspace: Workspace::default(),
+            virtual_documents: HashMap::new(),
+            console_scopes: Vec::new(),
+            installed_packages: Vec::new(),
+            root: None,
+            library: Library::default(),
+            config: LspConfig::default(),
+            runtime_mode: RuntimeMode::Attached,
         }
     }
 }

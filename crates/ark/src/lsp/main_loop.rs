@@ -42,6 +42,7 @@ use crate::lsp::document::Document;
 use crate::lsp::handlers;
 use crate::lsp::indexer;
 use crate::lsp::inputs::library::Library;
+use crate::lsp::state::RuntimeMode;
 use crate::lsp::state::WorldState;
 use crate::lsp::state_handlers;
 use crate::lsp::state_handlers::ConsoleInputs;
@@ -186,6 +187,14 @@ impl GlobalState {
         client: Client,
         console_notification_tx: TokioUnboundedSender<ConsoleNotification>,
     ) -> Self {
+        Self::new_with_runtime_mode(client, console_notification_tx, RuntimeMode::Attached)
+    }
+
+    pub(crate) fn new_with_runtime_mode(
+        client: Client,
+        console_notification_tx: TokioUnboundedSender<ConsoleNotification>,
+        runtime_mode: RuntimeMode,
+    ) -> Self {
         // Transmission channel for the main loop events. Shared with the
         // tower-lsp backend and the Jupyter kernel.
         let (events_tx, events_rx) = tokio_unbounded_channel::<Event>();
@@ -197,27 +206,32 @@ impl GlobalState {
         };
 
         let mut state = Self {
-            world: WorldState::default(),
+            world: match runtime_mode {
+                RuntimeMode::Attached => WorldState::default(),
+                RuntimeMode::Detached => WorldState::detached(),
+            },
             lsp_state,
             client,
             events_tx,
             events_rx,
         };
 
-        // FIXME: We shouldn't call R code in the kernel to figure this out
-        if let Err(err) = crate::r_task(|| -> anyhow::Result<()> {
-            let paths: Vec<String> = harp::RFunction::new("base", ".libPaths")
-                .call()?
-                .try_into()?;
+        if runtime_mode == RuntimeMode::Attached {
+            // FIXME: We shouldn't call R code in the kernel to figure this out
+            if let Err(err) = crate::r_task(|| -> anyhow::Result<()> {
+                let paths: Vec<String> = harp::RFunction::new("base", ".libPaths")
+                    .call()?
+                    .try_into()?;
 
-            log::info!("Using library paths: {paths:#?}");
-            let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-            state.world.library = Library::new(paths);
+                log::info!("Using library paths: {paths:#?}");
+                let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+                state.world.library = Library::new(paths);
 
-            Ok(())
-        }) {
-            log::error!("Can't evaluate `libPaths()`: {err:?}");
-        };
+                Ok(())
+            }) {
+                log::error!("Can't evaluate `libPaths()`: {err:?}");
+            };
+        }
 
         state
     }
