@@ -78,6 +78,7 @@ vim.fn.writefile({
   'levels_ark != "b',
   'dt_cmp_ark[color == "a',
   'mtcars$cyl == "4',
+  'iris$Species == "',
 }, test_file)
 
 vim.cmd("edit " .. test_file)
@@ -120,6 +121,11 @@ local has_data_table = capture:find("%[1%] TRUE") ~= nil
 
 local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
 local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+local trigger_characters = (((client.server_capabilities or {}).completionProvider or {}).triggerCharacters) or {}
+
+if not vim.tbl_contains(trigger_characters, '"') then
+  fail('ark_lsp completion triggers missing double quote: ' .. vim.inspect(trigger_characters))
+end
 
 local function completion_at(line, column)
   local params = {
@@ -171,5 +177,15 @@ if #numeric_items ~= 0 then
   fail('mtcars$cyl == " completion expected no string completions: ' .. vim.inspect(item_labels(numeric_items)))
 end
 result.numeric = "ok"
+
+local iris_items = completion_at(5, #lines[5])
+local setosa = find_item(iris_items, "setosa")
+if not setosa then
+  fail('iris$Species == " completion missing setosa: ' .. vim.inspect(item_labels(iris_items)))
+end
+if insert_text(setosa) ~= "setosa" then
+  fail('iris$Species == " completion inserted unexpected text: ' .. vim.inspect(setosa))
+end
+result.iris = insert_text(setosa)
 
 vim.print(result)
