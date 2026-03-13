@@ -994,8 +994,9 @@ fn completion_request_from_string_subset(
 fn completion_request_from_subset(
     context: &DocumentContext,
 ) -> anyhow::Result<Option<CompletionRequest>> {
+    let text_request = completion_request_from_subset_text(context);
     let Some((subset_node, subset_kind)) = find_subset_node(context) else {
-        return Ok(completion_request_from_subset_text(context));
+        return Ok(text_request);
     };
 
     let Some(object_node) = subset_node.child_by_field_name("function") else {
@@ -1003,15 +1004,24 @@ fn completion_request_from_subset(
     };
 
     let expr = object_node.node_to_string(context.document.contents.as_str())?;
-
-    Ok(Some(CompletionRequest {
+    let request = CompletionRequest {
         expr,
         flavor: CompletionFlavor::Subset,
         prefix: symbol_prefix(context)?,
         accessor: None,
         close_string: false,
         subset_kind: Some(subset_kind),
-    }))
+    };
+
+    let Some(text_request) = text_request else {
+        return Ok(Some(request));
+    };
+
+    if request.expr != text_request.expr || request.prefix != text_request.prefix {
+        return Ok(Some(text_request));
+    }
+
+    Ok(Some(request))
 }
 
 fn completion_request_from_comparison_string(
@@ -1155,6 +1165,18 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
         )
         .unwrap()
     });
+    static SUBSET_J_NESTED_CALL_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)
+            (?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*
+            \[
+            \s*[^,\]]*,\s*
+            (?:\.\(|list\s*\()
+            .*?(?:\(|,)\s*(?P<prefix>[A-Za-z0-9._]*)$
+            "#,
+        )
+        .unwrap()
+    });
     static SUBSET_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*\[\s*(?P<prefix>[A-Za-z0-9._]*)$"#)
             .unwrap()
@@ -1186,6 +1208,17 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
     }
 
     if let Some(captures) = SUBSET_C_RE.captures(prefix.as_str()) {
+        return Some(CompletionRequest {
+            expr: captures.name("expr")?.as_str().to_string(),
+            flavor: CompletionFlavor::Subset,
+            prefix: capture_prefix(&captures, "prefix"),
+            accessor: None,
+            close_string: false,
+            subset_kind: Some(SubsetCompletionKind::Subset),
+        });
+    }
+
+    if let Some(captures) = SUBSET_J_NESTED_CALL_RE.captures(prefix.as_str()) {
         return Some(CompletionRequest {
             expr: captures.name("expr")?.as_str().to_string(),
             flavor: CompletionFlavor::Subset,
@@ -2020,6 +2053,38 @@ mod tests {
                 .iter()
                 .any(|request| matches!(request.flavor, CompletionFlavor::Argument))
         );
+    }
+
+    #[test]
+    fn test_data_table_open_nested_call_text_fallback_prefers_subset_context() {
+        let (text, point) =
+            point_from_cursor("dt_iris_ark[Species == \"setosa\", .(mean = mean(@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("(")));
+
+        let request = completion_request_from_subset(&context)
+            .unwrap()
+            .expect("expected subset completion request");
+
+        assert_eq!(request.expr, "dt_iris_ark");
+        assert_eq!(request.prefix, None);
+        assert_eq!(request.subset_kind, Some(SubsetCompletionKind::Subset));
+    }
+
+    #[test]
+    fn test_data_table_open_nested_call_prefers_text_subset_request_in_document() {
+        let text = "dt_iris_ark[Species == \"setosa\", .(mean = mean(\nvalue <- 1\n";
+        let point = Point::new(0, 47);
+        let document = Document::new(text, None);
+        let context = DocumentContext::new(&document, point, Some(String::from("(")));
+
+        let request = completion_request_from_subset(&context)
+            .unwrap()
+            .expect("expected subset completion request");
+
+        assert_eq!(request.expr, "dt_iris_ark");
+        assert_eq!(request.prefix, None);
+        assert_eq!(request.subset_kind, Some(SubsetCompletionKind::Subset));
     }
 
     #[test]
