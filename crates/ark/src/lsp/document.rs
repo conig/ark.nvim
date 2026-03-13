@@ -5,6 +5,8 @@
 //
 //
 
+use std::path::Path;
+
 use aether_lsp_utils::proto::from_proto;
 use aether_lsp_utils::proto::to_proto;
 use aether_lsp_utils::proto::PositionEncoding;
@@ -13,6 +15,34 @@ use tree_sitter::Parser;
 use tree_sitter::Tree;
 
 use crate::lsp::config::DocumentConfig;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DocumentKind {
+    #[default]
+    R,
+    LiterateR,
+}
+
+impl DocumentKind {
+    pub fn from_language_id(language_id: &str) -> Self {
+        match language_id.to_ascii_lowercase().as_str() {
+            "rmd" | "qmd" | "quarto" => Self::LiterateR,
+            _ => Self::R,
+        }
+    }
+
+    pub fn from_path(path: &Path) -> Self {
+        let extension = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase);
+
+        match extension.as_deref() {
+            Some("rmd") | Some("qmd") | Some("quarto") => Self::LiterateR,
+            _ => Self::R,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Document {
@@ -39,6 +69,9 @@ pub struct Document {
 
     /// Configuration of the document, such as indentation settings.
     pub config: DocumentConfig,
+
+    /// How the editor document should be normalized before parsing.
+    pub kind: DocumentKind,
 }
 
 impl std::fmt::Debug for Document {
@@ -53,6 +86,10 @@ impl std::fmt::Debug for Document {
 
 impl Document {
     pub fn new(contents: &str, version: Option<i32>) -> Self {
+        Self::new_with_kind(contents, version, DocumentKind::R)
+    }
+
+    pub fn new_with_kind(contents: &str, version: Option<i32>, kind: DocumentKind) -> Self {
         // A one-shot parser, assumes the `Document` won't be incrementally reparsed.
         // Useful for testing, `with_document()`, and `index_file()`.
         let mut parser = Parser::new();
@@ -60,11 +97,20 @@ impl Document {
             .set_language(&tree_sitter_r::LANGUAGE.into())
             .unwrap();
 
-        Self::new_with_parser(contents, &mut parser, version)
+        Self::new_with_parser_and_kind(contents, &mut parser, version, kind)
     }
 
     pub fn new_with_parser(contents: &str, parser: &mut Parser, version: Option<i32>) -> Self {
-        let contents = String::from(contents);
+        Self::new_with_parser_and_kind(contents, parser, version, DocumentKind::R)
+    }
+
+    pub fn new_with_parser_and_kind(
+        contents: &str,
+        parser: &mut Parser,
+        version: Option<i32>,
+        kind: DocumentKind,
+    ) -> Self {
+        let contents = normalize_contents(contents, kind);
 
         // Legacy Tree-Sitter AST
         let ast = parser.parse(contents.as_str(), None).unwrap();
@@ -83,6 +129,7 @@ impl Document {
             // once/if Ark becomes an independent LSP
             position_encoding: PositionEncoding::Wide(biome_line_index::WideEncoding::Utf16),
             config: Default::default(),
+            kind,
         }
     }
 
@@ -167,6 +214,7 @@ impl Document {
         }
 
         // Rebuild everything once at the end
+        self.contents = normalize_contents(&self.contents, self.kind);
         self.line_index = biome_line_index::LineIndex::new(&self.contents);
         self.parse = aether_parser::parse(&self.contents, Default::default());
         self.ast = parser.parse(self.contents.as_str(), None).unwrap();
@@ -254,6 +302,114 @@ impl Document {
             end_point,
         })
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Fence {
+    marker: char,
+    width: usize,
+    is_r: bool,
+}
+
+fn normalize_contents(contents: &str, kind: DocumentKind) -> String {
+    match kind {
+        DocumentKind::R => contents.to_string(),
+        DocumentKind::LiterateR => normalize_literate_r(contents),
+    }
+}
+
+fn normalize_literate_r(contents: &str) -> String {
+    let mut normalized = String::with_capacity(contents.len());
+    let mut active_fence: Option<Fence> = None;
+
+    for segment in contents.split_inclusive('\n') {
+        let (line, newline) = strip_trailing_newline(segment);
+
+        if let Some(fence) = active_fence {
+            if is_closing_fence(line, fence) {
+                normalized.push_str(mask_non_r_line(line).as_str());
+                normalized.push_str(newline);
+                active_fence = None;
+                continue;
+            }
+
+            if fence.is_r {
+                normalized.push_str(line);
+            } else {
+                normalized.push_str(mask_non_r_line(line).as_str());
+            }
+            normalized.push_str(newline);
+            continue;
+        }
+
+        if let Some(fence) = parse_fence(line) {
+            normalized.push_str(mask_non_r_line(line).as_str());
+            normalized.push_str(newline);
+            active_fence = Some(fence);
+            continue;
+        }
+
+        normalized.push_str(mask_non_r_line(line).as_str());
+        normalized.push_str(newline);
+    }
+
+    normalized
+}
+
+fn strip_trailing_newline(segment: &str) -> (&str, &str) {
+    if let Some(line) = segment.strip_suffix('\n') {
+        (line, "\n")
+    } else {
+        (segment, "")
+    }
+}
+
+fn mask_non_r_line(line: &str) -> String {
+    if line.is_empty() {
+        return String::new();
+    }
+
+    let mut masked = String::with_capacity(line.len());
+    masked.push('#');
+    masked.push_str(" ".repeat(line.len().saturating_sub(1)).as_str());
+    masked
+}
+
+fn parse_fence(line: &str) -> Option<Fence> {
+    let trimmed = line.trim_start();
+    let marker = trimmed.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+
+    let width = trimmed.chars().take_while(|ch| *ch == marker).count();
+    if width < 3 {
+        return None;
+    }
+
+    let rest = trimmed[width..].trim();
+    if !rest.starts_with('{') || !rest.ends_with('}') {
+        return None;
+    }
+
+    let info = &rest[1..rest.len() - 1];
+    let engine = info
+        .trim()
+        .split(|ch: char| ch == ',' || ch.is_whitespace())
+        .next()
+        .unwrap_or_default();
+
+    Some(Fence {
+        marker,
+        width,
+        is_r: engine.eq_ignore_ascii_case("r"),
+    })
+}
+
+fn is_closing_fence(line: &str, fence: Fence) -> bool {
+    let trimmed = line.trim_start();
+    let width = trimmed.chars().take_while(|ch| *ch == fence.marker).count();
+    width >= fence.width && trimmed[width..].trim().is_empty()
 }
 
 #[cfg(test)]
@@ -403,5 +559,59 @@ mod tests {
 
         // The Rowan tree contains the updated document
         assert_eq!(document.syntax().text_with_trivia(), "lib");
+    }
+
+    #[test]
+    fn test_literate_r_masks_non_r_lines() {
+        let document = Document::new_with_kind(
+            r#"---
+title: "Doc"
+---
+
+```{python}
+x = y
+```
+
+```{r}
+library(ggplot2)
+value
+```
+"#,
+            None,
+            DocumentKind::LiterateR,
+        );
+
+        assert_eq!(
+            document.contents,
+            r#"#  
+#           
+#  
+
+#          
+#    
+#  
+
+#     
+library(ggplot2)
+value
+#  
+"#
+        );
+    }
+
+    #[test]
+    fn test_document_kind_detects_literate_extensions() {
+        assert_eq!(
+            DocumentKind::from_path(Path::new("/tmp/test.Rmd")),
+            DocumentKind::LiterateR
+        );
+        assert_eq!(
+            DocumentKind::from_path(Path::new("/tmp/test.qmd")),
+            DocumentKind::LiterateR
+        );
+        assert_eq!(
+            DocumentKind::from_path(Path::new("/tmp/test.R")),
+            DocumentKind::R
+        );
     }
 }

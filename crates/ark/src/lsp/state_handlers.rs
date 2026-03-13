@@ -51,6 +51,7 @@ use crate::lsp::config::indent_style_from_lsp;
 use crate::lsp::config::DOCUMENT_SETTINGS;
 use crate::lsp::config::GLOBAL_SETTINGS;
 use crate::lsp::document::Document;
+use crate::lsp::document::DocumentKind;
 use crate::lsp::inputs::package::Package;
 use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::main_loop::DidCloseVirtualDocumentParams;
@@ -234,7 +235,8 @@ pub(crate) fn did_open(
         .set_language(&tree_sitter_r::LANGUAGE.into())
         .unwrap();
 
-    let document = Document::new_with_parser(contents, &mut parser, Some(version));
+    let kind = DocumentKind::from_language_id(params.text_document.language_id.as_str());
+    let document = Document::new_with_parser_and_kind(contents, &mut parser, Some(version), kind);
 
     lsp_state.parsers.insert(uri.clone(), parser);
     state.documents.insert(uri.clone(), document.clone());

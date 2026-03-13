@@ -8,10 +8,11 @@ use url::Url;
 
 use crate::lsp::config::LspConfig;
 use crate::lsp::document::Document;
+use crate::lsp::document::DocumentKind;
 use crate::lsp::inputs::library::Library;
+use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::session_bridge::SessionBridge;
 use crate::lsp::session_bridge::SessionBridgeConfig;
-use crate::lsp::inputs::source_root::SourceRoot;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum RuntimeMode {
@@ -171,7 +172,8 @@ where
 {
     let mut fallback = || {
         let contents = std::fs::read_to_string(path)?;
-        let document = Document::new(contents.as_str(), None);
+        let document =
+            Document::new_with_kind(contents.as_str(), None, DocumentKind::from_path(path));
         callback(&document)
     };
 
