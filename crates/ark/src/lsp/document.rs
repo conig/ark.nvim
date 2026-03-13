@@ -46,7 +46,11 @@ impl DocumentKind {
 
 #[derive(Clone)]
 pub struct Document {
+    /// The document's original textual contents as seen by the editor.
+    pub source_contents: String,
+
     /// The document's textual contents.
+    /// For literate documents this is a normalized R-only analysis view.
     pub contents: String,
 
     /// The document's AST.
@@ -77,6 +81,7 @@ pub struct Document {
 impl std::fmt::Debug for Document {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Document")
+            .field("source_contents", &self.source_contents)
             .field("contents", &self.contents)
             .field("ast", &self.ast)
             .field("parse", &self.parse)
@@ -110,6 +115,7 @@ impl Document {
         version: Option<i32>,
         kind: DocumentKind,
     ) -> Self {
+        let source_contents = String::from(contents);
         let contents = normalize_contents(contents, kind);
 
         // Legacy Tree-Sitter AST
@@ -117,9 +123,10 @@ impl Document {
 
         // Preferred Rowan AST and accompanying line index
         let parse = aether_parser::parse(&contents, Default::default());
-        let line_index = biome_line_index::LineIndex::new(&contents);
+        let line_index = biome_line_index::LineIndex::new(&source_contents);
 
         Self {
+            source_contents,
             contents,
             version,
             ast,
@@ -175,7 +182,7 @@ impl Document {
                     let incremental = changes.split_off(idx + 1);
                     // Unwrap: `rposition()` confirmed this index contains a full document change
                     let change = changes.pop().unwrap();
-                    self.contents = change.text;
+                    self.source_contents = change.text;
                     (incremental, 0)
                 },
                 None => (changes, u32::MAX),
@@ -199,7 +206,7 @@ impl Document {
             // the `line_index` needed to apply this change is now invalid, so we have to
             // rebuild it.
             if range.end.line >= last_start_line {
-                self.line_index = biome_line_index::LineIndex::new(&self.contents);
+                self.line_index = biome_line_index::LineIndex::new(&self.source_contents);
             }
             last_start_line = range.start.line;
 
@@ -210,12 +217,12 @@ impl Document {
                     .expect("Can convert `range` from `Position` to `TextRange`.")
                     .into();
 
-            self.contents.replace_range(range, &change.text);
+            self.source_contents.replace_range(range, &change.text);
         }
 
         // Rebuild everything once at the end
-        self.contents = normalize_contents(&self.contents, self.kind);
-        self.line_index = biome_line_index::LineIndex::new(&self.contents);
+        self.contents = normalize_contents(&self.source_contents, self.kind);
+        self.line_index = biome_line_index::LineIndex::new(&self.source_contents);
         self.parse = aether_parser::parse(&self.contents, Default::default());
         self.ast = parser.parse(self.contents.as_str(), None).unwrap();
         self.version = Some(new_version);
@@ -228,7 +235,7 @@ impl Document {
                 "Requesting line {line} but only {n} lines exist.\n\nDocument:\n{contents}\n\nBacktrace:\n{trace}",
                 n = self.line_index.len(),
                 line = line + 1,
-                contents = &self.contents,
+                contents = &self.source_contents,
                 trace = std::backtrace::Backtrace::force_capture(),
             );
             return None;
@@ -240,12 +247,12 @@ impl Document {
             .get(line + 1)
             .copied()
             // if `line` is last, extract text until end of buffer
-            .unwrap_or_else(|| (self.contents.len() as u32).into());
+            .unwrap_or_else(|| (self.source_contents.len() as u32).into());
 
         let line_start_byte: usize = line_start.to_owned().into();
         let line_end_byte: usize = line_end.into();
 
-        self.contents.get(line_start_byte..line_end_byte)
+        self.source_contents.get(line_start_byte..line_end_byte)
     }
 
     /// Accessor that returns an annotated `RSyntaxNode` type.
@@ -370,8 +377,9 @@ fn mask_non_r_line(line: &str) -> String {
     }
 
     let mut masked = String::with_capacity(line.len());
-    masked.push('#');
-    masked.push_str(" ".repeat(line.len().saturating_sub(1)).as_str());
+    for (i, _) in line.as_bytes().iter().enumerate() {
+        masked.push(if i == 0 { '#' } else { ' ' });
+    }
     masked
 }
 
@@ -562,6 +570,42 @@ mod tests {
     }
 
     #[test]
+    fn test_literate_r_incremental_update_keeps_chunk_visible() {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_r::LANGUAGE.into())
+            .unwrap();
+
+        let mut document = Document::new_with_parser_and_kind(
+            "---\n```{r}\nwh\n```\n",
+            &mut parser,
+            Some(1),
+            DocumentKind::LiterateR,
+        );
+
+        let params = lsp_types::DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier {
+                uri: lsp_types::Url::parse("file:///test.Rmd").unwrap(),
+                version: 2,
+            },
+            content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                range: Some(lsp_types::Range::new(
+                    lsp_types::Position::new(2, 2),
+                    lsp_types::Position::new(2, 2),
+                )),
+                range_length: None,
+                text: String::from("i"),
+            }],
+        };
+
+        document.on_did_change(&mut parser, &params);
+
+        assert_eq!(document.source_contents, "---\n```{r}\nwhi\n```\n");
+        assert!(document.contents.contains("whi"));
+        assert_eq!(document.get_line(2), Some("whi\n"));
+    }
+
+    #[test]
     fn test_literate_r_masks_non_r_lines() {
         let document = Document::new_with_kind(
             r#"---
@@ -595,6 +639,22 @@ value
 library(ggplot2)
 value
 #  
+"#
+        );
+        assert_eq!(
+            document.source_contents,
+            r#"---
+title: "Doc"
+---
+
+```{python}
+x = y
+```
+
+```{r}
+library(ggplot2)
+value
+```
 "#
         );
     }
