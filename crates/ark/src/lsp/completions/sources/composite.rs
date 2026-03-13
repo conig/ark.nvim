@@ -15,6 +15,7 @@ mod workspace;
 
 use std::collections::HashMap;
 
+pub(crate) use pipe::find_pipe_root_name;
 use stdext::*;
 use tower_lsp::lsp_types::CompletionItem;
 use tower_lsp::lsp_types::CompletionItemKind;
@@ -26,8 +27,6 @@ use crate::lsp::completions::sources::utils::has_priority_prefix;
 use crate::lsp::completions::sources::CompletionSource;
 use crate::treesitter::NodeType;
 use crate::treesitter::NodeTypeExt;
-
-pub(crate) use pipe::find_pipe_root_name;
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct CompletionItemKey {

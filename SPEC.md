@@ -11,6 +11,12 @@ It keeps code execution and pane-side interaction simple:
 
 The project goal is to turn the current upstream Ark snapshot into a local-first Neovim product with a standard LSP server and a live-session bridge to the tmux-managed R process.
 
+Recent completion direction:
+
+- data-derived column completions in nested call contexts should prefer explicit invocation over auto-triggering
+- the live completion path should resolve bound `data` inputs from named arguments, positional matching, and pipe roots where practical
+- `ggplot(data = ..., aes(...))` is a first-class target workflow for that behavior
+
 ## Discovery Findings
 
 ### Current repo baseline

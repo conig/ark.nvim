@@ -14,6 +14,7 @@ use tower_lsp::lsp_types::CodeActionResponse;
 use tower_lsp::lsp_types::CompletionItem;
 use tower_lsp::lsp_types::CompletionParams;
 use tower_lsp::lsp_types::CompletionResponse;
+use tower_lsp::lsp_types::CompletionTriggerKind;
 use tower_lsp::lsp_types::DocumentOnTypeFormattingParams;
 use tower_lsp::lsp_types::DocumentSymbolParams;
 use tower_lsp::lsp_types::DocumentSymbolResponse;
@@ -200,10 +201,19 @@ pub(crate) fn handle_completion(
     let position = params.text_document_position.position;
     let point = document.tree_sitter_point_from_lsp_position(position)?;
 
-    let trigger = params.context.and_then(|ctxt| ctxt.trigger_character);
+    let trigger = params
+        .context
+        .as_ref()
+        .and_then(|ctxt| ctxt.trigger_character.clone());
+    let explicit_completion_request = params
+        .context
+        .as_ref()
+        .map(|ctxt| ctxt.trigger_kind == CompletionTriggerKind::INVOKED)
+        .unwrap_or(false);
 
     // Build the document context.
-    let context = DocumentContext::new(document, point, trigger);
+    let context =
+        DocumentContext::new_with_completion(document, point, trigger, explicit_completion_request);
     lsp::log_info!("Completion context: {:#?}", context);
 
     if !state.has_attached_runtime() {
@@ -233,9 +243,8 @@ pub(crate) fn handle_completion(
 
             let static_items =
                 provide_detached_static_completions(&context, state).map_err(LspError::Anyhow)?;
-            let items = dedupe_and_sort_completion_items(
-                detached.items.into_iter().chain(static_items),
-            );
+            let items =
+                dedupe_and_sort_completion_items(detached.items.into_iter().chain(static_items));
 
             return Ok(completion_response_from_items(items));
         }
@@ -335,7 +344,9 @@ pub(crate) fn handle_signature_help(
 
     if !state.has_attached_runtime() {
         if let Some(session_bridge) = state.session_bridge.as_ref() {
-            return session_bridge.signature_help(&context).map_err(LspError::Anyhow);
+            return session_bridge
+                .signature_help(&context)
+                .map_err(LspError::Anyhow);
         }
         return runtime_required(state);
     }

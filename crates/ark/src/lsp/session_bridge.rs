@@ -12,9 +12,9 @@ use regex::Regex;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use tower_lsp::lsp_types::Command;
 use tower_lsp::lsp_types::CompletionItem;
 use tower_lsp::lsp_types::CompletionItemKind;
-use tower_lsp::lsp_types::Command;
 use tower_lsp::lsp_types::Documentation;
 use tower_lsp::lsp_types::Hover;
 use tower_lsp::lsp_types::HoverContents;
@@ -151,6 +151,12 @@ struct CallContext {
     explicit_parameters: Vec<String>,
     num_unnamed_arguments: usize,
     callee: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CallArgument {
+    name: Option<String>,
+    value_expr: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -508,6 +514,20 @@ impl SessionBridge {
         if let Some(request) = completion_request_from_library_call(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
+        if let Some(request) = completion_request_from_explicit_pipe_root(context)? {
+            if let Some(search_path) = completion_request_from_search_path(context)? {
+                return Ok(Some(CompletionPlan::Composite(vec![request, search_path])));
+            }
+
+            return Ok(Some(CompletionPlan::Unique(request)));
+        }
+        if let Some(request) = self.completion_request_from_data_context(context)? {
+            if let Some(search_path) = completion_request_from_search_path(context)? {
+                return Ok(Some(CompletionPlan::Composite(vec![request, search_path])));
+            }
+
+            return Ok(Some(CompletionPlan::Unique(request)));
+        }
 
         let mut requests = Vec::new();
 
@@ -526,6 +546,90 @@ impl SessionBridge {
         } else {
             Ok(Some(CompletionPlan::Composite(requests)))
         }
+    }
+
+    fn completion_request_from_data_context(
+        &self,
+        context: &DocumentContext,
+    ) -> anyhow::Result<Option<CompletionRequest>> {
+        if !context.explicit_completion_request {
+            return Ok(None);
+        }
+
+        if argument_prefix(context)?.is_some() {
+            return Ok(None);
+        }
+
+        let prefix = symbol_prefix(context)?;
+        let Some(mut call_node) = node_find_containing_call(context.node) else {
+            return Ok(None);
+        };
+        let pipe_root_expr =
+            find_pipe_root_name(context, &call_node)?.or_else(|| pipe_root_text_expr(context));
+        let pipe_fallback_request = pipe_root_expr.as_ref().map(|expr| CompletionRequest {
+            expr: expr.clone(),
+            flavor: CompletionFlavor::Pipe,
+            prefix: prefix.clone(),
+            accessor: None,
+            close_string: false,
+            subset_kind: None,
+        });
+
+        loop {
+            if let Some(expr) =
+                self.data_completion_expr_for_call(context, &call_node, pipe_root_expr.as_deref())?
+            {
+                return Ok(Some(CompletionRequest {
+                    expr,
+                    flavor: CompletionFlavor::Pipe,
+                    prefix,
+                    accessor: None,
+                    close_string: false,
+                    subset_kind: None,
+                }));
+            }
+
+            let Some(parent) = next_enclosing_call(call_node) else {
+                return Ok(pipe_fallback_request);
+            };
+
+            call_node = parent;
+        }
+    }
+
+    fn data_completion_expr_for_call(
+        &self,
+        context: &DocumentContext,
+        call_node: &Node,
+        pipe_root_expr: Option<&str>,
+    ) -> anyhow::Result<Option<String>> {
+        let Some(callee) = call_node.child_by_field_name("function") else {
+            return Ok(None);
+        };
+
+        let callee = callee.node_to_string(context.document.contents.as_str())?;
+        let formals = self.call_formals(callee.as_str())?;
+
+        if !formals.iter().any(|formal| formal == "data") {
+            return Ok(None);
+        }
+
+        let arguments = call_arguments(context.document.contents.as_str(), call_node)?;
+        if let Some(expr) =
+            resolve_bound_argument_expr(formals.as_slice(), arguments.as_slice(), "data")
+        {
+            return Ok(Some(expr));
+        }
+
+        if let Some(expr) = pipe_root_expr {
+            return Ok(Some(String::from(expr)));
+        }
+
+        Ok(find_pipe_root_name(context, call_node)?)
+    }
+
+    fn call_formals(&self, callee: &str) -> anyhow::Result<Vec<String>> {
+        self.inspect_names(call_formals_completion_expr(callee).as_str())
     }
 
     fn completion_items_for_request(
@@ -1361,6 +1465,28 @@ fn completion_request_from_search_path(
     }))
 }
 
+fn completion_request_from_explicit_pipe_root(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<CompletionRequest>> {
+    if !context.explicit_completion_request {
+        return Ok(None);
+    }
+
+    let prefix = symbol_prefix(context)?;
+    let expr = completion_request_from_pipe(context)?
+        .map(|request| request.expr)
+        .or_else(|| pipe_root_text_expr(context));
+
+    Ok(expr.map(|expr| CompletionRequest {
+        expr,
+        flavor: CompletionFlavor::Pipe,
+        prefix,
+        accessor: None,
+        close_string: false,
+        subset_kind: None,
+    }))
+}
+
 fn analyze_call_context(context: &DocumentContext) -> anyhow::Result<Option<CallContext>> {
     let ast = &context.document.ast;
     let Some(mut node) = ast.root_node().find_closest_node_to_point(context.point) else {
@@ -1462,6 +1588,105 @@ fn argument_prefix(context: &DocumentContext) -> anyhow::Result<Option<String>> 
     Ok(Some(
         node.node_to_string(context.document.contents.as_str())?,
     ))
+}
+
+fn next_enclosing_call<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
+    let mut current = node.parent()?;
+
+    loop {
+        if current.is_call() {
+            return Some(current);
+        }
+
+        if current.is_braced_expression() {
+            return None;
+        }
+
+        current = current.parent()?;
+    }
+}
+
+fn call_arguments(contents: &str, call_node: &Node) -> anyhow::Result<Vec<CallArgument>> {
+    let Some(arguments) = call_node.child_by_field_name("arguments") else {
+        return Ok(vec![]);
+    };
+
+    let mut cursor = arguments.walk();
+    let mut values = Vec::new();
+
+    for argument in arguments.children_by_field_name("argument", &mut cursor) {
+        let value = match argument.child_by_field_name("value") {
+            Some(value) => value,
+            None => continue,
+        };
+
+        let name = argument
+            .child_by_field_name("name")
+            .map(|name| name.node_to_string(contents))
+            .transpose()?;
+
+        values.push(CallArgument {
+            name,
+            value_expr: value.node_to_string(contents)?,
+        });
+    }
+
+    Ok(values)
+}
+
+#[cfg(test)]
+fn resolve_active_formal_name(formals: &[String], call: &CallContext) -> Option<String> {
+    if let Some(active) = call.active_argument.clone() {
+        return Some(active);
+    }
+
+    let mut remaining = call.num_unnamed_arguments;
+
+    for formal in formals {
+        if call.explicit_parameters.contains(formal) {
+            continue;
+        }
+
+        if remaining > 0 {
+            remaining -= 1;
+            continue;
+        }
+
+        return Some(formal.clone());
+    }
+
+    None
+}
+
+fn resolve_bound_argument_expr(
+    formals: &[String],
+    arguments: &[CallArgument],
+    formal_name: &str,
+) -> Option<String> {
+    if let Some(argument) = arguments
+        .iter()
+        .find(|argument| argument.name.as_deref() == Some(formal_name))
+    {
+        return Some(argument.value_expr.clone());
+    }
+
+    let mut unnamed = arguments.iter().filter(|argument| argument.name.is_none());
+
+    for formal in formals {
+        if arguments
+            .iter()
+            .any(|argument| argument.name.as_deref() == Some(formal.as_str()))
+        {
+            continue;
+        }
+
+        let argument = unnamed.next()?;
+        if formal == formal_name {
+            return Some(argument.value_expr.clone());
+        }
+    }
+
+    None
 }
 
 fn symbol_prefix(context: &DocumentContext) -> anyhow::Result<Option<String>> {
@@ -1784,6 +2009,12 @@ fn installed_packages_completion_expr() -> String {
     )
 }
 
+fn call_formals_completion_expr(callee: &str) -> String {
+    format!(
+        "local({{ .x <- tryCatch(names(formals({callee})), error = function(e) character()); .x <- .x[!is.na(.x)]; stats::setNames(vector(\"list\", length(.x)), .x) }})"
+    )
+}
+
 fn library_paths_completion_expr() -> String {
     String::from(
         "local({ .x <- base::.libPaths(); stats::setNames(vector(\"list\", length(.x)), .x) })",
@@ -1796,6 +2027,18 @@ fn browser_locals_completion_expr(prefix: &str) -> String {
     format!(
         "local({{ .prefix <- \"{prefix}\"; .frames <- sys.frames(); .target <- NULL; for (.env in .frames) {{ .names <- tryCatch(ls(envir = .env, all.names = TRUE), error = function(e) character()); if (length(.names) && any(startsWith(tolower(.names), tolower(.prefix)))) {{ .target <- .env; break }} }}; if (is.null(.target)) {{ stats::setNames(list(), character()) }} else {{ .names <- ls(envir = .target, all.names = TRUE); stats::setNames(vector(\"list\", length(.names)), .names) }} }})"
     )
+}
+
+fn pipe_root_text_expr(context: &DocumentContext) -> Option<String> {
+    static PIPE_ROOT_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?x)^\s*(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*(?:\|>|%>%)"#).unwrap()
+    });
+
+    let line = context.document.get_line(context.point.row)?;
+    let prefix = line.chars().take(context.point.column).collect::<String>();
+    let captures = PIPE_ROOT_RE.captures(prefix.as_str())?;
+
+    Some(captures.name("expr")?.as_str().to_string())
 }
 
 fn escape_r_string(value: &str) -> String {
@@ -1906,7 +2149,151 @@ mod tests {
         let document = Document::new(text.as_str(), None);
         let context = DocumentContext::new(&document, point, None);
 
-        assert_eq!(symbol_prefix(&context).unwrap(), Some(String::from("as.char")));
+        assert_eq!(
+            symbol_prefix(&context).unwrap(),
+            Some(String::from("as.char"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_bound_argument_expr_prefers_named_data_argument() {
+        let formals = vec![
+            String::from("mapping"),
+            String::from("data"),
+            String::from("dots"),
+        ];
+        let arguments = vec![
+            CallArgument {
+                name: Some(String::from("mapping")),
+                value_expr: String::from("aes(mpg, cyl)"),
+            },
+            CallArgument {
+                name: Some(String::from("data")),
+                value_expr: String::from("mtcars"),
+            },
+        ];
+
+        assert_eq!(
+            resolve_bound_argument_expr(formals.as_slice(), arguments.as_slice(), "data"),
+            Some(String::from("mtcars"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_bound_argument_expr_supports_positional_data_argument() {
+        let formals = vec![String::from("data"), String::from("expr")];
+        let arguments = vec![
+            CallArgument {
+                name: None,
+                value_expr: String::from("mtcars"),
+            },
+            CallArgument {
+                name: None,
+                value_expr: String::from("mean(mpg)"),
+            },
+        ];
+
+        assert_eq!(
+            resolve_bound_argument_expr(formals.as_slice(), arguments.as_slice(), "data"),
+            Some(String::from("mtcars"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_active_formal_name_supports_positional_matching() {
+        let formals = vec![String::from("data"), String::from("expr")];
+        let call = CallContext {
+            active_argument: None,
+            explicit_parameters: vec![],
+            num_unnamed_arguments: 0,
+            callee: String::from("with"),
+        };
+
+        assert_eq!(
+            resolve_active_formal_name(formals.as_slice(), &call),
+            Some(String::from("data"))
+        );
+    }
+
+    #[test]
+    fn test_call_arguments_collects_named_and_positional_arguments() {
+        let (text, point) = point_from_cursor("ggplot(mtcars, data = iris, aes(mpg, cyl@))");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+        let call = node_find_containing_call(context.node).expect("expected call node");
+
+        let arguments = call_arguments(context.document.contents.as_str(), &call)
+            .expect("expected call arguments");
+
+        assert_eq!(arguments, vec![
+            CallArgument {
+                name: None,
+                value_expr: String::from("mpg"),
+            },
+            CallArgument {
+                name: None,
+                value_expr: String::from("cyl"),
+            },
+        ]);
+    }
+
+    #[test]
+    fn test_next_enclosing_call_finds_outer_call_through_pipe() {
+        let (text, point) = point_from_cursor("mtcars |> ggplot(aes(cy@))");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+        let inner = node_find_containing_call(context.node).expect("expected inner call");
+
+        assert_eq!(
+            inner
+                .child_by_field_name("function")
+                .expect("expected function")
+                .node_to_string(context.document.contents.as_str())
+                .expect("expected function text"),
+            "aes"
+        );
+
+        let outer = next_enclosing_call(inner).expect("expected outer call");
+        assert_eq!(
+            outer
+                .child_by_field_name("function")
+                .expect("expected function")
+                .node_to_string(context.document.contents.as_str())
+                .expect("expected function text"),
+            "ggplot"
+        );
+    }
+
+    #[test]
+    fn test_pipe_root_text_expr_extracts_root_for_nested_pipe_call() {
+        let (text, point) = point_from_cursor("mtcars |> ggplot(aes(cy@))");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        assert_eq!(pipe_root_text_expr(&context), Some(String::from("mtcars")));
+    }
+
+    #[test]
+    fn test_pipe_root_text_expr_extracts_root_for_closed_nested_pipe_call() {
+        let text = "mtcars |> ggplot(aes(cy))";
+        let point = Point::new(0, 22);
+        let document = Document::new(text, None);
+        let context = DocumentContext::new(&document, point, None);
+
+        assert_eq!(pipe_root_text_expr(&context), Some(String::from("mtcars")));
+    }
+
+    #[test]
+    fn test_analyze_call_context_prefers_inner_call_inside_piped_nested_call() {
+        let (text, point) = point_from_cursor("mtcars |> ggplot(aes(cy@))");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let call = analyze_call_context(&context)
+            .expect("expected call analysis")
+            .expect("expected call context");
+
+        assert_eq!(call.callee, "aes");
     }
 
     #[test]
@@ -2043,22 +2430,17 @@ mod tests {
             panic!("expected composite completion plan");
         };
 
-        assert!(
-            requests
-                .iter()
-                .any(|request| matches!(request.flavor, CompletionFlavor::Subset))
-        );
-        assert!(
-            requests
-                .iter()
-                .any(|request| matches!(request.flavor, CompletionFlavor::Argument))
-        );
+        assert!(requests
+            .iter()
+            .any(|request| matches!(request.flavor, CompletionFlavor::Subset)));
+        assert!(requests
+            .iter()
+            .any(|request| matches!(request.flavor, CompletionFlavor::Argument)));
     }
 
     #[test]
     fn test_data_table_open_nested_call_text_fallback_prefers_subset_context() {
-        let (text, point) =
-            point_from_cursor("dt_iris_ark[Species == \"setosa\", .(mean = mean(@");
+        let (text, point) = point_from_cursor("dt_iris_ark[Species == \"setosa\", .(mean = mean(@");
         let document = Document::new(text.as_str(), None);
         let context = DocumentContext::new(&document, point, Some(String::from("(")));
 

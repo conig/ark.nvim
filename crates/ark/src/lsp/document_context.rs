@@ -25,10 +25,20 @@ pub struct DocumentContext<'a> {
     pub closest_node: Node<'a>,
     pub point: Point,
     pub trigger: Option<String>,
+    pub explicit_completion_request: bool,
 }
 
 impl<'a> DocumentContext<'a> {
     pub fn new(document: &'a Document, point: Point, trigger: Option<String>) -> Self {
+        Self::new_with_completion(document, point, trigger, false)
+    }
+
+    pub fn new_with_completion(
+        document: &'a Document,
+        point: Point,
+        trigger: Option<String>,
+        explicit_completion_request: bool,
+    ) -> Self {
         // get reference to AST
         let ast = &document.ast;
 
@@ -90,6 +100,7 @@ impl<'a> DocumentContext<'a> {
             closest_node,
             point,
             trigger,
+            explicit_completion_request,
         }
     }
 }
