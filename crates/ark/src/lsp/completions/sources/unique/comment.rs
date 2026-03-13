@@ -5,8 +5,11 @@
 //
 //
 
-use std::path::Path;
+use std::path::PathBuf;
+use std::sync::LazyLock;
+use std::sync::Mutex;
 
+use anyhow::anyhow;
 use harp::exec::RFunction;
 use harp::exec::RFunctionExt;
 use regex::Regex;
@@ -24,6 +27,23 @@ use crate::lsp::completions::types::CompletionData;
 use crate::lsp::document_context::DocumentContext;
 use crate::lsp::traits::node::NodeExt;
 use crate::treesitter::NodeTypeExt;
+
+static ROXYGEN_TAG_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^.*\s").unwrap());
+static ROXYGEN_TAG_CACHE: LazyLock<Mutex<Option<CachedRoxygenTags>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CachedRoxygenTags {
+    path: PathBuf,
+    items: Vec<RoxygenTagEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RoxygenTagEntry {
+    name: String,
+    template: Option<String>,
+    description: Option<String>,
+}
 
 pub(super) struct CommentSource;
 
@@ -49,10 +69,8 @@ fn completions_from_comment(
         return Ok(None);
     }
 
-    let pattern = Regex::new(r"^.*\s")?;
-
     let contents = node.node_as_str(&context.document.contents)?;
-    let token = pattern.replace(contents, "");
+    let token = ROXYGEN_TAG_PATTERN.replace(contents, "");
 
     let mut completions: Vec<CompletionItem> = vec![];
 
@@ -62,9 +80,51 @@ fn completions_from_comment(
         return Ok(Some(completions));
     }
 
-    // TODO: cache these?
-    // TODO: use an indexer to build the tag list?
-    let tags = unsafe {
+    for entry in roxygen_tag_entries()?.iter() {
+        let item = completion_item_from_roxygen(
+            entry.name.as_str(),
+            entry.template.as_deref(),
+            entry.description.as_deref(),
+        )?;
+
+        completions.push(item);
+    }
+
+    Ok(Some(completions))
+}
+
+fn roxygen_tag_entries() -> anyhow::Result<Vec<RoxygenTagEntry>> {
+    let Some(path) = roxygen_tag_path()? else {
+        return Ok(vec![]);
+    };
+
+    {
+        let cache = ROXYGEN_TAG_CACHE
+            .lock()
+            .map_err(|err| anyhow!("failed to lock roxygen tag cache: {err}"))?;
+        if let Some(cache) = cache.as_ref() {
+            if cache.path == path {
+                return Ok(cache.items.clone());
+            }
+        }
+    }
+
+    let items = load_roxygen_tag_entries(&path)?;
+    let cached = CachedRoxygenTags {
+        path,
+        items: items.clone(),
+    };
+
+    let mut cache = ROXYGEN_TAG_CACHE
+        .lock()
+        .map_err(|err| anyhow!("failed to lock roxygen tag cache: {err}"))?;
+    *cache = Some(cached);
+
+    Ok(items)
+}
+
+fn roxygen_tag_path() -> anyhow::Result<Option<PathBuf>> {
+    let path = unsafe {
         RFunction::new("base", "system.file")
             .param("package", "roxygen2")
             .add("roxygen2-tags.yml")
@@ -72,37 +132,50 @@ fn completions_from_comment(
             .to::<String>()?
     };
 
-    if tags.is_empty() {
-        return Ok(Some(completions));
+    if path.is_empty() {
+        return Ok(None);
     }
 
-    let tags = Path::new(&tags);
-    if !tags.exists() {
-        return Ok(Some(completions));
+    let path = PathBuf::from(path);
+    if !path.exists() {
+        return Ok(None);
     }
 
-    let contents = std::fs::read_to_string(tags).unwrap();
-    let docs = YamlLoader::load_from_str(contents.as_str()).unwrap();
-    let doc = &docs[0];
+    Ok(Some(path))
+}
 
-    let items = doc.as_vec().unwrap();
+fn load_roxygen_tag_entries(path: &PathBuf) -> anyhow::Result<Vec<RoxygenTagEntry>> {
+    let contents = std::fs::read_to_string(path)?;
+    parse_roxygen_tag_entries(contents.as_str())
+}
+
+fn parse_roxygen_tag_entries(contents: &str) -> anyhow::Result<Vec<RoxygenTagEntry>> {
+    let docs = YamlLoader::load_from_str(contents)
+        .map_err(|err| anyhow!("failed to parse roxygen tags: {err}"))?;
+    let Some(doc) = docs.first() else {
+        return Ok(vec![]);
+    };
+
+    let Some(items) = doc.as_vec() else {
+        return Ok(vec![]);
+    };
+
+    let mut out = Vec::new();
     for entry in items.iter() {
         let Some(name) = entry["name"].as_str() else {
             continue;
         };
 
-        let template = entry["template"].as_str();
-        let template = template.map(inject_roxygen_comment_after_newline);
-        let template = template.as_deref();
-
-        let description = entry["description"].as_str();
-
-        let item = completion_item_from_roxygen(name, template, description)?;
-
-        completions.push(item);
+        out.push(RoxygenTagEntry {
+            name: name.to_string(),
+            template: entry["template"]
+                .as_str()
+                .map(inject_roxygen_comment_after_newline),
+            description: entry["description"].as_str().map(str::to_string),
+        });
     }
 
-    Ok(Some(completions))
+    Ok(out)
 }
 
 fn completion_item_from_roxygen(
@@ -237,4 +310,32 @@ fn test_roxygen_completion_item() {
     assert_eq!(item.label, name);
     assert_eq!(item.insert_text, Some("export".to_string()));
     assert_eq!(item.documentation, None);
+}
+
+#[test]
+fn test_parse_roxygen_tag_entries() {
+    let entries = parse_roxygen_tag_entries(
+        r#"
+- name: description
+  template: |
+    ${1:A short description...}
+  description: Explain the object.
+- name: export
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].name, "description");
+    assert_eq!(
+        entries[0].template,
+        Some("${1:A short description...}\n#' ".to_string())
+    );
+    assert_eq!(
+        entries[0].description,
+        Some("Explain the object.".to_string())
+    );
+    assert_eq!(entries[1].name, "export");
+    assert_eq!(entries[1].template, None);
+    assert_eq!(entries[1].description, None);
 }
