@@ -16,11 +16,12 @@ local pane_id, client = ark_test.setup_managed_buffer(test_file, {
   "dt_ark[, .(mpg, )]",
   "dt_ark[, list()]",
   "dt_ark[, list(mpg,)]",
+  'dt_iris_ark[Species == "setosa", .(mean = mean())]',
 })
 
 local has_data_table = ark_test.probe_data_table_available(
   pane_id,
-  'ark_dt_available <- requireNamespace("data.table", quietly = TRUE); if (ark_dt_available) dt_ark <- data.table::as.data.table(mtcars)'
+  'ark_dt_available <- requireNamespace("data.table", quietly = TRUE); if (ark_dt_available) { dt_ark <- data.table::as.data.table(mtcars); dt_iris_ark <- data.table::as.data.table(iris) }'
 )
 
 local function completion_at(line, column, trigger_character)
@@ -206,6 +207,24 @@ if has_data_table then
     ark_test.fail("dt_ark[, list(mpg,)] completion inserted unexpected text: " .. vim.inspect(dt_list_after))
   end
   result.dt_list_after = ark_test.insert_text(dt_list_after)
+
+  local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  local dt_nested_call_column = assert(lines[14]:find("mean()", 1, true)) + 4
+  local dt_nested_call_items = completion_at(14, dt_nested_call_column, "(")
+  local dt_nested_call = ark_test.find_item(dt_nested_call_items, "Sepal.Length")
+  if not dt_nested_call then
+    ark_test.fail(
+      'dt_iris_ark[Species == "setosa", .(mean = mean()] completion missing Sepal.Length: '
+        .. vim.inspect(ark_test.item_labels(dt_nested_call_items))
+    )
+  end
+  if type(dt_nested_call.sortText) ~= "string" or not dt_nested_call.sortText:match("^0%-") then
+    ark_test.fail(
+      'dt_iris_ark[Species == "setosa", .(mean = mean()] completion did not hoist Sepal.Length with priority sortText: '
+        .. vim.inspect(dt_nested_call)
+    )
+  end
+  result.dt_nested_call = ark_test.insert_text(dt_nested_call)
 else
   result.dt_subset = "skipped"
   result.dt_subset_pair = "skipped"
@@ -217,6 +236,7 @@ else
   result.dt_after_space = "skipped"
   result.dt_list_open = "skipped"
   result.dt_list_after = "skipped"
+  result.dt_nested_call = "skipped"
 end
 
 vim.print(result)

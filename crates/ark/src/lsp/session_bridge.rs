@@ -477,6 +477,19 @@ impl SessionBridge {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_subset(context)? {
+            let call_request = completion_request_from_call(context)?;
+
+            if call_request.is_some() {
+                let mut requests = vec![request];
+                requests.extend(call_request);
+
+                if let Some(search_path) = completion_request_from_search_path(context)? {
+                    requests.push(search_path);
+                }
+
+                return Ok(Some(CompletionPlan::Composite(requests)));
+            }
+
             if request.prefix.is_some() {
                 let mut requests = vec![request];
 
@@ -1969,6 +1982,44 @@ mod tests {
         let context = DocumentContext::new(&document, point, None);
 
         assert!(completion_request_from_call(&context).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_data_table_nested_call_completion_uses_composite_plan() {
+        let (text, point) =
+            point_from_cursor("dt_iris_ark[Species == \"setosa\", .(mean = mean(@))]");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("(")));
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port: 1,
+            auth_token: String::new(),
+            tmux_socket: String::new(),
+            tmux_session: String::new(),
+            tmux_pane: String::new(),
+            timeout_ms: 1000,
+        })
+        .unwrap();
+
+        let plan = bridge
+            .completion_plan(&context)
+            .unwrap()
+            .expect("expected completion plan");
+
+        let CompletionPlan::Composite(requests) = plan else {
+            panic!("expected composite completion plan");
+        };
+
+        assert!(
+            requests
+                .iter()
+                .any(|request| matches!(request.flavor, CompletionFlavor::Subset))
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|request| matches!(request.flavor, CompletionFlavor::Argument))
+        );
     }
 
     #[test]
