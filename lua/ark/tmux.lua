@@ -26,17 +26,11 @@ local function trim(s)
   return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
 end
 
-local function shellescape(value)
-  return vim.fn.shellescape(tostring(value))
-end
-
 local function run_tmux(args)
-  local escaped = {}
-  for _, arg in ipairs(args) do
-    table.insert(escaped, shellescape(arg))
-  end
+  local command = { "tmux" }
+  vim.list_extend(command, args)
 
-  local output = vim.fn.system("tmux " .. table.concat(escaped, " "))
+  local output = vim.fn.system(command)
   if vim.v.shell_error ~= 0 then
     return nil, trim(output)
   end
@@ -69,18 +63,8 @@ local function pane_exists(pane_id)
     return false
   end
 
-  local out = run_tmux({ "list-panes", "-a", "-F", "#{pane_id}" })
-  if not out then
-    return false
-  end
-
-  for line in out:gmatch("[^\r\n]+") do
-    if trim(line) == pane_id then
-      return true
-    end
-  end
-
-  return false
+  local out = run_tmux({ "display-message", "-p", "-t", pane_id, "#{pane_id}" })
+  return out == pane_id
 end
 
 local function resolve_pane_percent(config)
@@ -105,20 +89,31 @@ local function resolve_pane_percent(config)
 end
 
 local function current_session(pane_id)
-  local socket_path, socket_err = run_tmux({ "display-message", "-p", "#{socket_path}" })
-  if not socket_path then
-    return nil, "failed to get tmux socket path: " .. tostring(socket_err or "unknown")
+  local target = pane_id or state.pane_id
+  if type(target) ~= "string" or target == "" then
+    return nil, "managed tmux pane is missing"
   end
 
-  local session_name, session_err = run_tmux({ "display-message", "-p", "#{session_name}" })
-  if not session_name then
-    return nil, "failed to get tmux session name: " .. tostring(session_err or "unknown")
+  local session_info, session_err = run_tmux({
+    "display-message",
+    "-p",
+    "-t",
+    target,
+    "#{socket_path}\n#{session_name}",
+  })
+  if not session_info then
+    return nil, "failed to get tmux session info: " .. tostring(session_err or "unknown")
+  end
+
+  local socket_path, session_name = session_info:match("^([^\n]+)\n([^\n]+)$")
+  if not socket_path or not session_name then
+    return nil, "failed to parse tmux session info: " .. tostring(session_info)
   end
 
   return {
     tmux_socket = socket_path,
     tmux_session = session_name,
-    tmux_pane = pane_id or state.pane_id,
+    tmux_pane = target,
   }, nil
 end
 
@@ -389,15 +384,15 @@ end
 
 function M.pane_command(config)
   local exports = {
-    "ARK_STATUS_DIR=" .. shellescape(config.startup_status_dir),
-    "RSCOPE_STATUS_DIR=" .. shellescape(config.startup_status_dir),
-    "ARK_NVIM_SESSION_PKG_PATH=" .. shellescape(config.session_pkg_path),
-    "ARK_NVIM_SESSION_LIB=" .. shellescape(config.session_lib_path),
+    "ARK_STATUS_DIR=" .. vim.fn.shellescape(config.startup_status_dir),
+    "RSCOPE_STATUS_DIR=" .. vim.fn.shellescape(config.startup_status_dir),
+    "ARK_NVIM_SESSION_PKG_PATH=" .. vim.fn.shellescape(config.session_pkg_path),
+    "ARK_NVIM_SESSION_LIB=" .. vim.fn.shellescape(config.session_lib_path),
   }
 
   return "export " .. table.concat(exports, " ")
     .. "; clear && exec "
-    .. shellescape(config.launcher)
+    .. vim.fn.shellescape(config.launcher)
 end
 
 function M.session()
