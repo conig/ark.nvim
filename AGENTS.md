@@ -38,14 +38,14 @@ This separation is deliberate:
 - managed tmux pane lifecycle for a single interactive R session
 - standard LSP transport for Neovim, using a stdio server
 - Ark-powered R language features inside Neovim:
-  - completions
-  - hover
-  - signature help
-  - diagnostics
-  - definitions / references / implementations where supported
-  - symbols
-  - folding and selection ranges
-  - code actions already supported by Ark's LSP core
+    - completions
+    - hover
+    - signature help
+    - diagnostics
+    - definitions / references / implementations where supported
+    - symbols
+    - folding and selection ranges
+    - code actions already supported by Ark's LSP core
 - graceful fallback from runtime-aware features to static-only behavior when no live R session is attached
 - local, same-machine operation for tmux-managed R
 
@@ -91,16 +91,16 @@ Today the detached Neovim path uses the local `rscope` IPC runtime as that bridg
 That means `ark.nvim` v1 needs three layers:
 
 1. `ark-lsp`:
-   - standard stdio LSP server for Neovim
-   - owns static analysis, document state, indexing, diagnostics, and LSP protocol handling
+    - standard stdio LSP server for Neovim
+    - owns static analysis, document state, indexing, diagnostics, and LSP protocol handling
 2. session bridge:
-   - talks to the live R session in the managed tmux pane over a local IPC channel
-   - serves runtime-aware queries needed by completion, hover, signatures, help, and session-derived diagnostics/context
+    - talks to the live R session in the managed tmux pane over a local IPC channel
+    - serves runtime-aware queries needed by completion, hover, signatures, help, and session-derived diagnostics/context
 3. Neovim plugin:
-   - starts or reuses the managed pane
-   - discovers and attaches session identity
-   - launches the LSP server
-   - wires Neovim settings, commands, health checks, and filetype behavior
+    - starts or reuses the managed pane
+    - discovers and attaches session identity
+    - launches the LSP server
+    - wires Neovim settings, commands, health checks, and filetype behavior
 
 Per-request tmux text injection is not the target runtime architecture for language intelligence. A managed in-session service is the canonical solution.
 
@@ -122,12 +122,12 @@ For v1, contributors should optimize for that integration path rather than inven
 Expected long-term shape:
 
 - root Neovim plugin surface:
-  - `lua/`
-  - `plugin/`
-  - `doc/`
+    - `lua/`
+    - `plugin/`
+    - `doc/`
 - Rust workspace for native pieces:
-  - extracted LSP crate(s)
-  - reusable R bindings / support crates
+    - extracted LSP crate(s)
+    - reusable R bindings / support crates
 - optional R runtime package or scripts for the session bridge
 
 It is acceptable during migration for old upstream crates to remain present, but new feature work should be organized around the Neovim product shape.
@@ -152,6 +152,7 @@ The bar is not "delete upstream Ark quickly." The bar is "produce a clean Neovim
 - Prefer a single managed-pane model over multi-session abstractions unless a task explicitly requires more.
 - Keep runtime/session bridging explicit; do not hide it behind ad hoc tmux scraping.
 - If a feature needs the live R session, design the request/response path as a supported bridge API.
+- Commit to git as you go and keep the worktree clean.
 
 ## Verification Expectations
 
@@ -233,24 +234,24 @@ The fastest reliable path is usually a headless Neovim test, not a unit test.
 High-value harnesses:
 
 - `tests/e2e/comparison_string_completion.lua`
-  - comparison values
-  - empty-prefix quote-trigger cases
-  - factor / character / numeric-no-crash coverage
+    - comparison values
+    - empty-prefix quote-trigger cases
+    - factor / character / numeric-no-crash coverage
 - `tests/e2e/subset_completion.lua`
-  - `mtcars[`
-  - `mtcars[, c("`
-  - `mtcars[["`
-  - `data.table` `[` completion
+    - `mtcars[`
+    - `mtcars[, c("`
+    - `mtcars[["`
+    - `data.table` `[` completion
 - `tests/e2e/detached_parity.lua`
-  - detached static + bridge parity sanity checks
+    - detached static + bridge parity sanity checks
 - `tests/e2e/browser_completion.lua`
-  - `browser()` frame symbol completion
+    - `browser()` frame symbol completion
 - `tests/e2e/library_completion.lua`
-  - installed-package completion
+    - installed-package completion
 - `tests/e2e/completion_resolve.lua`
-  - docs/detail resolution
+    - docs/detail resolution
 - `tests/e2e/base_diagnostics.lua`
-  - detached diagnostics sanity
+    - detached diagnostics sanity
 
 Recommended verification pattern:
 
