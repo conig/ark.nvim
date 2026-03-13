@@ -2,7 +2,8 @@ local M = {}
 local tmux = require("ark.tmux")
 local uv = vim.uv or vim.loop
 
-local bridge_poll_tokens = {}
+local bridge_start_tokens = {}
+local bridge_start_watchers = {}
 
 local function filetype_enabled(filetypes, filetype)
   return vim.tbl_contains(filetypes or {}, filetype)
@@ -65,18 +66,32 @@ local function now_ms()
   return math.floor((vim.loop.hrtime() or 0) / 1e6)
 end
 
-local function next_bridge_poll_token(bufnr)
-  local token = (bridge_poll_tokens[bufnr] or 0) + 1
-  bridge_poll_tokens[bufnr] = token
+local function close_handle(handle)
+  if not handle then
+    return
+  end
+
+  pcall(handle.stop, handle)
+  pcall(handle.close, handle)
+end
+
+local function next_bridge_start_token(bufnr)
+  close_handle(bridge_start_watchers[bufnr])
+  bridge_start_watchers[bufnr] = nil
+
+  local token = (bridge_start_tokens[bufnr] or 0) + 1
+  bridge_start_tokens[bufnr] = token
   return token
 end
 
-local function bridge_poll_active(bufnr, token)
-  return bridge_poll_tokens[bufnr] == token
+local function bridge_start_active(bufnr, token)
+  return bridge_start_tokens[bufnr] == token
 end
 
-local function stop_bridge_poll(bufnr)
-  bridge_poll_tokens[bufnr] = nil
+local function stop_bridge_start(bufnr)
+  bridge_start_tokens[bufnr] = nil
+  close_handle(bridge_start_watchers[bufnr])
+  bridge_start_watchers[bufnr] = nil
 end
 
 function M.config(opts, bufnr, config_opts)
@@ -101,7 +116,7 @@ local function start_client(opts, bufnr, start_opts)
   local desired = M.config(opts, bufnr, start_opts)
   for _, client in ipairs(live_clients(opts, bufnr)) do
     if same_config(client.config, desired) then
-      stop_bridge_poll(bufnr)
+      stop_bridge_start(bufnr)
       return client.id
     end
   end
@@ -120,7 +135,7 @@ local function restart_client(opts, bufnr, start_opts)
   local desired = M.config(opts, bufnr, start_opts)
   for _, client in ipairs(live_clients(opts, bufnr)) do
     if same_config(client.config, desired) then
-      stop_bridge_poll(bufnr)
+      stop_bridge_start(bufnr)
       return client.id
     end
   end
@@ -137,37 +152,123 @@ local function restart_client(opts, bufnr, start_opts)
   return wait_for_client(client_id, opts.lsp.restart_wait_ms)
 end
 
-local function refresh_when_bridge_ready(opts, bufnr, token, deadline_ms)
-  if not bridge_poll_active(bufnr, token) then
-    return
-  end
-  if not vim.api.nvim_buf_is_valid(bufnr) then
-    stop_bridge_poll(bufnr)
-    return
-  end
-  if not filetype_enabled(opts.filetypes, vim.bo[bufnr].filetype) then
-    stop_bridge_poll(bufnr)
+local function startup_transition(opts, bufnr, token, start_opts)
+  if not bridge_start_active(bufnr, token) then
     return
   end
 
+  stop_bridge_start(bufnr)
+
+  restart_client(opts, bufnr, start_opts)
+end
+
+local function bridge_start_target(opts, bufnr)
   local desired = M.config(opts, bufnr, { wait_for_bridge = false })
   if desired.cmd_env and desired.cmd_env.ARK_SESSION_PORT then
-    restart_client(opts, bufnr, {
+    return "live"
+  end
+
+  local status = tmux.startup_status(opts.tmux)
+  if status and status.status == "error" then
+    return "static"
+  end
+
+  return nil
+end
+
+local function watch_bridge_status(status_path, on_change)
+  if not uv or type(status_path) ~= "string" or status_path == "" then
+    return nil
+  end
+
+  local watch_path = vim.fs.dirname(status_path)
+  if type(watch_path) ~= "string" or watch_path == "" then
+    return nil
+  end
+
+  vim.fn.mkdir(watch_path, "p")
+
+  local scheduled = false
+  local function trigger()
+    if scheduled then
+      return
+    end
+
+    scheduled = true
+    vim.schedule(function()
+      scheduled = false
+      on_change()
+    end)
+  end
+
+  if uv.new_fs_event then
+    local watcher = uv.new_fs_event()
+    if watcher then
+      local ok = watcher:start(watch_path, {}, function()
+        trigger()
+      end)
+      if ok then
+        return watcher
+      end
+      close_handle(watcher)
+    end
+  end
+
+  if uv.new_fs_poll then
+    local watcher = uv.new_fs_poll()
+    if watcher then
+      local ok = watcher:start(watch_path, 100, function()
+        trigger()
+      end)
+      if ok then
+        return watcher
+      end
+      close_handle(watcher)
+    end
+  end
+
+  return nil
+end
+
+local function start_when_bridge_ready(opts, bufnr, token, deadline_ms)
+  if not bridge_start_active(bufnr, token) then
+    return nil
+  end
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    stop_bridge_start(bufnr)
+    return nil
+  end
+  if not filetype_enabled(opts.filetypes, vim.bo[bufnr].filetype) then
+    stop_bridge_start(bufnr)
+    return nil
+  end
+
+  local target = bridge_start_target(opts, bufnr)
+  if target == "live" then
+    startup_transition(opts, bufnr, token, {
       wait_for_bridge = false,
       wait_for_client = false,
     })
-    stop_bridge_poll(bufnr)
-    return
+    return true
+  end
+
+  if target == "static" then
+    startup_transition(opts, bufnr, token, {
+      wait_for_bridge = false,
+      wait_for_client = false,
+    })
+    return true
   end
 
   if now_ms() >= deadline_ms then
-    stop_bridge_poll(bufnr)
-    return
+    startup_transition(opts, bufnr, token, {
+      wait_for_bridge = false,
+      wait_for_client = false,
+    })
+    return true
   end
 
-  vim.defer_fn(function()
-    refresh_when_bridge_ready(opts, bufnr, token, deadline_ms)
-  end, 100)
+  return false
 end
 
 function M.start(opts, bufnr, start_opts)
@@ -181,18 +282,56 @@ end
 function M.start_async(opts, bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
 
-  local client_id = start_client(opts, bufnr, {
-    wait_for_bridge = false,
-    wait_for_client = false,
-  })
+  if not filetype_enabled(opts.filetypes, vim.bo[bufnr].filetype) then
+    return nil
+  end
 
-  local token = next_bridge_poll_token(bufnr)
+  local initial_target = bridge_start_target(opts, bufnr)
+  if initial_target == "live" then
+    return start_client(opts, bufnr, {
+      wait_for_bridge = false,
+      wait_for_client = false,
+    })
+  end
+
+  local status_path = tmux.startup_status_path and tmux.startup_status_path(opts.tmux) or nil
+  if initial_target == "static" or not status_path then
+    return start_client(opts, bufnr, {
+      wait_for_bridge = false,
+      wait_for_client = false,
+    })
+  end
+
+  local token = next_bridge_start_token(bufnr)
   local deadline_ms = now_ms() + math.max(tonumber(opts.tmux.bridge_wait_ms) or 0, 1000)
-  vim.defer_fn(function()
-    refresh_when_bridge_ready(opts, bufnr, token, deadline_ms)
-  end, 50)
+  if start_when_bridge_ready(opts, bufnr, token, deadline_ms) then
+    return nil
+  end
 
-  return client_id
+  local watcher
+  watcher = watch_bridge_status(status_path, function()
+    start_when_bridge_ready(opts, bufnr, token, deadline_ms)
+  end)
+
+  if not watcher then
+    stop_bridge_start(bufnr)
+    return start_client(opts, bufnr, {
+      wait_for_bridge = false,
+      wait_for_client = false,
+    })
+  end
+
+  bridge_start_watchers[bufnr] = watcher
+
+  vim.defer_fn(function()
+    if start_when_bridge_ready(opts, bufnr, token, deadline_ms) then
+      return
+    end
+
+    stop_bridge_start(bufnr)
+  end, math.max(deadline_ms - now_ms(), 1))
+
+  return nil
 end
 
 return M

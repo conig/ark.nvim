@@ -63,6 +63,16 @@ For `r`, `rmd`, `qmd`, and `quarto` buffers in Neovim:
 - when the pane is attached and ready, runtime-aware features use the live session
 - when the pane is missing or unhealthy, static analysis still works and the failure mode is explicit
 
+### Startup handoff
+
+Async startup should be event-driven from the launcher's trusted status publication:
+
+- the managed pane and bridge start independently of Neovim's LSP client
+- the launcher writes pending / ready / error state to the startup status file
+- `ark.nvim` watches that status path and starts the LSP once, either with live bridge metadata on `ready` or in static fallback mode on timeout / error
+
+Avoid designs where Neovim starts a throwaway LSP client and repeatedly polls or restarts it while the bridge is still coming up.
+
 ### v1 must feel native in Neovim
 
 This means:

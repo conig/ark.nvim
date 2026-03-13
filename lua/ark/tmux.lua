@@ -426,6 +426,15 @@ function M.startup_status(config)
   return read_startup_status(session, config)
 end
 
+function M.startup_status_path(config)
+  local session = M.session()
+  if not session then
+    return nil
+  end
+
+  return status_file_path(session, config)
+end
+
 function M.bridge_env(config, opts)
   if type(config.session_kind) ~= "string" or config.session_kind == "" then
     return nil
