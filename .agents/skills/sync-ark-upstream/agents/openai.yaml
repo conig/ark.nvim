@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sync Ark Upstream"
+  short_description: "Catch up fork with real Ark"
+  default_prompt: "Use $sync-ark-upstream to fetch posit-dev/ark, merge the missing upstream commits into this fork safely, verify the important changes, and summarize any follow-up."
