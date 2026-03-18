@@ -1,21 +1,22 @@
 ## Building
 
-The workspace currently declares `rust-version = "1.89"`.
+The workspace currently declares `rust-version = "1.89"` and defaults to the
+`stable` Rust channel via `rust-toolchain.toml`.
 
-On this machine, `stable` is `1.88.0`, so the practical development path is:
+If your installed `stable` toolchain is older than `1.89`, update it first:
 
 ```sh
-cargo +nightly check -p ark --bin ark-lsp
+rustup update stable
 ```
 
-If your stable toolchain is already `1.89+`, ordinary `cargo` commands are fine.
+After that, ordinary `cargo` commands are fine.
 
 ## Useful Commands
 
 Build or check the standalone LSP:
 
 ```sh
-cargo +nightly check -p ark --bin ark-lsp
+cargo check -p ark --bin ark-lsp
 ```
 
 Headless-load the Neovim plugin:
@@ -41,3 +42,4 @@ Print the pane launcher command from Neovim:
 - The Neovim plugin uses the repo-local `scripts/ark-r-launcher.sh` launcher.
 - The managed pane bootstraps the vendored `packages/rscope` runtime into `stdpath("data") .. "/ark/r-lib"` by default.
 - Use `:ArkRefresh` after the managed pane becomes ready if you want to restart the buffer LSP with fresh session bridge metadata.
+- Formatting still uses nightly-only `rustfmt` options today, so `cargo fmt` is not yet a stable-only workflow.

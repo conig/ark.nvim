@@ -54,7 +54,12 @@ You need:
 - the R package `jsonlite`
 - a Rust toolchain capable of building the workspace (`rust-version = 1.89`)
 
-If your stable Rust is older than `1.89`, use `cargo +nightly ...` for now.
+The repo defaults to the `stable` Rust channel. If your installed `stable`
+toolchain is older than `1.89`, update it first:
+
+```sh
+rustup update stable
+```
 
 Install the R dependency once:
 
@@ -115,7 +120,7 @@ return {
       "jpalardy/vim-slime",
       "conig/nvim-slimetree",
     },
-    build = "cargo +nightly build -p ark --bin ark-lsp",
+    build = "cargo build -p ark --bin ark-lsp",
     config = function()
       require("ark").setup({
         auto_start_pane = true,
@@ -126,12 +131,6 @@ return {
     end,
   },
 }
-```
-
-If your stable toolchain is already `1.89+`, you can change the build command to:
-
-```lua
-build = "cargo build -p ark --bin ark-lsp"
 ```
 
 ### Local checkout
@@ -233,10 +232,10 @@ Pane width respects the first tmux setting it finds from:
 
 ## Build Notes
 
-The workspace still targets Rust `1.89`. On machines where stable is older, the practical command is:
+The workspace still targets Rust `1.89`. If your installed `stable` toolchain is older, update it first:
 
 ```sh
-cargo +nightly build -p ark --bin ark-lsp
+rustup update stable
 ```
 
 For quick local sanity, a headless load looks like:

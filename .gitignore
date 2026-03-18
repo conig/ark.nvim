@@ -4,3 +4,5 @@ tags
 *.tags
 .Rproj.user
 /TODO.md
+packages/rscope/src/*.o
+packages/rscope/src/*.so

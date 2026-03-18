@@ -61,6 +61,7 @@ Keep this fork current with `posit-dev/ark` without damaging local history or si
 - For docs, workflow notes, and local repo instructions, preserve fork-specific documentation unless upstream text clearly supersedes it.
 - For startup, session, REPL, completion, and editor integration code, preserve the fork's intended UX and local integrations, but port upstream correctness or performance fixes into the local shape.
 - If a conflict shows that the fork has a long-lived patch that upstream has independently solved more elegantly, prefer the upstream design and keep only the minimal fork-specific delta.
+- In some cases an upstream fix may adress a the bug targetted by a local patch. Choose which ever version is more elegant and easy to maintian.
 
 ## Verification
 
@@ -69,7 +70,8 @@ Verify the changed area, not just the merge mechanics.
 - Run `git status --short --branch` after the merge and confirm the worktree is clean.
 - Inspect the new tip with `git log --oneline --graph --max-count=8`.
 - Run the narrowest relevant tests for the upstream-only commits you just imported.
-- If upstream changed data explorer scheduling, REPL prioritization, completions, startup, or similar hot paths, run targeted tests in those areas before broader suites.
+- If upstream changed data explorer scheduling, REPL prioritization, completions, startup, or similar hot paths, run targeted tests in those areas before the complete suites.
+  Work isn't done until tests are all green.
 
 ## Toolchain Rule
 
