@@ -455,10 +455,13 @@ pub(crate) fn handle_goto_definition(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::io::Read;
     use std::io::Write;
     use std::net::TcpListener;
+    use std::path::PathBuf;
     use std::thread;
+    use tempfile::tempdir;
     use tower_lsp::lsp_types::Position;
     use tower_lsp::lsp_types::TextDocumentIdentifier;
     use tower_lsp::lsp_types::TextDocumentPositionParams;
@@ -502,12 +505,72 @@ mod tests {
         .expect("expected session bridge")
     }
 
+    fn unavailable_status_file_bridge() -> SessionBridge {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+        drop(listener);
+
+        let tempdir = tempdir().expect("expected tempdir");
+        let status_file: PathBuf = tempdir.path().join("status.json");
+        fs::write(
+            &status_file,
+            format!(
+                r#"{{"status":"ready","port":{port},"auth_token":"test-token","repl_ready":true}}"#
+            ),
+        )
+        .expect("expected status file");
+
+        // Leak the tempdir so the status file survives for the duration of the test.
+        let _ = Box::leak(Box::new(tempdir));
+
+        SessionBridge::new(SessionBridgeConfig {
+            host: String::new(),
+            port: 0,
+            auth_token: String::new(),
+            status_file: Some(status_file),
+            tmux_socket: String::from("/tmp/ark-test.sock"),
+            tmux_session: String::from("ark-test"),
+            tmux_pane: String::from("%1"),
+            timeout_ms: 100,
+        })
+        .expect("expected session bridge")
+    }
+
     #[test]
     fn test_detached_hover_auth_mismatch_degrades_to_none() {
         let uri = Url::parse("file:///tmp/ark_hover_auth_fallback.R").expect("expected uri");
         let mut state = WorldState {
             runtime_mode: RuntimeMode::Detached,
             session_bridge: Some(auth_error_bridge()),
+            ..Default::default()
+        };
+        state
+            .documents
+            .insert(uri.clone(), Document::new("mean", Some(1)));
+
+        let result = handle_hover(
+            HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position::new(0, 1),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            &state,
+        );
+
+        assert!(result.expect("expected detached hover fallback").is_none());
+    }
+
+    #[test]
+    fn test_detached_hover_connection_refused_degrades_to_none() {
+        let uri = Url::parse("file:///tmp/ark_hover_unavailable_bridge.R").expect("expected uri");
+        let mut state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            session_bridge: Some(unavailable_status_file_bridge()),
             ..Default::default()
         };
         state

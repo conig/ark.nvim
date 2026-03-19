@@ -752,20 +752,40 @@ impl SessionBridge {
         expr: &str,
         options: Option<InspectOptions>,
     ) -> anyhow::Result<InspectResponse> {
-        let connection = source.current_connection()?;
+        let mut connection = source.current_connection()?;
+        let max_attempts = 4;
 
-        match self.inspect_with_connection(&connection, expr, options.clone()) {
-            Ok(payload) => Ok(payload),
-            Err(err) if should_retry_dynamic_request(&err) => {
-                let refreshed = source.current_connection()?;
-                if refreshed == connection {
-                    return Err(err);
-                }
+        for attempt in 0..max_attempts {
+            match self.inspect_with_connection(&connection, expr, options.clone()) {
+                Ok(payload) => return Ok(payload),
+                Err(err) if should_retry_dynamic_request(&err) => {
+                    let retry_io = err.downcast_ref::<std::io::Error>().is_some();
+                    let refreshed = source.current_connection()?;
 
-                self.inspect_with_connection(&refreshed, expr, options)
-            },
-            Err(err) => Err(err),
+                    if refreshed != connection {
+                        connection = refreshed;
+                        continue;
+                    }
+
+                    if retry_io && attempt + 1 < max_attempts {
+                        std::thread::sleep(Duration::from_millis(50));
+                        continue;
+                    }
+
+                    return if retry_io {
+                        Err(unavailable_from_io_error(err))
+                    } else {
+                        Err(err)
+                    };
+                },
+                Err(err) => return Err(err),
+            }
         }
+
+        Err(SessionBridgeUnavailableError {
+            message: String::from("bridge request retry loop exhausted"),
+        }
+        .into())
     }
 
     fn inspect_with_connection(
@@ -987,6 +1007,18 @@ pub(crate) fn is_bridge_unavailable(err: &anyhow::Error) -> bool {
 
 fn should_retry_dynamic_request(err: &anyhow::Error) -> bool {
     is_ipc_auth_error(err) || err.downcast_ref::<std::io::Error>().is_some()
+}
+
+fn unavailable_from_io_error(err: anyhow::Error) -> anyhow::Error {
+    let message = err
+        .downcast_ref::<std::io::Error>()
+        .map(|err| err.to_string())
+        .unwrap_or_else(|| err.to_string());
+
+    SessionBridgeUnavailableError {
+        message: format!("bridge connection failed: {message}"),
+    }
+    .into()
 }
 
 fn read_session_status(path: &Path) -> anyhow::Result<SessionStatusPayload> {
