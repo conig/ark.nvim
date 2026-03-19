@@ -1,5 +1,6 @@
 local blink = require("ark.blink")
 local config = require("ark.config")
+local dev = require("ark.dev")
 local lsp = require("ark.lsp")
 local tmux = require("ark.tmux")
 
@@ -111,6 +112,17 @@ function M.setup(opts)
   })
 
   did_setup = true
+
+  vim.api.nvim_create_user_command("ArkBuildLsp", function()
+    local binary_path, err = dev.build_detached_lsp()
+    if not binary_path then
+      notify(err, vim.log.levels.ERROR)
+      return
+    end
+
+    notify("detached ark-lsp binary rebuilt: " .. binary_path)
+  end, { desc = "Rebuild the detached ark-lsp binary used by ark.nvim" })
+
   return options
 end
 
@@ -178,6 +190,11 @@ end
 function M.lsp_config(bufnr)
   ensure_setup()
   return lsp.config(options, bufnr)
+end
+
+function M.build_lsp()
+  ensure_setup()
+  return dev.build_detached_lsp()
 end
 
 function M.status()

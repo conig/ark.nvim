@@ -1,4 +1,5 @@
 local M = {}
+local dev = require("ark.dev")
 local tmux = require("ark.tmux")
 local uv = vim.uv or vim.loop
 
@@ -357,13 +358,17 @@ end
 
 function M.config(opts, bufnr, _config_opts)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local cmd, cmd_err = dev.ensure_current_detached_lsp_cmd(opts.lsp.cmd)
+  if not cmd then
+    return nil, cmd_err
+  end
 
   return {
     name = opts.lsp.name,
-    cmd = opts.lsp.cmd,
+    cmd = cmd,
     cmd_env = tmux.bridge_env(opts.tmux),
     root_dir = root_dir(bufnr, opts.lsp.root_markers),
-  }
+  }, nil
 end
 
 local function start_client(opts, bufnr, start_opts)
@@ -372,7 +377,11 @@ local function start_client(opts, bufnr, start_opts)
     return nil
   end
 
-  local desired = M.config(opts, bufnr, start_opts)
+  local desired, config_err = M.config(opts, bufnr, start_opts)
+  if not desired then
+    vim.notify(config_err, vim.log.levels.ERROR, { title = "ark.nvim" })
+    return nil
+  end
   for _, client in ipairs(live_clients(opts, bufnr)) do
     if same_server(client.config, desired) then
       ensure_session_watch(opts, bufnr)

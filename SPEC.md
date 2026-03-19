@@ -114,6 +114,7 @@ That means:
 - after changing detached-server Rust code, rebuild the real binary before trusting live Neovim or tmux E2E results
 - a green `cargo test` run against library code does not prove the tmux-backed path is exercising the new logic
 - when live behavior and unit tests disagree, suspect a stale detached binary before suspecting the architecture
+- the repo-local Neovim path should prefer the repo-built binary and offer an explicit rebuild helper so source/binary drift is not a hidden state
 
 ### v1 must feel native in Neovim
 

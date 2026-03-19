@@ -44,9 +44,9 @@ local root = repo_root()
 function M.defaults()
   local lsp_bin = first_executable(compact(
     vim.env.ARK_NVIM_LSP_BIN,
-    "ark-lsp",
     root .. "/target/debug/ark-lsp",
-    root .. "/target/release/ark-lsp"
+    root .. "/target/release/ark-lsp",
+    "ark-lsp"
   )) or "ark-lsp"
 
   local launcher = first_executable(compact(

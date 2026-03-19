@@ -15,6 +15,12 @@ Use:
 cargo build -p ark --bin ark-lsp
 ```
 
+The Neovim plugin should also make this easier in repo-dev mode:
+
+- prefer the repo-built `target/debug/ark-lsp` when it exists
+- expose an explicit rebuild helper like `:ArkBuildLsp`
+- refuse silent source/binary drift when launching the detached LSP from the repo checkout
+
 Do not assume `cargo test` alone refreshed the executable that Neovim will spawn.
 
 ## Why this matters
