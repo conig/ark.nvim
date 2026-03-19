@@ -32,7 +32,7 @@ pub(crate) fn has_priority_prefix(sort_text: &str) -> bool {
     sort_text.starts_with("0-")
 }
 
-pub(super) fn set_sort_text_by_first_appearance(completions: &mut Vec<CompletionItem>) {
+pub(super) fn set_sort_text_by_first_appearance(completions: &mut [CompletionItem]) {
     let size = completions.len();
 
     // Surely there's a better way to figure out what factor of 10 the `size`
@@ -211,8 +211,8 @@ pub(super) fn completions_from_evaluated_object_names(
         Ok(object) => object,
         Err(err) => match err {
             Error::UnsafeEvaluationError(_) => return Ok(None),
-            Error::TryCatchError { message, .. } => {
-                log::trace!("Can't evaluate object: {message}");
+            Error::TryCatchError(err) => {
+                log::trace!("Can't evaluate object: {}", err.message);
                 return Ok(None);
             },
             _ => {
@@ -472,7 +472,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(completions.len(), 2);
-            assert_eq!(completions.get(0).unwrap().label, String::from("a"));
+            assert_eq!(completions.first().unwrap().label, String::from("a"));
             assert_eq!(completions.get(1).unwrap().label, String::from("b"));
 
             parse_eval_global("remove(x)").unwrap();
@@ -484,7 +484,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(completions.len(), 3);
-            assert_eq!(completions.get(0).unwrap().label, String::from("a"));
+            assert_eq!(completions.first().unwrap().label, String::from("a"));
             assert_eq!(completions.get(1).unwrap().label, String::from("b"));
             assert_eq!(completions.get(2).unwrap().label, String::from("c"));
 
@@ -498,7 +498,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(completions.len(), 2);
-            assert_eq!(completions.get(0).unwrap().label, String::from("a"));
+            assert_eq!(completions.first().unwrap().label, String::from("a"));
             assert_eq!(completions.get(1).unwrap().label, String::from("b"));
 
             parse_eval_global("remove(x)").unwrap();
@@ -512,7 +512,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(completions.len(), 1);
-            assert_eq!(completions.get(0).unwrap().label, String::from("b"));
+            assert_eq!(completions.first().unwrap().label, String::from("b"));
 
             parse_eval_global("remove(x)").unwrap();
 
@@ -549,8 +549,8 @@ mod tests {
                 .unwrap();
 
             assert_eq!(completions.len(), 11);
-            assert_eq!(completions.get(0).unwrap().label, String::from("mpg"));
-            assert_eq!(completions.get(0).unwrap().insert_text, None);
+            assert_eq!(completions.first().unwrap().label, String::from("mpg"));
+            assert_eq!(completions.first().unwrap().insert_text, None);
 
             // Subset2 completions
             let completions =
@@ -559,9 +559,9 @@ mod tests {
                     .unwrap();
 
             assert_eq!(completions.len(), 11);
-            assert_eq!(completions.get(0).unwrap().label, String::from("mpg"));
+            assert_eq!(completions.first().unwrap().label, String::from("mpg"));
             assert_eq!(
-                completions.get(0).unwrap().insert_text,
+                completions.first().unwrap().insert_text,
                 Some("\"mpg\"".to_string())
             );
 

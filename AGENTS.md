@@ -65,6 +65,9 @@ If a change improves Positron or Jupyter but does not move the Neovim product fo
 
 ## Current Repository Reality
 
+Upstream now expects `just clippy` to pass for Rust changes. Use it when you
+touch Rust code that may be affected by the new lint baseline.
+
 This repository currently starts from upstream Ark. That means the tree still contains:
 
 - Jupyter kernel infrastructure in `crates/amalthea`

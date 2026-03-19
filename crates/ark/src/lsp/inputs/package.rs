@@ -128,61 +128,6 @@ impl Package {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::lsp::inputs::package_description::Description;
-    use crate::lsp::inputs::package_index::Index;
-    use crate::lsp::inputs::package_namespace::Namespace;
-
-    fn new_package(name: &str, ns: Namespace, index: Index) -> Package {
-        Package::new(
-            std::path::PathBuf::from("/fake"),
-            Description {
-                name: name.to_string(),
-                ..Description::default()
-            },
-            ns,
-            index,
-        )
-    }
-
-    #[test]
-    fn exported_symbols_are_sorted_and_unique() {
-        let mut ns = Namespace::default();
-        ns.exports = vec!["b".to_string(), "a".to_string(), "a".to_string()];
-
-        let mut index = Index::default();
-        index.names = vec!["c".to_string(), "a".to_string(), "a".to_string()];
-
-        let pkg = new_package("foo", ns, index);
-        assert_eq!(pkg.exported_symbols, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn exported_symbols_empty_when_none() {
-        let ns = Namespace::default();
-        let idx = Index::default();
-        let pkg = new_package("foo", ns, idx);
-        assert!(pkg.exported_symbols.is_empty());
-    }
-
-    #[test]
-    fn load_from_folder_reads_description_namespace_and_index() {
-        let dir = temp_palmerpenguin();
-
-        let pkg = Package::load_from_folder(dir.path()).unwrap().unwrap();
-
-        // Should include all exports and all index names, sorted and deduped
-        assert_eq!(pkg.exported_symbols, vec![
-            "path_to_file",
-            "penguins",
-            "penguins_raw"
-        ]);
-        assert_eq!(pkg.description.name, "penguins");
-    }
-}
-
-#[cfg(test)]
 pub(crate) fn temp_palmerpenguin() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
 
@@ -213,4 +158,62 @@ penguins_raw            Penguin size, clutch, and blood isotope data
     fs::write(dir.path().join("INDEX"), index).unwrap();
 
     dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lsp::inputs::package_description::Description;
+    use crate::lsp::inputs::package_index::Index;
+    use crate::lsp::inputs::package_namespace::Namespace;
+
+    fn new_package(name: &str, ns: Namespace, index: Index) -> Package {
+        Package::new(
+            std::path::PathBuf::from("/fake"),
+            Description {
+                name: name.to_string(),
+                ..Description::default()
+            },
+            ns,
+            index,
+        )
+    }
+
+    #[test]
+    fn exported_symbols_are_sorted_and_unique() {
+        let ns = Namespace {
+            exports: vec!["b".to_string(), "a".to_string(), "a".to_string()],
+            ..Default::default()
+        };
+
+        let index = Index {
+            names: vec!["c".to_string(), "a".to_string(), "a".to_string()],
+        };
+
+        let pkg = new_package("foo", ns, index);
+        assert_eq!(pkg.exported_symbols, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn exported_symbols_empty_when_none() {
+        let ns = Namespace::default();
+        let idx = Index::default();
+        let pkg = new_package("foo", ns, idx);
+        assert!(pkg.exported_symbols.is_empty());
+    }
+
+    #[test]
+    fn load_from_folder_reads_description_namespace_and_index() {
+        let dir = temp_palmerpenguin();
+
+        let pkg = Package::load_from_folder(dir.path()).unwrap().unwrap();
+
+        // Should include all exports and all index names, sorted and deduped
+        assert_eq!(pkg.exported_symbols, vec![
+            "path_to_file",
+            "penguins",
+            "penguins_raw"
+        ]);
+        assert_eq!(pkg.description.name, "penguins");
+    }
 }

@@ -13,20 +13,19 @@ use libr::SEXP;
 // only appropriate for R objects with 'automatic' lifetime. In general, this
 // should only be used when interfacing with native R APIs; general usages
 // should use the RObject struct instead.
+#[derive(Default)]
 pub struct RProtect {
     count: i32,
 }
 
 impl RProtect {
-    /// SAFETY: Assumes that the R lock is held.
-    pub unsafe fn new() -> Self {
-        Self { count: 0 }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// SAFETY: Assumes that the R lock is held.
-    pub unsafe fn add(&mut self, object: SEXP) -> SEXP {
+    pub fn add(&mut self, object: SEXP) -> SEXP {
         self.count += 1;
-        Rf_protect(object)
+        unsafe { Rf_protect(object) }
     }
 }
 

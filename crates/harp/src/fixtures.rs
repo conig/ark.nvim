@@ -9,7 +9,6 @@
 // that rely on an R session being available.
 
 use std::ffi::CString;
-use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::sync::Once;
 
@@ -72,9 +71,7 @@ pub fn r_test_init() {
         libraries.initialize_post_setup_r();
 
         // Initialize harp globals
-        unsafe {
-            crate::routines::r_register_routines();
-        }
+        crate::routines::r_register_routines();
         // After routine registration
         crate::initialize();
     });
@@ -90,7 +87,7 @@ fn r_test_setup() {
     }
 
     unsafe {
-        Rf_initialize_R(r_args.len() as i32, r_args.as_mut_ptr() as *mut *mut c_char);
+        Rf_initialize_R(r_args.len() as i32, r_args.as_mut_ptr());
         libr::set(R_CStackLimit, usize::MAX);
         setup_Rmainloop();
     }

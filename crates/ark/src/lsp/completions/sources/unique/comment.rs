@@ -124,13 +124,11 @@ fn roxygen_tag_entries() -> anyhow::Result<Vec<RoxygenTagEntry>> {
 }
 
 fn roxygen_tag_path() -> anyhow::Result<Option<PathBuf>> {
-    let path = unsafe {
-        RFunction::new("base", "system.file")
-            .param("package", "roxygen2")
-            .add("roxygen2-tags.yml")
-            .call()?
-            .to::<String>()?
-    };
+    let path = RFunction::new("base", "system.file")
+        .param("package", "roxygen2")
+        .add("roxygen2-tags.yml")
+        .call()?
+        .to::<String>()?;
 
     if path.is_empty() {
         return Ok(None);
@@ -276,7 +274,7 @@ fn test_roxygen_comment() {
             .iter()
             .filter(|item| item.label == "description")
             .collect();
-        let description = description.get(0).unwrap();
+        let description = description.first().unwrap();
         assert_eq!(
             description.insert_text,
             Some(String::from(

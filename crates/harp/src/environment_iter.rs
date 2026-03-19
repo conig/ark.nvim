@@ -133,11 +133,7 @@ impl Binding {
     }
 
     pub fn is_active(&self) -> bool {
-        if let BindingValue::Active { .. } = self.value {
-            true
-        } else {
-            false
-        }
+        matches!(self.value, BindingValue::Active { .. })
     }
 
     // Use id() to compare bindings by their pointers.
@@ -200,8 +196,8 @@ mod tests {
             let b = iter.next().unwrap().unwrap();
 
             // same object bound to different symbols
-            assert_eq!(a.id() == b.id(), false);
-            assert_eq!(a.value.id() == b.value.id(), true);
+            assert!(!(a.id() == b.id()));
+            assert!(a.value.id() == b.value.id());
 
             // now bind a different object to b
             let b = harp::parse_eval_base("1").unwrap();
@@ -211,7 +207,7 @@ mod tests {
             let a = iter.next().unwrap().unwrap();
             let b = iter.next().unwrap().unwrap();
             // Even though they are equal by value, their id() is different
-            assert_eq!(a.value.id() == b.value.id(), false);
+            assert!(!(a.value.id() == b.value.id()));
         })
     }
 }

@@ -23,13 +23,13 @@ use harp::object::RObject;
 use stdext::assert_match;
 
 fn open_dummy_connection() -> (socket::comm::CommSocket, Receiver<IOPubMessage>) {
-    print!("testing!\n");
+    println!("testing!");
 
     let (comm_event_tx, comm_event_rx) = bounded::<CommEvent>(0);
     // Create a dummy iopub channel to receive responses.
     let (iopub_tx, iopub_rx) = bounded::<IOPubMessage>(10);
 
-    let comm_id = r_task(|| unsafe {
+    let comm_id = r_task(|| {
         let mut dummy_connection = RFunction::new("", ".ps.register_dummy_connection");
         let comm_id = dummy_connection.call_in(ARK_ENVS.positron_ns)?;
         RObject::to::<String>(comm_id)
@@ -91,7 +91,7 @@ fn socket_rpc(
     iopub_rx: &Receiver<IOPubMessage>,
     req: ConnectionsBackendRequest,
 ) -> ConnectionsBackendReply {
-    socket_rpc_request::<ConnectionsBackendRequest, ConnectionsBackendReply>(&socket, iopub_rx, req)
+    socket_rpc_request::<ConnectionsBackendRequest, ConnectionsBackendReply>(socket, iopub_rx, req)
 }
 
 #[test]

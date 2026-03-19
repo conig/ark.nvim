@@ -89,7 +89,10 @@ fn test_missing_user_profile() {
 
 #[test]
 fn test_missing_site_profile() {
+    // Keep the scenario hermetic: this test is about a missing site profile,
+    // not whatever the local user profile happens to print at startup.
     std::env::set_var("R_PROFILE", "~/does/not/exist");
+    std::env::set_var("R_PROFILE_USER", "~/does/not/exist");
 
     let frontend = DummyArkFrontendRprofile::lock();
 

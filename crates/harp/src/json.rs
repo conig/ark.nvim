@@ -50,7 +50,7 @@ use crate::object::RObject;
 ///   - e.g.: list(1L, TRUE, "applesauce") -> [1, true, "applesauce"]
 /// - Named lists become JSON maps/objects
 ///   - e.g.: list(a = 1L, b = TRUE, c = "applesauce") ->
-///           {"a": 1, "b": true, "c": "applesauce"}
+///     {"a": 1, "b": true, "c": "applesauce"}
 /// - Named lists with duplicate keys have the values combined into an array
 ///   - e.g.: list(a = 1L, a = 2L, a = 3L) -> {"a": [1, 2, 3]}
 impl TryFrom<RObject> for Value {
@@ -71,7 +71,7 @@ impl TryFrom<RObject> for Value {
 
                 // A single integer becomes a JSON number
                 1 => {
-                    let value = unsafe { obj.to::<i32>()? };
+                    let value = obj.to::<i32>()?;
                     Ok(Value::Number(value.into()))
                 },
 
@@ -96,7 +96,7 @@ impl TryFrom<RObject> for Value {
 
                 // A single value becomes a JSON number
                 1 => {
-                    let value = unsafe { obj.to::<f64>()? };
+                    let value = obj.to::<f64>()?;
                     // There's no try/into implicit conversion from f64 to a
                     // JSON number, but json! handles it.
                     Ok(json!(value))
@@ -123,7 +123,7 @@ impl TryFrom<RObject> for Value {
 
                 // A single value becomes a JSON true/false value
                 1 => {
-                    let value = unsafe { obj.to::<bool>()? };
+                    let value = obj.to::<bool>()?;
                     Ok(Value::Bool(value))
                 },
 
@@ -159,7 +159,7 @@ impl TryFrom<RObject> for Value {
 
                 // With exactly one value, convert to a string
                 1 => {
-                    let str = unsafe { obj.to::<String>()? };
+                    let str = obj.to::<String>()?;
                     Ok(Value::String(str))
                 },
 

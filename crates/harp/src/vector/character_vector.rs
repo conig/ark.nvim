@@ -112,17 +112,15 @@ impl TryFrom<&[SEXP]> for CharacterVector {
     type Error = harp::Error;
 
     fn try_from(value: &[SEXP]) -> harp::Result<Self> {
-        unsafe {
-            let vec = Self::with_length(value.len());
-            let sexp = vec.object.sexp;
+        let vec = Self::with_length(value.len());
+        let sexp = vec.object.sexp;
 
-            for (i, elt) in value.iter().enumerate() {
-                r_assert_type(*elt, &[libr::CHARSXP])?;
-                r_chr_poke(sexp, i as R_xlen_t, *elt);
-            }
-
-            Ok(vec)
+        for (i, elt) in value.iter().enumerate() {
+            r_assert_type(*elt, &[libr::CHARSXP])?;
+            r_chr_poke(sexp, i as R_xlen_t, *elt);
         }
+
+        Ok(vec)
     }
 }
 
@@ -152,7 +150,7 @@ mod test {
         crate::r_task(|| {
             let vector = CharacterVector::create(&["hello", "world"]);
             assert!(vector == ["hello", "world"]);
-            assert!(vector == &["hello", "world"]);
+            assert!(vector == ["hello", "world"]);
 
             let mut it = vector.iter();
 
@@ -162,7 +160,7 @@ mod test {
 
             let vector = CharacterVector::create(["hello".to_string(), "world".to_string()]);
             assert!(vector == ["hello", "world"]);
-            assert!(vector == &["hello", "world"]);
+            assert!(vector == ["hello", "world"]);
 
             assert!(vector.get_unchecked(0) == Some(String::from("hello")));
             assert!(vector.get_unchecked(1) == Some(String::from("world")));

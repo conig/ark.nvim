@@ -1,6 +1,6 @@
 [package]
 name = "ark"
-version = "0.1.242"
+version = "0.1.243"
 description = """
 Ark, an R Kernel.
 """
@@ -9,6 +9,9 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 actix-web.workspace = true

@@ -113,6 +113,7 @@ impl ListIter {
     }
 
     /// SAFETY: Assumes `x` is VECSXP or EXPRSXP
+    #[allow(clippy::missing_safety_doc)]
     pub unsafe fn new_unchecked(x: SEXP) -> Self {
         let ptr = list_cbegin(x);
 
@@ -136,6 +137,20 @@ impl std::iter::Iterator for ListIter {
         let item = unsafe { *self.ptr.wrapping_add(self.index) };
         self.index += 1;
         Some(item)
+    }
+}
+
+impl TryFrom<SEXP> for List {
+    type Error = harp::Error;
+    fn try_from(value: SEXP) -> harp::Result<Self> {
+        super::try_r_vector_from_r_sexp(value)
+    }
+}
+
+impl TryFrom<&List> for Vec<RObject> {
+    type Error = harp::Error;
+    fn try_from(value: &List) -> harp::Result<Self> {
+        super::try_vec_from_r_vector(value)
     }
 }
 
@@ -165,19 +180,5 @@ mod test {
             ));
             assert!(it.next().is_none());
         })
-    }
-}
-
-impl TryFrom<SEXP> for List {
-    type Error = harp::Error;
-    fn try_from(value: SEXP) -> harp::Result<Self> {
-        super::try_r_vector_from_r_sexp(value)
-    }
-}
-
-impl TryFrom<&List> for Vec<RObject> {
-    type Error = harp::Error;
-    fn try_from(value: &List) -> harp::Result<Self> {
-        super::try_vec_from_r_vector(value)
     }
 }

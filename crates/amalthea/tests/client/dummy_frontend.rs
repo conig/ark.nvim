@@ -27,15 +27,15 @@ use crossbeam::channel::Sender;
 use super::control;
 use super::shell;
 
-static AMALTHEA_FRONTEND: OnceLock<
-    Arc<Mutex<(DummyFrontend, Sender<CommEvent>, Sender<IOPubMessage>)>>,
-> = OnceLock::new();
+type FrontendState = (DummyFrontend, Sender<CommEvent>, Sender<IOPubMessage>);
+
+static AMALTHEA_FRONTEND: OnceLock<Arc<Mutex<FrontendState>>> = OnceLock::new();
 
 /// Wrapper around `DummyFrontend` that checks sockets are empty on drop
 pub struct DummyAmaltheaFrontend {
     pub comm_event_tx: Sender<CommEvent>,
     pub iopub_tx: Sender<IOPubMessage>,
-    guard: MutexGuard<'static, (DummyFrontend, Sender<CommEvent>, Sender<IOPubMessage>)>,
+    guard: MutexGuard<'static, FrontendState>,
 }
 
 impl DummyAmaltheaFrontend {
@@ -50,12 +50,11 @@ impl DummyAmaltheaFrontend {
         }
     }
 
-    fn get_frontend(
-    ) -> &'static Arc<Mutex<(DummyFrontend, Sender<CommEvent>, Sender<IOPubMessage>)>> {
+    fn get_frontend() -> &'static Arc<Mutex<FrontendState>> {
         AMALTHEA_FRONTEND.get_or_init(|| Arc::new(Mutex::new(DummyAmaltheaFrontend::init())))
     }
 
-    fn init() -> (DummyFrontend, Sender<CommEvent>, Sender<IOPubMessage>) {
+    fn init() -> FrontendState {
         let connection = DummyConnection::new();
         let (connection_file, registration_file) = connection.get_connection_files();
 
@@ -86,15 +85,19 @@ impl DummyAmaltheaFrontend {
                     "amalthea",
                     connection_file,
                     Some(registration_file),
-                    shell,
-                    control,
-                    server_handlers,
+                    kernel::Handlers {
+                        shell_handler: shell,
+                        control_handler: control,
+                        server_handlers,
+                    },
+                    kernel::ConnectionChannels {
+                        iopub_tx,
+                        iopub_rx,
+                        comm_event_rx,
+                        stdin_request_rx,
+                        stdin_reply_tx,
+                    },
                     StreamBehavior::None,
-                    iopub_tx,
-                    iopub_rx,
-                    comm_event_rx,
-                    stdin_request_rx,
-                    stdin_reply_tx,
                 ) {
                     panic!("Error connecting kernel: {err:?}");
                 };

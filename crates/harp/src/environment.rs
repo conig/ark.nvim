@@ -134,11 +134,9 @@ impl Environment {
     pub fn is_empty(&self) -> bool {
         match self.filter {
             EnvironmentFilter::None => self.inner.length() == 0,
-            EnvironmentFilter::ExcludeHidden => self
-                .iter()
-                .filter_map(|b| b.ok())
-                .find(|b| !b.is_hidden())
-                .is_none(),
+            EnvironmentFilter::ExcludeHidden => {
+                !self.iter().filter_map(|b| b.ok()).any(|b| !b.is_hidden())
+            },
         }
     }
 
@@ -318,7 +316,7 @@ mod tests {
             assert_eq!(names, vec!["a", "b", "c"]);
 
             // Also assert that `.iter()` will be sorted
-            let expected = vec!["a", "b", "c"];
+            let expected = ["a", "b", "c"];
             for (i, binding) in Environment::new(env).iter().enumerate() {
                 assert_eq!(binding.unwrap().name, expected[i]);
             }
@@ -347,7 +345,7 @@ mod tests {
             let env: Environment = Environment::new(env);
 
             assert_eq!(env.names().len(), 0);
-            assert_eq!(env.is_empty(), true);
+            assert!(env.is_empty());
             assert_eq!(env.length(), 0);
 
             // Make sure that it would actually dispatch to the s3 methods we implemented

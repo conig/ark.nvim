@@ -368,7 +368,7 @@ fn collect_function(
 /// - In particular, `inner` does not close `middle` or `top`. If it
 ///   were able to close another section across the syntax tree, this
 ///   would create a confusing outline where e.g. the rest of R6 methods
-///  (`bar` in this case) would be pulled at top-level.
+///   (`bar` in this case) would be pulled at top-level.
 fn collect_sections<F>(
     ctx: &mut CollectContext,
     node: &Node,
@@ -478,9 +478,8 @@ fn collect_call(
 
     if callee.is_identifier() {
         let fun_symbol = callee.node_as_str(&doc.contents)?;
-        match fun_symbol {
-            "test_that" => return collect_call_test_that(ctx, node, doc, symbols),
-            _ => {}, // fallthrough
+        if fun_symbol == "test_that" {
+            return collect_call_test_that(ctx, node, doc, symbols);
         }
     }
 
@@ -1136,12 +1135,16 @@ outer <- 4
 
             let code = "# Section ----\nfoo <- 1";
 
-            let mut config = LspConfig::default();
-            config.workspace_symbols = WorkspaceSymbolsConfig {
-                include_comment_sections,
+            let config = LspConfig {
+                workspace_symbols: WorkspaceSymbolsConfig {
+                    include_comment_sections,
+                },
+                ..Default::default()
             };
-            let mut state = WorldState::default();
-            state.config = config;
+            let state = WorldState {
+                config,
+                ..Default::default()
+            };
 
             // Index the document
             let doc = Document::new(code, None);
@@ -1154,9 +1157,8 @@ outer <- 4
                 ..Default::default()
             };
             let result = super::symbols(&params, &state).unwrap();
-            let out = result.into_iter().map(|s| s.name).collect();
 
-            out
+            result.into_iter().map(|s| s.name).collect()
         }
 
         // Should include section when true

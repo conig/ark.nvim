@@ -19,10 +19,14 @@ members = [
 ]
 
 [workspace.package]
-rust-version = "1.89"
+rust-version = "1.94"
 edition = "2021"
 license = "MIT"
 authors = ["Posit Software, PBC"]
+
+[workspace.lints.clippy]
+result_large_err = "allow"
+too_many_arguments = "allow"
 
 [workspace.dependencies]
 actix-web = "4.4.0"

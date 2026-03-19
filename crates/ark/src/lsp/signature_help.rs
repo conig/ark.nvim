@@ -526,8 +526,14 @@ mod tests {
             assert_eq!(help.signatures.len(), 1);
 
             // Looking for the label offset into `library(package, ...etc)` for `package`
-            let signature = help.signatures.get(0).unwrap();
-            let label = &signature.parameters.as_ref().unwrap().get(0).unwrap().label;
+            let signature = help.signatures.first().unwrap();
+            let label = &signature
+                .parameters
+                .as_ref()
+                .unwrap()
+                .first()
+                .unwrap()
+                .label;
             assert_eq!(label, &ParameterLabel::LabelOffsets([8, 15]));
         })
     }
@@ -577,7 +583,7 @@ fn <- function(
             let help = help.unwrap().unwrap();
 
             // Check expected signature label
-            let signature = help.signatures.get(0).unwrap();
+            let signature = help.signatures.first().unwrap();
             assert_eq!(
                 signature.label,
                 String::from(
@@ -611,11 +617,11 @@ fn <- function(
     #[test]
     fn test_argument_label_symbol() {
         crate::r_task(|| {
-            let x = unsafe { r_symbol!("name") };
+            let x = r_symbol!("name");
             let label = argument_label(String::from("x"), x);
             assert_eq!(label, String::from("x = name"));
 
-            let x = unsafe { r_symbol!("hi there") };
+            let x = r_symbol!("hi there");
             let label = argument_label(String::from("x"), x);
             assert_eq!(label, String::from("x = `hi there`"));
         })
@@ -624,12 +630,10 @@ fn <- function(
     #[test]
     fn test_argument_label_call() {
         crate::r_task(|| {
-            let x = unsafe {
-                RCall::new(r_symbol!("source"))
-                    .add(r_symbol!("exprs"))
-                    .param("local", r_symbol!("is_local"))
-                    .build()
-            };
+            let x = RCall::new(r_symbol!("source"))
+                .add(r_symbol!("exprs"))
+                .param("local", r_symbol!("is_local"))
+                .build();
             let label = argument_label(String::from("x"), x.sexp);
             assert_eq!(label, String::from("x = source(exprs, local = is_local)"));
         })

@@ -347,7 +347,7 @@ pub fn r_formals(object: SEXP) -> Result<Vec<RArgument>> {
     Ok(arguments)
 }
 
-pub unsafe fn r_envir_name(envir: SEXP) -> Result<String> {
+pub fn r_envir_name(envir: SEXP) -> Result<String> {
     r_assert_type(envir, &[ENVSXP])?;
 
     if r_env_is_pkg_env(envir) {
@@ -360,7 +360,7 @@ pub unsafe fn r_envir_name(envir: SEXP) -> Result<String> {
         return name.to::<String>();
     }
 
-    let name = Rf_getAttrib(envir, r_symbol!("name"));
+    let name = unsafe { Rf_getAttrib(envir, r_symbol!("name")) };
     if r_typeof(name) == STRSXP {
         let name = RObject::view(name).to::<String>()?;
         return Ok(name);
@@ -381,12 +381,12 @@ pub fn r_envir_get(symbol: &str, envir: SEXP) -> Option<SEXP> {
     }
 }
 
-pub unsafe fn r_envir_set(symbol: &str, value: SEXP, envir: SEXP) {
-    Rf_defineVar(r_symbol!(symbol), value, envir);
+pub fn r_envir_set(symbol: &str, value: SEXP, envir: SEXP) {
+    unsafe { Rf_defineVar(r_symbol!(symbol), value, envir) };
 }
 
-pub unsafe fn r_envir_remove(symbol: &str, envir: SEXP) {
-    R_removeVarFromFrame(r_symbol!(symbol), envir);
+pub fn r_envir_remove(symbol: &str, envir: SEXP) {
+    unsafe { R_removeVarFromFrame(r_symbol!(symbol), envir) };
 }
 
 /// Get names of a vector
@@ -397,12 +397,12 @@ pub unsafe fn r_envir_remove(symbol: &str, envir: SEXP) {
 ///
 /// Note that it does not use S3 dispatch for length or names.
 pub fn r_names2(x: SEXP) -> SEXP {
-    let mut protect = unsafe { RProtect::new() };
+    let mut protect = RProtect::new();
 
     let size = r_length(x);
 
     let names = unsafe { Rf_getAttrib(x, R_NamesSymbol) };
-    unsafe { protect.add(names) };
+    protect.add(names);
 
     if r_is_null(names) {
         // Comes initialized with `""`.
@@ -430,7 +430,7 @@ pub fn r_names2(x: SEXP) -> SEXP {
     }
 
     let out = r_alloc_character(size);
-    unsafe { protect.add(out) };
+    protect.add(out);
 
     for i in 0..size {
         let elt = r_chr_get(names, i);
@@ -445,7 +445,7 @@ pub fn r_names2(x: SEXP) -> SEXP {
     out
 }
 
-pub unsafe fn r_stringify(object: SEXP, delimiter: &str) -> Result<String> {
+pub fn r_stringify(object: SEXP, delimiter: &str) -> Result<String> {
     // handle SYMSXPs upfront
     if r_typeof(object) == SYMSXP {
         return RObject::view(object).to::<String>();
@@ -466,11 +466,13 @@ pub unsafe fn r_stringify(object: SEXP, delimiter: &str) -> Result<String> {
     Ok(object)
 }
 
-pub unsafe fn r_inspect(object: SEXP) {
-    let mut protect = RProtect::new();
-    let inspect = protect.add(Rf_lang2(r_symbol!("inspect"), object));
-    let internal = protect.add(Rf_lang2(r_symbol!(".Internal"), inspect));
-    Rf_eval(internal, R_BaseEnv);
+pub fn r_inspect(object: SEXP) {
+    unsafe {
+        let mut protect = RProtect::new();
+        let inspect = protect.add(Rf_lang2(r_symbol!("inspect"), object));
+        let internal = protect.add(Rf_lang2(r_symbol!(".Internal"), inspect));
+        Rf_eval(internal, R_BaseEnv);
+    }
 }
 
 pub fn r_is_promise(x: SEXP) -> bool {
@@ -490,9 +492,9 @@ pub fn r_promise_expr(x: SEXP) -> SEXP {
     unsafe { R_PromiseExpr(x) }
 }
 
-pub unsafe fn r_promise_force(x: SEXP) -> harp::Result<RObject> {
+pub fn r_promise_force(x: SEXP) -> harp::Result<RObject> {
     // Expect that the promise protects its own result
-    harp::try_eval(x, R_EmptyEnv)
+    harp::try_eval(x, unsafe { R_EmptyEnv })
 }
 
 pub fn r_promise_force_with_rollback(x: SEXP) -> harp::Result<RObject> {
@@ -506,24 +508,24 @@ pub fn r_promise_force_with_rollback(x: SEXP) -> harp::Result<RObject> {
     }
 }
 
-pub unsafe fn r_promise_is_lazy_load_binding(x: SEXP) -> bool {
+pub fn r_promise_is_lazy_load_binding(x: SEXP) -> bool {
     // `rlang:::promise_expr("across", asNamespace("dplyr"))`
     // returns:
     // `lazyLoadDBfetch(c(105202L, 4670L), datafile, compressed, envhook)`
     // We can take advantage of this to identify promises in namespaces
     // that correspond to symbols we should evaluate when generating completions.
 
-    let expr = PRCODE(x);
+    let expr = unsafe { PRCODE(x) };
 
     if r_typeof(expr) != LANGSXP {
         return false;
     }
 
-    if Rf_xlength(expr) == 0 {
+    if unsafe { Rf_xlength(expr) } == 0 {
         return false;
     }
 
-    let expr = CAR(expr);
+    let expr = unsafe { CAR(expr) };
 
     if r_typeof(expr) != SYMSXP {
         return false;
@@ -563,46 +565,50 @@ pub fn r_env_binding_is_active(env: SEXP, sym: SEXP) -> harp::Result<bool> {
     }
 }
 
-pub unsafe fn r_env_is_pkg_env(env: SEXP) -> bool {
-    R_IsPackageEnv(env) == Rboolean_TRUE || env == R_BaseEnv
+pub fn r_env_is_pkg_env(env: SEXP) -> bool {
+    unsafe { R_IsPackageEnv(env) == Rboolean_TRUE || env == R_BaseEnv }
 }
 
-pub unsafe fn r_pkg_env_name(env: SEXP) -> SEXP {
-    if env == R_BaseEnv {
-        // `R_BaseEnv` is not handled by `R_PackageEnvName()`, but most of the time we want to
-        // treat it like a package namespace
-        return r_char!("base");
+pub fn r_pkg_env_name(env: SEXP) -> SEXP {
+    unsafe {
+        if env == R_BaseEnv {
+            // `R_BaseEnv` is not handled by `R_PackageEnvName()`, but most of the time we want to
+            // treat it like a package namespace
+            return r_char!("base");
+        }
+
+        let name = R_PackageEnvName(env);
+
+        if name == libr::R_NilValue {
+            // Should be very unlikely, but `NULL` can be returned
+            return r_char!("");
+        }
+
+        STRING_ELT(name, 0)
     }
-
-    let name = R_PackageEnvName(env);
-
-    if name == libr::R_NilValue {
-        // Should be very unlikely, but `NULL` can be returned
-        return r_char!("");
-    }
-
-    STRING_ELT(name, 0)
 }
 
-pub unsafe fn r_env_is_ns_env(env: SEXP) -> bool {
+pub fn r_env_is_ns_env(env: SEXP) -> bool {
     // Does handle `R_BaseNamespace`
     // https://github.com/wch/r-source/blob/1cb35ff692d3eb3ab546e0db4761102b5ea4ac89/src/main/envir.c#L3689
-    R_IsNamespaceEnv(env) == Rboolean_TRUE
+    unsafe { R_IsNamespaceEnv(env) == Rboolean_TRUE }
 }
 
-pub unsafe fn r_ns_env_name(env: SEXP) -> SEXP {
+pub fn r_ns_env_name(env: SEXP) -> SEXP {
     // Does handle `R_BaseNamespace`
     // https://github.com/wch/r-source/blob/1cb35ff692d3eb3ab546e0db4761102b5ea4ac89/src/main/envir.c#L3720
-    let mut protect = RProtect::new();
+    unsafe {
+        let mut protect = RProtect::new();
 
-    let spec = protect.add(R_NamespaceEnvSpec(env));
+        let spec = protect.add(R_NamespaceEnvSpec(env));
 
-    if spec == libr::R_NilValue {
-        // Should be very unlikely, but `NULL` can be returned
-        return r_char!("");
+        if spec == libr::R_NilValue {
+            // Should be very unlikely, but `NULL` can be returned
+            return r_char!("");
+        }
+
+        STRING_ELT(spec, 0)
     }
-
-    STRING_ELT(spec, 0)
 }
 
 /// Returns `true` if `f` returns `true` for any node of the pairlist
@@ -643,15 +649,13 @@ pub fn r_normalize_path(x: RObject) -> anyhow::Result<String> {
     if !r_is_string(x.sexp) {
         anyhow::bail!("Expected string for srcfile's filename");
     }
-    unsafe {
-        let path = RFunction::new("base", "normalizePath")
-            .param("path", x)
-            .param("winslash", "/")
-            .param("mustWork", false)
-            .call()?
-            .to::<String>()?;
-        Ok(path)
-    }
+    let path = RFunction::new("base", "normalizePath")
+        .param("path", x)
+        .param("winslash", "/")
+        .param("mustWork", false)
+        .call()?
+        .to::<String>()?;
+    Ok(path)
 }
 
 pub fn save_rds(x: SEXP, path: &str) {

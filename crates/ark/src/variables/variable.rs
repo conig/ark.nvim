@@ -537,7 +537,7 @@ impl WorkspaceVariableDisplayType {
     fn try_from_method(value: SEXP, include_length: bool) -> anyhow::Result<Option<Self>> {
         let args = vec![RArgument::new(
             "include_length",
-            RObject::try_from(include_length)?,
+            RObject::from(include_length),
         )];
         let result: Option<String> = ArkGenerics::VariableDisplayType.try_dispatch(value, args)?;
         Ok(result.map(Self::simple))
@@ -995,7 +995,7 @@ impl PositronVariable {
 
     pub fn clip(
         env: RObject,
-        path: &Vec<String>,
+        path: &[String],
         _format: &ClipboardFormatFormat,
     ) -> anyhow::Result<String> {
         let node = Self::resolve_object_from_path(env, path)?;
@@ -1033,14 +1033,16 @@ impl PositronVariable {
 
     pub fn resolve_data_object(
         env: RObject,
-        path: &Vec<String>,
+        path: &[String],
     ) -> Result<RObject, harp::error::Error> {
         let resolved = Self::resolve_object_from_path(env, path)?;
 
         match resolved {
             EnvironmentVariableNode::Concrete { object } => Ok(object),
 
-            _ => Err(harp::error::Error::InspectError { path: path.clone() }),
+            _ => Err(harp::error::Error::InspectError {
+                path: path.to_vec(),
+            }),
         }
     }
 
@@ -1048,7 +1050,7 @@ impl PositronVariable {
         object: RObject,
         access_key: &String,
     ) -> harp::Result<EnvironmentVariableNode> {
-        let symbol = unsafe { r_symbol!(access_key) };
+        let symbol = r_symbol!(access_key);
         let mut x = unsafe { Rf_findVarInFrame(object.sexp, symbol) };
 
         if r_typeof(x) == PROMSXP {
@@ -1121,7 +1123,7 @@ impl PositronVariable {
 
         // For S4 objects, we acess child nodes using R_do_slot.
         if object.is_s4() {
-            let name = unsafe { r_symbol!(access_key) };
+            let name = r_symbol!(access_key);
             let child: RObject =
                 harp::try_catch(|| unsafe { R_do_slot(object.sexp, name) }.into())?;
             return Ok(EnvironmentVariableNode::Concrete { object: child });
@@ -1225,7 +1227,7 @@ impl PositronVariable {
 
     fn resolve_object_from_path(
         object: RObject,
-        path: &Vec<String>,
+        path: &[String],
     ) -> harp::Result<EnvironmentVariableNode> {
         let mut node = EnvironmentVariableNode::Concrete { object };
 
@@ -1570,7 +1572,7 @@ impl PositronVariable {
                 // 1. Provide the name and the index for the `get_child_at` method.
                 // 2. (Not necessary) Given an access key, we can detect if we want to apply a custom get_child_method.
                 let list = List::new(value.sexp)?;
-                let n = unsafe { list.len() };
+                let n = list.len();
 
                 let names = match value.names() {
                     None => vec![None; n],
@@ -1610,7 +1612,7 @@ impl PositronVariable {
     }
 }
 
-fn parse_custom_access_key(access_key: &String) -> anyhow::Result<Option<(RObject, i32)>> {
+fn parse_custom_access_key(access_key: &str) -> anyhow::Result<Option<(RObject, i32)>> {
     let parsed_access_key: Vec<&str> = access_key.splitn(4, '-').collect();
 
     if parsed_access_key.len() != 4 {
@@ -1657,11 +1659,10 @@ fn try_from_method_variable_kind(value: SEXP) -> anyhow::Result<Option<VariableK
 }
 
 pub fn is_binding_fancy(binding: &Binding) -> bool {
-    match &binding.value {
-        BindingValue::Active { .. } => true,
-        BindingValue::Altrep { .. } => true,
-        _ => false,
-    }
+    matches!(
+        &binding.value,
+        BindingValue::Active { .. } | BindingValue::Altrep { .. }
+    )
 }
 
 pub fn plain_binding_force_with_rollback(binding: &Binding) -> anyhow::Result<RObject> {
@@ -1672,7 +1673,7 @@ pub fn plain_binding_force_with_rollback(binding: &Binding) -> anyhow::Result<RO
     }
 }
 
-fn parse_index(x: &String) -> harp::Result<isize> {
+fn parse_index(x: &str) -> harp::Result<isize> {
     x.parse::<isize>().map_err(|err| {
         harp::Error::Anyhow(anyhow!("Expected to be able to parse into integer: {err}"))
     })
@@ -1780,12 +1781,12 @@ mod tests {
 
             assert_eq!(variable.display_type, String::from("foo (3)"));
 
-            assert_eq!(variable.has_children, true);
+            assert!(variable.has_children);
 
             assert_eq!(variable.kind, VariableKind::Other);
 
             // The has_viewer method returns TRUE, so the object has a viewer
-            assert_eq!(variable.has_viewer, true);
+            assert!(variable.has_viewer);
 
             // Now inspect `x`
             let path = vec![String::from("x")];
@@ -2062,7 +2063,7 @@ mod tests {
             let vars = inspect_from_expr("matrix(0, ncol = 10000, nrow = 10000)");
             assert_eq!(vars.len(), MAX_DISPLAY_VALUE_ENTRIES);
             assert_eq!(vars[0].display_value.len(), MAX_DISPLAY_VALUE_LENGTH);
-            assert_eq!(vars[0].is_truncated, true);
+            assert!(vars[0].is_truncated);
 
             let vars = inspect_from_expr("new.env(parent=emptyenv())");
             assert_eq!(vars.len(), 0);
@@ -2078,7 +2079,7 @@ mod tests {
             );
             assert_eq!(vars.len(), 10);
             assert_eq!(vars[0].display_value.len(), MAX_DISPLAY_VALUE_LENGTH);
-            assert_eq!(vars[0].is_truncated, true);
+            assert!(vars[0].is_truncated);
 
             let vars = inspect_from_expr(
                 "structure(1:10, names = rep(paste(rep(letters, length.out = 10000), collapse = ''), 10))",
@@ -2100,12 +2101,12 @@ mod tests {
 
             let vars = inspect_from_expr("list(x = x ~ {y + z + a})");
             assert_eq!(vars[0].display_value, "x ~ { ...");
-            assert_eq!(vars[0].is_truncated, true);
+            assert!(vars[0].is_truncated);
 
             let formula: String = (0..100).map(|i| format!("x{i}")).collect_vec().join(" + ");
             let vars = inspect_from_expr(format!("list(x = x ~ {formula})").as_str());
 
-            assert_eq!(vars[0].is_truncated, true);
+            assert!(vars[0].is_truncated);
             // The deparser truncates the formula at 70 characters so we don't expect to get to
             // MAX_DISPLAY_VALUE_LENGTH. We do have protections if this behavior changes, though.
             assert_eq!(vars[0].display_value.len(), 70);
@@ -2143,7 +2144,7 @@ mod tests {
             let vars = PositronVariable::inspect(env.into(), &path).unwrap();
             assert_eq!(vars.len(), 1);
             assert_eq!(vars[0].display_value.len(), MAX_DISPLAY_VALUE_LENGTH);
-            assert_eq!(vars[0].is_truncated, true);
+            assert!(vars[0].is_truncated);
 
             // Test for the empty string
             let env = Environment::new_empty();
