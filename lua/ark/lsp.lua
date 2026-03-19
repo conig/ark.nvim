@@ -9,10 +9,8 @@ local STATUS_REQUEST_METHOD = "ark/internal/status"
 local session_watchers = {}
 local session_watch_cleanup = {}
 local session_watch_polls = {}
-local session_watch_force_until = {}
 local client_session_payloads = {}
 local managed_client_ids = {}
-local SESSION_RETRY_GRACE_MS = 20000
 
 local function filetype_enabled(filetypes, filetype)
   return vim.tbl_contains(filetypes or {}, filetype)
@@ -146,7 +144,6 @@ local function stop_session_watch(bufnr)
   session_watchers[bufnr] = nil
   session_watch_cleanup[bufnr] = nil
   session_watch_polls[bufnr] = nil
-  session_watch_force_until[bufnr] = nil
 end
 
 local function session_buffers(opts)
@@ -177,19 +174,22 @@ local function ensure_session_watch_cleanup(bufnr)
 end
 
 local function session_payload(opts)
-  local session = tmux.session and tmux.session() or nil
+  local tmux_status = tmux.status and tmux.status(opts.tmux) or nil
+  if type(tmux_status) ~= "table" then
+    return {}
+  end
+
+  local session = tmux_status.session
   if type(session) ~= "table" then
     return {}
   end
 
-  local status_path = tmux.startup_status_path and tmux.startup_status_path(opts.tmux) or nil
+  local status_path = tmux_status.startup_status_path
   if type(status_path) ~= "string" or status_path == "" then
     return {}
   end
 
-  local startup_status = tmux.startup_status_authoritative and tmux.startup_status_authoritative(opts.tmux)
-    or tmux.startup_status and tmux.startup_status(opts.tmux)
-    or nil
+  local startup_status = tmux_status.startup_status
 
   return {
     kind = opts.tmux.session_kind,
@@ -198,18 +198,18 @@ local function session_payload(opts)
     tmuxSession = session.tmux_session,
     tmuxPane = session.tmux_pane,
     timeoutMs = tonumber(opts.tmux.session_timeout_ms or 1000) or 1000,
-    status = type(startup_status) == "table" and startup_status.status or "",
-    replReady = type(startup_status) == "table" and startup_status.repl_ready == true or false,
+    status = tmux_status.bridge_ready == true and "ready" or (type(startup_status) == "table" and startup_status.status or ""),
+    replReady = tmux_status.repl_ready == true,
   }
 end
 
-local function notify_client_session(client, payload, force)
+local function notify_client_session(client, payload)
   if not live_client(client) then
     return
   end
 
   local normalized = payload or {}
-  if not force and vim.deep_equal(client_session_payloads[client.id] or {}, normalized) then
+  if vim.deep_equal(client_session_payloads[client.id] or {}, normalized) then
     return
   end
 
@@ -217,11 +217,11 @@ local function notify_client_session(client, payload, force)
   client:notify(SESSION_UPDATE_METHOD, normalized)
 end
 
-local function notify_sessions(opts, bufnr, payload, force)
+local function notify_sessions(opts, bufnr, payload)
   local clients = session_clients(opts, bufnr)
   local normalized = payload or session_payload(opts)
   for _, client in ipairs(clients) do
-    notify_client_session(client, normalized, force)
+    notify_client_session(client, normalized)
   end
 end
 
@@ -291,21 +291,8 @@ local function watch_status_file(status_path, on_change)
   return nil
 end
 
-local function session_watch_finished(bufnr, payload)
-  if next(payload) == nil or payload.status == "error" then
-    return true
-  end
-
-  if payload.replReady ~= true then
-    return false
-  end
-
-  local force_until = session_watch_force_until[bufnr]
-  if type(force_until) ~= "number" then
-    return false
-  end
-
-  return vim.uv.now() >= force_until
+local function session_watch_finished(payload)
+  return next(payload) == nil or payload.replReady == true or payload.status == "error"
 end
 
 local function ensure_session_watch(opts, bufnr)
@@ -320,16 +307,9 @@ local function ensure_session_watch(opts, bufnr)
   end
 
   local payload = session_payload(opts)
-  if payload.replReady == true and type(session_watch_force_until[bufnr]) ~= "number" then
-    session_watch_force_until[bufnr] = vim.uv.now() + SESSION_RETRY_GRACE_MS
-  elseif payload.replReady ~= true then
-    session_watch_force_until[bufnr] = nil
-  end
+  notify_sessions(opts, nil, payload)
 
-  local force_notify = payload.replReady == true and type(session_watch_force_until[bufnr]) == "number"
-  notify_sessions(opts, bufnr, payload, force_notify)
-
-  if session_watch_finished(bufnr, payload) then
+  if session_watch_finished(payload) then
     stop_session_watch(bufnr)
     return
   end
@@ -343,9 +323,8 @@ local function ensure_session_watch(opts, bufnr)
   if not session_watchers[bufnr] then
     local watcher = watch_status_file(status_path, function()
       local current = session_payload(opts)
-      local force = current.replReady == true and type(session_watch_force_until[bufnr]) == "number"
-      notify_sessions(opts, bufnr, current, force)
-      if session_watch_finished(bufnr, current) then
+      notify_sessions(opts, nil, current)
+      if session_watch_finished(current) then
         stop_session_watch(bufnr)
       end
     end)
@@ -368,9 +347,8 @@ local function ensure_session_watch(opts, bufnr)
     end
 
     local current = session_payload(opts)
-    local force = current.replReady == true and type(session_watch_force_until[bufnr]) == "number"
-    notify_sessions(opts, bufnr, current, force)
-    if session_watch_finished(bufnr, current) then
+    notify_sessions(opts, nil, current)
+    if session_watch_finished(current) then
       stop_session_watch(bufnr)
       return
     end

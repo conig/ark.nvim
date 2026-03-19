@@ -80,17 +80,27 @@ pub(crate) fn refresh_detached_session_inputs(state: &mut WorldState, force: boo
         return;
     }
 
-    if !force && state.detached_session_bootstrap_attempted {
+    let now = now_ms();
+    let bootstrap_incomplete = state.console_scopes.is_empty() || state.library.library_paths.is_empty();
+    let retry_cooldown_elapsed = state
+        .detached_session_status
+        .last_bootstrap_attempt_ms
+        .map(|last| now.saturating_sub(last) >= 500)
+        .unwrap_or(true);
+    let retry_failed_bootstrap = state.detached_session_bootstrap_attempted
+        && state.detached_session_status.last_bootstrap_success_ms.is_none()
+        && !state.detached_session_status.last_bootstrap_error.is_empty()
+        && bootstrap_incomplete
+        && retry_cooldown_elapsed;
+
+    if !force && state.detached_session_bootstrap_attempted && !retry_failed_bootstrap {
         return;
     }
 
     state.detached_session_bootstrap_attempted = true;
-    state.detached_session_status.last_bootstrap_attempt_ms = Some(now_ms());
+    state.detached_session_status.last_bootstrap_attempt_ms = Some(now);
 
-    let needs_bootstrap = force
-        || state.console_scopes.is_empty()
-        || state.installed_packages.is_empty()
-        || state.library.library_paths.is_empty();
+    let needs_bootstrap = force || bootstrap_incomplete;
     if !needs_bootstrap {
         return;
     }
@@ -366,7 +376,9 @@ pub(crate) fn did_change(
         .ok_or(anyhow!("No parser for {uri}"))?;
 
     document.on_did_change(parser, &params);
+    refresh_detached_session_inputs(state, false);
     lsp::main_loop::index_update(vec![uri.clone()], state.clone());
+    lsp::main_loop::diagnostics_refresh_all_from_state(state);
 
     // Notify console about document change to invalidate breakpoints.
     lsp_state

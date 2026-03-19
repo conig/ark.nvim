@@ -19,7 +19,7 @@ vim.api.nvim_create_user_command("ArkRefresh", function()
 end, { desc = "Restart ark.nvim LSP for the current buffer with current pane state" })
 
 vim.api.nvim_create_user_command("ArkStatus", function()
-  vim.print(require("ark").status())
+  vim.print(require("ark").status({ include_lsp = true }))
 end, { desc = "Print ark.nvim status" })
 
 vim.api.nvim_create_user_command("ArkPaneCommand", function()

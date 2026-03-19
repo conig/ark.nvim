@@ -198,12 +198,15 @@ function M.build_lsp()
   return dev.build_detached_lsp()
 end
 
-function M.status()
+function M.status(opts)
   ensure_setup()
+  opts = opts or {}
   local status = tmux.status(options.tmux)
   status.lsp_cmd = options.lsp.cmd
   status.launcher = options.tmux.launcher
-  status.lsp_status = lsp.status(options)
+  if opts.include_lsp == true then
+    status.lsp_status = lsp.status(options)
+  end
   return status
 end
 

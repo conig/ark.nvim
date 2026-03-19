@@ -373,14 +373,6 @@ impl SessionBridge {
 
     pub(crate) fn bootstrap(&self) -> anyhow::Result<SessionBootstrap> {
         let search_path_symbols = self.inspect_names(search_path_completion_expr().as_str())?;
-        let installed_packages =
-            match self.inspect_names(installed_packages_completion_expr().as_str()) {
-                Ok(packages) => packages,
-                Err(err) => {
-                    log::warn!("Detached bootstrap couldn't inspect installed packages: {err:?}");
-                    Vec::new()
-                },
-            };
         let library_paths = match self.inspect_names(library_paths_completion_expr().as_str()) {
             Ok(paths) => paths.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
             Err(err) => {
@@ -391,7 +383,11 @@ impl SessionBridge {
 
         Ok(SessionBootstrap {
             search_path_symbols,
-            installed_packages,
+            // Keep detached bootstrap focused on the session inputs required
+            // for immediate symbol diagnostics and runtime completions.
+            // Enumerating all installed packages is significantly more
+            // expensive and can stall the LSP main loop during session attach.
+            installed_packages: Vec::new(),
             library_paths,
         })
     }
