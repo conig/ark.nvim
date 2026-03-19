@@ -85,6 +85,14 @@ pub(crate) struct SessionBootstrap {
     pub search_path_symbols: Vec<String>,
     pub installed_packages: Vec<String>,
     pub library_paths: Vec<PathBuf>,
+    pub timings: SessionBootstrapTimings,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SessionBootstrapTimings {
+    pub total_ms: u64,
+    pub search_path_symbols_ms: u64,
+    pub library_paths_ms: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -217,6 +225,24 @@ struct SessionStatusPayload {
     auth_token: String,
     #[serde(default)]
     repl_ready: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct BootstrapRequest {
+    request_id: String,
+    auth_token: String,
+    command: String,
+    session: BridgeSession,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct BootstrapResponse {
+    #[serde(default)]
+    error: Option<BridgeError>,
+    #[serde(default, deserialize_with = "deserialize_string_vec")]
+    search_path_symbols: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_string_vec")]
+    library_paths: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -372,24 +398,13 @@ impl SessionBridge {
     }
 
     pub(crate) fn bootstrap(&self) -> anyhow::Result<SessionBootstrap> {
-        let search_path_symbols = self.inspect_names(search_path_completion_expr().as_str())?;
-        let library_paths = match self.inspect_names(library_paths_completion_expr().as_str()) {
-            Ok(paths) => paths.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
+        match self.bootstrap_via_command() {
+            Ok(bootstrap) => Ok(bootstrap),
             Err(err) => {
-                log::warn!("Detached bootstrap couldn't inspect library paths: {err:?}");
-                Vec::new()
+                log::warn!("Detached bootstrap command failed, falling back to legacy bootstrap: {err:?}");
+                self.bootstrap_legacy()
             },
-        };
-
-        Ok(SessionBootstrap {
-            search_path_symbols,
-            // Keep detached bootstrap focused on the session inputs required
-            // for immediate symbol diagnostics and runtime completions.
-            // Enumerating all installed packages is significantly more
-            // expensive and can stall the LSP main loop during session attach.
-            installed_packages: Vec::new(),
-            library_paths,
-        })
+        }
     }
 
     pub(crate) fn hover(&self, context: &DocumentContext) -> anyhow::Result<Option<Hover>> {
@@ -783,6 +798,79 @@ impl SessionBridge {
         }
     }
 
+    fn bootstrap_via_command(&self) -> anyhow::Result<SessionBootstrap> {
+        match &self.source {
+            SessionBridgeSource::Fixed(connection) => self.bootstrap_with_connection(connection),
+            SessionBridgeSource::StatusFile(source) => self.bootstrap_dynamic(source),
+        }
+    }
+
+    fn bootstrap_legacy(&self) -> anyhow::Result<SessionBootstrap> {
+        let total_start = std::time::Instant::now();
+        let search_path_start = std::time::Instant::now();
+        let search_path_symbols = self.inspect_names(search_path_completion_expr().as_str())?;
+        let search_path_symbols_ms = duration_ms(search_path_start.elapsed());
+        let library_paths_start = std::time::Instant::now();
+        let library_paths = match self.inspect_names(library_paths_completion_expr().as_str()) {
+            Ok(paths) => paths.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
+            Err(err) => {
+                log::warn!("Detached bootstrap couldn't inspect library paths: {err:?}");
+                Vec::new()
+            },
+        };
+
+        Ok(SessionBootstrap {
+            search_path_symbols,
+            installed_packages: Vec::new(),
+            library_paths,
+            timings: SessionBootstrapTimings {
+                total_ms: duration_ms(total_start.elapsed()),
+                search_path_symbols_ms,
+                library_paths_ms: duration_ms(library_paths_start.elapsed()),
+            },
+        })
+    }
+
+    fn bootstrap_dynamic(
+        &self,
+        source: &StatusFileSessionBridgeSource,
+    ) -> anyhow::Result<SessionBootstrap> {
+        let mut connection = source.current_connection()?;
+        let max_attempts = 4;
+
+        for attempt in 0..max_attempts {
+            match self.bootstrap_with_connection(&connection) {
+                Ok(payload) => return Ok(payload),
+                Err(err) if should_retry_dynamic_request(&err) => {
+                    let retry_io = err.downcast_ref::<std::io::Error>().is_some();
+                    let refreshed = source.current_connection()?;
+
+                    if refreshed != connection {
+                        connection = refreshed;
+                        continue;
+                    }
+
+                    if retry_io && attempt + 1 < max_attempts {
+                        std::thread::sleep(Duration::from_millis(50));
+                        continue;
+                    }
+
+                    return if retry_io {
+                        Err(unavailable_from_io_error(err))
+                    } else {
+                        Err(err)
+                    };
+                },
+                Err(err) => return Err(err),
+            }
+        }
+
+        Err(SessionBridgeUnavailableError {
+            message: String::from("bridge bootstrap retry loop exhausted"),
+        }
+        .into())
+    }
+
     fn inspect_dynamic(
         &self,
         source: &StatusFileSessionBridgeSource,
@@ -861,6 +949,55 @@ impl SessionBridge {
         }
 
         Ok(payload)
+    }
+
+    fn bootstrap_with_connection(
+        &self,
+        connection: &SessionBridgeConnection,
+    ) -> anyhow::Result<SessionBootstrap> {
+        let total_start = std::time::Instant::now();
+        let mut stream = TcpStream::connect((connection.host.as_str(), connection.port))?;
+        stream.set_read_timeout(Some(self.timeout))?;
+        stream.set_write_timeout(Some(self.timeout))?;
+
+        let request = BootstrapRequest {
+            request_id: format!("ark-{}", Uuid::new_v4()),
+            auth_token: connection.auth_token.clone(),
+            command: String::from("bootstrap"),
+            session: self.session.clone(),
+        };
+
+        let payload = serde_json::to_vec(&request)?;
+        stream.write_all(payload.as_slice())?;
+        stream.write_all(b"\n")?;
+        stream.shutdown(Shutdown::Write)?;
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+
+        let payload: BootstrapResponse = serde_json::from_str(response.as_str())?;
+        if let Some(error) = payload.error.as_ref() {
+            return Err(SessionBridgeResponseError {
+                code: error.code.clone(),
+                message: error.message.clone(),
+            }
+            .into());
+        }
+
+        Ok(SessionBootstrap {
+            search_path_symbols: payload.search_path_symbols,
+            installed_packages: Vec::new(),
+            library_paths: payload
+                .library_paths
+                .into_iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>(),
+            timings: SessionBootstrapTimings {
+                total_ms: duration_ms(total_start.elapsed()),
+                search_path_symbols_ms: 0,
+                library_paths_ms: 0,
+            },
+        })
     }
 
     fn completion_payload(&self, request: &CompletionRequest) -> anyhow::Result<InspectResponse> {
@@ -1044,6 +1181,10 @@ pub(crate) fn is_bridge_unavailable(err: &anyhow::Error) -> bool {
 
 fn should_retry_dynamic_request(err: &anyhow::Error) -> bool {
     is_ipc_auth_error(err) || err.downcast_ref::<std::io::Error>().is_some()
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn unavailable_from_io_error(err: anyhow::Error) -> anyhow::Error {
@@ -1295,7 +1436,23 @@ fn completion_request_from_extractor(
         return Ok(None);
     };
 
-    let Some(operator) = extract_operator_node(node, parent) else {
+    let operator = extract_operator_node(node, parent).or_else(|| {
+        if !matches!(parent.node_type(), NodeType::ExtractOperator(_)) {
+            return None;
+        }
+
+        if parent.child_by_field_name("lhs") != Some(node) {
+            return None;
+        }
+
+        if parent.end_position() != context.point {
+            return None;
+        }
+
+        Some(parent)
+    });
+
+    let Some(operator) = operator else {
         return Ok(None);
     };
 
@@ -2608,6 +2765,36 @@ mod tests {
         assert_eq!(request.expr, "dt_ark");
         assert_eq!(request.prefix, Some(String::from("as.char")));
         assert_eq!(request.subset_kind, Some(SubsetCompletionKind::Subset));
+    }
+
+    #[test]
+    fn test_extractor_completion_request_supports_empty_rhs_at_point() {
+        let (text, point) = point_from_cursor("mtcars$@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("$")));
+
+        let request = completion_request_from_extractor(&context)
+            .unwrap()
+            .expect("expected extractor completion request");
+
+        assert_eq!(request.expr, "mtcars");
+        assert_eq!(request.accessor, Some(String::from("$")));
+        assert_eq!(request.prefix, None);
+    }
+
+    #[test]
+    fn test_extractor_completion_request_supports_prefixed_rhs() {
+        let (text, point) = point_from_cursor("mtcars$mp@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("$")));
+
+        let request = completion_request_from_extractor(&context)
+            .unwrap()
+            .expect("expected extractor completion request");
+
+        assert_eq!(request.expr, "mtcars");
+        assert_eq!(request.accessor, Some(String::from("$")));
+        assert_eq!(request.prefix, Some(String::from("mp")));
     }
 
     #[test]

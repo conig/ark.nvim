@@ -97,6 +97,29 @@
   )
 }
 
+.rscope_bootstrap_payload <- function(session) {
+  tryCatch({
+    envs <- lapply(search(), as.environment)
+    search_path_symbols <- unique(unlist(lapply(envs, ls, all.names = TRUE), use.names = FALSE))
+    library_paths <- base::.libPaths()
+
+    .emit_json(list(
+      schema_version = .rscope_schema_version(),
+      status = "ok",
+      session = session,
+      search_path_symbols = as.character(search_path_symbols),
+      library_paths = as.character(library_paths)
+    ))
+  }, error = function(e) {
+    .emit_json(.new_error_payload(
+      "E_IPC_BOOTSTRAP",
+      conditionMessage(e),
+      "ipc_bootstrap",
+      session
+    ))
+  })
+}
+
 .rscope_request_meta_error <- function(code, message, stage, session) {
   .emit_json(.new_error_payload(code, message, stage, session))
 }
@@ -141,6 +164,10 @@
 
   if (identical(req$command %||% "", "ping")) {
     return(.emit_json(.rscope_ping_payload(session)))
+  }
+
+  if (identical(req$command %||% "", "bootstrap")) {
+    return(.rscope_bootstrap_payload(session))
   }
 
   expr <- req$expr %||% ""

@@ -99,6 +99,9 @@ pub(crate) fn refresh_detached_session_inputs(state: &mut WorldState, force: boo
 
     state.detached_session_bootstrap_attempted = true;
     state.detached_session_status.last_bootstrap_attempt_ms = Some(now);
+    state.detached_session_status.last_bootstrap_duration_ms = None;
+    state.detached_session_status.last_bootstrap_search_path_symbols_ms = None;
+    state.detached_session_status.last_bootstrap_library_paths_ms = None;
 
     let needs_bootstrap = force || bootstrap_incomplete;
     if !needs_bootstrap {
@@ -124,12 +127,20 @@ pub(crate) fn refresh_detached_session_inputs(state: &mut WorldState, force: boo
                 search_path_symbols = bootstrap.search_path_symbols.len(),
                 installed_packages = bootstrap.installed_packages.len(),
                 library_paths = bootstrap.library_paths.len(),
+                bootstrap_total_ms = bootstrap.timings.total_ms,
+                bootstrap_search_path_symbols_ms = bootstrap.timings.search_path_symbols_ms,
+                bootstrap_library_paths_ms = bootstrap.timings.library_paths_ms,
                 "Rehydrated detached session inputs"
             );
             state.console_scopes = vec![bootstrap.search_path_symbols];
             state.installed_packages = bootstrap.installed_packages;
             state.library = Library::new(bootstrap.library_paths);
             state.detached_session_status.last_bootstrap_success_ms = Some(now_ms());
+            state.detached_session_status.last_bootstrap_duration_ms = Some(bootstrap.timings.total_ms);
+            state.detached_session_status.last_bootstrap_search_path_symbols_ms =
+                Some(bootstrap.timings.search_path_symbols_ms);
+            state.detached_session_status.last_bootstrap_library_paths_ms =
+                Some(bootstrap.timings.library_paths_ms);
             state.detached_session_status.last_bootstrap_error.clear();
         },
         Err(err) => {
@@ -678,6 +689,10 @@ mod tests {
                     auth_token
                 );
 
+                let command = payload
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
                 let expr = payload
                     .get("expr")
                     .and_then(serde_json::Value::as_str)
@@ -685,8 +700,8 @@ mod tests {
 
                 let response = match expected {
                     "search_path" => {
-                        assert!(expr.contains("lapply(search()"));
-                        r#"{"members":[{"name_raw":"library"},{"name_raw":"mtcars"}]}"#
+                        assert_eq!(command, "bootstrap");
+                        r#"{"status":"ok","search_path_symbols":["library","mtcars"],"library_paths":["/tmp/ark-test-library"]}"#
                     },
                     "installed_packages" => {
                         assert!(expr.contains(".packages(all.available = TRUE)"));
@@ -716,8 +731,13 @@ mod tests {
             .port();
 
         thread::spawn(move || {
-            while let Ok((_stream, _)) = listener.accept() {
+            while let Ok((mut stream, _)) = listener.accept() {
                 count.fetch_add(1, Ordering::SeqCst);
+                let mut request = String::new();
+                let _ = stream.read_to_string(&mut request);
+                let _ = stream.write_all(
+                    br#"{"status":"ok","search_path_symbols":["library"],"library_paths":["/tmp/ark-test-library"]}"#,
+                );
             }
         });
 
@@ -761,7 +781,7 @@ mod tests {
         );
         assert_eq!(
             state.installed_packages,
-            vec![String::from("ggplot2"), String::from("utils")]
+            Vec::<String>::new()
         );
         assert_eq!(state.library.library_paths.len(), 1);
         assert_eq!(
@@ -806,7 +826,7 @@ mod tests {
 
         assert_eq!(
             bridge_hits.load(Ordering::SeqCst),
-            4,
+            1,
             "non-forced detached refresh should only run one bridge probe cycle"
         );
     }

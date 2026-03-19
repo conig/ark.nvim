@@ -88,6 +88,9 @@ pub(crate) struct DetachedSessionStatus {
     pub last_session_update_repl_ready: bool,
     pub last_bootstrap_attempt_ms: Option<u64>,
     pub last_bootstrap_success_ms: Option<u64>,
+    pub last_bootstrap_duration_ms: Option<u64>,
+    pub last_bootstrap_search_path_symbols_ms: Option<u64>,
+    pub last_bootstrap_library_paths_ms: Option<u64>,
     pub last_bootstrap_error: String,
 }
 
