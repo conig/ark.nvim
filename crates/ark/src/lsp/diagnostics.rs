@@ -1203,6 +1203,33 @@ foo
     }
 
     #[test]
+    fn test_search_path_symbol_after_unmatched_call_delimiter() {
+        r_task(|| {
+            let text = "\
+library(ggpl
+mtcars$mp";
+            let document = Document::new(text, None);
+            let state = WorldState {
+                console_scopes: vec![vec![String::from("library"), String::from("mtcars")]],
+                ..Default::default()
+            };
+
+            let diagnostics = generate_diagnostics(document, state);
+            let messages: Vec<String> = diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.clone())
+                .collect();
+
+            assert!(
+                !messages
+                    .iter()
+                    .any(|message| message.contains("No symbol named 'mtcars' in scope.")),
+                "unexpected diagnostics: {messages:?}"
+            );
+        })
+    }
+
+    #[test]
     fn test_missing_namespace_rhs() {
         r_task(|| {
             let text = "base::";

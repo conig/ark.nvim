@@ -204,8 +204,8 @@ fn collect_symbols(
             collect_if_statement(ctx, node, doc, symbols)?;
         },
 
-        NodeType::BinaryOperator(BinaryOperatorType::LeftAssignment) |
-        NodeType::BinaryOperator(BinaryOperatorType::EqualsAssignment) => {
+        NodeType::BinaryOperator(BinaryOperatorType::LeftAssignment)
+        | NodeType::BinaryOperator(BinaryOperatorType::EqualsAssignment) => {
             collect_assignment(ctx, node, doc, symbols)?;
         },
 
@@ -611,8 +611,8 @@ fn collect_assignment(
     doc: &Document,
     symbols: &mut Vec<DocumentSymbol>,
 ) -> anyhow::Result<()> {
-    let (NodeType::BinaryOperator(BinaryOperatorType::LeftAssignment) |
-    NodeType::BinaryOperator(BinaryOperatorType::EqualsAssignment)) = node.node_type()
+    let (NodeType::BinaryOperator(BinaryOperatorType::LeftAssignment)
+    | NodeType::BinaryOperator(BinaryOperatorType::EqualsAssignment)) = node.node_type()
     else {
         return Ok(());
     };
@@ -859,11 +859,10 @@ mod tests {
                 character: 10,
             },
         };
-        assert_eq!(test_symbol("# foo ----"), vec![new_symbol(
-            String::from("foo"),
-            SymbolKind::STRING,
-            range
-        )]);
+        assert_eq!(
+            test_symbol("# foo ----"),
+            vec![new_symbol(String::from("foo"), SymbolKind::STRING, range)]
+        );
     }
 
     #[test]
@@ -878,11 +877,10 @@ mod tests {
                 character: 8,
             },
         };
-        assert_eq!(test_symbol("foo <- 1"), vec![new_symbol(
-            String::from("foo"),
-            SymbolKind::VARIABLE,
-            range,
-        )]);
+        assert_eq!(
+            test_symbol("foo <- 1"),
+            vec![new_symbol(String::from("foo"), SymbolKind::VARIABLE, range,)]
+        );
     }
 
     #[test]

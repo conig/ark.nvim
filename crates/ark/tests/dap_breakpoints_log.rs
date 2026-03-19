@@ -70,10 +70,10 @@ foo()
 ",
     );
 
-    let breakpoints = dap.set_log_breakpoints(&file.path, &[(
-        4,
-        "x is {x}, label is {label}, sum is {x + 1}",
-    )]);
+    let breakpoints = dap.set_log_breakpoints(
+        &file.path,
+        &[(4, "x is {x}, label is {label}, sum is {x + 1}")],
+    );
     assert_eq!(breakpoints.len(), 1);
 
     frontend.send_execute_request(
@@ -239,13 +239,16 @@ fn test_dap_log_breakpoint_with_condition() {
 ",
     );
 
-    let breakpoints = dap.set_source_breakpoints(&file.path, vec![SourceBreakpoint {
-        line: 4,
-        column: None,
-        condition: Some("i %% 2 == 0".to_string()),
-        hit_condition: None,
-        log_message: Some("i={i}".to_string()),
-    }]);
+    let breakpoints = dap.set_source_breakpoints(
+        &file.path,
+        vec![SourceBreakpoint {
+            line: 4,
+            column: None,
+            condition: Some("i %% 2 == 0".to_string()),
+            hit_condition: None,
+            log_message: Some("i={i}".to_string()),
+        }],
+    );
     assert_eq!(breakpoints.len(), 1);
 
     frontend.send_execute_request(

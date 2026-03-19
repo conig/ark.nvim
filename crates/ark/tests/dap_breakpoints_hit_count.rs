@@ -249,13 +249,16 @@ foo()
 ",
     );
 
-    let breakpoints = dap.set_source_breakpoints(&file.path, vec![SourceBreakpoint {
-        line: 4,
-        column: None,
-        condition: Some("i %% 2 == 0".to_string()),
-        hit_condition: Some("2".to_string()),
-        log_message: None,
-    }]);
+    let breakpoints = dap.set_source_breakpoints(
+        &file.path,
+        vec![SourceBreakpoint {
+            line: 4,
+            column: None,
+            condition: Some("i %% 2 == 0".to_string()),
+            hit_condition: Some("2".to_string()),
+            log_message: None,
+        }],
+    );
     assert_eq!(breakpoints.len(), 1);
     let bp_id = breakpoints[0].id;
 
@@ -306,13 +309,16 @@ foo()
 ",
     );
 
-    let breakpoints = dap.set_source_breakpoints(&file.path, vec![SourceBreakpoint {
-        line: 4,
-        column: None,
-        condition: Some("i == 3".to_string()),
-        hit_condition: Some("2".to_string()),
-        log_message: None,
-    }]);
+    let breakpoints = dap.set_source_breakpoints(
+        &file.path,
+        vec![SourceBreakpoint {
+            line: 4,
+            column: None,
+            condition: Some("i == 3".to_string()),
+            hit_condition: Some("2".to_string()),
+            log_message: None,
+        }],
+    );
     assert_eq!(breakpoints.len(), 1);
     let bp_id = breakpoints[0].id;
 
@@ -357,13 +363,16 @@ fn test_dap_hit_count_with_log_message() {
     );
 
     // Log breakpoint with hit count 2: log on iterations 2 and 3 only
-    let breakpoints = dap.set_source_breakpoints(&file.path, vec![SourceBreakpoint {
-        line: 4,
-        column: None,
-        condition: None,
-        hit_condition: Some("2".to_string()),
-        log_message: Some("iteration {i}".to_string()),
-    }]);
+    let breakpoints = dap.set_source_breakpoints(
+        &file.path,
+        vec![SourceBreakpoint {
+            line: 4,
+            column: None,
+            condition: None,
+            hit_condition: Some("2".to_string()),
+            log_message: Some("iteration {i}".to_string()),
+        }],
+    );
     assert_eq!(breakpoints.len(), 1);
     let bp_id = breakpoints[0].id;
 

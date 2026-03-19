@@ -213,10 +213,10 @@ fn format_value_for_r(display_type: &ColumnDisplayType, value: &str) -> String {
         ColumnDisplayType::String => escape_character_constant(value),
 
         // For date and datetime types, wrap in quotes
-        ColumnDisplayType::Date |
-        ColumnDisplayType::Datetime |
-        ColumnDisplayType::Time |
-        ColumnDisplayType::Interval => escape_character_constant(value),
+        ColumnDisplayType::Date
+        | ColumnDisplayType::Datetime
+        | ColumnDisplayType::Time
+        | ColumnDisplayType::Interval => escape_character_constant(value),
 
         // For booleans, return as R logical constants
         ColumnDisplayType::Boolean => {
@@ -533,11 +533,14 @@ mod tests {
         let builder = PipeBuilder::new("data".to_string());
         let result = builder.build(vec!["library(dplyr)".to_string()]);
 
-        assert_eq!(result.converted_code, vec![
-            "library(dplyr)".to_string(),
-            "".to_string(),
-            "data".to_string()
-        ]);
+        assert_eq!(
+            result.converted_code,
+            vec![
+                "library(dplyr)".to_string(),
+                "".to_string(),
+                "data".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -548,11 +551,14 @@ mod tests {
 
         let result = builder.build(vec!["library(dplyr)".to_string()]);
 
-        assert_eq!(result.converted_code, vec![
-            "library(dplyr)".to_string(),
-            "".to_string(),
-            "data |>\n  filter(x > 1) |>\n  arrange(y)".to_string()
-        ]);
+        assert_eq!(
+            result.converted_code,
+            vec![
+                "library(dplyr)".to_string(),
+                "".to_string(),
+                "data |>\n  filter(x > 1) |>\n  arrange(y)".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -777,11 +783,14 @@ mod tests {
 
         let result = convert_to_code(params, Some("my_data"), &[]);
 
-        assert_eq!(result.converted_code, vec![
-            "library(dplyr)".to_string(),
-            "".to_string(),
-            "my_data |>\n  filter(\n    price > 100\n  )".to_string(),
-        ]);
+        assert_eq!(
+            result.converted_code,
+            vec![
+                "library(dplyr)".to_string(),
+                "".to_string(),
+                "my_data |>\n  filter(\n    price > 100\n  )".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -802,11 +811,14 @@ mod tests {
 
         let result = convert_to_code(params, Some("my_data"), &resolved_sorts);
 
-        assert_eq!(result.converted_code, vec![
-            "library(dplyr)".to_string(),
-            "".to_string(),
-            "my_data |>\n  arrange(desc(date))".to_string(),
-        ]);
+        assert_eq!(
+            result.converted_code,
+            vec![
+                "library(dplyr)".to_string(),
+                "".to_string(),
+                "my_data |>\n  arrange(desc(date))".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -866,11 +878,14 @@ mod tests {
 
         let result = convert_to_code(params, None, &[]);
 
-        assert_eq!(result.converted_code, vec![
-            "library(dplyr)".to_string(),
-            "".to_string(),
-            "dat".to_string(),
-        ]);
+        assert_eq!(
+            result.converted_code,
+            vec![
+                "library(dplyr)".to_string(),
+                "".to_string(),
+                "dat".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -991,12 +1006,15 @@ mod tests {
 
         let result = convert_to_code(params, Some("my_data"), &resolved_sorts);
 
-        assert_eq!(result.converted_code, vec![
+        assert_eq!(
+            result.converted_code,
+            vec![
             "library(dplyr)".to_string(),
             "".to_string(),
             "my_data |>\n  filter(\n    `2025 score` > 80\n  ) |>\n  arrange(desc(`student name`))"
                 .to_string(),
-        ]);
+        ]
+        );
     }
 }
 

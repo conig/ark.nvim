@@ -135,13 +135,16 @@ Nelder_Mead             Nelder-Mead Optimization of Parameters,
                         Possibly (Box) Constrained
 ";
         let idx = Index::parse(input);
-        assert_eq!(idx.names, vec![
-            ".prt.methTit",
-            "Arabidopsis",
-            "Dyestuff",
-            "GHrule",
-            "Nelder_Mead"
-        ]);
+        assert_eq!(
+            idx.names,
+            vec![
+                ".prt.methTit",
+                "Arabidopsis",
+                "Dyestuff",
+                "GHrule",
+                "Nelder_Mead"
+            ]
+        );
     }
 
     #[test]

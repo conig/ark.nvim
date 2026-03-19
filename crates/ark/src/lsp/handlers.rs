@@ -7,6 +7,7 @@
 
 use anyhow::anyhow;
 use serde_json::Value;
+use std::path::PathBuf;
 use stdext::result::ResultExt;
 use stdext::unwrap;
 use tower_lsp::lsp_types::CodeActionParams;
@@ -65,6 +66,8 @@ use crate::lsp::main_loop::LspState;
 use crate::lsp::references::find_references;
 use crate::lsp::selection_range::convert_selection_range_from_tree_sitter_to_lsp;
 use crate::lsp::selection_range::selection_range;
+use crate::lsp::session_bridge::is_bridge_unavailable;
+use crate::lsp::session_bridge::is_ipc_auth_error;
 use crate::lsp::signature_help::r_signature_help;
 use crate::lsp::state::WorldState;
 use crate::lsp::statement_range::statement_range;
@@ -74,6 +77,7 @@ use crate::lsp::symbols;
 use crate::r_task;
 
 pub static ARK_VDOC_REQUEST: &str = "ark/internal/virtualDocument";
+pub static ARK_SESSION_UPDATE_NOTIFICATION: &str = "ark/updateSession";
 
 #[derive(Debug, Eq, PartialEq, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +86,33 @@ pub(crate) struct VirtualDocumentParams {
 }
 
 pub(crate) type VirtualDocumentResponse = String;
+
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionUpdateParams {
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub status_file: Option<PathBuf>,
+    #[serde(default)]
+    pub tmux_socket: String,
+    #[serde(default)]
+    pub tmux_session: String,
+    #[serde(default)]
+    pub tmux_pane: String,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub repl_ready: bool,
+}
+
+fn log_detached_bridge_auth_fallback(feature: &str, err: &anyhow::Error) {
+    log::warn!(
+        "Detached {feature} hit stale bridge auth; falling back until ark_lsp refreshes: {err}"
+    );
+}
 
 fn runtime_required<T>(state: &WorldState) -> LspResult<Option<T>> {
     if state.has_attached_runtime() {
@@ -224,9 +255,19 @@ pub(crate) fn handle_completion(
         }
 
         if let Some(session_bridge) = state.session_bridge.as_ref() {
-            let detached = session_bridge
-                .completion_items(&context)
-                .map_err(LspError::Anyhow)?;
+            let detached = match session_bridge.completion_items(&context) {
+                Ok(detached) => detached,
+                Err(err) => {
+                    if is_bridge_unavailable(&err) {
+                        None
+                    } else if is_ipc_auth_error(&err) {
+                        log_detached_bridge_auth_fallback("completion", &err);
+                        None
+                    } else {
+                        return Err(LspError::Anyhow(err));
+                    }
+                },
+            };
 
             if detached.is_none() {
                 if let Some(completions) = provide_detached_post_bridge_completions(&context, state)
@@ -267,9 +308,20 @@ pub(crate) fn handle_completion_resolve(
 ) -> LspResult<CompletionItem> {
     if !state.has_attached_runtime() {
         if let Some(session_bridge) = state.session_bridge.as_ref() {
-            return session_bridge
-                .resolve_completion_item(item)
-                .map_err(LspError::Anyhow);
+            let unresolved = item.clone();
+            return match session_bridge.resolve_completion_item(item) {
+                Ok(item) => Ok(item),
+                Err(err) => {
+                    if is_bridge_unavailable(&err) {
+                        Ok(unresolved)
+                    } else if is_ipc_auth_error(&err) {
+                        log_detached_bridge_auth_fallback("completion resolve", &err);
+                        Ok(unresolved)
+                    } else {
+                        Err(LspError::Anyhow(err))
+                    }
+                },
+            };
         }
         return Ok(item);
     }
@@ -303,7 +355,19 @@ pub(crate) fn handle_hover(params: HoverParams, state: &WorldState) -> LspResult
 
     if !state.has_attached_runtime() {
         if let Some(session_bridge) = state.session_bridge.as_ref() {
-            return session_bridge.hover(&context).map_err(LspError::Anyhow);
+            return match session_bridge.hover(&context) {
+                Ok(result) => Ok(result),
+                Err(err) => {
+                    if is_bridge_unavailable(&err) {
+                        Ok(None)
+                    } else if is_ipc_auth_error(&err) {
+                        log_detached_bridge_auth_fallback("hover", &err);
+                        Ok(None)
+                    } else {
+                        Err(LspError::Anyhow(err))
+                    }
+                },
+            };
         }
         return runtime_required(state);
     }
@@ -344,9 +408,19 @@ pub(crate) fn handle_signature_help(
 
     if !state.has_attached_runtime() {
         if let Some(session_bridge) = state.session_bridge.as_ref() {
-            return session_bridge
-                .signature_help(&context)
-                .map_err(LspError::Anyhow);
+            return match session_bridge.signature_help(&context) {
+                Ok(result) => Ok(result),
+                Err(err) => {
+                    if is_bridge_unavailable(&err) {
+                        Ok(None)
+                    } else if is_ipc_auth_error(&err) {
+                        log_detached_bridge_auth_fallback("signature help", &err);
+                        Ok(None)
+                    } else {
+                        Err(LspError::Anyhow(err))
+                    }
+                },
+            };
         }
         return runtime_required(state);
     }
@@ -376,6 +450,81 @@ pub(crate) fn handle_goto_definition(
     let uri = &params.text_document_position_params.text_document.uri;
     let document = state.get_document(uri)?;
     Ok(goto_definition(document, params).log_err().flatten())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::thread;
+    use tower_lsp::lsp_types::Position;
+    use tower_lsp::lsp_types::TextDocumentIdentifier;
+    use tower_lsp::lsp_types::TextDocumentPositionParams;
+    use tower_lsp::lsp_types::WorkDoneProgressParams;
+    use url::Url;
+
+    use crate::lsp::document::Document;
+    use crate::lsp::session_bridge::SessionBridge;
+    use crate::lsp::session_bridge::SessionBridgeConfig;
+    use crate::lsp::state::RuntimeMode;
+
+    fn auth_error_bridge() -> SessionBridge {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("expected bridge request");
+            let mut request = String::new();
+            stream
+                .read_to_string(&mut request)
+                .expect("expected bridge request payload");
+            assert!(!request.is_empty(), "expected bridge request body");
+            stream
+                .write_all(br#"{"error":{"code":"E_IPC_AUTH","message":"invalid IPC auth token"}}"#)
+                .expect("expected bridge error response");
+        });
+
+        SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port,
+            auth_token: String::from("stale-token"),
+            status_file: None,
+            tmux_socket: String::from("/tmp/ark-test.sock"),
+            tmux_session: String::from("ark-test"),
+            tmux_pane: String::from("%1"),
+            timeout_ms: 1000,
+        })
+        .expect("expected session bridge")
+    }
+
+    #[test]
+    fn test_detached_hover_auth_mismatch_degrades_to_none() {
+        let uri = Url::parse("file:///tmp/ark_hover_auth_fallback.R").expect("expected uri");
+        let mut state = WorldState::default();
+        state.runtime_mode = RuntimeMode::Detached;
+        state.session_bridge = Some(auth_error_bridge());
+        state
+            .documents
+            .insert(uri.clone(), Document::new("mean", Some(1)));
+
+        let result = handle_hover(
+            HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position::new(0, 1),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            &state,
+        );
+
+        assert!(result.expect("expected detached hover fallback").is_none());
+    }
 }
 
 #[tracing::instrument(level = "info", skip_all)]

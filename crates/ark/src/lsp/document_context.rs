@@ -86,8 +86,8 @@ impl<'a> DocumentContext<'a> {
         // the 'Argument' node (with text "a = ").
         // In this case, `closest_node` is the anonymous "=" node and is a
         // better candidate for completions.
-        let node = if node.node_type() == NodeType::Arguments &&
-            closest_node.node_type() == NodeType::Anonymous(String::from("="))
+        let node = if node.node_type() == NodeType::Arguments
+            && closest_node.node_type() == NodeType::Anonymous(String::from("="))
         {
             closest_node
         } else {

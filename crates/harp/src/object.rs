@@ -778,9 +778,10 @@ impl TryFrom<&RObject> for Option<String> {
                 },
                 SYMSXP => PRINTNAME(value.sexp),
                 _ => {
-                    return Err(Error::UnexpectedType(r_typeof(value.sexp), vec![
-                        CHARSXP, STRSXP, SYMSXP,
-                    ]))
+                    return Err(Error::UnexpectedType(
+                        r_typeof(value.sexp),
+                        vec![CHARSXP, STRSXP, SYMSXP],
+                    ))
                 },
             };
 

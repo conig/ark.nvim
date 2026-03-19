@@ -415,8 +415,8 @@ impl<'a> AnnotationRewriter<'a> {
     /// Check if a breakpoint is available (not consumed, not invalid, and not
     /// disabled)
     fn is_available(&self, bp: &Breakpoint) -> bool {
-        !self.consumed.contains(&bp.id) &&
-            !matches!(
+        !self.consumed.contains(&bp.id)
+            && !matches!(
                 bp.state,
                 BreakpointState::Invalid(_) | BreakpointState::Disabled
             )
@@ -479,8 +479,8 @@ impl<'a> AnnotationRewriter<'a> {
             !matches!(
                 bp.state,
                 BreakpointState::Invalid(_) | BreakpointState::Disabled
-            ) && bp_line >= start &&
-                bp_line < end
+            ) && bp_line >= start
+                && bp_line < end
         })
     }
 }
@@ -761,8 +761,8 @@ impl AnnotationRewriter<'_> {
         reason: InvalidReason,
     ) {
         for bp in self.breakpoints.iter_mut() {
-            let is_available = !self.consumed.contains(&bp.id) &&
-                !matches!(
+            let is_available = !self.consumed.contains(&bp.id)
+                && !matches!(
                     bp.state,
                     BreakpointState::Invalid(_) | BreakpointState::Disabled
                 );

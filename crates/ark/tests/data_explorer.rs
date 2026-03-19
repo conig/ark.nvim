@@ -1013,10 +1013,10 @@ fn test_null_counts() {
     };
 
     // Check null count (should be 3)
-    let req =
-        RequestBuilder::get_column_profiles(String::from("id"), vec![ProfileBuilder::null_count(
-            0,
-        )]);
+    let req = RequestBuilder::get_column_profiles(
+        String::from("id"),
+        vec![ProfileBuilder::null_count(0)],
+    );
     expect_column_profile_results(&setup, req, |data| {
         assert_eq!(data.len(), 1);
         assert_eq!(data[0].null_count, Some(3));
@@ -1027,10 +1027,10 @@ fn test_null_counts() {
     TestAssertions::assert_row_filters_applied(&setup, filters, 6, Some(false));
 
     // Null count should now be 0 (after filtering out nulls)
-    let req =
-        RequestBuilder::get_column_profiles(String::from("id2"), vec![ProfileBuilder::null_count(
-            0,
-        )]);
+    let req = RequestBuilder::get_column_profiles(
+        String::from("id2"),
+        vec![ProfileBuilder::null_count(0)],
+    );
     expect_column_profile_results(&setup, req, |data| {
         assert_eq!(data.len(), 1);
         assert_eq!(data[0].null_count, Some(0));
@@ -1064,21 +1064,27 @@ fn test_summary_stats() {
         // First column: numeric stats
         assert!(data[0].summary_stats.is_some());
         let number_stats = data[0].summary_stats.clone().unwrap().number_stats.unwrap();
-        assert_eq!(number_stats, SummaryStatsNumber {
-            min_value: Some(String::from("1.00")),
-            max_value: Some(String::from("3.00")),
-            mean: Some(String::from("2.00")),
-            median: Some(String::from("2.00")),
-            stdev: Some(String::from("1.00")),
-        });
+        assert_eq!(
+            number_stats,
+            SummaryStatsNumber {
+                min_value: Some(String::from("1.00")),
+                max_value: Some(String::from("3.00")),
+                mean: Some(String::from("2.00")),
+                median: Some(String::from("2.00")),
+                stdev: Some(String::from("1.00")),
+            }
+        );
 
         // Second column: character stats
         assert!(data[1].summary_stats.is_some());
         let string_stats = data[1].summary_stats.clone().unwrap().string_stats.unwrap();
-        assert_eq!(string_stats, SummaryStatsString {
-            num_empty: 1,
-            num_unique: 3, // NA's are counted as unique values
-        });
+        assert_eq!(
+            string_stats,
+            SummaryStatsString {
+                num_empty: 1,
+                num_unique: 3, // NA's are counted as unique values
+            }
+        );
 
         // Third column: boolean stats
         assert!(data[2].summary_stats.is_some());
@@ -1088,10 +1094,13 @@ fn test_summary_stats() {
             .unwrap()
             .boolean_stats
             .unwrap();
-        assert_eq!(boolean_stats, SummaryStatsBoolean {
-            true_count: 2,
-            false_count: 1,
-        });
+        assert_eq!(
+            boolean_stats,
+            SummaryStatsBoolean {
+                true_count: 2,
+                false_count: 1,
+            }
+        );
     });
 }
 
@@ -1659,11 +1668,14 @@ fn test_update_data_filters_reapplied() {
     };
 
     // GetData should also display 2 rows only
-    expect_get_data_rows(3, vec![
-        ColumnValue::FormattedValue("a".to_string()),
-        ColumnValue::FormattedValue("b".to_string()),
-        ColumnValue::FormattedValue("c".to_string()),
-    ]);
+    expect_get_data_rows(
+        3,
+        vec![
+            ColumnValue::FormattedValue("a".to_string()),
+            ColumnValue::FormattedValue("b".to_string()),
+            ColumnValue::FormattedValue("c".to_string()),
+        ],
+    );
 
     // Now make the filter invalid because of the data type has changed
     r_task(|| {
@@ -1686,10 +1698,13 @@ fn test_update_data_filters_reapplied() {
 
     // We now expect 2 rows when getting data
     // It should also be sorted differently
-    expect_get_data_rows(2, vec![
-        ColumnValue::FormattedValue("b".to_string()),
-        ColumnValue::FormattedValue("a".to_string()),
-    ]);
+    expect_get_data_rows(
+        2,
+        vec![
+            ColumnValue::FormattedValue("b".to_string()),
+            ColumnValue::FormattedValue("a".to_string()),
+        ],
+    );
 }
 
 /// Helper function to test set membership filters for both inclusive and exclusive modes
@@ -1929,16 +1944,19 @@ fn test_histogram() {
 
     expect_column_profile_results(&setup, req, |profiles| {
         let histogram = profiles[0].small_histogram.clone().unwrap();
-        assert_eq!(histogram, ColumnHistogram {
-            bin_edges: r_task(|| format_string(
-                harp::parse_eval_global("seq(1, 10, length.out=11)")
-                    .unwrap()
-                    .sexp,
-                &default_format_options()
-            )),
-            bin_counts: vec![10, 9, 8, 7, 6, 5, 4, 3, 2, 1], // Pretty bind edges unite the first two intervals
-            quantiles: vec![],
-        });
+        assert_eq!(
+            histogram,
+            ColumnHistogram {
+                bin_edges: r_task(|| format_string(
+                    harp::parse_eval_global("seq(1, 10, length.out=11)")
+                        .unwrap()
+                        .sexp,
+                    &default_format_options()
+                )),
+                bin_counts: vec![10, 9, 8, 7, 6, 5, 4, 3, 2, 1], // Pretty bind edges unite the first two intervals
+                quantiles: vec![],
+            }
+        );
     });
 }
 
@@ -1948,9 +1966,10 @@ fn test_histogram_single_bin_same_values() {
 
     let histogram_req =
         ProfileBuilder::small_histogram(0, ColumnHistogramParamsMethod::Fixed, 5, None);
-    let req = RequestBuilder::get_column_profiles("histogram_same_values".to_string(), vec![
-        histogram_req,
-    ]);
+    let req = RequestBuilder::get_column_profiles(
+        "histogram_same_values".to_string(),
+        vec![histogram_req],
+    );
 
     expect_column_profile_results(&setup, req, |profiles| {
         let histogram = profiles[0].small_histogram.clone().unwrap();
@@ -1981,14 +2000,17 @@ fn test_frequency_table() {
 
     expect_column_profile_results(&setup, req, |profiles| {
         let freq_table = profiles[0].small_frequency_table.clone().unwrap();
-        assert_eq!(freq_table, ColumnFrequencyTable {
-            values: format_column(
-                harp::parse_eval_global("letters[1:5]").unwrap().sexp,
-                &default_format_options()
-            ),
-            counts: vec![10, 9, 8, 7, 6],
-            other_count: Some(5 + 4 + 3 + 2 + 1)
-        });
+        assert_eq!(
+            freq_table,
+            ColumnFrequencyTable {
+                values: format_column(
+                    harp::parse_eval_global("letters[1:5]").unwrap().sexp,
+                    &default_format_options()
+                ),
+                counts: vec![10, 9, 8, 7, 6],
+                other_count: Some(5 + 4 + 3 + 2 + 1)
+            }
+        );
     });
 }
 
@@ -3031,10 +3053,10 @@ fn test_single_row_data_frame_column_profiles() {
 
     for method in histogram_methods {
         let histogram_req = ProfileBuilder::small_histogram(3, method.clone(), 10, None); // single_int column
-        let req =
-            RequestBuilder::get_column_profiles(format!("single_histogram_{:?}", method), vec![
-                histogram_req,
-            ]);
+        let req = RequestBuilder::get_column_profiles(
+            format!("single_histogram_{:?}", method),
+            vec![histogram_req],
+        );
 
         expect_column_profile_results(&setup, req, |profiles| {
             let histogram = profiles[0].small_histogram.clone().unwrap();

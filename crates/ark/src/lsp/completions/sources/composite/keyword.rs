@@ -113,9 +113,12 @@ const KEYWORD_SNIPPETS: &[KeywordSnippet] = &[
 
 fn add_bare_keywords(completions: &mut Vec<CompletionItem>) {
     for keyword in BARE_KEYWORDS {
-        let item = completion_item(keyword, CompletionData::Keyword {
-            name: keyword.to_string(),
-        });
+        let item = completion_item(
+            keyword,
+            CompletionData::Keyword {
+                name: keyword.to_string(),
+            },
+        );
 
         let mut item = unwrap!(item, Err(err) => {
             log::error!("Failed to construct completion item for keyword '{keyword}' due to {err:?}.");
@@ -140,9 +143,12 @@ fn add_keyword_snippets(completions: &mut Vec<CompletionItem>) {
         label_details_description,
     } in KEYWORD_SNIPPETS
     {
-        let item = completion_item(label, CompletionData::Snippet {
-            text: snippet.to_string(),
-        });
+        let item = completion_item(
+            label,
+            CompletionData::Snippet {
+                text: snippet.to_string(),
+            },
+        );
 
         let mut item = match item {
             Ok(item) => item,

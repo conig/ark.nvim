@@ -1352,8 +1352,8 @@ impl Console {
                 // Evaluate first expression if there is one
                 if let Some(input) = self.pop_pending() {
                     Some(self.handle_pending_input(input, buf, buflen))
-                } else if self.debug_is_debugging &&
-                    !harp::options::get_option_bool("browserNLdisabled")
+                } else if self.debug_is_debugging
+                    && !harp::options::get_option_bool("browserNLdisabled")
                 {
                     // Empty input in the debugger counts as `n` unless
                     // `browserNLdisabled` is TRUE. This matches RStudio
@@ -1417,8 +1417,8 @@ impl Console {
                 // frame is the hidden handler that called `browser()`. Remap
                 // "step over" to "step out" so the user leaves the handler
                 // frame instead of stepping through internal code.
-                if sym == "n" &&
-                    matches!(
+                if sym == "n"
+                    && matches!(
                         self.debug_stopped_reason,
                         Some(DebugStoppedReason::Condition { .. } | DebugStoppedReason::Pause)
                     )

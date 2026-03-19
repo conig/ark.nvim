@@ -316,10 +316,13 @@ foo(5)
     );
 
     // Condition that produces a warning, a message, cat() output, then returns TRUE
-    let breakpoints = dap.set_conditional_breakpoints(&file.path, &[(
-        3,
-        "cat('n is', n, '\\n'); warning('heads up'); message('info'); n > 3",
-    )]);
+    let breakpoints = dap.set_conditional_breakpoints(
+        &file.path,
+        &[(
+            3,
+            "cat('n is', n, '\\n'); warning('heads up'); message('info'); n > 3",
+        )],
+    );
     assert_eq!(breakpoints.len(), 1);
 
     frontend.send_execute_request(
@@ -372,22 +375,25 @@ foo()
 ",
     );
 
-    let breakpoints = dap.set_source_breakpoints(&file.path, vec![
-        SourceBreakpoint {
-            line: 3,
-            column: None,
-            condition: Some("FALSE".to_string()),
-            hit_condition: None,
-            log_message: None,
-        },
-        SourceBreakpoint {
-            line: 4,
-            column: None,
-            condition: None,
-            hit_condition: None,
-            log_message: None,
-        },
-    ]);
+    let breakpoints = dap.set_source_breakpoints(
+        &file.path,
+        vec![
+            SourceBreakpoint {
+                line: 3,
+                column: None,
+                condition: Some("FALSE".to_string()),
+                hit_condition: None,
+                log_message: None,
+            },
+            SourceBreakpoint {
+                line: 4,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            },
+        ],
+    );
     assert_eq!(breakpoints.len(), 2);
 
     frontend.source_file_and_hit_breakpoint(&file);

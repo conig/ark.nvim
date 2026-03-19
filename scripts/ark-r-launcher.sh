@@ -147,6 +147,20 @@ local({
   .quiet_log <- .log_file_path()
   .quiet_con <- file(.quiet_log, open = "wt")
 
+  .log_line <- function(...) {
+    .parts <- unlist(list(...), use.names = FALSE)
+    .parts <- .parts[!vapply(.parts, is.null, logical(1))]
+    .msg <- paste(as.character(.parts), collapse = "")
+    cat(.msg, "\n", file = .quiet_con, sep = "")
+    flush(.quiet_con)
+    invisible(NULL)
+  }
+
+  .string_field <- function(x) {
+    if (is.null(x) || length(x) == 0L || is.na(x[[1]])) return("")
+    as.character(x[[1]])
+  }
+
   .status_file_path <- function() {
     if (!nzchar(.status_root) || !nzchar(.socket) || !nzchar(.session) || !nzchar(.pane)) {
       return("")
@@ -198,6 +212,16 @@ local({
       unlink(.tmp)
     }
     suppressWarnings(Sys.chmod(.path, mode = "600", use_umask = FALSE))
+
+    .log_line(
+      "[status] status=", .payload\$status,
+      " phase=", .string_field(.payload\$phase),
+      " port=", .string_field(.payload\$port),
+      " auth_token=", if (nzchar(.string_field(.payload\$auth_token))) "<set>" else "",
+      " repl_ready=", if (isTRUE(.payload\$repl_ready)) "true" else "false",
+      " error_code=", .string_field(.payload\$error_code),
+      " message=", .string_field(.payload\$message)
+    )
 
     invisible(NULL)
   }
@@ -538,6 +562,7 @@ local({
         port = as.integer(.svc\$port),
         auth_token = .auth_token
       ))
+      .log_line("[ready] ipc service started on port ", as.integer(.svc\$port))
       invisible(.svc)
     }
   }, error = function(e) {
@@ -553,6 +578,7 @@ local({
     if (is.null(.code) && grepl("00LOCK-rscope", .msg, fixed = TRUE)) {
       .code <- "E_INSTALL_LOCK"
     }
+    .log_line("[error] code=", .string_field(.code), " message=", .msg)
     .write_status("error", list(
       message = .msg,
       error_code = .code

@@ -374,24 +374,27 @@ fn test_plot_get_metadata_with_origin() {
     let origin_uri = "file:///path/to/analysis.R";
 
     // Send execute_request with a code_location
-    frontend.send_execute_request(code, ExecuteRequestOptions {
-        positron: Some(ExecuteRequestPositron {
-            code_location: Some(JupyterPositronLocation {
-                uri: origin_uri.to_string(),
-                range: JupyterPositronRange {
-                    start: JupyterPositronPosition {
-                        line: 5,
-                        character: 0,
+    frontend.send_execute_request(
+        code,
+        ExecuteRequestOptions {
+            positron: Some(ExecuteRequestPositron {
+                code_location: Some(JupyterPositronLocation {
+                    uri: origin_uri.to_string(),
+                    range: JupyterPositronRange {
+                        start: JupyterPositronPosition {
+                            line: 5,
+                            character: 0,
+                        },
+                        end: JupyterPositronPosition {
+                            line: 5,
+                            character: 10,
+                        },
                     },
-                    end: JupyterPositronPosition {
-                        line: 5,
-                        character: 10,
-                    },
-                },
+                }),
             }),
-        }),
-        ..ExecuteRequestOptions::default()
-    });
+            ..ExecuteRequestOptions::default()
+        },
+    );
     frontend.recv_iopub_busy();
 
     let input = frontend.recv_iopub_execute_input();

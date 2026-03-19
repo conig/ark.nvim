@@ -634,8 +634,8 @@ impl Dap {
         // breakpoint in an expression that hasn't been evaluated yet (or hasn't
         // finished).
         breakpoints.iter().any(|bp| {
-            bp.id == id &&
-                matches!(
+            bp.id == id
+                && matches!(
                     bp.state,
                     BreakpointState::Verified | BreakpointState::Unverified
                 )
@@ -782,10 +782,13 @@ mod tests {
 
         dap.breakpoints.insert(
             uri.clone(),
-            (hash, vec![
-                Breakpoint::new(1, 10, BreakpointState::Verified),
-                Breakpoint::new(2, 20, BreakpointState::Verified),
-            ]),
+            (
+                hash,
+                vec![
+                    Breakpoint::new(1, 10, BreakpointState::Verified),
+                    Breakpoint::new(2, 20, BreakpointState::Verified),
+                ],
+            ),
         );
 
         dap.did_change_document(&uri);
@@ -795,16 +798,22 @@ mod tests {
         let event1 = rx.try_recv().unwrap();
         let event2 = rx.try_recv().unwrap();
 
-        assert!(matches!(event1, DapBackendEvent::BreakpointState {
-            id: 1,
-            verified: false,
-            ..
-        }));
-        assert!(matches!(event2, DapBackendEvent::BreakpointState {
-            id: 2,
-            verified: false,
-            ..
-        }));
+        assert!(matches!(
+            event1,
+            DapBackendEvent::BreakpointState {
+                id: 1,
+                verified: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            event2,
+            DapBackendEvent::BreakpointState {
+                id: 2,
+                verified: false,
+                ..
+            }
+        ));
 
         assert!(rx.try_recv().is_err());
     }
@@ -831,19 +840,17 @@ mod tests {
 
         dap.breakpoints.insert(
             uri1.clone(),
-            (hash1, vec![Breakpoint::new(
-                1,
-                10,
-                BreakpointState::Verified,
-            )]),
+            (
+                hash1,
+                vec![Breakpoint::new(1, 10, BreakpointState::Verified)],
+            ),
         );
         dap.breakpoints.insert(
             uri2.clone(),
-            (hash2, vec![Breakpoint::new(
-                2,
-                20,
-                BreakpointState::Verified,
-            )]),
+            (
+                hash2,
+                vec![Breakpoint::new(2, 20, BreakpointState::Verified)],
+            ),
         );
 
         dap.did_change_document(&uri1);
@@ -852,10 +859,10 @@ mod tests {
         assert!(dap.breakpoints.contains_key(&uri2));
 
         let event = rx.try_recv().unwrap();
-        assert!(matches!(event, DapBackendEvent::BreakpointState {
-            id: 1,
-            ..
-        }));
+        assert!(matches!(
+            event,
+            DapBackendEvent::BreakpointState { id: 1, .. }
+        ));
         assert!(rx.try_recv().is_err());
     }
 
@@ -886,11 +893,10 @@ mod tests {
 
         dap.breakpoints.insert(
             uri.clone(),
-            (hash, vec![Breakpoint::new(
-                1,
-                10,
-                BreakpointState::Verified,
-            )]),
+            (
+                hash,
+                vec![Breakpoint::new(1, 10, BreakpointState::Verified)],
+            ),
         );
 
         // Should not panic even without `backend_events_tx`

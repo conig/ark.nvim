@@ -183,9 +183,10 @@ fn completion_item_from_roxygen(
 ) -> anyhow::Result<CompletionItem> {
     let label = name.to_string();
 
-    let mut item = completion_item(label.clone(), CompletionData::RoxygenTag {
-        tag: label.clone(),
-    })?;
+    let mut item = completion_item(
+        label.clone(),
+        CompletionData::RoxygenTag { tag: label.clone() },
+    )?;
 
     // TODO: What is the appropriate icon for us to use here?
     if let Some(template) = template {

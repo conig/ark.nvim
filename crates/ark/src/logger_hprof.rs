@@ -80,12 +80,12 @@ where
             None => true,
         };
 
-        allowed &&
-            metadata.is_span() &&
-            metadata.level() >= &Level::INFO &&
-            !metadata.target().starts_with("salsa") &&
-            metadata.name() != "compute_exhaustiveness_and_usefulness" &&
-            !metadata.target().starts_with("chalk")
+        allowed
+            && metadata.is_span()
+            && metadata.level() >= &Level::INFO
+            && !metadata.target().starts_with("salsa")
+            && metadata.name() != "compute_exhaustiveness_and_usefulness"
+            && !metadata.target().starts_with("chalk")
     });
 
     logger_hprof::SpanTree {

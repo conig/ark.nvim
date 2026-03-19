@@ -75,9 +75,34 @@ Async startup should be event-driven from the launcher's trusted status publicat
 
 - the managed pane and bridge start independently of Neovim's LSP client
 - the launcher writes pending / ready / error state to the startup status file
-- `ark.nvim` watches that status path and starts the LSP once, either with live bridge metadata on `ready` or in static fallback mode on timeout / error
+- `ark.nvim` starts one detached LSP client immediately for static features
+- when a managed pane exists, the LSP learns bridge identity from the trusted status-file path plus tmux session metadata
+- bridge readiness and auth changes are handled inside the running detached LSP, not by rebuilding the client
 
 Avoid designs where Neovim starts a throwaway LSP client and repeatedly polls or restarts it while the bridge is still coming up.
+
+### Bridge lifecycle invariants
+
+The managed-session bridge is runtime state, not process identity.
+
+That means:
+
+- detached `ark_lsp` startup must not depend on the bridge already being live
+- bridge port and auth token must be discovered from the trusted status file at request time
+- `status = ready` is not sufficient for live requests; the bridge must also be `repl_ready`
+- bridge status changes may trigger an in-process session refresh and diagnostics refresh, but must not trigger normal LSP stop/start churn
+- explicit user restarts remain available as an escape hatch, but they are not the canonical attach path
+
+### Detached binary verification invariant
+
+The tmux-backed Neovim flow runs the built `ark-lsp` binary from `target/debug/ark-lsp`.
+
+That means:
+
+- Rust library tests are necessary but not sufficient when detached LSP behavior changes
+- after changing detached-server Rust code, rebuild the real binary before trusting live Neovim or tmux E2E results
+- a green `cargo test` run against library code does not prove the tmux-backed path is exercising the new logic
+- when live behavior and unit tests disagree, suspect a stale detached binary before suspecting the architecture
 
 ### v1 must feel native in Neovim
 

@@ -30,6 +30,10 @@ ark_test.wait_for("ark bridge ready", 20000, function()
   return require("ark").status().bridge_ready == true
 end)
 
+ark_test.wait_for("managed R repl ready", 20000, function()
+  return require("ark").status().repl_ready == true
+end)
+
 ark_test.wait_for("ark lsp client", 15000, function()
   local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
   return client ~= nil and client.initialized == true and not client:is_stopped()

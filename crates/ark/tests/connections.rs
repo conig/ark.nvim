@@ -156,11 +156,14 @@ fn test_connections_list_objects() {
     // Check that we get the correct list of objects
     let cases: Vec<(Vec<ObjectSchema>, Vec<ObjectSchema>)> = vec![
         (vec![], vec![obj("main", "schema")]),
-        (vec![obj("main", "schema")], vec![
-            obj("table1", "table"),
-            obj("table2", "table"),
-            obj("view1", "view"),
-        ]),
+        (
+            vec![obj("main", "schema")],
+            vec![
+                obj("table1", "table"),
+                obj("table2", "table"),
+                obj("view1", "view"),
+            ],
+        ),
     ];
 
     for (path, objects) in cases {
@@ -179,16 +182,22 @@ fn test_connection_list_fields() {
 
     // Check that we get the correct list of objects
     let cases: Vec<(Vec<ObjectSchema>, Vec<FieldSchema>)> = vec![
-        (vec![obj("main", "schema"), obj("table1", "table")], vec![
-            field("table1_col1", "integer"),
-            field("table1_col2", "character"),
-            field("table1_col3", "logical"),
-        ]),
-        (vec![obj("main", "schema"), obj("view1", "view")], vec![
-            field("view1_col1", "integer"),
-            field("view1_col2", "character"),
-            field("view1_col3", "logical"),
-        ]),
+        (
+            vec![obj("main", "schema"), obj("table1", "table")],
+            vec![
+                field("table1_col1", "integer"),
+                field("table1_col2", "character"),
+                field("table1_col3", "logical"),
+            ],
+        ),
+        (
+            vec![obj("main", "schema"), obj("view1", "view")],
+            vec![
+                field("view1_col1", "integer"),
+                field("view1_col2", "character"),
+                field("view1_col3", "logical"),
+            ],
+        ),
     ];
 
     for (path, objects) in cases {

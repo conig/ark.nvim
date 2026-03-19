@@ -2,6 +2,7 @@ use std::io::Read;
 use std::io::Write;
 use std::net::Shutdown;
 use std::net::TcpStream;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -43,11 +44,27 @@ use crate::treesitter::NodeTypeExt;
 
 #[derive(Clone, Debug)]
 pub(crate) struct SessionBridge {
+    source: SessionBridgeSource,
+    session: BridgeSession,
+    timeout: Duration,
+}
+
+#[derive(Clone, Debug)]
+enum SessionBridgeSource {
+    Fixed(SessionBridgeConnection),
+    StatusFile(StatusFileSessionBridgeSource),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SessionBridgeConnection {
     host: String,
     port: u16,
     auth_token: String,
-    session: BridgeSession,
-    timeout: Duration,
+}
+
+#[derive(Clone, Debug)]
+struct StatusFileSessionBridgeSource {
+    status_file: PathBuf,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -62,6 +79,7 @@ pub(crate) struct SessionBridgeConfig {
     pub host: String,
     pub port: u16,
     pub auth_token: String,
+    pub status_file: Option<PathBuf>,
     pub tmux_socket: String,
     pub tmux_session: String,
     pub tmux_pane: String,
@@ -119,6 +137,37 @@ struct BridgeError {
     message: String,
 }
 
+#[derive(Debug)]
+struct SessionBridgeResponseError {
+    code: String,
+    message: String,
+}
+
+impl std::fmt::Display for SessionBridgeResponseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "session bridge request failed: {}: {}",
+            self.code, self.message
+        )
+    }
+}
+
+impl std::error::Error for SessionBridgeResponseError {}
+
+#[derive(Debug)]
+struct SessionBridgeUnavailableError {
+    message: String,
+}
+
+impl std::fmt::Display for SessionBridgeUnavailableError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "session bridge unavailable: {}", self.message)
+    }
+}
+
+impl std::error::Error for SessionBridgeUnavailableError {}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 struct ObjectMeta {
     #[serde(default, deserialize_with = "deserialize_string_vec")]
@@ -143,6 +192,18 @@ struct BridgeMember {
     summary: String,
     #[serde(default)]
     r#type: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct SessionStatusPayload {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    auth_token: String,
+    #[serde(default)]
+    repl_ready: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -207,22 +268,35 @@ pub(crate) struct SessionBridgeCompletion {
 
 impl SessionBridge {
     pub(crate) fn new(config: SessionBridgeConfig) -> anyhow::Result<Self> {
-        if config.host.is_empty() {
-            return Err(anyhow!("session bridge host is missing"));
-        }
-        if config.port == 0 {
-            return Err(anyhow!("session bridge port is missing"));
-        }
+        let session = BridgeSession {
+            tmux_socket: config.tmux_socket,
+            tmux_session: config.tmux_session,
+            tmux_pane: config.tmux_pane,
+        };
+
+        let source = if let Some(status_file) = config
+            .status_file
+            .filter(|status_file| !status_file.as_os_str().is_empty())
+        {
+            SessionBridgeSource::StatusFile(StatusFileSessionBridgeSource { status_file })
+        } else {
+            if config.host.is_empty() {
+                return Err(anyhow!("session bridge host is missing"));
+            }
+            if config.port == 0 {
+                return Err(anyhow!("session bridge port is missing"));
+            }
+
+            SessionBridgeSource::Fixed(SessionBridgeConnection {
+                host: config.host,
+                port: config.port,
+                auth_token: config.auth_token,
+            })
+        };
 
         Ok(Self {
-            host: config.host,
-            port: config.port,
-            auth_token: config.auth_token,
-            session: BridgeSession {
-                tmux_socket: config.tmux_socket,
-                tmux_session: config.tmux_session,
-                tmux_pane: config.tmux_pane,
-            },
+            source,
+            session,
             timeout: Duration::from_millis(config.timeout_ms.max(50)),
         })
     }
@@ -259,12 +333,20 @@ impl SessionBridge {
     pub(crate) fn bootstrap(&self) -> anyhow::Result<SessionBootstrap> {
         let search_path_symbols = self.inspect_names(search_path_completion_expr().as_str())?;
         let installed_packages =
-            self.inspect_names(installed_packages_completion_expr().as_str())?;
-        let library_paths = self
-            .inspect_names(library_paths_completion_expr().as_str())?
-            .into_iter()
-            .map(PathBuf::from)
-            .collect::<Vec<_>>();
+            match self.inspect_names(installed_packages_completion_expr().as_str()) {
+                Ok(packages) => packages,
+                Err(err) => {
+                    log::warn!("Detached bootstrap couldn't inspect installed packages: {err:?}");
+                    Vec::new()
+                },
+            };
+        let library_paths = match self.inspect_names(library_paths_completion_expr().as_str()) {
+            Ok(paths) => paths.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
+            Err(err) => {
+                log::warn!("Detached bootstrap couldn't inspect library paths: {err:?}");
+                Vec::new()
+            },
+        };
 
         Ok(SessionBootstrap {
             search_path_symbols,
@@ -656,13 +738,49 @@ impl SessionBridge {
         expr: &str,
         options: Option<InspectOptions>,
     ) -> anyhow::Result<InspectResponse> {
-        let mut stream = TcpStream::connect((self.host.as_str(), self.port))?;
+        match &self.source {
+            SessionBridgeSource::Fixed(connection) => {
+                self.inspect_with_connection(connection, expr, options)
+            },
+            SessionBridgeSource::StatusFile(source) => self.inspect_dynamic(source, expr, options),
+        }
+    }
+
+    fn inspect_dynamic(
+        &self,
+        source: &StatusFileSessionBridgeSource,
+        expr: &str,
+        options: Option<InspectOptions>,
+    ) -> anyhow::Result<InspectResponse> {
+        let connection = source.current_connection()?;
+
+        match self.inspect_with_connection(&connection, expr, options.clone()) {
+            Ok(payload) => Ok(payload),
+            Err(err) if should_retry_dynamic_request(&err) => {
+                let refreshed = source.current_connection()?;
+                if refreshed == connection {
+                    return Err(err);
+                }
+
+                self.inspect_with_connection(&refreshed, expr, options)
+            },
+            Err(err) => Err(err),
+        }
+    }
+
+    fn inspect_with_connection(
+        &self,
+        connection: &SessionBridgeConnection,
+        expr: &str,
+        options: Option<InspectOptions>,
+    ) -> anyhow::Result<InspectResponse> {
+        let mut stream = TcpStream::connect((connection.host.as_str(), connection.port))?;
         stream.set_read_timeout(Some(self.timeout))?;
         stream.set_write_timeout(Some(self.timeout))?;
 
         let request = InspectRequest {
             request_id: format!("ark-{}", Uuid::new_v4()),
-            auth_token: self.auth_token.clone(),
+            auth_token: connection.auth_token.clone(),
             expr: String::from(expr),
             session: self.session.clone(),
             options,
@@ -678,11 +796,11 @@ impl SessionBridge {
 
         let payload: InspectResponse = serde_json::from_str(response.as_str())?;
         if let Some(error) = payload.error.as_ref() {
-            return Err(anyhow!(
-                "session bridge request failed: {}: {}",
-                error.code,
-                error.message
-            ));
+            return Err(SessionBridgeResponseError {
+                code: error.code.clone(),
+                message: error.message.clone(),
+            }
+            .into());
         }
 
         Ok(payload)
@@ -806,6 +924,117 @@ impl SessionBridge {
     }
 }
 
+impl StatusFileSessionBridgeSource {
+    fn current_connection(&self) -> anyhow::Result<SessionBridgeConnection> {
+        let status = read_session_status(self.status_file.as_path())?;
+
+        if status.status != "ready" {
+            return Err(SessionBridgeUnavailableError {
+                message: if status.status.is_empty() {
+                    format!(
+                        "startup status file '{}' has no ready state yet",
+                        self.status_file.display()
+                    )
+                } else {
+                    format!(
+                        "startup status file '{}' is '{}'",
+                        self.status_file.display(),
+                        status.status
+                    )
+                },
+            }
+            .into());
+        }
+
+        if !status.repl_ready {
+            return Err(SessionBridgeUnavailableError {
+                message: format!(
+                    "startup status file '{}' is ready but the R prompt is not",
+                    self.status_file.display()
+                ),
+            }
+            .into());
+        }
+
+        let Some(port) = status.port else {
+            return Err(SessionBridgeUnavailableError {
+                message: format!(
+                    "startup status file '{}' does not publish a bridge port",
+                    self.status_file.display()
+                ),
+            }
+            .into());
+        };
+
+        Ok(SessionBridgeConnection {
+            host: String::from("127.0.0.1"),
+            port,
+            auth_token: status.auth_token,
+        })
+    }
+}
+
+pub(crate) fn is_ipc_auth_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<SessionBridgeResponseError>()
+        .map(|err| err.code == "E_IPC_AUTH")
+        .unwrap_or(false)
+}
+
+pub(crate) fn is_bridge_unavailable(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<SessionBridgeUnavailableError>()
+        .is_some()
+}
+
+fn should_retry_dynamic_request(err: &anyhow::Error) -> bool {
+    is_ipc_auth_error(err) || err.downcast_ref::<std::io::Error>().is_some()
+}
+
+fn read_session_status(path: &Path) -> anyhow::Result<SessionStatusPayload> {
+    if !path.exists() {
+        return Err(SessionBridgeUnavailableError {
+            message: format!(
+                "startup status file '{}' does not exist yet",
+                path.display()
+            ),
+        }
+        .into());
+    }
+
+    if !status_file_trusted(path)? {
+        return Err(SessionBridgeUnavailableError {
+            message: format!("startup status file '{}' is not trusted", path.display()),
+        }
+        .into());
+    }
+
+    let payload = std::fs::read_to_string(path)?;
+    let status: SessionStatusPayload = serde_json::from_str(payload.as_str())?;
+    Ok(status)
+}
+
+fn status_file_trusted(path: &Path) -> anyhow::Result<bool> {
+    let metadata = std::fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Ok(false);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let current_uid = unsafe { libc::geteuid() };
+        if metadata.uid() != current_uid {
+            return Ok(false);
+        }
+
+        if metadata.mode() & 0o022 != 0 {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
 fn completion_item(
     member: BridgeMember,
     request: &CompletionRequest,
@@ -821,10 +1050,10 @@ fn completion_item(
             }
         },
         CompletionFlavor::ComparisonString => escape_r_double_quoted(member.name_raw.as_str()),
-        CompletionFlavor::Extractor |
-        CompletionFlavor::Namespace |
-        CompletionFlavor::Package |
-        CompletionFlavor::Symbol => member.name_raw.clone(),
+        CompletionFlavor::Extractor
+        | CompletionFlavor::Namespace
+        | CompletionFlavor::Package
+        | CompletionFlavor::Symbol => member.name_raw.clone(),
         CompletionFlavor::Pipe => sym_quote_invalid(member.name_raw.as_str()),
         CompletionFlavor::Subset => subset_insert_text(
             member.name_raw.as_str(),
@@ -2225,16 +2454,19 @@ mod tests {
         let arguments = call_arguments(context.document.contents.as_str(), &call)
             .expect("expected call arguments");
 
-        assert_eq!(arguments, vec![
-            CallArgument {
-                name: None,
-                value_expr: String::from("mpg"),
-            },
-            CallArgument {
-                name: None,
-                value_expr: String::from("cyl"),
-            },
-        ]);
+        assert_eq!(
+            arguments,
+            vec![
+                CallArgument {
+                    name: None,
+                    value_expr: String::from("mpg"),
+                },
+                CallArgument {
+                    name: None,
+                    value_expr: String::from("cyl"),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -2414,6 +2646,7 @@ mod tests {
             host: String::from("127.0.0.1"),
             port: 1,
             auth_token: String::new(),
+            status_file: None,
             tmux_socket: String::new(),
             tmux_session: String::new(),
             tmux_pane: String::new(),

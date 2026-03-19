@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::anyhow;
 use stdext::result::ResultExt;
@@ -137,9 +138,20 @@ fn session_bridge_from_env() -> anyhow::Result<Option<SessionBridge>> {
     }
 
     let host = env::var("ARK_SESSION_HOST").unwrap_or_else(|_| String::from("127.0.0.1"));
+    let status_file = env::var("ARK_SESSION_STATUS_FILE")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
     let port = env::var("ARK_SESSION_PORT")
-        .map_err(|_| anyhow!("ARK_SESSION_PORT is required for session bridge"))?
-        .parse::<u16>()?;
+        .ok()
+        .map(|value| value.parse::<u16>())
+        .transpose()?
+        .unwrap_or_default();
+    if status_file.is_none() && port == 0 {
+        return Err(anyhow!(
+            "ARK_SESSION_STATUS_FILE or ARK_SESSION_PORT is required for session bridge"
+        ));
+    }
     let auth_token = env::var("ARK_SESSION_AUTH_TOKEN").unwrap_or_default();
     let tmux_socket = env::var("ARK_SESSION_TMUX_SOCKET").unwrap_or_default();
     let tmux_session = env::var("ARK_SESSION_TMUX_SESSION").unwrap_or_default();
@@ -153,6 +165,7 @@ fn session_bridge_from_env() -> anyhow::Result<Option<SessionBridge>> {
         host,
         port,
         auth_token,
+        status_file,
         tmux_socket,
         tmux_session,
         tmux_pane,

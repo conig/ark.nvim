@@ -167,10 +167,13 @@ pub(crate) fn r_signature_help(context: &DocumentContext) -> anyhow::Result<Opti
     // Try to figure out what R object it's associated with.
     let code = callee.node_to_string(context.document.contents.as_str())?;
 
-    let object = harp::parse_eval(code.as_str(), RParseEvalOptions {
-        forbid_function_calls: true,
-        ..Default::default()
-    });
+    let object = harp::parse_eval(
+        code.as_str(),
+        RParseEvalOptions {
+            forbid_function_calls: true,
+            ..Default::default()
+        },
+    );
 
     let object = match object {
         Ok(object) => object,
@@ -679,14 +682,22 @@ fn <- function(
 
             let x = RObject::from(r_alloc_complex(3));
             r_cpl_poke(x.sexp, 0, libr::Rcomplex { r: 1.0, i: 2.5 });
-            r_cpl_poke(x.sexp, 1, libr::Rcomplex {
-                r: r_dbl_positive_infinity(),
-                i: r_dbl_negative_infinity(),
-            });
-            r_cpl_poke(x.sexp, 2, libr::Rcomplex {
-                r: r_dbl_na(),
-                i: 2.5,
-            });
+            r_cpl_poke(
+                x.sexp,
+                1,
+                libr::Rcomplex {
+                    r: r_dbl_positive_infinity(),
+                    i: r_dbl_negative_infinity(),
+                },
+            );
+            r_cpl_poke(
+                x.sexp,
+                2,
+                libr::Rcomplex {
+                    r: r_dbl_na(),
+                    i: 2.5,
+                },
+            );
             let label = argument_label(String::from("x"), x.sexp);
             assert_eq!(label, String::from("x = c(1+2.5i, Inf-Infi, NA+2.5i)"));
 

@@ -38,6 +38,10 @@ local function run_tmux(args)
   return trim(output), nil
 end
 
+local function strip_ansi(text)
+  return (text or ""):gsub("\27%[[0-9;]*[%a]", "")
+end
+
 local function parse_percent(value)
   value = trim(value)
   if value == "" or value:sub(1, 1) == "-" then
@@ -354,20 +358,53 @@ local function ping_bridge(session, status, timeout_ms)
   return true
 end
 
+local function prompt_ready(session)
+  if type(session) ~= "table" or type(session.tmux_pane) ~= "string" or session.tmux_pane == "" then
+    return false
+  end
+
+  local capture = run_tmux({ "capture-pane", "-p", "-t", session.tmux_pane })
+  if type(capture) ~= "string" or capture == "" then
+    return false
+  end
+
+  local last_line = ""
+  for line in (strip_ansi(capture) .. "\n"):gmatch("(.-)\n") do
+    if line:match("%S") then
+      last_line = line
+    end
+  end
+
+  return last_line == ">" or last_line == "> "
+end
+
 local function wait_for_ready_status(session, config)
-  local wait_ms = tonumber(config.bridge_wait_ms) or 0
-  if wait_ms <= 0 then
+  local function ready_status()
     local status = read_startup_status(session, config)
-    if status and status.status == "ready" and status.port and ping_bridge(session, status, 250) then
+    local repl_ready = status and (status.repl_ready == true or prompt_ready(session))
+    if status and repl_ready then
+      status.repl_ready = true
+    end
+    if status
+      and status.status == "ready"
+      and repl_ready
+      and status.port
+      and ping_bridge(session, status, 250)
+    then
       return status
     end
     return nil
   end
 
+  local wait_ms = tonumber(config.bridge_wait_ms) or 0
+  if wait_ms <= 0 then
+    return ready_status()
+  end
+
   local ready = nil
   vim.wait(wait_ms, function()
-    local status = read_startup_status(session, config)
-    if status and status.status == "ready" and status.port and ping_bridge(session, status, 250) then
+    local status = ready_status()
+    if status then
       ready = status
       return true
     end
@@ -418,7 +455,12 @@ function M.startup_status(config)
     return nil
   end
 
-  return read_startup_status(session, config)
+  local status = read_startup_status(session, config)
+  if status and status.repl_ready ~= true and prompt_ready(session) then
+    status.repl_ready = true
+  end
+
+  return status
 end
 
 function M.startup_status_path(config)
@@ -440,20 +482,14 @@ function M.bridge_env(config, opts)
     return nil
   end
 
-  local wait_for_ready = opts == nil or opts.wait ~= false
-  local status = read_startup_status(session, config)
-  if wait_for_ready and not (status and status.status == "ready" and status.port) then
-    status = wait_for_ready_status(session, config)
-  end
-  if not (status and status.status == "ready" and status.port) then
+  local status_path = status_file_path(session, config)
+  if type(status_path) ~= "string" or status_path == "" then
     return nil
   end
 
   return {
     ARK_SESSION_KIND = config.session_kind,
-    ARK_SESSION_HOST = "127.0.0.1",
-    ARK_SESSION_PORT = tostring(status.port),
-    ARK_SESSION_AUTH_TOKEN = status.auth_token or "",
+    ARK_SESSION_STATUS_FILE = status_path,
     ARK_SESSION_TMUX_SOCKET = session.tmux_socket,
     ARK_SESSION_TMUX_SESSION = session.tmux_session,
     ARK_SESSION_TMUX_PANE = session.tmux_pane,
@@ -463,7 +499,7 @@ end
 
 function M.status(config)
   local session = M.session()
-  local startup_status = session and read_startup_status(session, config or {}) or nil
+  local startup_status = session and M.startup_status(config or {}) or nil
   local bridge_ready = session and startup_status and startup_status.status == "ready"
     and startup_status.port ~= nil and ping_bridge(session, startup_status, 150)
     or false

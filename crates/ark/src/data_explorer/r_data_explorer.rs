@@ -657,12 +657,12 @@ impl RDataExplorer {
         let is_compare_supported = |x: &ColumnDisplayType| {
             matches!(
                 x,
-                ColumnDisplayType::Integer |
-                    ColumnDisplayType::Floating |
-                    ColumnDisplayType::Decimal |
-                    ColumnDisplayType::Date |
-                    ColumnDisplayType::Datetime |
-                    ColumnDisplayType::Time
+                ColumnDisplayType::Integer
+                    | ColumnDisplayType::Floating
+                    | ColumnDisplayType::Decimal
+                    | ColumnDisplayType::Date
+                    | ColumnDisplayType::Datetime
+                    | ColumnDisplayType::Time
             )
         };
 

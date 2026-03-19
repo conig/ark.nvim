@@ -1,39 +1,44 @@
 vim.opt.rtp:prepend(vim.fn.getcwd())
 
+local current_session = {
+  tmux_socket = "/tmp/ark-test.sock",
+  tmux_session = "ark-test",
+  tmux_pane = "%1",
+}
+
 local status_dir = vim.fn.tempname()
 vim.fn.mkdir(status_dir, "p")
 
-local status_path = status_dir .. "/session.json"
+local function status_path()
+  return string.format("%s/%s.json", status_dir, current_session.tmux_pane:gsub("[^%w]", "_"))
+end
+
 local current_status = {
-  status = "pending",
-  repl_ready = false,
+  status = "ready",
+  repl_ready = true,
 }
 
-vim.fn.writefile({ vim.json.encode(current_status) }, status_path)
+vim.fn.writefile({ vim.json.encode(current_status) }, status_path())
 
 package.loaded["ark.tmux"] = {
   bridge_env = function()
     return {
       ARK_SESSION_KIND = "ark",
-      ARK_SESSION_STATUS_FILE = status_path,
-      ARK_SESSION_TMUX_SOCKET = "/tmp/ark-test.sock",
-      ARK_SESSION_TMUX_SESSION = "ark-test",
-      ARK_SESSION_TMUX_PANE = "%1",
+      ARK_SESSION_STATUS_FILE = status_path(),
+      ARK_SESSION_TMUX_SOCKET = current_session.tmux_socket,
+      ARK_SESSION_TMUX_SESSION = current_session.tmux_session,
+      ARK_SESSION_TMUX_PANE = current_session.tmux_pane,
       ARK_SESSION_TIMEOUT_MS = "1000",
     }
   end,
   session = function()
-    return {
-      tmux_socket = "/tmp/ark-test.sock",
-      tmux_session = "ark-test",
-      tmux_pane = "%1",
-    }
+    return vim.deepcopy(current_session)
   end,
   startup_status = function()
     return vim.deepcopy(current_status)
   end,
   startup_status_path = function()
-    return status_path
+    return status_path()
   end,
 }
 package.loaded["ark.lsp"] = nil
@@ -78,6 +83,9 @@ vim.lsp.get_clients = function(_)
       out[#out + 1] = client
     end
   end
+  table.sort(out, function(lhs, rhs)
+    return lhs.id < rhs.id
+  end)
   return out
 end
 
@@ -97,10 +105,10 @@ local ok, err = pcall(function()
 
   local buf = vim.api.nvim_create_buf(true, false)
   vim.api.nvim_set_current_buf(buf)
-  vim.api.nvim_buf_set_name(buf, "/tmp/ark_async_startup_notification.R")
+  vim.api.nvim_buf_set_name(buf, "/tmp/ark_bridge_session_update.R")
   vim.bo[buf].filetype = "r"
 
-  lsp.start_async({
+  local opts = {
     filetypes = { "r" },
     lsp = {
       name = "ark_lsp",
@@ -110,61 +118,47 @@ local ok, err = pcall(function()
     },
     tmux = {
       bridge_wait_ms = 1000,
+      session_kind = "ark",
+      session_timeout_ms = 1000,
     },
-  }, buf)
+  }
 
-  local started_early = vim.wait(80, function()
-    return #started > 0
-  end, 10, false)
-  if not started_early then
-    error("async startup did not launch the static LSP immediately", 0)
-  end
+  lsp.start(opts, buf, {
+    wait_for_client = false,
+  })
 
-  if #started ~= 1 then
-    error("expected exactly one initial LSP start, saw " .. #started, 0)
-  end
-
-  local initial_env = started[1].cmd_env or {}
-  if initial_env.ARK_SESSION_STATUS_FILE ~= status_path then
-    error("expected detached LSP to receive session discovery env, got " .. vim.inspect(initial_env), 0)
-  end
-
-  local notified_pending = vim.wait(1000, function()
+  local notified_initial = vim.wait(1000, function()
     return #notifications > 0
   end, 10, false)
-  if not notified_pending then
-    error("timed out waiting for initial session notification", 0)
+  if not notified_initial then
+    error("expected initial session notification", 0)
   end
 
-  vim.defer_fn(function()
-    current_status = {
-      status = "ready",
-      port = 43123,
-      auth_token = "ark-test-token",
-      repl_ready = true,
-    }
-    vim.fn.writefile({ vim.json.encode(current_status) }, status_path)
-  end, 150)
+  current_session.tmux_pane = "%2"
+  vim.fn.writefile({ vim.json.encode(current_status) }, status_path())
 
-  local ready_ok = vim.wait(1200, function()
+  lsp.sync_sessions(opts, buf)
+
+  local updated = vim.wait(1000, function()
     local last = notifications[#notifications]
     return last
       and last.method == "ark/updateSession"
       and last.params
-      and last.params.replReady == true
+      and last.params.tmuxPane == "%2"
   end, 10, false)
-  if not ready_ok then
-    error("timed out waiting for the ready session notification", 0)
+  if not updated then
+    error("expected in-place session update notification for pane change: " .. vim.inspect(notifications), 0)
+  end
+
+  if #started ~= 1 then
+    error("expected exactly one LSP start, saw " .. #started, 0)
   end
 
   if #stopped ~= 0 then
-    error("expected no stop/start churn during async startup session updates, saw " .. #stopped .. " stops", 0)
+    error("expected no client restart for session identity change, saw " .. vim.inspect(stopped), 0)
   end
 
-  vim.print({
-    starts = #started,
-    notifications = notifications,
-  })
+  vim.api.nvim_buf_delete(buf, { force = true })
 end)
 
 vim.lsp.start = original_start

@@ -103,9 +103,12 @@ pub(super) fn completion_item_from_assignment(
     let label = lhs.node_as_str(&context.document.contents)?.to_string();
 
     // TODO: Resolve functions that exist in-document here.
-    let mut item = completion_item(label.clone(), CompletionData::ScopeVariable {
-        name: label.clone(),
-    })?;
+    let mut item = completion_item(
+        label.clone(),
+        CompletionData::ScopeVariable {
+            name: label.clone(),
+        },
+    )?;
 
     let markup = MarkupContent {
         kind: MarkupKind::Markdown,
@@ -139,9 +142,12 @@ pub(super) unsafe fn completion_item_from_package(
     package: &str,
     append_colons: bool,
 ) -> anyhow::Result<CompletionItem> {
-    let mut item = completion_item(package, CompletionData::Package {
-        name: package.to_string(),
-    })?;
+    let mut item = completion_item(
+        package,
+        CompletionData::Package {
+            name: package.to_string(),
+        },
+    )?;
 
     item.kind = Some(CompletionItemKind::MODULE);
     item.label_details = Some(CompletionItemLabelDetails {
@@ -168,10 +174,13 @@ pub(super) fn completion_item_from_function(
     function_context: &FunctionContext,
 ) -> anyhow::Result<CompletionItem> {
     let label = name.to_string();
-    let mut item = completion_item(label, CompletionData::Function {
-        name: name.to_string(),
-        package: package.map(|s| s.to_string()),
-    })?;
+    let mut item = completion_item(
+        label,
+        CompletionData::Function {
+            name: name.to_string(),
+            package: package.map(|s| s.to_string()),
+        },
+    )?;
 
     item.kind = Some(CompletionItemKind::FUNCTION);
 
@@ -314,10 +323,13 @@ pub(super) unsafe fn completion_item_from_data_variable(
     owner: &str,
     enquote: bool,
 ) -> anyhow::Result<CompletionItem> {
-    let mut item = completion_item(name, CompletionData::DataVariable {
-        name: name.to_string(),
-        owner: owner.to_string(),
-    })?;
+    let mut item = completion_item(
+        name,
+        CompletionData::DataVariable {
+            name: name.to_string(),
+            owner: owner.to_string(),
+        },
+    )?;
 
     if enquote {
         item.insert_text = Some(format!("\"{}\"", name));
@@ -359,9 +371,12 @@ pub(super) unsafe fn completion_item_from_object(
         return completion_item_from_function(name, package, function_context);
     }
 
-    let mut item = completion_item(name, CompletionData::Object {
-        name: name.to_string(),
-    })?;
+    let mut item = completion_item(
+        name,
+        CompletionData::Object {
+            name: name.to_string(),
+        },
+    )?;
 
     item.label_details = Some(item_details(package));
     item.kind = Some(CompletionItemKind::STRUCT);
@@ -374,9 +389,12 @@ pub(super) unsafe fn completion_item_from_object(
 }
 
 pub(super) fn completion_item_from_variable(name: &str) -> anyhow::Result<CompletionItem> {
-    let mut item = completion_item(String::from(name), CompletionData::Object {
-        name: String::from(name),
-    })?;
+    let mut item = completion_item(
+        String::from(name),
+        CompletionData::Object {
+            name: String::from(name),
+        },
+    )?;
     item.kind = Some(CompletionItemKind::VALUE);
     Ok(item)
 }
@@ -422,9 +440,12 @@ pub(super) unsafe fn completion_item_from_promise(
 
     // Otherwise we never want to force promises, so we return a fairly
     // generic completion item
-    let mut item = completion_item(name, CompletionData::Object {
-        name: name.to_string(),
-    })?;
+    let mut item = completion_item(
+        name,
+        CompletionData::Object {
+            name: name.to_string(),
+        },
+    )?;
 
     item.detail = Some("Promise".to_string());
     item.kind = Some(CompletionItemKind::STRUCT);
@@ -439,9 +460,12 @@ pub(super) unsafe fn completion_item_from_promise(
 pub(super) fn completion_item_from_active_binding(name: &str) -> anyhow::Result<CompletionItem> {
     // We never want to force active bindings, so we return a fairly
     // generic completion item
-    let mut item = completion_item(name, CompletionData::Object {
-        name: name.to_string(),
-    })?;
+    let mut item = completion_item(
+        name,
+        CompletionData::Object {
+            name: name.to_string(),
+        },
+    )?;
 
     item.detail = Some("Active binding".to_string());
     item.kind = Some(CompletionItemKind::STRUCT);
@@ -584,9 +608,12 @@ pub(super) fn completion_item_from_scope_parameter(
     parameter: &str,
     _context: &DocumentContext,
 ) -> anyhow::Result<CompletionItem> {
-    let mut item = completion_item(parameter, CompletionData::ScopeParameter {
-        name: parameter.to_string(),
-    })?;
+    let mut item = completion_item(
+        parameter,
+        CompletionData::ScopeParameter {
+            name: parameter.to_string(),
+        },
+    )?;
 
     item.kind = Some(CompletionItemKind::VARIABLE);
     Ok(item)
@@ -637,10 +664,13 @@ fn completion_item_from_dot_dot_dot(
     // `insert_text` of `""` because Positron treats it like `None`.
     let label = "...";
 
-    let mut item = completion_item(label, CompletionData::Parameter {
-        name: label.to_string(),
-        function: callee.to_string(),
-    })?;
+    let mut item = completion_item(
+        label,
+        CompletionData::Parameter {
+            name: label.to_string(),
+            function: callee.to_string(),
+        },
+    )?;
 
     item.kind = Some(CompletionItemKind::FIELD);
 

@@ -5,8 +5,10 @@ vim.fn.mkdir(status_dir, "p")
 
 local status_path = status_dir .. "/session.json"
 local current_status = {
-  status = "pending",
-  repl_ready = false,
+  status = "ready",
+  repl_ready = true,
+  port = 43123,
+  auth_token = "token-one",
 }
 
 vim.fn.writefile({ vim.json.encode(current_status) }, status_path)
@@ -40,7 +42,6 @@ package.loaded["ark.lsp"] = nil
 
 local started = {}
 local stopped = {}
-local notifications = {}
 local clients = {}
 
 local original_start = vim.lsp.start
@@ -58,12 +59,7 @@ vim.lsp.start = function(config, _)
     is_stopped = function(self)
       return self._stopped == true
     end,
-    notify = function(_, method, params)
-      notifications[#notifications + 1] = {
-        method = method,
-        params = vim.deepcopy(params),
-      }
-    end,
+    notify = function() end,
   }
 
   started[#started + 1] = vim.deepcopy(config)
@@ -97,10 +93,10 @@ local ok, err = pcall(function()
 
   local buf = vim.api.nvim_create_buf(true, false)
   vim.api.nvim_set_current_buf(buf)
-  vim.api.nvim_buf_set_name(buf, "/tmp/ark_async_startup_notification.R")
+  vim.api.nvim_buf_set_name(buf, "/tmp/ark_bridge_auth_token_refresh.R")
   vim.bo[buf].filetype = "r"
 
-  lsp.start_async({
+  lsp.start({
     filetypes = { "r" },
     lsp = {
       name = "ark_lsp",
@@ -110,61 +106,35 @@ local ok, err = pcall(function()
     },
     tmux = {
       bridge_wait_ms = 1000,
+      session_kind = "ark",
+      session_timeout_ms = 1000,
     },
-  }, buf)
-
-  local started_early = vim.wait(80, function()
-    return #started > 0
-  end, 10, false)
-  if not started_early then
-    error("async startup did not launch the static LSP immediately", 0)
-  end
+  }, buf, {
+    wait_for_client = false,
+  })
 
   if #started ~= 1 then
-    error("expected exactly one initial LSP start, saw " .. #started, 0)
-  end
-
-  local initial_env = started[1].cmd_env or {}
-  if initial_env.ARK_SESSION_STATUS_FILE ~= status_path then
-    error("expected detached LSP to receive session discovery env, got " .. vim.inspect(initial_env), 0)
-  end
-
-  local notified_pending = vim.wait(1000, function()
-    return #notifications > 0
-  end, 10, false)
-  if not notified_pending then
-    error("timed out waiting for initial session notification", 0)
+    error("expected initial detached LSP start, saw " .. #started, 0)
   end
 
   vim.defer_fn(function()
-    current_status = {
-      status = "ready",
-      port = 43123,
-      auth_token = "ark-test-token",
-      repl_ready = true,
-    }
+    current_status.auth_token = "token-two"
     vim.fn.writefile({ vim.json.encode(current_status) }, status_path)
-  end, 150)
+  end, 100)
 
-  local ready_ok = vim.wait(1200, function()
-    local last = notifications[#notifications]
-    return last
-      and last.method == "ark/updateSession"
-      and last.params
-      and last.params.replReady == true
-  end, 10, false)
-  if not ready_ok then
-    error("timed out waiting for the ready session notification", 0)
+  vim.wait(400, function()
+    return false
+  end, 50, false)
+
+  if #started ~= 1 then
+    error("expected auth token rotation to avoid client restart, saw starts=" .. #started, 0)
   end
 
   if #stopped ~= 0 then
-    error("expected no stop/start churn during async startup session updates, saw " .. #stopped .. " stops", 0)
+    error("expected auth token rotation to avoid client stop/start churn, saw stops=" .. vim.inspect(stopped), 0)
   end
 
-  vim.print({
-    starts = #started,
-    notifications = notifications,
-  })
+  vim.api.nvim_buf_delete(buf, { force = true })
 end)
 
 vim.lsp.start = original_start

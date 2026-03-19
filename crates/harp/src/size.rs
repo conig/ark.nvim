@@ -208,11 +208,11 @@ fn obj_size_tree(
         },
         // Environments
         ENVSXP => {
-            if x == R_ENVS.base ||
-                x == R_ENVS.global ||
-                x == R_ENVS.empty ||
-                x == base_env ||
-                is_namespace(x)
+            if x == R_ENVS.base
+                || x == R_ENVS.global
+                || x == R_ENVS.empty
+                || x == base_env
+                || is_namespace(x)
             {
                 return 0;
             }
@@ -325,8 +325,8 @@ fn is_linked_list(x: SEXP) -> bool {
 }
 
 fn is_namespace(x: SEXP) -> bool {
-    x == R_ENVS.base_ns ||
-        unsafe {
+    x == R_ENVS.base_ns
+        || unsafe {
             libr::Rf_findVarInFrame(x, r_symbol!(".__NAMESPACE__.")) != libr::R_UnboundValue
         }
 }

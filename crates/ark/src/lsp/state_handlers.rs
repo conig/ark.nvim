@@ -52,14 +52,90 @@ use crate::lsp::config::DOCUMENT_SETTINGS;
 use crate::lsp::config::GLOBAL_SETTINGS;
 use crate::lsp::document::Document;
 use crate::lsp::document::DocumentKind;
+use crate::lsp::handlers::SessionUpdateParams;
+use crate::lsp::inputs::library::Library;
 use crate::lsp::inputs::package::Package;
 use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::main_loop::DidCloseVirtualDocumentParams;
 use crate::lsp::main_loop::DidOpenVirtualDocumentParams;
 use crate::lsp::main_loop::LspState;
+use crate::lsp::session_bridge::is_bridge_unavailable;
+use crate::lsp::session_bridge::is_ipc_auth_error;
+use crate::lsp::session_bridge::SessionBridge;
+use crate::lsp::session_bridge::SessionBridgeConfig;
 use crate::lsp::state::workspace_uris;
+use crate::lsp::state::RuntimeMode;
 use crate::lsp::state::WorldState;
 use crate::url::UrlId;
+
+pub(crate) fn refresh_detached_session_inputs(state: &mut WorldState, force: bool) {
+    if state.runtime_mode != RuntimeMode::Detached {
+        return;
+    }
+
+    let needs_bootstrap = force
+        || state.console_scopes.is_empty()
+        || state.installed_packages.is_empty()
+        || state.library.library_paths.is_empty();
+    if !needs_bootstrap {
+        return;
+    }
+
+    let Some(session_bridge) = state.session_bridge.as_ref() else {
+        return;
+    };
+
+    match session_bridge.bootstrap() {
+        Ok(bootstrap) => {
+            tracing::info!(
+                search_path_symbols = bootstrap.search_path_symbols.len(),
+                installed_packages = bootstrap.installed_packages.len(),
+                library_paths = bootstrap.library_paths.len(),
+                "Rehydrated detached session inputs"
+            );
+            state.console_scopes = vec![bootstrap.search_path_symbols];
+            state.installed_packages = bootstrap.installed_packages;
+            state.library = Library::new(bootstrap.library_paths);
+        },
+        Err(err) => {
+            if is_ipc_auth_error(&err) {
+                tracing::warn!("Detached session input refresh hit stale bridge auth: {err}");
+            } else if is_bridge_unavailable(&err) {
+                tracing::debug!("Detached session inputs not ready yet: {err}");
+            } else {
+                tracing::warn!("Detached session input refresh failed: {err:?}");
+            }
+        },
+    }
+}
+
+fn session_bridge_from_update(
+    params: &SessionUpdateParams,
+) -> anyhow::Result<Option<SessionBridge>> {
+    let Some(kind) = params.kind.as_deref().filter(|kind| !kind.is_empty()) else {
+        return Ok(None);
+    };
+
+    if kind != "ark" && kind != "rscope" {
+        return Err(anyhow!("unsupported session bridge kind: {kind}"));
+    }
+
+    let Some(status_file) = params.status_file.clone() else {
+        return Ok(None);
+    };
+
+    SessionBridge::new(SessionBridgeConfig {
+        host: String::new(),
+        port: 0,
+        auth_token: String::new(),
+        status_file: Some(status_file),
+        tmux_socket: params.tmux_socket.clone(),
+        tmux_session: params.tmux_session.clone(),
+        tmux_pane: params.tmux_pane.clone(),
+        timeout_ms: params.timeout_ms.unwrap_or(1000),
+    })
+    .map(Some)
+}
 
 // Handlers that mutate the world state
 
@@ -242,6 +318,7 @@ pub(crate) fn did_open(
 
     // NOTE: Do we need to call `update_config()` here?
     // update_config(vec![uri]).await;
+    refresh_detached_session_inputs(state, false);
 
     lsp::main_loop::diagnostics_refresh_all(state.clone());
 
@@ -263,6 +340,7 @@ pub(crate) fn did_change(
         .ok_or(anyhow!("No parser for {uri}"))?;
 
     document.on_did_change(parser, &params);
+    refresh_detached_session_inputs(state, false);
 
     lsp::main_loop::index_update(vec![uri.clone()], state.clone());
 
@@ -382,6 +460,26 @@ pub(crate) async fn did_change_configuration(
 }
 
 #[tracing::instrument(level = "info", skip_all)]
+pub(crate) fn did_update_session(
+    params: SessionUpdateParams,
+    state: &mut WorldState,
+) -> anyhow::Result<()> {
+    if state.runtime_mode != RuntimeMode::Detached {
+        return Ok(());
+    }
+
+    state.session_bridge = session_bridge_from_update(&params)?;
+
+    if params.repl_ready || params.status == "ready" {
+        refresh_detached_session_inputs(state, true);
+    }
+
+    lsp::diagnostics_refresh_all(state.clone());
+
+    Ok(())
+}
+
+#[tracing::instrument(level = "info", skip_all)]
 pub(crate) fn did_change_formatting_options(
     uri: &Url,
     opts: &FormattingOptions,
@@ -492,6 +590,118 @@ async fn update_config(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn spawn_bootstrap_bridge(auth_token: &str) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+        let auth_token = auth_token.to_string();
+
+        thread::spawn(move || {
+            for expected in ["search_path", "installed_packages", "library_paths"] {
+                let (mut stream, _) = listener.accept().expect("expected bridge request");
+                let mut request = String::new();
+                stream
+                    .read_to_string(&mut request)
+                    .expect("expected bridge request payload");
+                assert!(!request.is_empty(), "expected bridge request body");
+
+                let payload: serde_json::Value =
+                    serde_json::from_str(request.trim()).expect("expected json request");
+                assert_eq!(
+                    payload
+                        .get("auth_token")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default(),
+                    auth_token
+                );
+
+                let expr = payload
+                    .get("expr")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+
+                let response = match expected {
+                    "search_path" => {
+                        assert!(expr.contains("lapply(search()"));
+                        r#"{"members":[{"name_raw":"library"},{"name_raw":"mtcars"}]}"#
+                    },
+                    "installed_packages" => {
+                        assert!(expr.contains(".packages(all.available = TRUE)"));
+                        r#"{"members":[{"name_raw":"ggplot2"},{"name_raw":"utils"}]}"#
+                    },
+                    "library_paths" => {
+                        assert!(expr.contains(".libPaths()"));
+                        r#"{"members":[{"name_raw":"/tmp/ark-test-library"}]}"#
+                    },
+                    _ => unreachable!(),
+                };
+
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("expected bridge response");
+            }
+        });
+
+        port
+    }
+
+    #[test]
+    fn test_detached_session_update_bootstraps_console_scopes() {
+        let auth_token = "ark-test-token";
+        let port = spawn_bootstrap_bridge(auth_token);
+        let status = tempfile::NamedTempFile::new().expect("expected temp status file");
+        std::fs::write(
+            status.path(),
+            format!(
+                r#"{{"status":"ready","port":{},"auth_token":"{}","repl_ready":true}}"#,
+                port, auth_token
+            ),
+        )
+        .expect("expected status file");
+
+        let mut state = WorldState::detached();
+
+        did_update_session(
+            SessionUpdateParams {
+                kind: Some(String::from("ark")),
+                status_file: Some(status.path().to_path_buf()),
+                tmux_socket: String::from("/tmp/ark-test.sock"),
+                tmux_session: String::from("ark-test"),
+                tmux_pane: String::from("%1"),
+                timeout_ms: Some(1000),
+                status: String::from("ready"),
+                repl_ready: true,
+            },
+            &mut state,
+        )
+        .expect("expected session update to succeed");
+
+        assert_eq!(
+            state.console_scopes,
+            vec![vec![String::from("library"), String::from("mtcars")]]
+        );
+        assert_eq!(
+            state.installed_packages,
+            vec![String::from("ggplot2"), String::from("utils")]
+        );
+        assert_eq!(state.library.library_paths.len(), 1);
+        assert_eq!(
+            state.library.library_paths[0],
+            std::path::PathBuf::from("/tmp/ark-test-library")
+        );
+    }
 }
 
 #[tracing::instrument(level = "info", skip_all)]

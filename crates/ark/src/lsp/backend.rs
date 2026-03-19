@@ -37,8 +37,10 @@ use tower_lsp::Server;
 use super::main_loop::LSP_HAS_CRASHED;
 use crate::console::Console;
 use crate::console::ConsoleNotification;
+use crate::lsp::handlers::SessionUpdateParams;
 use crate::lsp::handlers::VirtualDocumentParams;
 use crate::lsp::handlers::VirtualDocumentResponse;
+use crate::lsp::handlers::ARK_SESSION_UPDATE_NOTIFICATION;
 use crate::lsp::handlers::ARK_VDOC_REQUEST;
 use crate::lsp::help_topic;
 use crate::lsp::help_topic::HelpTopicParams;
@@ -135,6 +137,7 @@ pub(crate) enum LspMessage {
 #[derive(Debug)]
 pub(crate) enum LspNotification {
     Initialized(InitializedParams),
+    SessionUpdate(SessionUpdateParams),
     DidChangeWorkspaceFolders(DidChangeWorkspaceFoldersParams),
     DidChangeConfiguration(DidChangeConfigurationParams),
     DidChangeWatchedFiles(DidChangeWatchedFilesParams),
@@ -243,6 +246,16 @@ struct Backend {
 }
 
 impl Backend {
+    fn parse_session_update_params(params: Value) -> Option<SessionUpdateParams> {
+        match params {
+            Value::Object(_) => serde_json::from_value(params).ok(),
+            Value::Array(mut values) if values.len() == 1 => {
+                serde_json::from_value(values.remove(0)).ok()
+            },
+            _ => None,
+        }
+    }
+
     async fn request(&self, request: LspRequest) -> RequestResponse {
         if LSP_HAS_CRASHED.load(Ordering::Acquire) {
             return RequestResponse::Disabled;
@@ -524,6 +537,15 @@ impl Backend {
     async fn notification(&self, params: Option<Value>) {
         log::info!("Received Positron notification: {:?}", params);
     }
+
+    async fn update_session(&self, params: Value) {
+        let Some(params) = Self::parse_session_update_params(params) else {
+            log::warn!("Ignoring malformed ark/updateSession notification");
+            return;
+        };
+
+        self.notify(LspNotification::SessionUpdate(params));
+    }
 }
 
 pub(crate) fn start_lsp(
@@ -592,6 +614,7 @@ pub(crate) fn start_lsp(
         };
 
         let (service, socket) = LspService::build(init)
+            .custom_method(ARK_SESSION_UPDATE_NOTIFICATION, Backend::update_session)
             .custom_method(
                 statement_range::POSITRON_STATEMENT_RANGE_REQUEST,
                 Backend::statement_range,
@@ -657,6 +680,7 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
     };
 
     let (service, socket) = LspService::build(init)
+        .custom_method(ARK_SESSION_UPDATE_NOTIFICATION, Backend::update_session)
         .custom_method(
             statement_range::POSITRON_STATEMENT_RANGE_REQUEST,
             Backend::statement_range,

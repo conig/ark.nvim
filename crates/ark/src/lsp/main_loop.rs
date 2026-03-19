@@ -42,6 +42,8 @@ use crate::lsp::document::Document;
 use crate::lsp::handlers;
 use crate::lsp::indexer;
 use crate::lsp::inputs::library::Library;
+use crate::lsp::session_bridge::is_bridge_unavailable;
+use crate::lsp::session_bridge::is_ipc_auth_error;
 use crate::lsp::state::RuntimeMode;
 use crate::lsp::state::WorldState;
 use crate::lsp::state_handlers;
@@ -244,7 +246,15 @@ impl GlobalState {
                             state.world.library = Library::new(bootstrap.library_paths);
                         },
                         Err(err) => {
-                            log::error!("Can't bootstrap detached session inputs: {err:?}");
+                            if is_ipc_auth_error(&err) {
+                                log::warn!(
+                                    "Detached bootstrap hit stale bridge auth; waiting for ark_lsp refresh: {err}"
+                                );
+                            } else if is_bridge_unavailable(&err) {
+                                log::info!("Detached bootstrap waiting for managed session readiness: {err}");
+                            } else {
+                                log::error!("Can't bootstrap detached session inputs: {err:?}");
+                            }
                         },
                     }
                 }
@@ -319,6 +329,9 @@ impl GlobalState {
                     match notif {
                         LspNotification::Initialized(_params) => {
                             handlers::handle_initialized(&self.client, &self.lsp_state).await?;
+                        },
+                        LspNotification::SessionUpdate(params) => {
+                            state_handlers::did_update_session(params, &mut self.world)?;
                         },
                         LspNotification::DidChangeWorkspaceFolders(_params) => {
                             // TODO: Restart indexer with new folders.
@@ -903,6 +916,9 @@ async fn process_diagnostics_batch(batch: Vec<RefreshDiagnosticsTask>) {
     for (uri, state) in batch {
         futures.push(task::spawn_blocking(move || {
             let _span = tracing::info_span!("diagnostics_refresh", uri = %uri).entered();
+            let mut state = state;
+
+            state_handlers::refresh_detached_session_inputs(&mut state, false);
 
             if let Some(document) = state.documents.get(&uri) {
                 // Special case testthat-specific behaviour. This is a simple

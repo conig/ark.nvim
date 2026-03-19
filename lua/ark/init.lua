@@ -132,6 +132,7 @@ function M.start_pane()
     return nil, err
   end
 
+  lsp.sync_sessions(options)
   notify("managed R pane ready: " .. pane_id)
   return pane_id
 end
@@ -144,6 +145,7 @@ function M.restart_pane()
     return nil, err
   end
 
+  lsp.sync_sessions(options)
   notify("managed R pane restarted: " .. pane_id)
   return pane_id
 end
@@ -151,6 +153,7 @@ end
 function M.stop_pane()
   ensure_setup()
   tmux.stop()
+  lsp.sync_sessions(options)
   notify("managed R pane stopped")
 end
 
@@ -169,7 +172,7 @@ function M.refresh(bufnr)
     end
   end
 
-  return lsp.restart(options, bufnr)
+  return lsp.refresh(options, bufnr)
 end
 
 function M.lsp_config(bufnr)

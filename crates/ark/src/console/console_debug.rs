@@ -381,12 +381,15 @@ fn remove_condition_handling_frames(
 
     // Then discard base R's own condition handling/emitting frames, if any
     remove_frame_prefix(stack, &[".handleSimpleError()"]);
-    remove_frame_prefix(stack, &[
-        "doWithOneRestart()",
-        "withOneRestart()",
-        "withRestarts()",
-        ".signalSimpleWarning",
-    ]);
+    remove_frame_prefix(
+        stack,
+        &[
+            "doWithOneRestart()",
+            "withOneRestart()",
+            "withRestarts()",
+            ".signalSimpleWarning",
+        ],
+    );
 }
 
 /// Remove frames from the top of the stack that match the given prefixes in order.
@@ -894,13 +897,16 @@ mod tests {
             frame("top()"),
         ];
         remove_fenced_frames(&mut frames);
-        assert_eq!(names(&frames), vec![
-            "user_code()",
-            "inner_off()",
-            "middle_user()",
-            "outer_off()",
-            "top()"
-        ]);
+        assert_eq!(
+            names(&frames),
+            vec![
+                "user_code()",
+                "inner_off()",
+                "middle_user()",
+                "outer_off()",
+                "top()"
+            ]
+        );
     }
 
     #[test]
@@ -923,11 +929,10 @@ mod tests {
             frame("shiny::runApp()"),
         ];
         remove_fenced_frames(&mut frames);
-        assert_eq!(names(&frames), vec![
-            "renderPlot()",
-            "output$distPlot()",
-            "shiny::runApp()"
-        ]);
+        assert_eq!(
+            names(&frames),
+            vec!["renderPlot()", "output$distPlot()", "shiny::runApp()"]
+        );
     }
 
     #[test]
@@ -999,11 +1004,10 @@ mod tests {
         remove_fenced_frames(&mut frames);
         // The sentinel at index 0 is kept without triggering hidden state,
         // so `internal()` between on/off is also visible
-        assert_eq!(names(&frames), vec![
-            "..stacktraceon..()",
-            "internal()",
-            "outer()"
-        ]);
+        assert_eq!(
+            names(&frames),
+            vec!["..stacktraceon..()", "internal()", "outer()"]
+        );
     }
 
     #[test]
