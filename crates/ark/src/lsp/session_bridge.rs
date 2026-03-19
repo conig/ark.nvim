@@ -707,7 +707,7 @@ impl SessionBridge {
             return Ok(Some(String::from(expr)));
         }
 
-        Ok(find_pipe_root_name(context, call_node)?)
+        find_pipe_root_name(context, call_node)
     }
 
     fn call_formals(&self, callee: &str) -> anyhow::Result<Vec<String>> {
@@ -2130,9 +2130,7 @@ fn subset_contains_point(point: &Point, subset_node: &Node) -> bool {
 
 fn locate_bridge_hover_node<'tree>(context: &'tree DocumentContext) -> Option<Node<'tree>> {
     let root = context.document.ast.root_node();
-    let Some(mut node) = root.find_closest_node_to_point(context.point) else {
-        return None;
-    };
+    let mut node = root.find_closest_node_to_point(context.point)?;
 
     while !node.is_identifier() && !node.is_string() && !node.is_keyword() {
         if let Some(sibling) = node.prev_sibling() {

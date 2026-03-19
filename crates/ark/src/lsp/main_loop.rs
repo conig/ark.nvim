@@ -67,6 +67,7 @@ pub(crate) type TokioUnboundedReceiver<T> = tokio::sync::mpsc::UnboundedReceiver
 /// https://github.com/posit-dev/positron/issues/5321), it's possible for older
 /// LSPs to send log messages and tasks to the newer LSPs.
 static AUXILIARY_EVENT_TX: RwLock<Option<TokioUnboundedSender<AuxiliaryEvent>>> = RwLock::new(None);
+static LATEST_WORLD_STATE: RwLock<Option<WorldState>> = RwLock::new(None);
 
 pub static LSP_HAS_CRASHED: AtomicBool = AtomicBool::new(false);
 
@@ -260,6 +261,8 @@ impl GlobalState {
                 }
             },
         }
+
+        store_latest_world_state(&state.world);
 
         state
     }
@@ -745,7 +748,6 @@ impl std::fmt::Debug for TraceKernelNotification<'_> {
 }
 
 #[derive(Debug)]
-#[expect(clippy::large_enum_variant)]
 pub(crate) enum IndexerQueueTask {
     Indexer(IndexerTask),
     Diagnostics(RefreshDiagnosticsTask),
@@ -762,7 +764,6 @@ pub enum IndexerTask {
 #[derive(Debug)]
 pub(crate) struct RefreshDiagnosticsTask {
     uri: Url,
-    state: WorldState,
 }
 
 #[derive(Debug)]
@@ -904,19 +905,15 @@ async fn process_diagnostics_batch(batch: Vec<RefreshDiagnosticsTask>) {
     tracing::trace!("Processing {n} diagnostic tasks", n = batch.len());
 
     // Deduplicate tasks by keeping only the last one for each URI. We use a
-    // `HashMap` so only the last insertion is retained. This is effectively a
-    // way of cancelling diagnostics tasks for outdated documents.
-    let batch: std::collections::HashMap<_, _> = batch
-        .into_iter()
-        .map(|task| (task.uri, task.state))
-        .collect();
+    // `HashSet` so only the latest refresh intent for each URI is retained.
+    let batch: std::collections::HashSet<_> = batch.into_iter().map(|task| task.uri).collect();
 
     let mut futures = FuturesUnordered::new();
 
-    for (uri, state) in batch {
+    for uri in batch {
         futures.push(task::spawn_blocking(move || {
             let _span = tracing::info_span!("diagnostics_refresh", uri = %uri).entered();
-            let mut state = state;
+            let mut state = latest_world_state()?;
 
             state_handlers::refresh_detached_session_inputs(&mut state, false);
 
@@ -986,14 +983,14 @@ pub(crate) fn index_start(folders: Vec<String>, state: WorldState) {
     index_create(uris, state);
 }
 
-pub(crate) fn index_create(uris: Vec<Url>, state: WorldState) {
+pub(crate) fn index_create(uris: Vec<Url>, _state: WorldState) {
     for uri in uris {
         INDEXER_QUEUE
             .send(IndexerQueueTask::Indexer(IndexerTask::Create { uri }))
             .unwrap_or_else(|err| crate::lsp::log_error!("Failed to queue index create: {err}"));
     }
 
-    diagnostics_refresh_all(state);
+    diagnostics_refresh_all_latest();
 }
 
 pub(crate) fn index_update(uris: Vec<Url>, state: WorldState) {
@@ -1020,10 +1017,10 @@ pub(crate) fn index_update(uris: Vec<Url>, state: WorldState) {
 
     // Refresh all diagnostics since the indexer results for one file may affect
     // other files
-    diagnostics_refresh_all(state);
+    diagnostics_refresh_all_latest();
 }
 
-pub(crate) fn index_delete(uris: Vec<Url>, state: WorldState) {
+pub(crate) fn index_delete(uris: Vec<Url>, _state: WorldState) {
     for uri in uris {
         INDEXER_QUEUE
             .send(IndexerQueueTask::Indexer(IndexerTask::Delete { uri }))
@@ -1032,10 +1029,10 @@ pub(crate) fn index_delete(uris: Vec<Url>, state: WorldState) {
 
     // Refresh all diagnostics since the indexer results for one file may affect
     // other files
-    diagnostics_refresh_all(state);
+    diagnostics_refresh_all_latest();
 }
 
-pub(crate) fn index_rename(uris: Vec<(Url, Url)>, state: WorldState) {
+pub(crate) fn index_rename(uris: Vec<(Url, Url)>, _state: WorldState) {
     for (old, new) in uris {
         INDEXER_QUEUE
             .send(IndexerQueueTask::Indexer(IndexerTask::Rename {
@@ -1047,10 +1044,30 @@ pub(crate) fn index_rename(uris: Vec<(Url, Url)>, state: WorldState) {
 
     // Refresh all diagnostics since the indexer results for one file may affect
     // other files
-    diagnostics_refresh_all(state);
+    diagnostics_refresh_all_latest();
 }
 
-pub(crate) fn diagnostics_refresh_all(state: WorldState) {
+pub(crate) fn store_latest_world_state(state: &WorldState) {
+    let mut latest = LATEST_WORLD_STATE.write().unwrap();
+    *latest = Some(state.clone());
+}
+
+fn latest_world_state() -> Option<WorldState> {
+    let latest = LATEST_WORLD_STATE.read().unwrap();
+    latest.clone()
+}
+
+pub(crate) fn diagnostics_refresh_all_from_state(state: &WorldState) {
+    store_latest_world_state(state);
+    diagnostics_refresh_all_latest();
+}
+
+pub(crate) fn diagnostics_refresh_all_latest() {
+    let Some(state) = latest_world_state() else {
+        tracing::trace!("Skipping diagnostics refresh because no latest world state is available");
+        return;
+    };
+
     tracing::trace!(
         "Refreshing diagnostics for {n} documents",
         n = state.documents.len()
@@ -1064,7 +1081,6 @@ pub(crate) fn diagnostics_refresh_all(state: WorldState) {
         INDEXER_QUEUE
             .send(IndexerQueueTask::Diagnostics(RefreshDiagnosticsTask {
                 uri: uri.clone(),
-                state: state.clone(),
             }))
             .unwrap_or_else(|err| lsp::log_error!("Failed to queue diagnostics refresh: {err}"));
     }

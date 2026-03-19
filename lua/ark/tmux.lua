@@ -463,6 +463,15 @@ function M.startup_status(config)
   return status
 end
 
+function M.startup_status_authoritative(config)
+  local session = M.session()
+  if not session then
+    return nil
+  end
+
+  return read_startup_status(session, config)
+end
+
 function M.startup_status_path(config)
   local session = M.session()
   if not session then

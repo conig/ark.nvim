@@ -53,6 +53,10 @@ wait_for("ark bridge ready", 20000, function()
   return require("ark").status().bridge_ready == true
 end)
 
+wait_for("managed R repl ready", 20000, function()
+  return require("ark").status().repl_ready == true
+end)
+
 require("ark").refresh(0)
 
 wait_for("ark lsp client", 15000, function()
@@ -61,18 +65,14 @@ wait_for("ark lsp client", 15000, function()
 end)
 
 wait_for("semantic diagnostics", 10000, function()
-  return #vim.diagnostic.get(0) >= 1
+  local messages = diagnostic_messages()
+  return #messages >= 1
+    and not any_message_contains(messages, "No symbol named 'library' in scope.")
+    and not any_message_contains(messages, "No symbol named 'browser' in scope.")
+    and any_message_contains(messages, "No symbol named 'undefined_symbol_ark' in scope.")
 end)
 
 local messages = diagnostic_messages()
-
-if any_message_contains(messages, "No symbol named 'library' in scope.") then
-  fail("unexpected diagnostic for library(): " .. vim.inspect(messages))
-end
-
-if any_message_contains(messages, "No symbol named 'browser' in scope.") then
-  fail("unexpected diagnostic for browser(): " .. vim.inspect(messages))
-end
 
 if not any_message_contains(messages, "No symbol named 'undefined_symbol_ark' in scope.") then
   fail("expected undefined symbol diagnostic, got: " .. vim.inspect(messages))

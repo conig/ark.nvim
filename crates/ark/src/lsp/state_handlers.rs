@@ -320,7 +320,7 @@ pub(crate) fn did_open(
     // update_config(vec![uri]).await;
     refresh_detached_session_inputs(state, false);
 
-    lsp::main_loop::diagnostics_refresh_all(state.clone());
+    lsp::main_loop::diagnostics_refresh_all_from_state(state);
 
     Ok(())
 }
@@ -470,11 +470,11 @@ pub(crate) fn did_update_session(
 
     state.session_bridge = session_bridge_from_update(&params)?;
 
-    if params.repl_ready || params.status == "ready" {
+    if params.repl_ready {
         refresh_detached_session_inputs(state, true);
     }
 
-    lsp::diagnostics_refresh_all(state.clone());
+    lsp::diagnostics_refresh_all(state);
 
     Ok(())
 }
@@ -586,7 +586,7 @@ async fn update_config(
     // Refresh diagnostics if the configuration changed
     if state.config.diagnostics != diagnostics_config {
         tracing::info!("Refreshing diagnostics after configuration changed");
-        lsp::main_loop::diagnostics_refresh_all(state.clone());
+        lsp::main_loop::diagnostics_refresh_all_from_state(state);
     }
 
     Ok(())
@@ -716,7 +716,7 @@ pub(crate) fn did_change_console_inputs(
     // during package development in conjunction with `devtools::load_all()`.
     // Ideally diagnostics would not rely on these though, and we wouldn't need
     // to refresh from here.
-    lsp::diagnostics_refresh_all(state.clone());
+    lsp::diagnostics_refresh_all(state);
 
     Ok(())
 }

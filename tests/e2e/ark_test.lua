@@ -63,6 +63,57 @@ function M.item_labels(items)
   return out
 end
 
+function M.assert_fresh_detached_lsp_binary(binary_path)
+  if type(binary_path) ~= "string" or binary_path == "" then
+    return
+  end
+
+  local repo_root = vim.fn.getcwd()
+  local normalized_binary = vim.fs.normalize(binary_path)
+  local normalized_root = vim.fs.normalize(repo_root)
+
+  if not vim.startswith(normalized_binary, normalized_root .. "/target/") then
+    return
+  end
+
+  if vim.fn.filereadable(normalized_binary) ~= 1 then
+    M.fail("detached ark-lsp binary is missing: " .. normalized_binary)
+  end
+
+  local binary_mtime = vim.fn.getftime(normalized_binary)
+  if type(binary_mtime) ~= "number" or binary_mtime <= 0 then
+    M.fail("failed to stat detached ark-lsp binary: " .. normalized_binary)
+  end
+
+  local source_paths = vim.fn.systemlist({ "rg", "--files", "crates/ark/src", "crates/ark_test/src" })
+  if vim.v.shell_error ~= 0 then
+    M.fail("failed to enumerate Rust sources for binary freshness check")
+  end
+
+  source_paths[#source_paths + 1] = "crates/ark/Cargo.toml"
+  source_paths[#source_paths + 1] = "crates/ark_test/Cargo.toml"
+  source_paths[#source_paths + 1] = "Cargo.lock"
+
+  local newer = {}
+  for _, relpath in ipairs(source_paths) do
+    local fullpath = vim.fs.normalize(repo_root .. "/" .. relpath)
+    if vim.fn.filereadable(fullpath) == 1 then
+      local source_mtime = vim.fn.getftime(fullpath)
+      if type(source_mtime) == "number" and source_mtime > binary_mtime then
+        newer[#newer + 1] = relpath
+      end
+    end
+  end
+
+  if #newer > 0 then
+    M.fail(
+      "detached ark-lsp binary is older than source files: "
+        .. table.concat(newer, ", ")
+        .. ". Rebuild with: cargo build -p ark --bin ark-lsp"
+    )
+  end
+end
+
 function M.insert_text(item)
   return item.insertText or item.insert_text
 end
@@ -78,6 +129,9 @@ function M.setup_managed_buffer(test_file, lines)
   vim.fn.writefile(lines, test_file)
   vim.cmd("edit " .. test_file)
   vim.cmd("setfiletype r")
+
+  local lsp_config = require("ark").lsp_config(0)
+  M.assert_fresh_detached_lsp_binary(lsp_config and lsp_config.cmd and lsp_config.cmd[1] or nil)
 
   local pane_id, pane_err = require("ark").start_pane()
   if not pane_id then

@@ -505,9 +505,11 @@ mod tests {
     #[test]
     fn test_detached_hover_auth_mismatch_degrades_to_none() {
         let uri = Url::parse("file:///tmp/ark_hover_auth_fallback.R").expect("expected uri");
-        let mut state = WorldState::default();
-        state.runtime_mode = RuntimeMode::Detached;
-        state.session_bridge = Some(auth_error_bridge());
+        let mut state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            session_bridge: Some(auth_error_bridge()),
+            ..Default::default()
+        };
         state
             .documents
             .insert(uri.clone(), Document::new("mean", Some(1)));

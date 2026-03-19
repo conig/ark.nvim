@@ -90,6 +90,7 @@ That means:
 - detached `ark_lsp` startup must not depend on the bridge already being live
 - bridge port and auth token must be discovered from the trusted status file at request time
 - `status = ready` is not sufficient for live requests; the bridge must also be `repl_ready`
+- Neovim must not synthesize `repl_ready` for LSP session updates unless it also supplies a live connection shape Rust can trust immediately; otherwise the Lua layer and detached bridge will split on readiness
 - bridge status changes may trigger an in-process session refresh and diagnostics refresh, but must not trigger normal LSP stop/start churn
 - explicit user restarts remain available as an escape hatch, but they are not the canonical attach path
 

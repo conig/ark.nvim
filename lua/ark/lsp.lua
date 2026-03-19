@@ -182,7 +182,9 @@ local function session_payload(opts)
     return {}
   end
 
-  local startup_status = tmux.startup_status and tmux.startup_status(opts.tmux) or nil
+  local startup_status = tmux.startup_status_authoritative and tmux.startup_status_authoritative(opts.tmux)
+    or tmux.startup_status and tmux.startup_status(opts.tmux)
+    or nil
 
   return {
     kind = opts.tmux.session_kind,
