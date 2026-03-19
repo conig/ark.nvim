@@ -94,6 +94,16 @@ That means:
 - bridge status changes may trigger an in-process session refresh and diagnostics refresh, but must not trigger normal LSP stop/start churn
 - explicit user restarts remain available as an escape hatch, but they are not the canonical attach path
 
+### Diagnostics freshness invariant
+
+Background diagnostics refreshes must run against the newest post-edit `WorldState`, not just the newest index tasks.
+
+That means:
+
+- any path that queues index-driven diagnostics refreshes after document edits must also update the shared latest-world snapshot first
+- otherwise diagnostics can clear or stay stale after a real edit even though the parser and live session are healthy
+- this failure is especially visible when static diagnostics disappear after live attach and the next edit should replace them with a syntax diagnostic
+
 ### Detached binary verification invariant
 
 The tmux-backed Neovim flow runs the built `ark-lsp` binary from `target/debug/ark-lsp`.

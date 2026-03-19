@@ -983,7 +983,9 @@ pub(crate) fn index_start(folders: Vec<String>, state: WorldState) {
     index_create(uris, state);
 }
 
-pub(crate) fn index_create(uris: Vec<Url>, _state: WorldState) {
+pub(crate) fn index_create(uris: Vec<Url>, state: WorldState) {
+    store_latest_world_state(&state);
+
     for uri in uris {
         INDEXER_QUEUE
             .send(IndexerQueueTask::Indexer(IndexerTask::Create { uri }))
@@ -994,6 +996,8 @@ pub(crate) fn index_create(uris: Vec<Url>, _state: WorldState) {
 }
 
 pub(crate) fn index_update(uris: Vec<Url>, state: WorldState) {
+    store_latest_world_state(&state);
+
     for uri in uris {
         if !ExtUrl::is_indexable(&uri) {
             continue;
@@ -1020,7 +1024,9 @@ pub(crate) fn index_update(uris: Vec<Url>, state: WorldState) {
     diagnostics_refresh_all_latest();
 }
 
-pub(crate) fn index_delete(uris: Vec<Url>, _state: WorldState) {
+pub(crate) fn index_delete(uris: Vec<Url>, state: WorldState) {
+    store_latest_world_state(&state);
+
     for uri in uris {
         INDEXER_QUEUE
             .send(IndexerQueueTask::Indexer(IndexerTask::Delete { uri }))
@@ -1032,7 +1038,9 @@ pub(crate) fn index_delete(uris: Vec<Url>, _state: WorldState) {
     diagnostics_refresh_all_latest();
 }
 
-pub(crate) fn index_rename(uris: Vec<(Url, Url)>, _state: WorldState) {
+pub(crate) fn index_rename(uris: Vec<(Url, Url)>, state: WorldState) {
+    store_latest_world_state(&state);
+
     for (old, new) in uris {
         INDEXER_QUEUE
             .send(IndexerQueueTask::Indexer(IndexerTask::Rename {
