@@ -49,6 +49,19 @@ pub(crate) struct SessionBridge {
     timeout: Duration,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionBridgeDebugInfo {
+    source_kind: String,
+    status_file: Option<PathBuf>,
+    host: Option<String>,
+    port: Option<u16>,
+    tmux_socket: String,
+    tmux_session: String,
+    tmux_pane: String,
+    timeout_ms: u64,
+}
+
 #[derive(Clone, Debug)]
 enum SessionBridgeSource {
     Fixed(SessionBridgeConnection),
@@ -267,6 +280,34 @@ pub(crate) struct SessionBridgeCompletion {
 }
 
 impl SessionBridge {
+    pub(crate) fn debug_info(&self) -> SessionBridgeDebugInfo {
+        let (source_kind, status_file, host, port) = match &self.source {
+            SessionBridgeSource::Fixed(connection) => (
+                String::from("fixed"),
+                None,
+                Some(connection.host.clone()),
+                Some(connection.port),
+            ),
+            SessionBridgeSource::StatusFile(source) => (
+                String::from("status_file"),
+                Some(source.status_file.clone()),
+                None,
+                None,
+            ),
+        };
+
+        SessionBridgeDebugInfo {
+            source_kind,
+            status_file,
+            host,
+            port,
+            tmux_socket: self.session.tmux_socket.clone(),
+            tmux_session: self.session.tmux_session.clone(),
+            tmux_pane: self.session.tmux_pane.clone(),
+            timeout_ms: self.timeout.as_millis().min(u128::from(u64::MAX)) as u64,
+        }
+    }
+
     pub(crate) fn new(config: SessionBridgeConfig) -> anyhow::Result<Self> {
         let session = BridgeSession {
             tmux_socket: config.tmux_socket,

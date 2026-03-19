@@ -68,10 +68,24 @@ use crate::lsp::state::RuntimeMode;
 use crate::lsp::state::WorldState;
 use crate::url::UrlId;
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
 pub(crate) fn refresh_detached_session_inputs(state: &mut WorldState, force: bool) {
     if state.runtime_mode != RuntimeMode::Detached {
         return;
     }
+
+    if !force && state.detached_session_bootstrap_attempted {
+        return;
+    }
+
+    state.detached_session_bootstrap_attempted = true;
+    state.detached_session_status.last_bootstrap_attempt_ms = Some(now_ms());
 
     let needs_bootstrap = force
         || state.console_scopes.is_empty()
@@ -82,8 +96,17 @@ pub(crate) fn refresh_detached_session_inputs(state: &mut WorldState, force: boo
     }
 
     let Some(session_bridge) = state.session_bridge.as_ref() else {
+        state.detached_session_status.last_bootstrap_error = String::from("session bridge missing");
         return;
     };
+
+    tracing::info!(
+        force,
+        console_scope_count = state.console_scopes.len(),
+        installed_package_count = state.installed_packages.len(),
+        library_path_count = state.library.library_paths.len(),
+        "Attempting detached session bootstrap refresh"
+    );
 
     match session_bridge.bootstrap() {
         Ok(bootstrap) => {
@@ -96,8 +119,11 @@ pub(crate) fn refresh_detached_session_inputs(state: &mut WorldState, force: boo
             state.console_scopes = vec![bootstrap.search_path_symbols];
             state.installed_packages = bootstrap.installed_packages;
             state.library = Library::new(bootstrap.library_paths);
+            state.detached_session_status.last_bootstrap_success_ms = Some(now_ms());
+            state.detached_session_status.last_bootstrap_error.clear();
         },
         Err(err) => {
+            state.detached_session_status.last_bootstrap_error = err.to_string();
             if is_ipc_auth_error(&err) {
                 tracing::warn!("Detached session input refresh hit stale bridge auth: {err}");
             } else if is_bridge_unavailable(&err) {
@@ -340,8 +366,6 @@ pub(crate) fn did_change(
         .ok_or(anyhow!("No parser for {uri}"))?;
 
     document.on_did_change(parser, &params);
-    refresh_detached_session_inputs(state, false);
-
     lsp::main_loop::index_update(vec![uri.clone()], state.clone());
 
     // Notify console about document change to invalidate breakpoints.
@@ -468,7 +492,20 @@ pub(crate) fn did_update_session(
         return Ok(());
     }
 
+    tracing::info!(
+        status = params.status,
+        repl_ready = params.repl_ready,
+        tmux_socket = params.tmux_socket,
+        tmux_session = params.tmux_session,
+        tmux_pane = params.tmux_pane,
+        "Received detached session update"
+    );
+
+    state.detached_session_status.last_session_update_ms = Some(now_ms());
+    state.detached_session_status.last_session_update_status = params.status.clone();
+    state.detached_session_status.last_session_update_repl_ready = params.repl_ready;
     state.session_bridge = session_bridge_from_update(&params)?;
+    state.detached_session_bootstrap_attempted = false;
 
     if params.repl_ready {
         refresh_detached_session_inputs(state, true);
@@ -598,8 +635,10 @@ mod tests {
     use std::io::Read;
     use std::io::Write;
     use std::net::TcpListener;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
     use std::thread;
-
     fn spawn_bootstrap_bridge(auth_token: &str) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
         let port = listener
@@ -657,6 +696,22 @@ mod tests {
         port
     }
 
+    fn spawn_counting_bridge(count: Arc<AtomicUsize>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+
+        thread::spawn(move || {
+            while let Ok((_stream, _)) = listener.accept() {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        port
+    }
+
     #[test]
     fn test_detached_session_update_bootstraps_console_scopes() {
         let auth_token = "ark-test-token";
@@ -700,6 +755,47 @@ mod tests {
         assert_eq!(
             state.library.library_paths[0],
             std::path::PathBuf::from("/tmp/ark-test-library")
+        );
+    }
+
+    #[test]
+    fn test_detached_nonforced_refresh_only_probes_bridge_once() {
+        let bridge_hits = Arc::new(AtomicUsize::new(0));
+        let port = spawn_counting_bridge(bridge_hits.clone());
+        let status = tempfile::NamedTempFile::new().expect("expected temp status file");
+        std::fs::write(
+            status.path(),
+            format!(
+                r#"{{"status":"ready","port":{},"auth_token":"test-token","repl_ready":true}}"#,
+                port
+            ),
+        )
+        .expect("expected status file");
+
+        let mut state = WorldState {
+            runtime_mode: crate::lsp::state::RuntimeMode::Detached,
+            session_bridge: Some(
+                SessionBridge::new(SessionBridgeConfig {
+                    host: String::new(),
+                    port: 0,
+                    auth_token: String::new(),
+                    status_file: Some(status.path().to_path_buf()),
+                    tmux_socket: String::from("/tmp/ark-test.sock"),
+                    tmux_session: String::from("ark-test"),
+                    tmux_pane: String::from("%1"),
+                    timeout_ms: 50,
+                })
+                .expect("expected bridge"),
+            ),
+            ..Default::default()
+        };
+        refresh_detached_session_inputs(&mut state, false);
+        refresh_detached_session_inputs(&mut state, false);
+
+        assert_eq!(
+            bridge_hits.load(Ordering::SeqCst),
+            4,
+            "non-forced detached refresh should only run one bridge probe cycle"
         );
     }
 }

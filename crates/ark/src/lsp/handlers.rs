@@ -77,6 +77,7 @@ use crate::lsp::symbols;
 use crate::r_task;
 
 pub static ARK_VDOC_REQUEST: &str = "ark/internal/virtualDocument";
+pub static ARK_STATUS_REQUEST: &str = "ark/internal/status";
 pub static ARK_SESSION_UPDATE_NOTIFICATION: &str = "ark/updateSession";
 
 #[derive(Debug, Eq, PartialEq, Clone, serde::Deserialize, serde::Serialize)]
@@ -86,6 +87,10 @@ pub(crate) struct VirtualDocumentParams {
 }
 
 pub(crate) type VirtualDocumentResponse = String;
+
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StatusParams {}
 
 #[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,6 +224,10 @@ pub(crate) async fn handle_execute_command(client: &Client) -> LspResult<Option<
         Err(err) => client.log_message(MessageType::ERROR, err).await,
     }
     Ok(None)
+}
+
+pub(crate) fn handle_status(_params: StatusParams, state: &WorldState) -> LspResult<Value> {
+    serde_json::to_value(state.detached_status_snapshot()).map_err(|err| LspError::Anyhow(err.into()))
 }
 
 #[tracing::instrument(level = "info", skip_all)]

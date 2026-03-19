@@ -90,8 +90,11 @@ That means:
 - detached `ark_lsp` startup must not depend on the bridge already being live
 - bridge port and auth token must be discovered from the trusted status file at request time
 - `status = ready` is not sufficient for live requests; the bridge must also be `repl_ready`
+- only the interactive pane-owned R process may publish tmux-pane session status; non-interactive child R processes spawned from that pane must not overwrite the pane status file or bridge identity
 - Neovim must not synthesize `repl_ready` for LSP session updates unless it also supplies a live connection shape Rust can trust immediately; otherwise the Lua layer and detached bridge will split on readiness
 - bridge status changes may trigger an in-process session refresh and diagnostics refresh, but must not trigger normal LSP stop/start churn
+- detached live-session bootstrap must not run on every document edit; the edit path may take at most one opportunistic bootstrap probe per session state, and authoritative `ark/updateSession` remains the reset point for another probe cycle
+- diagnostics workers must treat the latest stored `WorldState` as read-only input; detached session bootstrap belongs on the authoritative main-state path, not inside background diagnostics tasks running on cloned state snapshots
 - explicit user restarts remain available as an escape hatch, but they are not the canonical attach path
 
 ### Diagnostics freshness invariant

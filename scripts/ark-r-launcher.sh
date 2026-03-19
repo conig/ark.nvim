@@ -242,6 +242,10 @@ local({
     sys.source(.user_profile, envir = .GlobalEnv, keep.source = FALSE)
   }
 
+  if (!interactive()) {
+    return(invisible(NULL))
+  }
+
   .has_runtime <- function() {
     if (!requireNamespace("rscope", quietly = TRUE)) return(FALSE)
     .ns <- asNamespace("rscope")

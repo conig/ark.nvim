@@ -27,6 +27,7 @@ end
 function M.setup(opts)
   options = merged_opts(options, opts)
   blink.register_lsp_commands()
+  blink.patch_blink_context()
 
   local group = vim.api.nvim_create_augroup("ArkNvim", { clear = true })
   vim.api.nvim_create_autocmd("FileType", {
@@ -202,6 +203,7 @@ function M.status()
   local status = tmux.status(options.tmux)
   status.lsp_cmd = options.lsp.cmd
   status.launcher = options.tmux.launcher
+  status.lsp_status = lsp.status(options)
   return status
 end
 

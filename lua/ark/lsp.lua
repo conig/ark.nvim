@@ -4,12 +4,15 @@ local tmux = require("ark.tmux")
 local uv = vim.uv or vim.loop
 
 local SESSION_UPDATE_METHOD = "ark/updateSession"
+local STATUS_REQUEST_METHOD = "ark/internal/status"
 
 local session_watchers = {}
 local session_watch_cleanup = {}
 local session_watch_polls = {}
+local session_watch_force_until = {}
 local client_session_payloads = {}
 local managed_client_ids = {}
+local SESSION_RETRY_GRACE_MS = 20000
 
 local function filetype_enabled(filetypes, filetype)
   return vim.tbl_contains(filetypes or {}, filetype)
@@ -143,6 +146,7 @@ local function stop_session_watch(bufnr)
   session_watchers[bufnr] = nil
   session_watch_cleanup[bufnr] = nil
   session_watch_polls[bufnr] = nil
+  session_watch_force_until[bufnr] = nil
 end
 
 local function session_buffers(opts)
@@ -199,13 +203,13 @@ local function session_payload(opts)
   }
 end
 
-local function notify_client_session(client, payload)
+local function notify_client_session(client, payload, force)
   if not live_client(client) then
     return
   end
 
   local normalized = payload or {}
-  if vim.deep_equal(client_session_payloads[client.id] or {}, normalized) then
+  if not force and vim.deep_equal(client_session_payloads[client.id] or {}, normalized) then
     return
   end
 
@@ -213,11 +217,11 @@ local function notify_client_session(client, payload)
   client:notify(SESSION_UPDATE_METHOD, normalized)
 end
 
-local function notify_sessions(opts, bufnr, payload)
+local function notify_sessions(opts, bufnr, payload, force)
   local clients = session_clients(opts, bufnr)
   local normalized = payload or session_payload(opts)
   for _, client in ipairs(clients) do
-    notify_client_session(client, normalized)
+    notify_client_session(client, normalized, force)
   end
 end
 
@@ -287,8 +291,21 @@ local function watch_status_file(status_path, on_change)
   return nil
 end
 
-local function session_watch_finished(payload)
-  return next(payload) == nil or payload.replReady == true or payload.status == "error"
+local function session_watch_finished(bufnr, payload)
+  if next(payload) == nil or payload.status == "error" then
+    return true
+  end
+
+  if payload.replReady ~= true then
+    return false
+  end
+
+  local force_until = session_watch_force_until[bufnr]
+  if type(force_until) ~= "number" then
+    return false
+  end
+
+  return vim.uv.now() >= force_until
 end
 
 local function ensure_session_watch(opts, bufnr)
@@ -303,9 +320,16 @@ local function ensure_session_watch(opts, bufnr)
   end
 
   local payload = session_payload(opts)
-  notify_sessions(opts, bufnr, payload)
+  if payload.replReady == true and type(session_watch_force_until[bufnr]) ~= "number" then
+    session_watch_force_until[bufnr] = vim.uv.now() + SESSION_RETRY_GRACE_MS
+  elseif payload.replReady ~= true then
+    session_watch_force_until[bufnr] = nil
+  end
 
-  if session_watch_finished(payload) then
+  local force_notify = payload.replReady == true and type(session_watch_force_until[bufnr]) == "number"
+  notify_sessions(opts, bufnr, payload, force_notify)
+
+  if session_watch_finished(bufnr, payload) then
     stop_session_watch(bufnr)
     return
   end
@@ -319,8 +343,9 @@ local function ensure_session_watch(opts, bufnr)
   if not session_watchers[bufnr] then
     local watcher = watch_status_file(status_path, function()
       local current = session_payload(opts)
-      notify_sessions(opts, bufnr, current)
-      if session_watch_finished(current) then
+      local force = current.replReady == true and type(session_watch_force_until[bufnr]) == "number"
+      notify_sessions(opts, bufnr, current, force)
+      if session_watch_finished(bufnr, current) then
         stop_session_watch(bufnr)
       end
     end)
@@ -343,8 +368,9 @@ local function ensure_session_watch(opts, bufnr)
     end
 
     local current = session_payload(opts)
-    notify_sessions(opts, bufnr, current)
-    if session_watch_finished(current) then
+    local force = current.replReady == true and type(session_watch_force_until[bufnr]) == "number"
+    notify_sessions(opts, bufnr, current, force)
+    if session_watch_finished(bufnr, current) then
       stop_session_watch(bufnr)
       return
     end
@@ -460,6 +486,48 @@ function M.refresh(opts, bufnr)
   end
 
   return start_client(opts, bufnr)
+end
+
+function M.status(opts, bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+  local client = live_clients(opts, bufnr)[1]
+  if not live_client(client) then
+    return {
+      available = false,
+      reason = "ark_lsp client unavailable",
+    }
+  end
+
+  local response, err = client:request_sync(STATUS_REQUEST_METHOD, {}, 200, bufnr)
+  if err then
+    return {
+      available = false,
+      reason = err,
+      client_id = client.id,
+    }
+  end
+
+  if not response then
+    return {
+      available = false,
+      reason = "no response",
+      client_id = client.id,
+    }
+  end
+
+  if response.error then
+    return {
+      available = false,
+      reason = vim.inspect(response.error),
+      client_id = client.id,
+    }
+  end
+
+  return vim.tbl_extend("force", {
+    available = true,
+    client_id = client.id,
+  }, response.result or {})
 end
 
 return M

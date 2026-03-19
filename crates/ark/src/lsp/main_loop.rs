@@ -430,6 +430,9 @@ impl GlobalState {
                         LspRequest::VirtualDocument(params) => {
                             respond(tx, || handlers::handle_virtual_document(params, &self.world), LspResponse::VirtualDocument)?;
                         },
+                        LspRequest::Status(params) => {
+                            respond(tx, || handlers::handle_status(params, &self.world), LspResponse::Status)?;
+                        },
                         LspRequest::InputBoundaries(params) => {
                             respond(tx, || handlers::handle_input_boundaries(params), LspResponse::InputBoundaries)?;
                         },
@@ -913,9 +916,7 @@ async fn process_diagnostics_batch(batch: Vec<RefreshDiagnosticsTask>) {
     for uri in batch {
         futures.push(task::spawn_blocking(move || {
             let _span = tracing::info_span!("diagnostics_refresh", uri = %uri).entered();
-            let mut state = latest_world_state()?;
-
-            state_handlers::refresh_detached_session_inputs(&mut state, false);
+            let state = latest_world_state()?;
 
             if let Some(document) = state.documents.get(&uri) {
                 // Special case testthat-specific behaviour. This is a simple
@@ -1091,5 +1092,78 @@ pub(crate) fn diagnostics_refresh_all_latest() {
                 uri: uri.clone(),
             }))
             .unwrap_or_else(|err| lsp::log_error!("Failed to queue diagnostics refresh: {err}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::thread;
+
+    use crate::lsp::session_bridge::SessionBridge;
+    use crate::lsp::session_bridge::SessionBridgeConfig;
+
+    fn spawn_counting_bridge(count: Arc<AtomicUsize>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+
+        thread::spawn(move || {
+            while let Ok((_stream, _)) = listener.accept() {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        port
+    }
+
+    #[test]
+    fn test_diagnostics_batch_does_not_probe_detached_bridge() {
+        let runtime = tokio::runtime::Runtime::new().expect("expected tokio runtime");
+        let bridge_hits = Arc::new(AtomicUsize::new(0));
+        let port = spawn_counting_bridge(bridge_hits.clone());
+        let status = tempfile::NamedTempFile::new().expect("expected temp status file");
+        std::fs::write(
+            status.path(),
+            format!(
+                r#"{{"status":"ready","port":{},"auth_token":"test-token","repl_ready":true}}"#,
+                port
+            ),
+        )
+        .expect("expected status file");
+
+        store_latest_world_state(&WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            session_bridge: Some(
+                SessionBridge::new(SessionBridgeConfig {
+                    host: String::new(),
+                    port: 0,
+                    auth_token: String::new(),
+                    status_file: Some(status.path().to_path_buf()),
+                    tmux_socket: String::from("/tmp/ark-test.sock"),
+                    tmux_session: String::from("ark-test"),
+                    tmux_pane: String::from("%1"),
+                    timeout_ms: 50,
+                })
+                .expect("expected bridge"),
+            ),
+            ..Default::default()
+        });
+
+        runtime.block_on(process_diagnostics_batch(vec![RefreshDiagnosticsTask {
+            uri: Url::parse("file:///tmp/ark_diag_probe.R").expect("expected uri"),
+        }]));
+
+        assert_eq!(
+            bridge_hits.load(Ordering::SeqCst),
+            0,
+            "diagnostics refresh must not bootstrap detached bridge state from a cloned snapshot"
+        );
     }
 }

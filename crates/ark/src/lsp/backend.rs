@@ -38,8 +38,10 @@ use super::main_loop::LSP_HAS_CRASHED;
 use crate::console::Console;
 use crate::console::ConsoleNotification;
 use crate::lsp::handlers::SessionUpdateParams;
+use crate::lsp::handlers::StatusParams;
 use crate::lsp::handlers::VirtualDocumentParams;
 use crate::lsp::handlers::VirtualDocumentResponse;
+use crate::lsp::handlers::ARK_STATUS_REQUEST;
 use crate::lsp::handlers::ARK_SESSION_UPDATE_NOTIFICATION;
 use crate::lsp::handlers::ARK_VDOC_REQUEST;
 use crate::lsp::help_topic;
@@ -171,6 +173,7 @@ pub(crate) enum LspRequest {
     OnTypeFormatting(DocumentOnTypeFormattingParams),
     CodeAction(CodeActionParams),
     VirtualDocument(VirtualDocumentParams),
+    Status(StatusParams),
     InputBoundaries(InputBoundariesParams),
 }
 
@@ -195,6 +198,7 @@ pub(crate) enum LspResponse {
     OnTypeFormatting(Option<Vec<TextEdit>>),
     CodeAction(Option<CodeActionResponse>),
     VirtualDocument(VirtualDocumentResponse),
+    Status(Value),
     InputBoundaries(InputBoundariesResponse),
 }
 
@@ -523,6 +527,14 @@ impl Backend {
         )
     }
 
+    async fn status(&self, params: StatusParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::Status(params)).await,
+            LspResponse::Status
+        )
+    }
+
     async fn input_boundaries(
         &self,
         params: InputBoundariesParams,
@@ -621,6 +633,7 @@ pub(crate) fn start_lsp(
             )
             .custom_method(help_topic::POSITRON_HELP_TOPIC_REQUEST, Backend::help_topic)
             .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
+            .custom_method(ARK_STATUS_REQUEST, Backend::status)
             // In principle this should probably be a Jupyter request
             .custom_method(
                 input_boundaries::POSITRON_INPUT_BOUNDARIES_REQUEST,
@@ -687,6 +700,7 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         )
         .custom_method(help_topic::POSITRON_HELP_TOPIC_REQUEST, Backend::help_topic)
         .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
+        .custom_method(ARK_STATUS_REQUEST, Backend::status)
         .custom_method(
             input_boundaries::POSITRON_INPUT_BOUNDARIES_REQUEST,
             Backend::input_boundaries,

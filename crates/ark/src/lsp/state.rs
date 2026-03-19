@@ -13,6 +13,7 @@ use crate::lsp::document::DocumentKind;
 use crate::lsp::inputs::library::Library;
 use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::session_bridge::SessionBridge;
+use crate::lsp::session_bridge::SessionBridgeDebugInfo;
 use crate::lsp::session_bridge::SessionBridgeConfig;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -74,6 +75,34 @@ pub(crate) struct WorldState {
     pub(crate) runtime_mode: RuntimeMode,
 
     pub(crate) session_bridge: Option<SessionBridge>,
+
+    pub(crate) detached_session_bootstrap_attempted: bool,
+    pub(crate) detached_session_status: DetachedSessionStatus,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DetachedSessionStatus {
+    pub last_session_update_ms: Option<u64>,
+    pub last_session_update_status: String,
+    pub last_session_update_repl_ready: bool,
+    pub last_bootstrap_attempt_ms: Option<u64>,
+    pub last_bootstrap_success_ms: Option<u64>,
+    pub last_bootstrap_error: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DetachedStatusSnapshot {
+    pub runtime_mode: String,
+    pub session_bridge_configured: bool,
+    pub session_bridge: Option<SessionBridgeDebugInfo>,
+    pub detached_session_bootstrap_attempted: bool,
+    pub console_scope_count: usize,
+    pub console_scope_symbol_count: usize,
+    pub installed_package_count: usize,
+    pub library_path_count: usize,
+    pub detached_session_status: DetachedSessionStatus,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -109,6 +138,23 @@ impl WorldState {
     pub(crate) fn has_attached_runtime(&self) -> bool {
         self.runtime_mode == RuntimeMode::Attached
     }
+
+    pub(crate) fn detached_status_snapshot(&self) -> DetachedStatusSnapshot {
+        DetachedStatusSnapshot {
+            runtime_mode: match self.runtime_mode {
+                RuntimeMode::Attached => String::from("attached"),
+                RuntimeMode::Detached => String::from("detached"),
+            },
+            session_bridge_configured: self.session_bridge.is_some(),
+            session_bridge: self.session_bridge.as_ref().map(|bridge| bridge.debug_info()),
+            detached_session_bootstrap_attempted: self.detached_session_bootstrap_attempted,
+            console_scope_count: self.console_scopes.len(),
+            console_scope_symbol_count: self.console_scopes.iter().map(|scope| scope.len()).sum(),
+            installed_package_count: self.installed_packages.len(),
+            library_path_count: self.library.library_paths.len(),
+            detached_session_status: self.detached_session_status.clone(),
+        }
+    }
 }
 
 impl Default for WorldState {
@@ -124,6 +170,8 @@ impl Default for WorldState {
             config: LspConfig::default(),
             runtime_mode: RuntimeMode::Attached,
             session_bridge: None,
+            detached_session_bootstrap_attempted: false,
+            detached_session_status: DetachedSessionStatus::default(),
         }
     }
 }
