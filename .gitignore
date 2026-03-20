@@ -8,4 +8,5 @@ packages/rscope/src/*.o
 packages/rscope/src/*.so
 packages/arkbridge/src/*.o
 packages/arkbridge/src/*.so
+packages/arkbridge/src/symbols.rds
 /.nvimlog
