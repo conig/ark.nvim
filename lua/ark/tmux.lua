@@ -375,7 +375,8 @@ local function prompt_ready(session)
     end
   end
 
-  return last_line == ">" or last_line == "> "
+  last_line = trim((last_line or ""):gsub("\r", ""))
+  return last_line:sub(-1) == ">"
 end
 
 local function wait_for_ready_status(session, config)
@@ -422,7 +423,6 @@ end
 function M.pane_command(config)
   local exports = {
     "ARK_STATUS_DIR=" .. vim.fn.shellescape(config.startup_status_dir),
-    "RSCOPE_STATUS_DIR=" .. vim.fn.shellescape(config.startup_status_dir),
     "ARK_NVIM_SESSION_PKG_PATH=" .. vim.fn.shellescape(config.session_pkg_path),
     "ARK_NVIM_SESSION_LIB=" .. vim.fn.shellescape(config.session_lib_path),
   }

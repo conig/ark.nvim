@@ -1,514 +1,348 @@
-# ark.nvim v1 Spec
+# ark.nvim Spec
 
-## Summary
+## Purpose
 
-`ark.nvim` v1 is a Neovim-only R language tooling stack built around a managed tmux pane running interactive `R`.
+`ark.nvim` is a Neovim-only R tooling project.
 
-It keeps code execution and pane-side interaction simple:
+Its job is to make one editor workflow feel native and reliable:
 
-- execute code with `vim-slime` + `nvim-slimetree`
-- get language intelligence from `ark.nvim`
+1. open an `r`, `rmd`, `qmd`, or `quarto` buffer in Neovim
+2. get one managed tmux pane running interactive `R`
+3. keep code sending simple through `vim-slime` and `nvim-slimetree`
+4. get language intelligence from `ark.nvim` through the normal Neovim LSP client
+5. when a live R session exists, augment static analysis with runtime-aware completions, hover, signatures, and session-derived diagnostics context
 
-The project goal is to turn the current upstream Ark snapshot into a local-first Neovim product with a standard LSP server and a live-session bridge to the tmux-managed R process.
+This project is not trying to be Positron, Jupyter, or a notebook runtime.
+It is trying to be the cleanest possible R IDE layer for the user's existing Neovim + tmux workflow.
 
-Recent completion direction:
-
-- data-derived column completions in nested call contexts should prefer explicit invocation over auto-triggering
-- the live completion path should resolve bound `data` inputs from named arguments, positional matching, and pipe roots where practical
-- `ggplot(data = ..., aes(...))` is a first-class target workflow for that behavior
-
-## Discovery Findings
-
-### Current repo baseline
-
-- This repo is still upstream Ark: a Rust workspace centered on a Jupyter kernel, Positron integration, an LSP, and a DAP.
-- The existing LSP implementation is substantial and worth reusing.
-- The current LSP is not directly usable in Neovim because it assumes:
-  - a kernel-owned `Console`
-  - in-process access to the active R runtime via `r_task()`
-  - frontend coordination through Jupyter / Positron channels
-
-### Current Neovim workflow
-
-The user's Neovim config already has the desired execution model:
-
-- `~/.config/nvim/lua/r_tmux_pane.lua`
-  - creates or reuses one managed tmux pane
-  - now launches R via Ark's repo-local `scripts/ark-r-launcher.sh`
-- `~/.config/nvim/lua/plugins/slime.lua`
-  - keeps `vim-slime` as transport
-  - uses local `~/repos/nvim-slimetree/` for AST-aware send motions
-- `~/.config/nvim/lua/configs/lspconfig.lua`
-  - currently enables `r_language_server`
-- `~/.config/nvim/lua/plugins/rscope.lua`
-  - currently attaches `rscope.nvim` to the managed pane
-- `~/.config/nvim/lua/plugins/blink.lua`
-  - Blink is the active completion engine
-  - `rscope` currently participates as a custom source
-
-### Architecture implication
-
-The key constraint is that the real interactive R session lives in tmux, outside the LSP process.
-
-Therefore `ark.nvim` cannot reach v1 by merely:
-
-- renaming Ark
-- running the existing Ark LSP over stdio
-
-It also needs a supported bridge from the LSP to the live R session in the managed pane.
-
-## Product Definition
-
-### v1 user promise
-
-For `r`, `rmd`, `qmd`, and `quarto` buffers in Neovim:
-
-- one command or automatic filetype entry starts or reuses one managed tmux pane running `R`
-- sending code remains fast and deterministic through `nvim-slimetree` + `vim-slime`
-- `ark.nvim` provides first-class R language intelligence through Neovim's LSP client
-- when the pane is attached and ready, runtime-aware features use the live session
-- when the pane is missing or unhealthy, static analysis still works and the failure mode is explicit
-
-### Startup handoff
-
-Async startup should be event-driven from the launcher's trusted status publication:
-
-- the managed pane and bridge start independently of Neovim's LSP client
-- the launcher writes pending / ready / error state to the startup status file
-- `ark.nvim` starts one detached LSP client immediately for static features
-- when a managed pane exists, the LSP learns bridge identity from the trusted status-file path plus tmux session metadata
-- bridge readiness and auth changes are handled inside the running detached LSP, not by rebuilding the client
-
-Avoid designs where Neovim starts a throwaway LSP client and repeatedly polls or restarts it while the bridge is still coming up.
-
-### Bridge lifecycle invariants
-
-The managed-session bridge is runtime state, not process identity.
-
-That means:
-
-- detached `ark_lsp` startup must not depend on the bridge already being live
-- bridge port and auth token must be discovered from the trusted status file at request time
-- `status = ready` is not sufficient for live requests; the bridge must also be `repl_ready`
-- only the interactive pane-owned R process may publish tmux-pane session status; non-interactive child R processes spawned from that pane must not overwrite the pane status file or bridge identity
-- Neovim must not synthesize `repl_ready` for LSP session updates unless it also supplies a live connection shape Rust can trust immediately; otherwise the Lua layer and detached bridge will split on readiness
-- bridge status changes may trigger an in-process session refresh and diagnostics refresh, but must not trigger normal LSP stop/start churn
-- detached live-session bootstrap must not run on every document edit; the edit path may take at most one opportunistic bootstrap probe per session state, and authoritative `ark/updateSession` remains the reset point for another probe cycle
-- diagnostics workers must treat the latest stored `WorldState` as read-only input; detached session bootstrap belongs on the authoritative main-state path, not inside background diagnostics tasks running on cloned state snapshots
-- explicit user restarts remain available as an escape hatch, but they are not the canonical attach path
-
-### Diagnostics freshness invariant
-
-Background diagnostics refreshes must run against the newest post-edit `WorldState`, not just the newest index tasks.
-
-That means:
-
-- any path that queues index-driven diagnostics refreshes after document edits must also update the shared latest-world snapshot first
-- otherwise diagnostics can clear or stay stale after a real edit even though the parser and live session are healthy
-- this failure is especially visible when static diagnostics disappear after live attach and the next edit should replace them with a syntax diagnostic
-
-### Detached binary verification invariant
-
-The tmux-backed Neovim flow runs the built `ark-lsp` binary from `target/debug/ark-lsp`.
-
-That means:
-
-- Rust library tests are necessary but not sufficient when detached LSP behavior changes
-- after changing detached-server Rust code, rebuild the real binary before trusting live Neovim or tmux E2E results
-- a green `cargo test` run against library code does not prove the tmux-backed path is exercising the new logic
-- when live behavior and unit tests disagree, suspect a stale detached binary before suspecting the architecture
-- the repo-local Neovim path should prefer the repo-built binary and offer an explicit rebuild helper so source/binary drift is not a hidden state
-
-### v1 must feel native in Neovim
-
-This means:
-
-- standard LSP integration, not a bespoke completion-only plugin
-- Blink consumes the normal `lsp` source
-- clear Neovim commands for status, attach, refresh, and health
-- tmux and R failures surface as actionable messages, not silent empty results
-
-## Exact Slot-In Plan For The User's Config
-
-`ark.nvim` should replace or absorb these pieces:
-
-1. `r_language_server`
-   - replace with `ark.nvim` LSP client setup in `~/.config/nvim/lua/configs/lspconfig.lua`
-2. `rscope.nvim`
-   - replace with `ark.nvim` plugin setup in `~/.config/nvim/lua/plugins/rscope.lua`
-3. `rscope` launcher in `r_tmux_pane.lua`
-   - replace launcher path with an `ark.nvim`-owned launcher / pane command
-4. Blink custom source
-   - remove the custom `rscope` completion source once Ark completions come through LSP
-
-These pieces should stay:
-
-- `vim-slime`
-- `nvim-slimetree`
-- the single managed-pane workflow
-- the user's existing keymap habit of "send code separately from ask for IDE help"
-
-## v1 Scope
+## Product Boundary
 
 ### In scope
 
-- Neovim plugin at repo root
-- managed tmux R pane lifecycle
-- local session discovery and attach
-- stdio LSP server binary
-- reuse and adaptation of Ark's static LSP features:
-  - diagnostics
-  - symbols
-  - folding
-  - selection ranges
-  - definitions / references / implementations where already supported
-  - code actions already implemented in Ark
-- live-session features backed by the managed pane:
-  - completions
-  - hover
-  - signature help
-  - help-topic lookups where worth keeping
-  - session-derived diagnostics context such as known search-path symbols / installed packages
-- health checks and failure reporting
-- local developer documentation and tests
+- Neovim plugin setup, commands, and health/status reporting
+- one managed tmux pane per Neovim instance
+- one detached stdio LSP client for Ark-backed language features
+- runtime-aware language features routed through a local bridge to the tmux-managed R session
+- graceful fallback to static-only behavior when the live session is absent
+- local same-machine operation
 
 ### Out of scope
 
-- Jupyter kernel runtime
-- Positron comms and UI
-- DAP
-- variables pane / data explorer / plot panes
-- notebook documents or notebook execution
-- remote / multi-machine workflows
-- Windows managed-pane support
-- replacing `nvim-slimetree`
-- turning `ark.nvim` into a general REPL transport framework for non-R languages
+- Positron support
+- Jupyter kernel support
+- notebook UI or notebook execution
+- DAP/debugger product work
+- data explorer / variables pane / plots pane UI
+- remote tmux or multi-host orchestration
+- replacing `vim-slime` or `nvim-slimetree`
 
-## Non-Negotiable Architectural Decisions
+## Basic Infrastructure
 
-### 1. Standard LSP transport
+`ark.nvim` currently has three major layers.
 
-v1 must expose a normal stdio LSP server suitable for Neovim.
+### 1. Neovim plugin layer
 
-Not acceptable as the primary path:
+Main files:
 
-- a frontend-specific TCP handshake copied from Positron
-- a Blink-only completion backend
-- tmux scraping as a substitute for an LSP server
-
-### 2. Session bridge, not per-request send-keys
-
-Runtime-aware language features must use a supported request path into the live R session.
-
-The bridge may be implemented as:
-
-- an R package runtime loaded in the managed pane
-- a lightweight injected service started by an `ark.nvim` launcher
-- another explicit local IPC service
-
-But it must not rely on:
-
-- sending `source(...)` to tmux for every completion request
-- parsing terminal output as the normal query mechanism
-
-### 3. Single managed pane for v1
-
-v1 targets one managed R pane per Neovim instance.
-
-This matches the user's current workflow and avoids premature session-routing complexity.
-
-### 4. Static-first fallback
-
-The LSP must still provide useful static features without a live R session.
-
-Live-session unavailability should disable only the features that truly require runtime access.
-
-## Proposed Architecture
-
-## Layer A: `ark-lsp`
+- [lua/ark/init.lua](/home/marine/repos/ark.nvim/lua/ark/init.lua)
+- [lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua)
+- [lua/ark/tmux.lua](/home/marine/repos/ark.nvim/lua/ark/tmux.lua)
+- [plugin/ark.lua](/home/marine/repos/ark.nvim/plugin/ark.lua)
 
 Responsibilities:
 
-- stdio LSP server
-- document store and indexing
-- static analysis
-- LSP protocol handling
-- session-aware request orchestration
+- start or reuse the managed tmux pane
+- launch or reuse the detached `ark-lsp` client
+- publish session metadata into the running client
+- surface `ArkStatus`, `ArkRefresh`, pane control, and related commands
 
-Extraction work required:
+### 2. Detached LSP layer
 
-- remove dependency on Jupyter startup path
-- remove dependency on Positron server start messages
-- replace `Console` / `r_task()` coupling with an abstract session client interface
-- rename Positron-specific settings and custom method names
+Main files:
 
-## Layer B: `ark-session`
-
-Responsibilities:
-
-- connect the LSP to the tmux-managed live R session
-- expose runtime queries needed by Ark's LSP features
-- publish session identity and readiness state
-- handle auth / trust for local IPC
-
-Minimum query surface for v1:
-
-- current library paths
-- installed packages
-- search path / visible object names
-- callable argument names
-- object member completions
-- hover/help payloads
-- signature help payloads
-
-This layer is the direct replacement for Ark's current in-process `r_task()` access.
-
-## Layer C: Neovim plugin
+- [crates/ark/src/lsp/backend.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/backend.rs)
+- [crates/ark/src/lsp/main_loop.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/main_loop.rs)
+- [crates/ark/src/lsp/state.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/state.rs)
+- [crates/ark/src/lsp/state_handlers.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/state_handlers.rs)
+- [crates/ark/src/lsp/session_bridge.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/session_bridge.rs)
 
 Responsibilities:
 
-- `setup()`
-- pane creation / reuse
-- launcher command generation
-- attach / reattach behavior
-- status and health commands
-- LSP client configuration helpers
-- custom user commands for refresh / attach / status
+- run as a normal stdio LSP server in Neovim
+- own documents, parsing, indexing, diagnostics, and protocol handling
+- combine static analysis with runtime-aware bridge queries when available
+- keep detached session state truthful and inspectable
 
-Likely commands for v1:
+### 3. Pane-side runtime layer
 
-- `:ArkAttachManagedPane`
-- `:ArkStatus`
-- `:ArkCheckHealth`
-- `:ArkRefresh`
+Main files:
 
-## Repository Reshaping
+- [scripts/ark-r-launcher.sh](/home/marine/repos/ark.nvim/scripts/ark-r-launcher.sh)
+- [scripts/ark-wait-for-repl.sh](/home/marine/repos/ark.nvim/scripts/ark-wait-for-repl.sh)
+- [packages/arkbridge/](/home/marine/repos/ark.nvim/packages/arkbridge/)
 
-### Desired end state
+Responsibilities:
 
-- root Neovim plugin files:
-  - `lua/ark.lua`
-  - `lua/ark/...`
-  - `plugin/ark.lua`
-  - `doc/ark.txt` or equivalent
-- Rust crates for:
-  - reusable LSP core
-  - stdio server binary
-  - shared runtime/session protocol types if needed
-- optional R package / scripts for session runtime
+- start R in the managed pane
+- start the local IPC service inside that interactive process
+- publish trusted startup status for the pane
+- answer runtime queries from the detached LSP
 
-### Practical migration rule
+## Current Architecture
 
-Do not block v1 on deleting every upstream crate.
+The key constraint is simple:
 
-It is acceptable to:
+- the real R session lives in tmux
+- the LSP process does not own that R runtime
 
-- leave `amalthea`, DAP, and kernel code present for a while
-- stop wiring them into the shipped product
-- progressively extract reusable code into cleaner Neovim-oriented crates
+So `ark.nvim` cannot be “just upstream Ark over stdio”.
+It needs a supported bridge from the detached LSP to the live pane-owned R session.
 
-## Workstreams
+That means the intended data flow is:
 
-## Workstream 1: Scope Lock And Naming Cleanup
+1. Neovim opens an R-family buffer.
+2. `ark.nvim` ensures the tmux pane and launcher exist.
+3. The launcher starts R and the pane-side IPC service.
+4. `ark.nvim` starts `ark-lsp` in detached mode.
+5. `ark.nvim` sends trusted session metadata into `ark-lsp`.
+6. `ark-lsp` uses static analysis by default and the bridge for runtime-aware requests.
 
-Deliverables:
+## Why `rscope` Was Used
 
-- formal project docs
-- final public names for:
-  - plugin namespace
-  - LSP binary
-  - session bridge
-  - settings keys
-  - Neovim commands
+Historically, the easiest bridge already available for this shape was the old `rscope` runtime:
 
-Acceptance criteria:
+- a small R package with inspection helpers
+- a local IPC service
+- some member completion and object inspection logic
 
-- docs make it impossible to mistake the project for "Ark, but also still Positron"
-- `positron.*` is no longer the intended public configuration namespace
+That let the repo prove that a tmux-managed detached Ark flow was possible.
+It was a pragmatic bootstrap step.
 
-## Workstream 2: Extract A Neovim-Usable LSP Core
+## Why `rscope` Is Now a Problem
 
-Deliverables:
+The old `rscope` dependency is now architectural drag.
 
-- stdio server binary, likely separate from the upstream `ark` kernel entrypoint
-- LSP startup independent of Jupyter / Positron server handshakes
-- abstract session interface replacing direct `Console` / `r_task()` dependence in LSP handlers
+### Product clarity problem
 
-Acceptance criteria:
+`ark.nvim` is meant to be an Ark-owned Neovim product.
+Continuing to route core runtime behavior through `rscope` muddies ownership and product boundaries.
 
-- Neovim can start the server as a normal LSP process
-- static features work in a plain R file without a live session
-- no Jupyter connection file or Positron handshake is required
+### Naming and trust problem
 
-## Workstream 3: Managed Pane Runtime
+The current runtime still contains:
 
-Deliverables:
+- `RSCOPE_*` env compatibility
+- the vendored `packages/rscope` package
+- old package-level helpers and naming
 
-- `ark.nvim` launcher script or pane command
-- readiness and status markers for the managed pane
-- local IPC channel from the tmux R session to the LSP
-- robust attach and reattach logic
+That makes the runtime feel transitional instead of canonical.
 
-Acceptance criteria:
+### Maintenance problem
 
-- opening an R-family buffer creates or reuses a managed pane
-- session identity survives reconnects cleanly
-- failures are inspectable through logs and status
+Important behavior has been living in a legacy package we are trying to retire:
 
-## Workstream 4: Runtime-Aware Language Features
+- member extraction
+- inspection payload shaping
+- IPC service behavior
+- launcher installation expectations
 
-Deliverables:
+That is backwards. The new product should not deepen its dependency on the thing it intends to remove.
 
-- completions via live session
-- hover via live session
-- signature help via live session
-- session-derived installed-package and search-path context for diagnostics
-- library path and help integration as needed
+## Deprecation Direction
 
-Acceptance criteria:
+The goal is not “keep `rscope` forever but rename some commands”.
+The goal is:
 
-- member/function completion uses the actual pane session state
-- hover and signatures reflect the active session, not a separate embedded R
-- static fallback remains usable when session bridge is unavailable
+1. keep only the minimum bridge behavior needed to support Neovim
+2. move that bridge under Ark-owned naming and ownership
+3. shrink and eventually delete the vendored `rscope` runtime
 
-## Workstream 5: Neovim Product Integration
+The current intermediate step is [packages/arkbridge/](/home/marine/repos/ark.nvim/packages/arkbridge/), which is the beginning of that Ark-owned pane runtime.
 
-Deliverables:
+## Weak Points We Have Identified
 
-- root plugin structure
-- setup docs
-- default LSP config helper
-- health commands
-- migration instructions from current user config
+### 1. Truthful readiness
 
-Acceptance criteria:
+For a long time, Ark could look healthy while the detached LSP was still not hydrated.
 
-- user config can drop `r_language_server` and `rscope.nvim`
-- Blink uses normal LSP completion
-- `nvim-slimetree` send motions continue unchanged
+Examples:
 
-## Workstream 6: Verification And Release Hardening
+- tmux pane exists
+- launcher status file says `ready`
+- bridge answers pings
+- but `ark_lsp` still has no session-derived scopes or library paths
 
-Deliverables:
+This led to false confidence from status output.
 
-- Rust tests for static LSP behavior
-- tmux + live R end-to-end tests
-- headless Neovim tests for plugin attach and configuration
-- release checklist and operator docs
+### 2. Startup contract split across layers
 
-Acceptance criteria:
+There are several notions of “ready”:
 
-- build and tests cover static and live-session paths
-- at least one automated or scripted end-to-end proof exists for managed-pane startup plus completion
-- failure modes are documented
+- pane exists
+- IPC service started
+- tmux prompt is stable
+- detached `ark-lsp` client exists
+- detached client has actually consumed the session update
+- detached client has successfully bootstrapped its runtime inputs
 
-## Suggested Milestones
+If these are not separated cleanly, bugs appear as:
 
-### M0: Scope and naming
+- missing completions on first attach
+- diagnostics coming online late
+- status reporting that says “fine” when the useful path is still broken
 
-- complete docs
-- finalize public API direction
+### 3. Prompt scraping is brittle
 
-### M1: Static Ark LSP in Neovim
+Prompt detection based on the visible tmux line is not a robust contract.
 
-- stdio LSP binary
-- static features working in Neovim
+Why it is weak:
 
-### M2: Managed pane and attach
+- `.Rprofile` can change the prompt
+- browser/debug prompts differ
+- tmux pane capture is a UI scrape, not an authoritative runtime signal
 
-- launcher
-- pane status
-- plugin attach commands
+The detached LSP should not block runtime-aware language features on prompt text.
 
-### M3: Live-session completions / hover / signatures
+### 4. Client attachment churn
 
-- session bridge queries implemented
-- runtime-aware features wired through LSP
+Some failures are not bridge failures at all.
+They are “no live `ark_lsp` client for this buffer” failures.
 
-### M4: Config migration and polish
+That distinction matters because:
 
-- replace `r_language_server`
-- remove `rscope` dependency in user config
-- health checks, docs, failure reporting
+- no client means no completion requests are even possible
+- a live but unhydrated client is a different problem
+- the status tooling must tell those apart
 
-### M5: v1 release candidate
+### 5. Integration fragility with real Neovim config
 
-- end-to-end verification
-- docs and packaging good enough for daily use
+Synthetic headless tests can pass while the real workflow still fails.
 
-## Acceptance Criteria For v1
+Common causes:
 
-`ark.nvim` v1 is complete when all of the following are true:
+- actual lazy-loading order
+- real Blink behavior
+- real async startup timing
+- plugin interaction and restart churn
 
-1. In Neovim, `ark.nvim` can be configured as the sole R LSP.
-2. Opening an R-family buffer can create or reuse one managed tmux pane running `R`.
-3. The LSP server starts over stdio with no Jupyter or Positron dependency.
-4. `nvim-slimetree` + `vim-slime` still handle execution without regression.
-5. Completion, hover, and signature help work against the live managed R session.
-6. Diagnostics, symbols, and other static features still work without a live session.
-7. Blink completion works through the standard `lsp` source.
-8. Status / health / refresh workflows are documented and usable.
-9. Project docs and repo structure clearly present `ark.nvim` as a Neovim-only product.
+This repo must keep testing under the user's real `~/.config/nvim/init.lua` for the critical path.
 
-## Key Risks
+## Current Strategic Decisions
 
-### Biggest technical risk
+### Detached hydration must depend on bridge reachability, not prompt text
 
-Ark's current runtime-aware LSP handlers assume in-process access to R.
+This is the most important design correction from recent work.
 
-Mitigation:
+For completions and diagnostics:
 
-- define the session client interface early
-- move handlers onto that abstraction before large-scale cleanup
+- if the Ark bridge is reachable, detached `ark-lsp` should hydrate
+- prompt readiness should remain relevant only for pane-send workflows
 
-### Biggest product risk
+That split is cleaner and more future-proof.
 
-Rebuilding too much at once and drifting away from the user's existing workflow.
+### `ArkStatus` must report useful state, not comfort text
 
-Mitigation:
+Status output should let a user distinguish:
 
-- keep `nvim-slimetree` and `vim-slime`
-- keep one pane
-- focus first on replacing `r_language_server` and `rscope.nvim`, not on inventing a new IDE model
+- no client
+- client exists but is not attached to this buffer
+- client exists but is not live
+- client is live but detached bootstrap failed
+- bridge identity is missing or stale
+- session update was received but bootstrap never completed
 
-### Biggest scope risk
+If `ArkStatus` does not answer those questions, it is not doing its job.
 
-Trying to carry Positron and Jupyter compatibility through the refactor.
+### Runtime bridge requests are the canonical path
 
-Mitigation:
+The intended architecture is not per-request `tmux send-keys`.
+It is:
 
-- treat those systems as reference code only
-- do not spend v1 effort preserving them
+- one managed pane
+- one in-session bridge service
+- detached LSP requests over local IPC
 
-## Recommended First Implementation Order
+That is the only shape that scales cleanly to robust completions, hover, signatures, and session-aware diagnostics.
 
-1. Create the root Neovim plugin skeleton and document the public API.
-2. Introduce a dedicated stdio LSP binary.
-3. Extract static LSP paths away from kernel-specific startup.
-4. Define the session bridge interface and a minimal managed-pane protocol.
-5. Reuse the current managed-pane workflow to launch and attach the live R session.
-6. Port completion, hover, and signature help onto the bridge.
-7. Replace current Neovim config dependencies one by one.
+## Opportunities For Future Elegance
 
-## Verification Plan
+### 1. Replace prompt scraping with explicit runtime readiness
 
-At minimum, every serious milestone should be checked with:
+The pane-side runtime should publish a real readiness signal from inside R, not infer it from terminal output.
 
-- `cargo` tests for affected Rust crates
-- headless Neovim startup for plugin config sanity
-- tmux-backed manual or automated proof for:
-  - pane start
-  - attach
-  - completion from live session
+That would allow:
 
-Verification should mirror the real editing environment.
-Because the target config uses automatic delimiter closing, completion and signature tests should default to cursor-before-close shapes like `foo(bar|)` or `dt[, .(m|)]`, not only truly unclosed forms.
-Open-delimiter-only cases are still worth testing, but they are secondary unless the bug explicitly depends on missing closers.
+- cleaner separation between bridge readiness and send-keys safety
+- fewer tmux heuristics
+- less startup flake
 
-The eventual target command set should include:
+### 2. Finish the `arkbridge` transition
 
-- a Rust test command for the LSP core
-- a headless Neovim test command
-- a tmux / live-R integration test command
+The long-term elegant shape is:
 
-These commands should be standardized and added to repo docs as they become real.
+- Ark-owned package name
+- Ark-owned IPC/runtime API
+- Ark-owned environment variable names
+- no product-critical behavior living in `packages/rscope`
+
+### 3. Make status reporting first-class diagnostics
+
+The right `ArkStatus` output should effectively be a startup trace snapshot:
+
+- client presence
+- buffer attachment
+- session bridge source
+- last session update
+- last bootstrap attempt
+- last bootstrap error
+- useful timing fields
+
+This will save more debugging time than another round of vague recovery logic.
+
+### 4. Separate startup phases explicitly
+
+A cleaner model would name and preserve explicit phases such as:
+
+- pane created
+- IPC service reachable
+- client created
+- session update delivered
+- detached bootstrap complete
+
+Then both tests and user-facing status could reason about the same state machine.
+
+### 5. Shrink the Neovim-side heuristics
+
+The most elegant long-term design is one where Neovim mostly:
+
+- starts the pane
+- starts the client
+- passes trusted session identity
+
+and the rest is handled by:
+
+- an explicit pane runtime contract
+- an explicit detached LSP state machine
+
+The fewer UI heuristics the plugin carries, the better.
+
+## Success Criteria
+
+The project should be considered healthy when the normal workflow reliably does this on first attach:
+
+1. open an R-family buffer
+2. get one managed pane and one detached `ark_lsp` client
+3. see truthful `ArkStatus`
+4. get `libr -> library`
+5. get `mtcars$ -> mpg`
+6. get diagnostics without waiting for mysterious late hydration
+
+And it should do that without leaning on legacy `rscope` ownership or prompt-scrape luck.
+
+## Immediate Priorities
+
+1. keep the detached startup contract truthful and deterministic
+2. continue migrating pane runtime ownership from `rscope` to `arkbridge`
+3. make `ArkStatus` diagnostic-grade
+4. keep real-config regressions for startup, completions, and diagnostics
+5. prefer deleting transitional compatibility once the Ark-owned path is proven

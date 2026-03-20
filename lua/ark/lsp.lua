@@ -199,7 +199,11 @@ local function session_payload(opts)
     tmuxPane = session.tmux_pane,
     timeoutMs = tonumber(opts.tmux.session_timeout_ms or 1000) or 1000,
     status = tmux_status.bridge_ready == true and "ready" or (type(startup_status) == "table" and startup_status.status or ""),
-    replReady = tmux_status.repl_ready == true,
+    -- For detached LSP hydration, the authoritative readiness signal is that
+    -- the managed bridge is actually reachable. Prompt scraping is too brittle
+    -- to gate runtime-aware language features on, because .Rprofile can change
+    -- the visible prompt shape.
+    replReady = tmux_status.bridge_ready == true,
   }
 end
 
@@ -225,29 +229,48 @@ local function notify_sessions(opts, bufnr, payload)
   end
 end
 
-local function schedule_session_sync(opts, bufnr, client_id)
+local function session_payload_delivered(opts, bufnr, payload)
+  local clients = session_clients(opts, bufnr)
+  if #clients == 0 then
+    return false
+  end
+
+  local normalized = payload or {}
+  for _, client in ipairs(clients) do
+    if not vim.deep_equal(client_session_payloads[client.id] or {}, normalized) then
+      return false
+    end
+  end
+
+  return true
+end
+
+local function schedule_session_syncs(opts, bufnr, client_id)
   if not client_id then
     return
   end
 
-  local remaining = 20
+  local delays = { 0, 250, 1000, 2000, 4000, 8000 }
 
-  local function attempt()
+  local function attempt(index)
     local client = vim.lsp.get_client_by_id(client_id)
     if live_client(client) then
       notify_client_session(client, session_payload(opts))
+    end
+
+    local next_index = index + 1
+    if next_index > #delays then
       return
     end
 
-    remaining = remaining - 1
-    if remaining <= 0 then
-      return
-    end
-
-    vim.defer_fn(attempt, 100)
+    vim.defer_fn(function()
+      attempt(next_index)
+    end, delays[next_index])
   end
 
-  vim.defer_fn(attempt, 0)
+  vim.defer_fn(function()
+    attempt(1)
+  end, delays[1])
 end
 
 local function watch_status_file(status_path, on_change)
@@ -291,8 +314,16 @@ local function watch_status_file(status_path, on_change)
   return nil
 end
 
-local function session_watch_finished(payload)
-  return next(payload) == nil or payload.replReady == true or payload.status == "error"
+local function session_watch_finished(opts, bufnr, payload)
+  if next(payload) == nil or payload.status == "error" then
+    return true
+  end
+
+  if payload.status == "ready" then
+    return session_payload_delivered(opts, bufnr, payload)
+  end
+
+  return false
 end
 
 local function ensure_session_watch(opts, bufnr)
@@ -309,7 +340,7 @@ local function ensure_session_watch(opts, bufnr)
   local payload = session_payload(opts)
   notify_sessions(opts, nil, payload)
 
-  if session_watch_finished(payload) then
+  if session_watch_finished(opts, bufnr, payload) then
     stop_session_watch(bufnr)
     return
   end
@@ -324,7 +355,7 @@ local function ensure_session_watch(opts, bufnr)
     local watcher = watch_status_file(status_path, function()
       local current = session_payload(opts)
       notify_sessions(opts, nil, current)
-      if session_watch_finished(current) then
+      if session_watch_finished(opts, bufnr, current) then
         stop_session_watch(bufnr)
       end
     end)
@@ -348,7 +379,7 @@ local function ensure_session_watch(opts, bufnr)
 
     local current = session_payload(opts)
     notify_sessions(opts, nil, current)
-    if session_watch_finished(current) then
+    if session_watch_finished(opts, bufnr, current) then
       stop_session_watch(bufnr)
       return
     end
@@ -406,12 +437,13 @@ local function start_client(opts, bufnr, start_opts)
   ensure_session_watch(opts, bufnr)
 
   if start_opts and start_opts.wait_for_client == false then
-    schedule_session_sync(opts, bufnr, client_id)
+    schedule_session_syncs(opts, bufnr, client_id)
     return client_id
   end
 
   client_id = wait_for_client(client_id, opts.lsp.restart_wait_ms)
   notify_sessions(opts, bufnr)
+  schedule_session_syncs(opts, bufnr, client_id)
   return client_id
 end
 
@@ -469,11 +501,41 @@ end
 function M.status(opts, bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
 
+  local current_filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or nil
+  local all_named_clients = vim.lsp.get_clients({ name = opts.lsp.name })
+  local buffer_named_clients = vim.api.nvim_buf_is_valid(bufnr) and vim.lsp.get_clients({
+    bufnr = bufnr,
+    name = opts.lsp.name,
+  }) or {}
+  local all_clients = vim.tbl_map(function(client)
+    return {
+      id = client.id,
+      initialized = client.initialized == true,
+      stopped = client.is_stopped and client:is_stopped() or false,
+      attached_buffers = vim.tbl_keys(client.attached_buffers or {}),
+    }
+  end, all_named_clients)
+
   local client = live_clients(opts, bufnr)[1]
   if not live_client(client) then
+    local reason = "ark_lsp client unavailable"
+    if not filetype_enabled(opts.filetypes, current_filetype) then
+      reason = "current buffer filetype is not managed by ark.nvim"
+    elseif #all_named_clients > 0 and #buffer_named_clients == 0 then
+      reason = "ark_lsp exists, but is not attached to the current buffer"
+    elseif #all_named_clients > 0 then
+      reason = "ark_lsp exists, but no live initialized client is available"
+    end
+
     return {
       available = false,
-      reason = "ark_lsp client unavailable",
+      reason = reason,
+      bufnr = bufnr,
+      filetype = current_filetype,
+      filetype_supported = filetype_enabled(opts.filetypes, current_filetype),
+      total_named_clients = #all_named_clients,
+      buffer_named_clients = #buffer_named_clients,
+      clients = all_clients,
     }
   end
 
@@ -483,6 +545,12 @@ function M.status(opts, bufnr)
       available = false,
       reason = err,
       client_id = client.id,
+      bufnr = bufnr,
+      filetype = current_filetype,
+      filetype_supported = filetype_enabled(opts.filetypes, current_filetype),
+      total_named_clients = #all_named_clients,
+      buffer_named_clients = #buffer_named_clients,
+      clients = all_clients,
     }
   end
 
@@ -491,6 +559,12 @@ function M.status(opts, bufnr)
       available = false,
       reason = "no response",
       client_id = client.id,
+      bufnr = bufnr,
+      filetype = current_filetype,
+      filetype_supported = filetype_enabled(opts.filetypes, current_filetype),
+      total_named_clients = #all_named_clients,
+      buffer_named_clients = #buffer_named_clients,
+      clients = all_clients,
     }
   end
 
@@ -499,12 +573,24 @@ function M.status(opts, bufnr)
       available = false,
       reason = vim.inspect(response.error),
       client_id = client.id,
+      bufnr = bufnr,
+      filetype = current_filetype,
+      filetype_supported = filetype_enabled(opts.filetypes, current_filetype),
+      total_named_clients = #all_named_clients,
+      buffer_named_clients = #buffer_named_clients,
+      clients = all_clients,
     }
   end
 
   return vim.tbl_extend("force", {
     available = true,
     client_id = client.id,
+    bufnr = bufnr,
+    filetype = current_filetype,
+    filetype_supported = filetype_enabled(opts.filetypes, current_filetype),
+    total_named_clients = #all_named_clients,
+    buffer_named_clients = #buffer_named_clients,
+    clients = all_clients,
   }, response.result or {})
 end
 

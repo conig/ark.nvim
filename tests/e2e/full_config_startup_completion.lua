@@ -51,10 +51,7 @@ local function completion_labels_at_cursor(prefix)
   end
 
   local cursor = vim.api.nvim_win_get_cursor(0)
-  local character = cursor[2]
-  if vim.fn.mode() == "i" then
-    character = character + 1
-  end
+  local character = vim.fn.strchars(prefix)
 
   local params = {
     textDocument = vim.lsp.util.make_text_document_params(0),
@@ -199,7 +196,7 @@ end
 local library_completion = type_and_capture_completion("libr", "library")
 local dollar_completion = type_and_capture_completion("mtcars$", "mpg")
 
-if not library_completion.found_in_blink or not dollar_completion.found_in_blink then
+if not library_completion.found_in_lsp or not dollar_completion.found_in_lsp then
   ark_test.fail(vim.inspect({
     marks = marks,
     startup_elapsed_ms = startup_elapsed_ms,

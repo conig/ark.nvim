@@ -10,7 +10,7 @@ IPC_MAX_REQUEST_BYTES="${ARK_IPC_MAX_REQUEST_BYTES:-${RSCOPE_IPC_MAX_REQUEST_BYT
 IPC_READ_TIMEOUT_MS="${ARK_IPC_READ_TIMEOUT_MS:-${RSCOPE_IPC_READ_TIMEOUT_MS:-250}}"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-DEFAULT_PKG_PATH=$(CDPATH= cd -- "$SCRIPT_DIR/../packages/rscope" && pwd)
+DEFAULT_PKG_PATH=$(CDPATH= cd -- "$SCRIPT_DIR/../packages/arkbridge" && pwd)
 
 escape_r_string() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -85,7 +85,7 @@ IPC_READ_TIMEOUT_MS_R=$(escape_r_string "$IPC_READ_TIMEOUT_MS")
 
 cat > "$PROFILE_FILE" <<EOR
 local({
-  if (identical(Sys.getenv("RSCOPE_LAUNCHER_INSTALLING", unset = ""), "1")) {
+  if (identical(Sys.getenv("ARK_LAUNCHER_INSTALLING", unset = ""), "1")) {
     return(invisible(NULL))
   }
 
@@ -226,7 +226,7 @@ local({
     invisible(NULL)
   }
 
-  .user_profile <- Sys.getenv("RSCOPE_ORIG_R_PROFILE_USER", unset = "")
+  .user_profile <- Sys.getenv("ARK_ORIG_R_PROFILE_USER", unset = "")
   if (!nzchar(.user_profile)) {
     if (file.exists(".Rprofile")) {
       .user_profile <- ".Rprofile"
@@ -247,8 +247,8 @@ local({
   }
 
   .has_runtime <- function() {
-    if (!requireNamespace("rscope", quietly = TRUE)) return(FALSE)
-    .ns <- asNamespace("rscope")
+    if (!requireNamespace("arkbridge", quietly = TRUE)) return(FALSE)
+    .ns <- asNamespace("arkbridge")
     exists("start_ipc_service", envir = .ns, inherits = FALSE) &&
       exists(".rscope_dispatch_ipc_request", envir = .ns, inherits = FALSE) &&
       exists(".rscope_resolve_eval_env", envir = .ns, inherits = FALSE)
@@ -291,19 +291,19 @@ local({
   }
 
   .stale_lock_seconds <- suppressWarnings(as.numeric(Sys.getenv(
-    "RSCOPE_INSTALL_STALE_LOCK_SECONDS",
+    "ARK_INSTALL_STALE_LOCK_SECONDS",
     unset = "600"
   )))
   if (!is.finite(.stale_lock_seconds) || .stale_lock_seconds <= 0) {
     .stale_lock_seconds <- 600
   }
 
-  .install_lock_dir <- function(lib_path, pkg_name = "rscope") {
+  .install_lock_dir <- function(lib_path, pkg_name = "arkbridge") {
     if (!nzchar(lib_path)) return("")
     file.path(lib_path, paste0("00LOCK-", pkg_name))
   }
 
-  .cleanup_stale_install_lock <- function(lib_path, pkg_name = "rscope", stale_seconds = 600) {
+  .cleanup_stale_install_lock <- function(lib_path, pkg_name = "arkbridge", stale_seconds = 600) {
     .lock_dir <- .install_lock_dir(lib_path, pkg_name)
     if (!nzchar(.lock_dir) || !dir.exists(.lock_dir)) {
       return(FALSE)
@@ -360,7 +360,7 @@ local({
     as.character(getRversion())
   }
 
-  .built_matches_current_r <- function(pkg_name = "rscope") {
+  .built_matches_current_r <- function(pkg_name = "arkbridge") {
     .desc <- tryCatch(utils::packageDescription(pkg_name), error = function(e) NULL)
     if (is.null(.desc)) return(FALSE)
     .built <- .desc\$Built
@@ -391,19 +391,19 @@ local({
     if (!dir.exists(pkg_path)) return(TRUE)
     .desc_path <- file.path(pkg_path, "DESCRIPTION")
     if (!file.exists(.desc_path)) return(TRUE)
-    if (!requireNamespace("rscope", quietly = TRUE)) return(TRUE)
+    if (!requireNamespace("arkbridge", quietly = TRUE)) return(TRUE)
     if (!.has_runtime()) return(TRUE)
 
-    .installed_path <- tryCatch(find.package("rscope"), error = function(e) "")
+    .installed_path <- tryCatch(find.package("arkbridge"), error = function(e) "")
     if (!nzchar(.installed_path)) return(TRUE)
 
     .src_dcf <- tryCatch(read.dcf(.desc_path), error = function(e) NULL)
     .src_version <- if (!is.null(.src_dcf) && "Version" %in% colnames(.src_dcf)) as.character(.src_dcf[1, "Version"]) else ""
-    .installed_version <- tryCatch(as.character(utils::packageVersion("rscope")), error = function(e) "")
+    .installed_version <- tryCatch(as.character(utils::packageVersion("arkbridge")), error = function(e) "")
     if (nzchar(.src_version) && nzchar(.installed_version) && !identical(.src_version, .installed_version)) {
       return(TRUE)
     }
-    if (!.built_matches_current_r("rscope")) {
+    if (!.built_matches_current_r("arkbridge")) {
       return(TRUE)
     }
 
@@ -429,7 +429,7 @@ local({
       try(close(.quiet_con), silent = TRUE)
     }, add = TRUE)
 
-    .bootstrap_lib <- Sys.getenv("RSCOPE_R_LIB", unset = "$BOOTSTRAP_LIB_R")
+    .bootstrap_lib <- Sys.getenv("ARK_R_LIB", unset = "$BOOTSTRAP_LIB_R")
     if (nzchar(.bootstrap_lib)) {
       dir.create(.bootstrap_lib, recursive = TRUE, showWarnings = FALSE)
       .libPaths(unique(c(.bootstrap_lib, .libPaths())))
@@ -445,13 +445,13 @@ local({
     .libPaths(unique(c(.install_lib, .libPaths())))
 
     .pkg_path <- "$PKG_PATH_R"
-    .auth_token <- Sys.getenv("RSCOPE_IPC_AUTH_TOKEN", unset = "")
+    .auth_token <- Sys.getenv("ARK_IPC_AUTH_TOKEN", unset = "")
     if (!nzchar(.auth_token)) {
       .auth_token <- .new_auth_token()
     }
     .cleanup_stale_install_lock(
       lib_path = .install_lib,
-      pkg_name = "rscope",
+      pkg_name = "arkbridge",
       stale_seconds = .stale_lock_seconds
     )
     .check_key <- .install_check_key(.pkg_path, .install_lib)
@@ -476,12 +476,12 @@ local({
         updating = 1,
         install_lib = .install_lib
       ))
-      if ("rscope" %in% loadedNamespaces()) {
-        try(unloadNamespace("rscope"), silent = TRUE)
+      if ("arkbridge" %in% loadedNamespaces()) {
+        try(unloadNamespace("arkbridge"), silent = TRUE)
       }
       local({
         .old_profile_user <- Sys.getenv("R_PROFILE_USER", unset = NA_character_)
-        .old_launcher_installing <- Sys.getenv("RSCOPE_LAUNCHER_INSTALLING", unset = NA_character_)
+        .old_launcher_installing <- Sys.getenv("ARK_LAUNCHER_INSTALLING", unset = NA_character_)
         on.exit({
           if (is.na(.old_profile_user)) {
             Sys.unsetenv("R_PROFILE_USER")
@@ -489,19 +489,19 @@ local({
             Sys.setenv(R_PROFILE_USER = .old_profile_user)
           }
           if (is.na(.old_launcher_installing)) {
-            Sys.unsetenv("RSCOPE_LAUNCHER_INSTALLING")
+            Sys.unsetenv("ARK_LAUNCHER_INSTALLING")
           } else {
-            Sys.setenv(RSCOPE_LAUNCHER_INSTALLING = .old_launcher_installing)
+            Sys.setenv(ARK_LAUNCHER_INSTALLING = .old_launcher_installing)
           }
         }, add = TRUE)
 
-        Sys.setenv(R_PROFILE_USER = "", RSCOPE_LAUNCHER_INSTALLING = "1")
+        Sys.setenv(R_PROFILE_USER = "", ARK_LAUNCHER_INSTALLING = "1")
         .install_err <- tryCatch({
           utils::install.packages(.pkg_path, repos = NULL, type = "source", lib = .install_lib, quiet = TRUE)
           NULL
         }, error = function(e) e)
         if (inherits(.install_err, "error")) {
-          .lock_dir <- .install_lock_dir(.install_lib, "rscope")
+          .lock_dir <- .install_lock_dir(.install_lib, "arkbridge")
           if (nzchar(.lock_dir) && dir.exists(.lock_dir)) {
             stop(paste0(
               "E_INSTALL_LOCK: ",
@@ -531,8 +531,8 @@ local({
       .mark_install_check_done(.check_key)
     }
 
-    if ("rscope" %in% loadedNamespaces()) {
-      try(unloadNamespace("rscope"), silent = TRUE)
+    if ("arkbridge" %in% loadedNamespaces()) {
+      try(unloadNamespace("arkbridge"), silent = TRUE)
     }
 
     if (.has_runtime()) {
@@ -547,7 +547,7 @@ local({
         port = .port
       ))
 
-      .svc <- rscope:::start_ipc_service(
+      .svc <- arkbridge:::start_ipc_service(
         port = .port,
         options = list(
           session = list(
@@ -579,7 +579,7 @@ local({
     if (is.null(.code) && grepl("Too many open files", .msg, fixed = TRUE)) {
       .code <- "E_RESOURCE_LIMIT"
     }
-    if (is.null(.code) && grepl("00LOCK-rscope", .msg, fixed = TRUE)) {
+    if (is.null(.code) && grepl("00LOCK-arkbridge", .msg, fixed = TRUE)) {
       .code <- "E_INSTALL_LOCK"
     }
     .log_line("[error] code=", .string_field(.code), " message=", .msg)
@@ -608,7 +608,8 @@ fi
 ARK_STATUS_DIR="$STATUS_DIR" \
 ARK_IPC_MAX_REQUEST_BYTES="$IPC_MAX_REQUEST_BYTES" \
 ARK_IPC_READ_TIMEOUT_MS="$IPC_READ_TIMEOUT_MS" \
-RSCOPE_ORIG_R_PROFILE_USER="${R_PROFILE_USER:-}" \
+ARK_ORIG_R_PROFILE_USER="${R_PROFILE_USER:-}" \
+ARK_R_LIB="$BOOTSTRAP_LIB" \
 RSCOPE_STATUS_DIR="$STATUS_DIR" \
 RSCOPE_IPC_MAX_REQUEST_BYTES="$IPC_MAX_REQUEST_BYTES" \
 RSCOPE_IPC_READ_TIMEOUT_MS="$IPC_READ_TIMEOUT_MS" \

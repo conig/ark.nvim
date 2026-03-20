@@ -59,9 +59,10 @@ prompt_ready() {
       | strip_ansi \
       | awk 'NF { line = $0 } END { print line }'
   )
+  last_line=$(printf '%s' "$last_line" | tr -d '\r' | sed 's/[[:space:]]*$//')
 
   case "$last_line" in
-    ">"|"> ")
+    *">")
       return 0
       ;;
     *)

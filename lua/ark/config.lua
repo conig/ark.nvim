@@ -80,7 +80,7 @@ function M.defaults()
       startup_status_dir = vim.env.ARK_STATUS_DIR
         or vim.env.RSCOPE_STATUS_DIR
         or ((vim.fn.stdpath("state") or "/tmp") .. "/ark-status"),
-      session_pkg_path = root .. "/packages/rscope",
+      session_pkg_path = root .. "/packages/arkbridge",
       session_lib_path = (vim.fn.stdpath("data") or "/tmp") .. "/ark/r-lib",
       bridge_wait_ms = 5000,
       session_timeout_ms = 1000,

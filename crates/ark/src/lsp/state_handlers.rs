@@ -530,7 +530,7 @@ pub(crate) fn did_update_session(
     state.session_bridge = session_bridge_from_update(&params)?;
     state.detached_session_bootstrap_attempted = false;
 
-    if params.repl_ready {
+    if params.status == "ready" && state.session_bridge.is_some() {
         refresh_detached_session_inputs(state, true);
     }
 
@@ -745,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detached_session_update_bootstraps_console_scopes() {
+    fn test_detached_session_update_bootstraps_console_scopes_when_bridge_is_ready() {
         let auth_token = "ark-test-token";
         let port = spawn_bootstrap_bridge(auth_token);
         let status = tempfile::NamedTempFile::new().expect("expected temp status file");
@@ -769,7 +769,7 @@ mod tests {
                 tmux_pane: String::from("%1"),
                 timeout_ms: Some(1000),
                 status: String::from("ready"),
-                repl_ready: true,
+                repl_ready: false,
             },
             &mut state,
         )

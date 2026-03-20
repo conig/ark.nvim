@@ -46,10 +46,7 @@ local function completion_labels_at_cursor(prefix)
   end
 
   local cursor = vim.api.nvim_win_get_cursor(0)
-  local character = cursor[2]
-  if vim.fn.mode() == "i" then
-    character = character + 1
-  end
+  local character = vim.fn.strchars(prefix)
 
   local params = {
     textDocument = vim.lsp.util.make_text_document_params(0),

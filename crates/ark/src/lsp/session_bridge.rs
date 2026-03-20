@@ -223,8 +223,6 @@ struct SessionStatusPayload {
     port: Option<u16>,
     #[serde(default)]
     auth_token: String,
-    #[serde(default)]
-    repl_ready: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1136,16 +1134,6 @@ impl StatusFileSessionBridgeSource {
                         status.status
                     )
                 },
-            }
-            .into());
-        }
-
-        if !status.repl_ready {
-            return Err(SessionBridgeUnavailableError {
-                message: format!(
-                    "startup status file '{}' is ready but the R prompt is not",
-                    self.status_file.display()
-                ),
             }
             .into());
         }
@@ -2795,6 +2783,42 @@ mod tests {
         assert_eq!(request.expr, "mtcars");
         assert_eq!(request.accessor, Some(String::from("$")));
         assert_eq!(request.prefix, Some(String::from("mp")));
+    }
+
+    #[test]
+    fn test_extractor_completion_request_treats_next_line_as_rhs_continuation() {
+        let document = Document::new("mtcars$\nmtcars$mp\n", None);
+        let context = DocumentContext::new(
+            &document,
+            Point::new(0, 7),
+            Some(String::from("$")),
+        );
+
+        let request = completion_request_from_extractor(&context)
+            .unwrap()
+            .expect("expected extractor completion request");
+
+        assert_eq!(request.expr, "mtcars");
+        assert_eq!(request.accessor, Some(String::from("$")));
+        assert_eq!(request.prefix, Some(String::from("mtcars")));
+    }
+
+    #[test]
+    fn test_extractor_completion_request_supports_single_line_with_trailing_newline() {
+        let document = Document::new("mtcars$\n", None);
+        let context = DocumentContext::new(
+            &document,
+            Point::new(0, 7),
+            Some(String::from("$")),
+        );
+
+        let request = completion_request_from_extractor(&context)
+            .unwrap()
+            .expect("expected extractor completion request");
+
+        assert_eq!(request.expr, "mtcars");
+        assert_eq!(request.accessor, Some(String::from("$")));
+        assert_eq!(request.prefix, None);
     }
 
     #[test]
