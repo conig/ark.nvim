@@ -153,18 +153,22 @@ pub(crate) async fn handle_initialized(
         // underlying setting. Unfortunately we don't receive updates in that case.
 
         for setting in crate::lsp::config::GLOBAL_SETTINGS {
-            regs.push(Registration {
-                id: uuid::Uuid::new_v4().to_string(),
-                method: String::from("workspace/didChangeConfiguration"),
-                register_options: Some(serde_json::json!({ "section": setting.key })),
-            });
+            for key in setting.keys {
+                regs.push(Registration {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    method: String::from("workspace/didChangeConfiguration"),
+                    register_options: Some(serde_json::json!({ "section": key })),
+                });
+            }
         }
         for setting in crate::lsp::config::DOCUMENT_SETTINGS {
-            regs.push(Registration {
-                id: uuid::Uuid::new_v4().to_string(),
-                method: String::from("workspace/didChangeConfiguration"),
-                register_options: Some(serde_json::json!({ "section": setting.key })),
-            });
+            for key in setting.keys {
+                regs.push(Registration {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    method: String::from("workspace/didChangeConfiguration"),
+                    register_options: Some(serde_json::json!({ "section": key })),
+                });
+            }
         }
     }
 

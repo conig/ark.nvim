@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::lsp::diagnostics::DiagnosticsConfig;
 
 pub struct Setting<T> {
-    pub key: &'static str,
+    pub keys: &'static [&'static str],
     pub set: fn(&mut T, Value),
 }
 
@@ -18,7 +18,7 @@ pub struct Setting<T> {
 /// document URI, add it to `DOCUMENT_SETTINGS` instead.
 pub static GLOBAL_SETTINGS: &[Setting<LspConfig>] = &[
     Setting {
-        key: "positron.r.diagnostics.enable",
+        keys: &["ark.r.diagnostics.enable", "positron.r.diagnostics.enable"],
         set: |cfg, v| {
             cfg.diagnostics.enable = v
                 .as_bool()
@@ -26,7 +26,10 @@ pub static GLOBAL_SETTINGS: &[Setting<LspConfig>] = &[
         },
     },
     Setting {
-        key: "positron.r.symbols.includeAssignmentsInBlocks",
+        keys: &[
+            "ark.r.symbols.includeAssignmentsInBlocks",
+            "positron.r.symbols.includeAssignmentsInBlocks",
+        ],
         set: |cfg, v| {
             cfg.symbols.include_assignments_in_blocks = v
                 .as_bool()
@@ -34,7 +37,10 @@ pub static GLOBAL_SETTINGS: &[Setting<LspConfig>] = &[
         },
     },
     Setting {
-        key: "positron.r.workspaceSymbols.includeCommentSections",
+        keys: &[
+            "ark.r.workspaceSymbols.includeCommentSections",
+            "positron.r.workspaceSymbols.includeCommentSections",
+        ],
         set: |cfg, v| {
             cfg.workspace_symbols.include_comment_sections = v
                 .as_bool()
@@ -47,7 +53,7 @@ pub static GLOBAL_SETTINGS: &[Setting<LspConfig>] = &[
 /// own value of the setting.
 pub static DOCUMENT_SETTINGS: &[Setting<DocumentConfig>] = &[
     Setting {
-        key: "editor.insertSpaces",
+        keys: &["editor.insertSpaces"],
         set: |cfg, v| {
             let default_style = IndentationConfig::default().indent_style;
             cfg.indent.indent_style = if v
@@ -61,7 +67,7 @@ pub static DOCUMENT_SETTINGS: &[Setting<DocumentConfig>] = &[
         },
     },
     Setting {
-        key: "editor.indentSize",
+        keys: &["editor.indentSize"],
         set: |cfg, v| {
             cfg.indent.indent_size = v
                 .as_u64()
@@ -70,7 +76,7 @@ pub static DOCUMENT_SETTINGS: &[Setting<DocumentConfig>] = &[
         },
     },
     Setting {
-        key: "editor.tabSize",
+        keys: &["editor.tabSize"],
         set: |cfg, v| {
             cfg.indent.tab_width = v
                 .as_u64()

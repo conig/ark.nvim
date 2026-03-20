@@ -574,6 +574,14 @@ async fn update_config(
     client: &tower_lsp::Client,
     state: &mut WorldState,
 ) -> anyhow::Result<()> {
+    fn preferred_value(values: &[serde_json::Value]) -> serde_json::Value {
+        values
+            .iter()
+            .find(|value| !value.is_null())
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    }
+
     // Keep track of existing config to detect whether it was changed
     let diagnostics_config = state.config.diagnostics.clone();
 
@@ -584,9 +592,11 @@ async fn update_config(
     // splitting them off the response array
     let mut global_items: Vec<_> = GLOBAL_SETTINGS
         .iter()
-        .map(|mapping| lsp_types::ConfigurationItem {
-            scope_uri: None,
-            section: Some(mapping.key.to_string()),
+        .flat_map(|mapping| {
+            mapping.keys.iter().map(|key| lsp_types::ConfigurationItem {
+                scope_uri: None,
+                section: Some((*key).to_string()),
+            })
         })
         .collect();
 
@@ -595,12 +605,12 @@ async fn update_config(
     let mut document_items: Vec<_> = uris
         .iter()
         .flat_map(|uri| {
-            DOCUMENT_SETTINGS
-                .iter()
-                .map(|mapping| lsp_types::ConfigurationItem {
+            DOCUMENT_SETTINGS.iter().flat_map(|mapping| {
+                mapping.keys.iter().map(|key| lsp_types::ConfigurationItem {
                     scope_uri: Some(uri.clone()),
-                    section: Some(mapping.key.to_string()),
+                    section: Some((*key).to_string()),
                 })
+            })
         })
         .collect();
 
@@ -621,11 +631,21 @@ async fn update_config(
         ));
     }
 
-    let document_configs = configs.split_off(GLOBAL_SETTINGS.len());
+    let global_item_count: usize = GLOBAL_SETTINGS.iter().map(|mapping| mapping.keys.len()).sum();
+    let document_item_count_per_uri: usize = DOCUMENT_SETTINGS
+        .iter()
+        .map(|mapping| mapping.keys.len())
+        .sum();
+
+    let document_configs = configs.split_off(global_item_count);
     let global_configs = configs;
 
-    for (mapping, value) in GLOBAL_SETTINGS.iter().zip(global_configs) {
+    let mut global_offset = 0;
+    for mapping in GLOBAL_SETTINGS.iter() {
+        let next_offset = global_offset + mapping.keys.len();
+        let value = preferred_value(&global_configs[global_offset..next_offset]);
         (mapping.set)(&mut state.config, value);
+        global_offset = next_offset;
     }
 
     let mut remaining = document_configs;
@@ -633,13 +653,17 @@ async fn update_config(
     for uri in uris.into_iter() {
         // Need to juggle a bit because `split_off()` returns the tail of the
         // split and updates the vector with the head
-        let tail = remaining.split_off(DOCUMENT_SETTINGS.len());
+        let tail = remaining.split_off(document_item_count_per_uri);
         let head = std::mem::replace(&mut remaining, tail);
 
-        for (mapping, value) in DOCUMENT_SETTINGS.iter().zip(head) {
+        let mut offset = 0;
+        for mapping in DOCUMENT_SETTINGS.iter() {
+            let next_offset = offset + mapping.keys.len();
+            let value = preferred_value(&head[offset..next_offset]);
             if let Ok(doc) = state.get_document_mut(&uri) {
                 (mapping.set)(&mut doc.config, value);
             }
+            offset = next_offset;
         }
     }
 
