@@ -146,12 +146,36 @@ local({
 
   .quiet_log <- .log_file_path()
   .quiet_con <- file(.quiet_log, open = "wt")
+  .launcher_started_at <- Sys.time()
+
+  .timestamp_iso <- function(time = Sys.time()) {
+    format(time, "%Y-%m-%dT%H:%M:%OS3%z")
+  }
+
+  .elapsed_ms <- function(time = Sys.time()) {
+    .delta <- as.numeric(difftime(time, .launcher_started_at, units = "secs"))
+    if (!is.finite(.delta)) {
+      return(NA_integer_)
+    }
+    as.integer(round(.delta * 1000))
+  }
 
   .log_line <- function(...) {
+    .now <- Sys.time()
     .parts <- unlist(list(...), use.names = FALSE)
     .parts <- .parts[!vapply(.parts, is.null, logical(1))]
     .msg <- paste(as.character(.parts), collapse = "")
-    cat(.msg, "\n", file = .quiet_con, sep = "")
+    cat(
+      "[",
+      .timestamp_iso(.now),
+      " +",
+      .elapsed_ms(.now),
+      "ms] ",
+      .msg,
+      "\n",
+      file = .quiet_con,
+      sep = ""
+    )
     flush(.quiet_con)
     invisible(NULL)
   }
@@ -189,8 +213,10 @@ local({
       list(
         status = as.character(status),
         ts = as.integer(Sys.time()),
+        ts_iso = .timestamp_iso(),
         pid = as.integer(Sys.getpid()),
         log_path = normalizePath(.quiet_log, winslash = "/", mustWork = FALSE),
+        elapsed_ms = .elapsed_ms(),
         repl_ready = FALSE,
         repl_ts = NULL
       ),
