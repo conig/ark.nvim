@@ -114,8 +114,8 @@ fn report_crash() {
     let user_message = concat!(
         "The R language server has crashed and has been disabled. ",
         "Smart features such as completions will no longer work in this session. ",
-        "Please report this crash to https://github.com/posit-dev/positron/issues ",
-        "with full logs (see https://positron.posit.co/troubleshooting.html#python-and-r-logs)."
+        "Please report this crash to https://github.com/conig/ark.nvim/issues ",
+        "with full logs from the current Neovim session."
     );
 
     r_task(|| {
@@ -547,7 +547,7 @@ impl Backend {
     }
 
     async fn notification(&self, params: Option<Value>) {
-        log::info!("Received Positron notification: {:?}", params);
+        log::info!("Received legacy positron/notification payload: {:?}", params);
     }
 
     async fn update_session(&self, params: Value) {

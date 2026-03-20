@@ -6,4 +6,6 @@ tags
 /TODO.md
 packages/rscope/src/*.o
 packages/rscope/src/*.so
+packages/arkbridge/src/*.o
+packages/arkbridge/src/*.so
 /.nvimlog

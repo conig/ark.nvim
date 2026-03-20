@@ -173,37 +173,84 @@ local function ensure_session_watch_cleanup(bufnr)
   })
 end
 
-local function session_payload(opts)
+local function normalize_repl_ready(status)
+  if type(status) ~= "table" then
+    return nil
+  end
+
+  if status.repl_ready == nil then
+    return nil
+  end
+
+  return status.repl_ready == true or status.repl_ready == 1
+end
+
+local function session_snapshot(opts)
   local tmux_status = tmux.status and tmux.status(opts.tmux) or nil
-  if type(tmux_status) ~= "table" then
-    return {}
+  local session = type(tmux_status) == "table" and tmux_status.session or nil
+  if type(session) ~= "table" and type(tmux.session) == "function" then
+    session = tmux.session()
   end
-
-  local session = tmux_status.session
   if type(session) ~= "table" then
-    return {}
+    return nil
   end
 
-  local status_path = tmux_status.startup_status_path
+  local status_path = type(tmux_status) == "table" and tmux_status.startup_status_path or nil
+  if (type(status_path) ~= "string" or status_path == "")
+    and type(tmux.startup_status_path) == "function"
+  then
+    status_path = tmux.startup_status_path(opts.tmux)
+  end
   if type(status_path) ~= "string" or status_path == "" then
+    return nil
+  end
+
+  local startup_status = type(tmux_status) == "table" and tmux_status.startup_status or nil
+  if type(startup_status) ~= "table" and type(tmux.startup_status) == "function" then
+    startup_status = tmux.startup_status(opts.tmux)
+  end
+
+  local authoritative_status = nil
+  if type(tmux.startup_status_authoritative) == "function" then
+    authoritative_status = tmux.startup_status_authoritative(opts.tmux)
+  end
+
+  return {
+    bridge_ready = type(tmux_status) == "table" and tmux_status.bridge_ready == true or false,
+    session = session,
+    startup_status = startup_status,
+    authoritative_status = authoritative_status,
+    status_path = status_path,
+  }
+end
+
+local function session_payload(opts)
+  local snapshot = session_snapshot(opts)
+  if type(snapshot) ~= "table" then
     return {}
   end
 
-  local startup_status = tmux_status.startup_status
+  local session = snapshot.session
+  local startup_status = snapshot.startup_status
+  local authoritative_status = snapshot.authoritative_status
+  local status = snapshot.bridge_ready == true and "ready"
+    or (type(authoritative_status) == "table" and authoritative_status.status)
+    or (type(startup_status) == "table" and startup_status.status)
+    or ""
+  local repl_ready = normalize_repl_ready(authoritative_status)
+  if repl_ready == nil then
+    repl_ready = snapshot.bridge_ready == true and true or normalize_repl_ready(startup_status)
+  end
 
   return {
     kind = opts.tmux.session_kind,
-    statusFile = status_path,
+    statusFile = snapshot.status_path,
     tmuxSocket = session.tmux_socket,
     tmuxSession = session.tmux_session,
     tmuxPane = session.tmux_pane,
     timeoutMs = tonumber(opts.tmux.session_timeout_ms or 1000) or 1000,
-    status = tmux_status.bridge_ready == true and "ready" or (type(startup_status) == "table" and startup_status.status or ""),
-    -- For detached LSP hydration, the authoritative readiness signal is that
-    -- the managed bridge is actually reachable. Prompt scraping is too brittle
-    -- to gate runtime-aware language features on, because .Rprofile can change
-    -- the visible prompt shape.
-    replReady = tmux_status.bridge_ready == true,
+    status = status,
+    replReady = repl_ready == true,
   }
 end
 
