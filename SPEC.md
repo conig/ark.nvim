@@ -2,47 +2,78 @@
 
 ## Purpose
 
-`ark.nvim` is a Neovim-only R tooling project.
+This file captures the architectural state of the Neovim refactor, how it has
+departed from upstream Ark, the weaknesses that remain, and the changes that
+should define v2.
 
-Its job is to make one editor workflow feel native and reliable:
+It does not replace [AGENTS.md](/home/marine/repos/ark.nvim/AGENTS.md). That
+file remains canonical for product scope, contributor workflow, and repository
+rules. This spec is narrower and more opinionated. It records:
 
-1. open an `r`, `rmd`, `qmd`, or `quarto` buffer in Neovim
-2. get one managed tmux pane running interactive `R`
-3. keep code sending simple through `vim-slime` and `nvim-slimetree`
-4. get language intelligence from `ark.nvim` through the normal Neovim LSP client
-5. when a live R session exists, augment static analysis with runtime-aware completions, hover, signatures, and session-derived diagnostics context
+- the actual runtime shape in the repo today
+- the meaningful divergence from upstream Ark
+- what is working well
+- what is still transitional, brittle, or too expensive
+- the changes required to reach a clean v2 architecture
 
-This project is not trying to be Positron, Jupyter, or a notebook runtime.
-It is trying to be the cleanest possible R IDE layer for the user's existing Neovim + tmux workflow.
+## Upstream Divergence
 
-## Product Boundary
+As of 2026-03-20:
 
-### In scope
+- current `ark.nvim` HEAD: `45313412`
+- compared upstream ref: `upstream/main` at `9c899e2d`
+- merge-base with upstream: `7f8487f2`
+- divergence from that merge-base: 148 files changed, about 15.9k insertions and 975 deletions
 
-- Neovim plugin setup, commands, and health/status reporting
-- one managed tmux pane per Neovim instance
-- one detached stdio LSP client for Ark-backed language features
-- runtime-aware language features routed through a local bridge to the tmux-managed R session
-- graceful fallback to static-only behavior when the live session is absent
-- local same-machine operation
+That divergence is not random churn. It is a deliberate product split away from
+upstream Ark's kernel and Positron orientation.
 
-### Out of scope
+### The primary product departure
 
-- Positron support
-- Jupyter kernel support
-- notebook UI or notebook execution
-- DAP/debugger product work
-- data explorer / variables pane / plots pane UI
-- remote tmux or multi-host orchestration
-- replacing `vim-slime` or `nvim-slimetree`
+Upstream Ark still centers an attached runtime model shaped around:
 
-## Basic Infrastructure
+- kernel startup
+- Positron/Jupyter comms
+- frontend-specific requests and settings
+- an R process that Ark can directly control
 
-`ark.nvim` currently has three major layers.
+`ark.nvim` has moved to a different product boundary:
 
-### 1. Neovim plugin layer
+- one Neovim plugin surface in [lua/ark/](/home/marine/repos/ark.nvim/lua/ark)
+- one detached stdio LSP binary in [crates/ark/src/bin/ark-lsp.rs](/home/marine/repos/ark.nvim/crates/ark/src/bin/ark-lsp.rs)
+- one tmux-managed interactive `R` pane started by [scripts/ark-r-launcher.sh](/home/marine/repos/ark.nvim/scripts/ark-r-launcher.sh)
+- one pane-side bridge runtime under [packages/arkbridge/](/home/marine/repos/ark.nvim/packages/arkbridge/)
+- one Neovim-focused E2E suite under [tests/e2e/](/home/marine/repos/ark.nvim/tests/e2e)
 
-Main files:
+### The important architectural departure
+
+The real interactive R session no longer lives inside the LSP process.
+
+That means `ark.nvim` cannot be "upstream Ark over stdio." It must do three
+separate things well:
+
+1. manage a pane-owned interactive runtime
+2. start a detached language server that behaves like a normal Neovim LSP
+3. bridge runtime-aware requests from that detached LSP into the pane-owned R session
+
+### What has intentionally been kept from upstream
+
+The refactor is not a rewrite. The project still sensibly reuses upstream Ark's:
+
+- parser and document model
+- indexing and diagnostics infrastructure
+- completion, hover, signature, and symbol logic where still applicable
+- low-level R integration crates such as `harp` and `libr`
+
+That is the right call. Reusing the analysis core is a strength.
+
+## Current Runtime Shape
+
+The current product is three cooperating layers.
+
+### Neovim plugin layer
+
+Primary files:
 
 - [lua/ark/init.lua](/home/marine/repos/ark.nvim/lua/ark/init.lua)
 - [lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua)
@@ -51,15 +82,17 @@ Main files:
 
 Responsibilities:
 
-- start or reuse the managed tmux pane
-- launch or reuse the detached `ark-lsp` client
-- publish session metadata into the running client
-- surface `ArkStatus`, `ArkRefresh`, pane control, and related commands
+- ensure or reuse one managed tmux pane
+- locate and start detached `ark-lsp`
+- discover session identity and deliver it into the LSP using `ark/updateSession`
+- surface commands such as `ArkPaneStart`, `ArkRefresh`, and `ArkStatus`
+- integrate with Blink and with the existing `vim-slime` workflow
 
-### 2. Detached LSP layer
+### Detached LSP layer
 
-Main files:
+Primary files:
 
+- [crates/ark/src/bin/ark-lsp.rs](/home/marine/repos/ark.nvim/crates/ark/src/bin/ark-lsp.rs)
 - [crates/ark/src/lsp/backend.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/backend.rs)
 - [crates/ark/src/lsp/main_loop.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/main_loop.rs)
 - [crates/ark/src/lsp/state.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/state.rs)
@@ -68,281 +101,272 @@ Main files:
 
 Responsibilities:
 
-- run as a normal stdio LSP server in Neovim
-- own documents, parsing, indexing, diagnostics, and protocol handling
-- combine static analysis with runtime-aware bridge queries when available
-- keep detached session state truthful and inspectable
+- behave as a normal stdio LSP server for Neovim
+- own parsing, document state, indexing, diagnostics, and request handling
+- combine static analysis with runtime-aware bridge queries
+- bootstrap and report detached session status
 
-### 3. Pane-side runtime layer
+### Pane-side runtime layer
 
-Main files:
+Primary files:
 
 - [scripts/ark-r-launcher.sh](/home/marine/repos/ark.nvim/scripts/ark-r-launcher.sh)
 - [scripts/ark-wait-for-repl.sh](/home/marine/repos/ark.nvim/scripts/ark-wait-for-repl.sh)
 - [packages/arkbridge/](/home/marine/repos/ark.nvim/packages/arkbridge/)
+- transitional legacy runtime in [packages/rscope/](/home/marine/repos/ark.nvim/packages/rscope/)
 
 Responsibilities:
 
-- start R in the managed pane
-- start the local IPC service inside that interactive process
-- publish trusted startup status for the pane
-- answer runtime queries from the detached LSP
+- launch interactive `R` inside the managed pane
+- bootstrap the local IPC bridge inside that session
+- publish startup and readiness metadata to a trusted status file
+- answer runtime inspection and bootstrap requests from detached `ark-lsp`
 
-## Current Architecture
+## Current Startup Contract
 
-The key constraint is simple:
-
-- the real R session lives in tmux
-- the LSP process does not own that R runtime
-
-So `ark.nvim` cannot be “just upstream Ark over stdio”.
-It needs a supported bridge from the detached LSP to the live pane-owned R session.
-
-That means the intended data flow is:
+The startup path today is effectively:
 
 1. Neovim opens an R-family buffer.
-2. `ark.nvim` ensures the tmux pane and launcher exist.
-3. The launcher starts R and the pane-side IPC service.
-4. `ark.nvim` starts `ark-lsp` in detached mode.
-5. `ark.nvim` sends trusted session metadata into `ark-lsp`.
-6. `ark-lsp` uses static analysis by default and the bridge for runtime-aware requests.
+2. [lua/ark/init.lua](/home/marine/repos/ark.nvim/lua/ark/init.lua) triggers pane and LSP startup.
+3. [lua/ark/tmux.lua](/home/marine/repos/ark.nvim/lua/ark/tmux.lua) creates or reuses a pane and computes the status-file path.
+4. [scripts/ark-r-launcher.sh](/home/marine/repos/ark.nvim/scripts/ark-r-launcher.sh) starts `R`, installs or reuses `arkbridge`, and writes startup metadata.
+5. [lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua) starts detached `ark-lsp` with bridge env pointing at that status file.
+6. The plugin sends `ark/updateSession` notifications as the status file changes.
+7. [crates/ark/src/lsp/state_handlers.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/state_handlers.rs) converts those updates into a `SessionBridge`.
+8. [crates/ark/src/lsp/session_bridge.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/session_bridge.rs) bootstraps console scopes and library paths, after which runtime-aware features become fully live.
 
-## Why `rscope` Was Used
+This contract is viable. It is also still too implicit.
 
-Historically, the easiest bridge already available for this shape was the old `rscope` runtime:
+## What Is Working Well
 
-- a small R package with inspection helpers
-- a local IPC service
-- some member completion and object inspection logic
+### The product split is directionally correct
 
-That let the repo prove that a tmux-managed detached Ark flow was possible.
-It was a pragmatic bootstrap step.
+The repo is no longer pretending that Neovim is just another frontend for the
+old Ark product. The new detached stdio path is real and explicit.
 
-## Why `rscope` Is Now a Problem
+### The reuse boundary is sensible
 
-The old `rscope` dependency is now architectural drag.
+Keeping the analysis engine and adapting only the runtime boundary is the right
+engineering choice. The project is preserving the valuable parts of upstream
+instead of rewriting them under deadline pressure.
 
-### Product clarity problem
+### The team invested in ecologically valid tests
 
-`ark.nvim` is meant to be an Ark-owned Neovim product.
-Continuing to route core runtime behavior through `rscope` muddies ownership and product boundaries.
+The repo now has a real Neovim E2E suite, including:
 
-### Naming and trust problem
+- detached parity coverage in [tests/e2e/detached_parity.lua](/home/marine/repos/ark.nvim/tests/e2e/detached_parity.lua)
+- startup and timing coverage in [tests/e2e/full_config_startup_completion.lua](/home/marine/repos/ark.nvim/tests/e2e/full_config_startup_completion.lua)
+- managed-session completion coverage in [tests/e2e/subset_completion.lua](/home/marine/repos/ark.nvim/tests/e2e/subset_completion.lua)
+- readiness and bridge-state regressions in multiple focused tests under [tests/e2e/](/home/marine/repos/ark.nvim/tests/e2e)
 
-The current runtime still contains:
+That is the correct testing direction for this product.
 
-- `RSCOPE_*` env compatibility
-- the vendored `packages/rscope` package
-- old package-level helpers and naming
+### The bridge is the right abstraction
 
-That makes the runtime feel transitional instead of canonical.
+Runtime-aware language intelligence is being routed through an explicit local IPC
+boundary rather than per-request `tmux send-keys`. That is the correct UNIX-ish
+design: one process owns the REPL, one process owns language serving, and they
+communicate over a narrow, explicit protocol.
 
-### Maintenance problem
+## Review Findings
 
-Important behavior has been living in a legacy package we are trying to retire:
+These are the highest-value weaknesses remaining in the current implementation.
 
-- member extraction
-- inspection payload shaping
-- IPC service behavior
-- launcher installation expectations
+### 1. There is still no single authoritative startup state machine
 
-That is backwards. The new product should not deepen its dependency on the thing it intends to remove.
+The current truth is spread across several partially overlapping signals:
 
-## Deprecation Direction
+- pane existence in [lua/ark/tmux.lua](/home/marine/repos/ark.nvim/lua/ark/tmux.lua)
+- launcher status-file contents in [scripts/ark-r-launcher.sh](/home/marine/repos/ark.nvim/scripts/ark-r-launcher.sh)
+- live bridge ping in [lua/ark/tmux.lua](/home/marine/repos/ark.nvim/lua/ark/tmux.lua)
+- client presence and attachment in [lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua)
+- detached bootstrap state in [crates/ark/src/lsp/state.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/state.rs)
 
-The goal is not “keep `rscope` forever but rename some commands”.
-The goal is:
+This is the root architectural weakness behind startup flake and confusing
+status output. The code has improved substantially, but it still reasons about
+one startup across multiple truth models.
 
-1. keep only the minimum bridge behavior needed to support Neovim
-2. move that bridge under Ark-owned naming and ownership
-3. shrink and eventually delete the vendored `rscope` runtime
+### 2. Too much of the orchestration remains large, stateful, and editor-side
 
-The current intermediate step is [packages/arkbridge/](/home/marine/repos/ark.nvim/packages/arkbridge/), which is the beginning of that Ark-owned pane runtime.
+The current file sizes are a warning sign:
 
-## Weak Points We Have Identified
+- [scripts/ark-r-launcher.sh](/home/marine/repos/ark.nvim/scripts/ark-r-launcher.sh): 617 lines
+- [lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua): 597 lines
+- [lua/ark/tmux.lua](/home/marine/repos/ark.nvim/lua/ark/tmux.lua): 603 lines
+- [crates/ark/src/lsp/session_bridge.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/session_bridge.rs): 3031 lines
 
-### 1. Truthful readiness
+That does not automatically mean the code is bad, but it does mean v2 should
+actively simplify and split responsibilities before more behavior accretes there.
 
-For a long time, Ark could look healthy while the detached LSP was still not hydrated.
+### 3. The editor still performs too much synchronous readiness probing
 
-Examples:
+[lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua) derives session
+payloads from `tmux.status()`, and [lua/ark/tmux.lua](/home/marine/repos/ark.nvim/lua/ark/tmux.lua)
+uses bridge pings as part of status computation. That is understandable for v1,
+but it means the editor is still actively probing the runtime during watcher and
+polling activity.
 
-- tmux pane exists
-- launcher status file says `ready`
-- bridge answers pings
-- but `ark_lsp` still has no session-derived scopes or library paths
+That is correct enough to ship, but it is not the clean final design. In v2,
+the runtime should publish authoritative state so the editor is mostly relaying
+facts instead of repeatedly discovering them.
 
-This led to false confidence from status output.
+### 4. `arkbridge` is still a thin ownership wrapper over `rscope`
 
-### 2. Startup contract split across layers
+The new package name exists, but the runtime is still visibly transitional:
 
-There are several notions of “ready”:
+- [scripts/ark-r-launcher.sh](/home/marine/repos/ark.nvim/scripts/ark-r-launcher.sh) still accepts many `RSCOPE_*` variables
+- [packages/arkbridge/R/ipc_service.R](/home/marine/repos/ark.nvim/packages/arkbridge/R/ipc_service.R) still uses `.rscope_*` internals
+- [packages/arkbridge/src/init.c](/home/marine/repos/ark.nvim/packages/arkbridge/src/init.c) and related C code still export `C_rscope_*` symbols
+- [packages/arkbridge/LICENSE](/home/marine/repos/ark.nvim/packages/arkbridge/LICENSE) still names `rscope maintainers`
+- [packages/rscope/](/home/marine/repos/ark.nvim/packages/rscope/) is still vendored beside the Ark-owned package
 
-- pane exists
-- IPC service started
-- tmux prompt is stable
-- detached `ark-lsp` client exists
-- detached client has actually consumed the session update
-- detached client has successfully bootstrapped its runtime inputs
+This is the biggest maintainability debt in the runtime layer.
 
-If these are not separated cleanly, bugs appear as:
+### 5. Generated runtime artifacts are still tracked in the repository
 
-- missing completions on first attach
-- diagnostics coming online late
-- status reporting that says “fine” when the useful path is still broken
+[packages/arkbridge/src/arkbridge.so](/home/marine/repos/ark.nvim/packages/arkbridge/src/arkbridge.so),
+[packages/arkbridge/src/init.o](/home/marine/repos/ark.nvim/packages/arkbridge/src/init.o),
+[packages/arkbridge/src/ipc.o](/home/marine/repos/ark.nvim/packages/arkbridge/src/ipc.o),
+[packages/arkbridge/src/rscope.o](/home/marine/repos/ark.nvim/packages/arkbridge/src/rscope.o),
+and [packages/arkbridge/src/rscope.so](/home/marine/repos/ark.nvim/packages/arkbridge/src/rscope.so)
+are currently tracked.
 
-### 3. Prompt scraping is brittle
+That is not a robust long-term distribution story. Generated binaries make the
+repository noisier, less portable, and harder to trust.
 
-Prompt detection based on the visible tmux line is not a robust contract.
+### 6. The detached Neovim path still carries upstream Positron surface area
 
-Why it is weak:
+The user-facing product boundary has changed, but several detached-path surfaces
+still speak upstream language:
 
-- `.Rprofile` can change the prompt
-- browser/debug prompts differ
-- tmux pane capture is a UI scrape, not an authoritative runtime signal
+- [crates/ark/src/lsp/config.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/config.rs) still uses `positron.r.*` setting keys
+- [crates/ark/src/lsp/backend.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/backend.rs) still logs a `Positron` notification path and crash guidance pointing to Positron issues
+- several custom method names remain `positron/*` because they were inherited from upstream
 
-The detached LSP should not block runtime-aware language features on prompt text.
+This is not a release blocker, but it is product-boundary debt and should be
+removed or clearly isolated.
 
-### 4. Client attachment churn
+### 7. The test suite is strong overall, but some mocked tests have drifted from the current contract
 
-Some failures are not bridge failures at all.
-They are “no live `ark_lsp` client for this buffer” failures.
+The live E2E direction is good. The mocked contract tests are less healthy.
 
-That distinction matters because:
+At review time, these headless tests fail against the current implementation:
 
-- no client means no completion requests are even possible
-- a live but unhydrated client is a different problem
-- the status tooling must tell those apart
+- [tests/e2e/async_startup_notification.lua](/home/marine/repos/ark.nvim/tests/e2e/async_startup_notification.lua)
+- [tests/e2e/session_notification_prefers_authoritative_repl_ready.lua](/home/marine/repos/ark.nvim/tests/e2e/session_notification_prefers_authoritative_repl_ready.lua)
 
-### 5. Integration fragility with real Neovim config
+Those failures matter because they indicate the mocked `ark.tmux` contract in
+the tests has drifted from the current `tmux.status()`-driven startup path.
+That weakens confidence in the fast test tier even though the live E2E coverage
+is improving.
 
-Synthetic headless tests can pass while the real workflow still fails.
+## v2 Requirements
 
-Common causes:
+The following changes should define v2.
 
-- actual lazy-loading order
-- real Blink behavior
-- real async startup timing
-- plugin interaction and restart churn
+### 1. Introduce one canonical startup state machine
 
-This repo must keep testing under the user's real `~/.config/nvim/init.lua` for the critical path.
+The startup path should be represented explicitly and consistently across the
+launcher, Neovim plugin, status output, and tests.
 
-## Current Strategic Decisions
+At minimum the named phases should be:
 
-### Detached hydration must depend on bridge reachability, not prompt text
+1. pane created
+2. launcher running
+3. bridge reachable
+4. client started
+5. session update delivered
+6. detached bootstrap complete
 
-This is the most important design correction from recent work.
+`ArkStatus`, logging, and tests should all talk about these same phases.
 
-For completions and diagnostics:
+### 2. Make pane readiness explicit from inside `R`
 
-- if the Ark bridge is reachable, detached `ark-lsp` should hydrate
-- prompt readiness should remain relevant only for pane-send workflows
+Prompt scraping should no longer be a core readiness contract. It may remain a
+send-keys safety signal, but language-intelligence readiness should come from an
+explicit runtime signal published by the pane-side runtime.
 
-That split is cleaner and more future-proof.
+### 3. Minimize synchronous discovery in Neovim
 
-### `ArkStatus` must report useful state, not comfort text
+The plugin should trend toward:
 
-Status output should let a user distinguish:
+- starting the pane
+- starting the client
+- reading authoritative runtime state
+- relaying that state
 
-- no client
-- client exists but is not attached to this buffer
-- client exists but is not live
-- client is live but detached bootstrap failed
-- bridge identity is missing or stale
-- session update was received but bootstrap never completed
+It should trend away from repeated probing and derived readiness heuristics in
+editor code.
 
-If `ArkStatus` does not answer those questions, it is not doing its job.
+### 4. Finish the Ark-owned runtime migration
 
-### Runtime bridge requests are the canonical path
+v2 should make `arkbridge` genuinely Ark-owned:
 
-The intended architecture is not per-request `tmux send-keys`.
-It is:
+- remove `RSCOPE_*` compatibility from the default path
+- rename `.rscope_*` R internals
+- rename `C_rscope_*` native symbols
+- fix package metadata and license ownership
+- delete [packages/rscope/](/home/marine/repos/ark.nvim/packages/rscope/) once migration is complete
 
-- one managed pane
-- one in-session bridge service
-- detached LSP requests over local IPC
+### 5. Split oversized orchestration modules along clean boundaries
 
-That is the only shape that scales cleanly to robust completions, hover, signatures, and session-aware diagnostics.
+v2 should not add more complexity to the current monoliths.
 
-## Opportunities For Future Elegance
+The preferred split is:
 
-### 1. Replace prompt scraping with explicit runtime readiness
+- launcher shell orchestration in shell
+- bootstrap and runtime logic in checked-in R sources, not embedded heredocs
+- Neovim pane/session discovery separate from LSP lifecycle management
+- session-bridge transport separate from R-context parsing and completion-context extraction
 
-The pane-side runtime should publish a real readiness signal from inside R, not infer it from terminal output.
+### 6. Isolate or remove upstream Positron-facing surfaces from the Neovim path
 
-That would allow:
+The detached stdio path should not present Positron branding or Positron-specific
+settings as its public contract. Where compatibility must remain, it should be
+encapsulated and documented as legacy compatibility rather than default product identity.
 
-- cleaner separation between bridge readiness and send-keys safety
-- fewer tmux heuristics
-- less startup flake
+### 7. Repair and stratify the test suite
 
-### 2. Finish the `arkbridge` transition
+v2 should maintain three clear test layers:
 
-The long-term elegant shape is:
+1. Rust unit and integration tests for bridge state, bootstrap, and detached LSP state handling
+2. fast headless Neovim contract tests with mocks that actually match current plugin APIs
+3. serial live tmux E2Es, plus a small real-config smoke suite
 
-- Ark-owned package name
-- Ark-owned IPC/runtime API
-- Ark-owned environment variable names
-- no product-critical behavior living in `packages/rscope`
+The current mocked test drift needs to be fixed before that layer can be trusted.
 
-### 3. Make status reporting first-class diagnostics
+### 8. Remove generated artifacts from git
 
-The right `ArkStatus` output should effectively be a startup trace snapshot:
+Compiled package outputs should be built or installed as part of the bootstrap
+path, not versioned in the source tree.
 
-- client presence
-- buffer attachment
-- session bridge source
-- last session update
-- last bootstrap attempt
-- last bootstrap error
-- useful timing fields
+## v2 Priorities
 
-This will save more debugging time than another round of vague recovery logic.
+The priority order should be:
 
-### 4. Separate startup phases explicitly
-
-A cleaner model would name and preserve explicit phases such as:
-
-- pane created
-- IPC service reachable
-- client created
-- session update delivered
-- detached bootstrap complete
-
-Then both tests and user-facing status could reason about the same state machine.
-
-### 5. Shrink the Neovim-side heuristics
-
-The most elegant long-term design is one where Neovim mostly:
-
-- starts the pane
-- starts the client
-- passes trusted session identity
-
-and the rest is handled by:
-
-- an explicit pane runtime contract
-- an explicit detached LSP state machine
-
-The fewer UI heuristics the plugin carries, the better.
+1. define and implement the canonical startup state machine
+2. remove prompt-scrape and ping-heavy readiness heuristics from the hot path
+3. finish the `rscope` to `arkbridge` ownership migration
+4. repair the fast mocked test tier and document a canonical test runner
+5. separate Neovim-serving code from inherited Positron/Jupyter surfaces
+6. split large orchestration modules before adding more behavior
+7. remove generated binaries from version control
 
 ## Success Criteria
 
-The project should be considered healthy when the normal workflow reliably does this on first attach:
+The project is in good shape when first attach reliably gives the user:
 
-1. open an R-family buffer
-2. get one managed pane and one detached `ark_lsp` client
-3. see truthful `ArkStatus`
-4. get `libr -> library`
-5. get `mtcars$ -> mpg`
-6. get diagnostics without waiting for mysterious late hydration
+1. one managed tmux pane
+2. one detached live `ark_lsp` client
+3. truthful `ArkStatus`
+4. fast `libr -> library`
+5. fast `mtcars$ -> mpg`
+6. diagnostics without mysterious late arrival
 
-And it should do that without leaning on legacy `rscope` ownership or prompt-scrape luck.
+and does so without:
 
-## Immediate Priorities
-
-1. keep the detached startup contract truthful and deterministic
-2. continue migrating pane runtime ownership from `rscope` to `arkbridge`
-3. make `ArkStatus` diagnostic-grade
-4. keep real-config regressions for startup, completions, and diagnostics
-5. prefer deleting transitional compatibility once the Ark-owned path is proven
+- prompt-scrape luck
+- product-critical `rscope` ownership
+- stale bridge-auth churn
+- broken fast-path tests
+- versioned generated runtime artifacts
