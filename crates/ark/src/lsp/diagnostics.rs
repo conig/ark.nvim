@@ -688,9 +688,14 @@ fn recurse_namespace(
         return ().ok();
     });
 
-    // Check for a valid package name.
+    // Prefer the eager installed-package set when available, but fall back to
+    // lazy library resolution in detached mode where bootstrap intentionally
+    // avoids enumerating every installed package for startup speed.
     let package = lhs.node_as_str(&context.doc.contents)?;
-    if !context.installed_packages.contains(package) {
+    let package_exists = context.installed_packages.contains(package)
+        || (!context.library.library_paths.is_empty() && context.library.get(package).is_some());
+
+    if !package_exists {
         let range = lhs.range();
         let range = context.doc.lsp_range_from_tree_sitter_range(range)?;
         let message = format!("Package '{}' is not installed.", package);
@@ -1129,10 +1134,12 @@ fn check_symbol_in_scope(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
 
     use harp::eval::RParseEvalOptions;
     use once_cell::sync::Lazy;
+    use tempfile::TempDir;
     use tower_lsp::lsp_types;
     use tower_lsp::lsp_types::Position;
 
@@ -1161,6 +1168,19 @@ mod tests {
             installed_packages: inputs.installed_packages,
             ..Default::default()
         }
+    }
+
+    fn create_temp_library_package(pkg_name: &str, namespace: &str) -> (TempDir, PathBuf) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pkg_dir = temp_dir.path().join(pkg_name);
+        fs::create_dir(&pkg_dir).unwrap();
+        fs::write(
+            pkg_dir.join("DESCRIPTION"),
+            format!("Package: {pkg_name}\nVersion: 1.0.0\n"),
+        )
+        .unwrap();
+        fs::write(pkg_dir.join("NAMESPACE"), namespace).unwrap();
+        (temp_dir, pkg_dir)
     }
 
     #[test]
@@ -1238,6 +1258,41 @@ mtcars$mp";
             assert_eq!(diagnostics.len(), 1);
             let diagnostic = diagnostics.first().unwrap();
             insta::assert_snapshot!(diagnostic.message);
+        })
+    }
+
+    #[test]
+    fn test_namespace_diagnostics_use_library_metadata_for_package_existence() {
+        r_task(|| {
+            // Reproduces detached mode after lean bootstrap: package names were
+            // not eagerly enumerated, but library paths were provided.
+            let (base_library, _) = create_temp_library_package("base", "export(\"!\")\n");
+            let (corx_library, _) = create_temp_library_package("corx", "export(corx)\n");
+
+            let state = WorldState {
+                library: Library::new(vec![
+                    base_library.path().to_path_buf(),
+                    corx_library.path().to_path_buf(),
+                ]),
+                ..Default::default()
+            };
+
+            let document = Document::new("base::!\ncorx::corx()", None);
+            let diagnostics = generate_diagnostics(document, state);
+            let messages: Vec<_> = diagnostics.iter().map(|d| d.message.clone()).collect();
+
+            assert!(
+                !messages
+                    .iter()
+                    .any(|message| message.contains("Package 'base' is not installed.")),
+                "unexpected diagnostics: {messages:?}"
+            );
+            assert!(
+                !messages
+                    .iter()
+                    .any(|message| message.contains("Package 'corx' is not installed.")),
+                "unexpected diagnostics: {messages:?}"
+            );
         })
     }
 
