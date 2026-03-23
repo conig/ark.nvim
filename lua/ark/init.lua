@@ -26,6 +26,7 @@ end
 
 function M.setup(opts)
   options = merged_opts(options, opts)
+  blink.configure_blink_sources()
   blink.register_lsp_commands()
   blink.patch_blink_context()
 
