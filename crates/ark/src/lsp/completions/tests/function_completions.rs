@@ -332,3 +332,28 @@ mod nonempty_args_tests {
         });
     }
 }
+
+#[cfg(test)]
+mod assignment_context_tests {
+    use crate::lsp::completions::tests::utils::find_completion_by_label;
+    use crate::lsp::completions::tests::utils::get_completions_at_cursor;
+    use crate::r_task;
+
+    #[test]
+    fn test_no_completions_on_empty_assignment_rhs() {
+        r_task(|| {
+            // Regression coverage for `x <- |`: the empty RHS of an assignment
+            // should not fall through to generic global completions.
+            let completions = get_completions_at_cursor("x <- @").unwrap();
+            assert!(completions.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_partial_identifier_still_completes_on_assignment_rhs() {
+        r_task(|| {
+            let completions = get_completions_at_cursor("x <- me@").unwrap();
+            assert!(find_completion_by_label(&completions, "mean").is_some());
+        });
+    }
+}

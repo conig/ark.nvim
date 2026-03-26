@@ -10,6 +10,7 @@ use tree_sitter::Point;
 
 use crate::lsp::document::Document;
 use crate::lsp::traits::node::NodeExt;
+use crate::treesitter::BinaryOperatorType;
 use crate::treesitter::NodeType;
 use crate::treesitter::NodeTypeExt;
 
@@ -103,6 +104,32 @@ impl<'a> DocumentContext<'a> {
             explicit_completion_request,
         }
     }
+
+    pub fn is_empty_assignment_rhs(&self) -> bool {
+        let closest = self.closest_node;
+
+        if !closest.is_identifier() {
+            return false;
+        }
+
+        let Ok(text) = closest.node_as_str(&self.document.contents) else {
+            return false;
+        };
+
+        if !text.is_empty() {
+            return false;
+        }
+
+        let Some(parent) = closest.parent() else {
+            return false;
+        };
+
+        matches!(
+            parent.node_type(),
+            NodeType::BinaryOperator(BinaryOperatorType::LeftAssignment)
+                | NodeType::BinaryOperator(BinaryOperatorType::LeftSuperAssignment)
+        ) && parent.child_by_field_name("rhs") == Some(closest)
+    }
 }
 
 #[cfg(test)]
@@ -183,5 +210,14 @@ mod tests {
                 .unwrap(),
             ")"
         );
+    }
+
+    #[test]
+    fn test_document_context_detects_empty_assignment_rhs() {
+        let (text, point) = point_from_cursor("x <- @");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        assert!(context.is_empty_assignment_rhs());
     }
 }

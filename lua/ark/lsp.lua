@@ -128,6 +128,7 @@ local function same_server(lhs, rhs)
   return lhs.name == rhs.name
     and vim.deep_equal(lhs.cmd, rhs.cmd)
     and lhs.root_dir == rhs.root_dir
+    and lhs._ark_lsp_build_fingerprint == rhs._ark_lsp_build_fingerprint
 end
 
 local function close_handle(handle)
@@ -446,6 +447,7 @@ function M.config(opts, bufnr, _config_opts)
   end
 
   return {
+    _ark_lsp_build_fingerprint = dev.detached_lsp_build_fingerprint(cmd[1]),
     name = opts.lsp.name,
     cmd = cmd,
     cmd_env = tmux.bridge_env(opts.tmux),

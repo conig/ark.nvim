@@ -201,6 +201,7 @@ impl Document {
             let range = change
                 .range
                 .expect("`None` case already handled by finding the last full document change.");
+            let range = self.clamp_lsp_range(range);
 
             // If the end of this change is at or past the start of the last change, then
             // the `line_index` needed to apply this change is now invalid, so we have to
@@ -261,10 +262,43 @@ impl Document {
         self.parse.syntax()
     }
 
+    fn clamp_lsp_position(&self, position: lsp_types::Position) -> lsp_types::Position {
+        let last_line = self.line_index.len().saturating_sub(1);
+        let line = position.line.min(last_line);
+
+        let max_character = self
+            .get_line(line as usize)
+            .map(|line| line.strip_suffix('\n').unwrap_or(line))
+            .map(|line| match self.position_encoding {
+                PositionEncoding::Utf8 => line.len() as u32,
+                PositionEncoding::Wide(biome_line_index::WideEncoding::Utf16) => {
+                    line.encode_utf16().count() as u32
+                },
+                PositionEncoding::Wide(biome_line_index::WideEncoding::Utf32) => {
+                    line.chars().count() as u32
+                },
+            })
+            .unwrap_or(0);
+
+        lsp_types::Position::new(line, position.character.min(max_character))
+    }
+
+    fn clamp_lsp_range(&self, range: lsp_types::Range) -> lsp_types::Range {
+        let start = self.clamp_lsp_position(range.start);
+        let mut end = self.clamp_lsp_position(range.end);
+
+        if (end.line, end.character) < (start.line, start.character) {
+            end = start;
+        }
+
+        lsp_types::Range::new(start, end)
+    }
+
     pub fn tree_sitter_point_from_lsp_position(
         &self,
         position: lsp_types::Position,
     ) -> anyhow::Result<tree_sitter::Point> {
+        let position = self.clamp_lsp_position(position);
         let line_col =
             from_proto::line_col_from_position(position, &self.line_index, self.position_encoding);
         Ok(tree_sitter::Point::new(
@@ -297,6 +331,7 @@ impl Document {
         &self,
         range: lsp_types::Range,
     ) -> anyhow::Result<tree_sitter::Range> {
+        let range = self.clamp_lsp_range(range);
         let start_point = self.tree_sitter_point_from_lsp_position(range.start)?;
         let end_point = self.tree_sitter_point_from_lsp_position(range.end)?;
 
@@ -657,6 +692,41 @@ value
 ```
 "#
         );
+    }
+
+    #[test]
+    fn test_literate_r_incremental_update_clamps_invalid_range_columns() {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_r::LANGUAGE.into())
+            .unwrap();
+
+        let mut document = Document::new_with_parser_and_kind(
+            "---\n```{r}\nfoo\n\nbar\n```\n",
+            &mut parser,
+            Some(1),
+            DocumentKind::LiterateR,
+        );
+
+        let params = lsp_types::DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier {
+                uri: lsp_types::Url::parse("file:///test.Rmd").unwrap(),
+                version: 2,
+            },
+            content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                range: Some(lsp_types::Range::new(
+                    lsp_types::Position::new(3, 30),
+                    lsp_types::Position::new(4, 0),
+                )),
+                range_length: None,
+                text: String::new(),
+            }],
+        };
+
+        document.on_did_change(&mut parser, &params);
+
+        assert_eq!(document.source_contents, "---\n```{r}\nfoo\nbar\n```\n");
+        assert!(document.contents.contains("foo\nbar"));
     }
 
     #[test]

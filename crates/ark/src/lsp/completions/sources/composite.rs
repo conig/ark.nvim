@@ -58,6 +58,10 @@ pub(crate) fn get_completions(
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
     log::info!("Getting completions from composite sources");
 
+    if completion_context.document_context.is_empty_assignment_rhs() {
+        return Ok(Some(vec![]));
+    }
+
     let mut completions = HashMap::new();
 
     // Call, pipe, and subset completions should show up no matter what when
@@ -109,6 +113,10 @@ pub(crate) fn get_completions(
 pub(crate) fn get_detached_static_completions(
     completion_context: &CompletionContext,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    if completion_context.document_context.is_empty_assignment_rhs() {
+        return Ok(Some(vec![]));
+    }
+
     let mut completions = HashMap::new();
 
     if completion_context.document_context.node.is_program()
@@ -328,5 +336,14 @@ mod tests {
             assert!(completions.is_some());
             assert!(!completions.unwrap().is_empty());
         });
+    }
+
+    #[test]
+    fn test_detects_empty_assignment_rhs_context() {
+        let (text, point) = point_from_cursor("x <- @");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        assert!(context.is_empty_assignment_rhs());
     }
 }

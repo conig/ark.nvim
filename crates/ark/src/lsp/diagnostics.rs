@@ -854,6 +854,11 @@ fn recurse_call(
                 lsp::log_warn!("Can't handle attach call: {err:?}");
             }
         },
+        "tar_load" | "targets::tar_load" | "targets:::tar_load" => {
+            if let Err(err) = handle_targets_load_call(node, context) {
+                lsp::log_warn!("Can't handle tar_load() call: {err:?}");
+            }
+        },
         _ => {},
     };
 
@@ -934,6 +939,27 @@ fn handle_package_attach_call(node: Node, context: &mut DiagnosticContext) -> an
     };
     for package_name in attach_field {
         insert_package_exports(package_name, attach_pos, context)?;
+    }
+
+    Ok(())
+}
+
+fn handle_targets_load_call(node: Node, context: &mut DiagnosticContext) -> anyhow::Result<()> {
+    for (name, value) in node.arguments() {
+        if name.is_some() {
+            continue;
+        }
+
+        let Some(value) = value else {
+            continue;
+        };
+
+        if !value.is_identifier_or_string() {
+            continue;
+        }
+
+        let name = value.get_identifier_or_string_text(&context.doc.contents)?;
+        context.add_defined_variable(name, value.range());
     }
 
     Ok(())
@@ -1145,6 +1171,7 @@ mod tests {
 
     use crate::console::console_inputs;
     use crate::lsp::document::Document;
+    use crate::lsp::document::DocumentKind;
     use crate::lsp::inputs::library::Library;
     use crate::lsp::inputs::package::Package;
     use crate::lsp::inputs::package_description::Dcf;
@@ -1921,6 +1948,68 @@ mtcars$mp";
                 .iter()
                 .any(|d| d.message.contains("No symbol named 'foo'")));
             assert_eq!(diagnostics.len(), 1);
+        });
+    }
+
+    #[test]
+    fn test_tar_load_marks_loaded_targets_as_in_scope_in_literate_r() {
+        r_task(|| {
+            let state = WorldState {
+                console_scopes: vec![vec!["tar_load".to_string()]],
+                ..Default::default()
+            };
+
+            let document = Document::new_with_kind(
+                r#"---
+title: "Ark tar_load diagnostics"
+---
+
+```{r}
+tar_load(clean_data)
+clean_data
+```
+"#,
+                None,
+                DocumentKind::LiterateR,
+            );
+
+            let diagnostics = generate_diagnostics(document, state);
+            let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+
+            assert!(
+                !messages
+                    .iter()
+                    .any(|m| m.contains("No symbol named 'clean_data' in scope.")),
+                "unexpected diagnostics: {messages:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn test_tar_load_only_defines_targets_after_the_call() {
+        r_task(|| {
+            let state = WorldState {
+                console_scopes: vec![vec!["tar_load".to_string()]],
+                ..Default::default()
+            };
+
+            let document = Document::new(
+                r#"
+clean_data
+tar_load(clean_data)
+clean_data
+"#,
+                None,
+            );
+
+            let diagnostics = generate_diagnostics(document, state);
+            let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+
+            assert_eq!(messages.len(), 1, "unexpected diagnostics: {messages:?}");
+            assert!(messages
+                .first()
+                .unwrap()
+                .contains("No symbol named 'clean_data' in scope."));
         });
     }
 

@@ -602,6 +602,10 @@ impl SessionBridge {
     }
 
     fn completion_plan(&self, context: &DocumentContext) -> anyhow::Result<Option<CompletionPlan>> {
+        if context.is_empty_assignment_rhs() {
+            return Ok(None);
+        }
+
         if let Some(request) = completion_request_from_extractor(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
@@ -1894,8 +1898,11 @@ fn completion_request_from_search_path(
     context: &DocumentContext,
 ) -> anyhow::Result<Option<CompletionRequest>> {
     let prefix = symbol_prefix(context)?;
-    if prefix.is_none() && context.trigger.is_none() {
-        return Ok(None);
+    if prefix.is_none() {
+        match context.trigger.as_deref() {
+            None | Some(" ") => return Ok(None),
+            _ => {},
+        }
     }
 
     Ok(Some(CompletionRequest {

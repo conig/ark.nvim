@@ -156,6 +156,18 @@ function M.ensure_current_detached_lsp_cmd(cmd)
   return updated, nil
 end
 
+function M.detached_lsp_build_fingerprint(path)
+  local binary_path = repo_target_binary(path)
+  if not binary_path then
+    return nil
+  end
+
+  return table.concat({
+    binary_path,
+    tostring(stat_mtime(binary_path) or 0),
+  }, "::")
+end
+
 function M.build_detached_lsp()
   local ok, build_err = run_build()
   if not ok then
