@@ -1,14 +1,41 @@
 vim.api.nvim_create_user_command("ArkPaneStart", function()
   require("ark").start_pane()
-end, { desc = "Start or reuse the managed ark.nvim R pane" })
+end, { desc = "Start or reuse the visible managed ark.nvim R tab" })
 
 vim.api.nvim_create_user_command("ArkPaneRestart", function()
   require("ark").restart_pane()
-end, { desc = "Restart the managed ark.nvim R pane" })
+end, { desc = "Restart the active managed ark.nvim R tab" })
 
 vim.api.nvim_create_user_command("ArkPaneStop", function()
   require("ark").stop_pane()
-end, { desc = "Stop the managed ark.nvim R pane" })
+end, { desc = "Stop all managed ark.nvim R tabs" })
+
+vim.api.nvim_create_user_command("ArkTabNew", function()
+  require("ark").new_tab()
+end, { desc = "Create a new managed ark.nvim R tab" })
+
+vim.api.nvim_create_user_command("ArkTabNext", function()
+  require("ark").next_tab()
+end, { desc = "Switch to the next managed ark.nvim R tab" })
+
+vim.api.nvim_create_user_command("ArkTabPrev", function()
+  require("ark").prev_tab()
+end, { desc = "Switch to the previous managed ark.nvim R tab" })
+
+vim.api.nvim_create_user_command("ArkTabClose", function()
+  require("ark").close_tab()
+end, { desc = "Close the active managed ark.nvim R tab" })
+
+vim.api.nvim_create_user_command("ArkTabList", function()
+  vim.print(require("ark").list_tabs())
+end, { desc = "Print the managed ark.nvim R tabs" })
+
+vim.api.nvim_create_user_command("ArkTabGo", function(args)
+  require("ark").go_tab(args.args)
+end, {
+  desc = "Switch to the managed ark.nvim R tab at the given index",
+  nargs = 1,
+})
 
 vim.api.nvim_create_user_command("ArkLspStart", function()
   require("ark").start_lsp(0)

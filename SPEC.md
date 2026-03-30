@@ -71,6 +71,35 @@ That is the right call. Reusing the analysis core is a strength.
 
 The current product is three cooperating layers.
 
+### Managed terminal tabs
+
+`ark.nvim` now supports a tabbed managed-terminal model for Neovim without
+showing multiple Ark panes on screen at once.
+
+The intended behavior is:
+
+- exactly one Ark pane is visible beside Neovim at a time
+- inactive Ark tabs are parked off-screen in a dedicated detached tmux session
+- each parked tab lives in its own tmux window inside that parking session
+- switching tabs moves the live pane back into the visible slot and retargets
+  both `vim-slime` and the detached LSP session metadata
+
+This design is deliberate.
+
+- It avoids carving up the visible tmux window into many tiny panes.
+- It avoids the geometry coupling that would come from storing multiple hidden
+  tabs in one parking window.
+- It preserves the current Ark architecture of one active live session per
+  Neovim instance.
+- It stays on the same tmux server so Ark can move the exact live pane back and
+  forth with `break-pane` and `join-pane`.
+
+Important constraint:
+
+- parked tabs may temporarily reside in a different tmux session, but the
+  launcher snapshots the visible-session identity at startup and Ark only treats
+  the restored visible tab as the active bridge target
+
 ### Neovim plugin layer
 
 Primary files:

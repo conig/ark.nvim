@@ -252,6 +252,9 @@ local function session_payload(opts)
     timeoutMs = tonumber(opts.tmux.session_timeout_ms or 1000) or 1000,
     status = status,
     replReady = repl_ready == true,
+    replSeq = (type(authoritative_status) == "table" and authoritative_status.repl_seq)
+      or (type(startup_status) == "table" and startup_status.repl_seq)
+      or nil,
   }
 end
 
@@ -367,11 +370,11 @@ local function session_watch_finished(opts, bufnr, payload)
     return true
   end
 
-  if payload.status == "ready" then
-    return session_payload_delivered(opts, bufnr, payload)
-  end
-
   return false
+end
+
+local function session_poll_finished(opts, bufnr, payload)
+  return payload.status == "ready" and session_payload_delivered(opts, bufnr, payload)
 end
 
 local function ensure_session_watch(opts, bufnr)
@@ -429,6 +432,11 @@ local function ensure_session_watch(opts, bufnr)
     notify_sessions(opts, nil, current)
     if session_watch_finished(opts, bufnr, current) then
       stop_session_watch(bufnr)
+      return
+    end
+    if session_poll_finished(opts, bufnr, current) then
+      session_watch_polls[bufnr] = nil
+      ensure_session_watch_cleanup(bufnr)
       return
     end
 

@@ -5,22 +5,59 @@ local M = {}
 
 local state = _G.__ark_nvim_state
 if type(state) ~= "table" then
-  state = {
-    managed = false,
-    pane_id = nil,
-    session = nil,
-  }
+  state = {}
 end
+
+local function normalize_state(raw)
+  raw = raw or {}
+  raw.tabs = type(raw.tabs) == "table" and raw.tabs or {}
+  raw.active_index = type(raw.active_index) == "number" and raw.active_index or nil
+  raw.anchor_pane_id = type(raw.anchor_pane_id) == "string" and raw.anchor_pane_id or nil
+  raw.parking_session_name = type(raw.parking_session_name) == "string" and raw.parking_session_name or nil
+  raw.slot_width_cells = tonumber(raw.slot_width_cells) or nil
+  raw.next_tab_id = type(raw.next_tab_id) == "number" and raw.next_tab_id or 1
+  raw.managed = raw.managed == true
+  raw.pane_id = type(raw.pane_id) == "string" and raw.pane_id or nil
+  raw.session = type(raw.session) == "table" and raw.session or nil
+
+  if #raw.tabs == 0 and raw.pane_id then
+    raw.tabs[1] = {
+      id = raw.next_tab_id,
+      pane_id = raw.pane_id,
+      session = raw.session,
+      visible = true,
+      managed = raw.managed ~= false,
+      label = "R " .. tostring(raw.next_tab_id),
+      parking_window_id = nil,
+    }
+    raw.active_index = 1
+    raw.next_tab_id = raw.next_tab_id + 1
+  end
+
+  for _, tab in ipairs(raw.tabs) do
+    if type(tab) == "table" then
+      tab.id = type(tab.id) == "number" and tab.id or raw.next_tab_id
+      if tab.id >= raw.next_tab_id then
+        raw.next_tab_id = tab.id + 1
+      end
+      tab.pane_id = type(tab.pane_id) == "string" and tab.pane_id or nil
+      tab.session = type(tab.session) == "table" and tab.session or nil
+      tab.visible = tab.visible == true
+      tab.managed = tab.managed ~= false
+      tab.label = type(tab.label) == "string" and tab.label or ("R " .. tostring(tab.id))
+      tab.parking_window_id = type(tab.parking_window_id) == "string" and tab.parking_window_id or nil
+    end
+  end
+
+  if raw.active_index and not raw.tabs[raw.active_index] then
+    raw.active_index = nil
+  end
+
+  return raw
+end
+
+state = normalize_state(state)
 _G.__ark_nvim_state = state
-
-local function sync_compat_state()
-  _G.__r_repl_state = {
-    pane_id = state.pane_id,
-    managed = state.managed,
-  }
-end
-
-sync_compat_state()
 
 local function trim(s)
   return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -71,6 +108,41 @@ local function pane_exists(pane_id)
   return out == pane_id
 end
 
+local function session_exists(session_name)
+  if not session_name or session_name == "" then
+    return false
+  end
+
+  local out = run_tmux({ "display-message", "-p", "-t", session_name, "#{session_name}" })
+  return out == session_name
+end
+
+local function active_tab()
+  return state.active_index and state.tabs[state.active_index] or nil
+end
+
+local function sync_compat_state()
+  local current = active_tab()
+  local pane_id = current and current.pane_id or nil
+  local managed = #state.tabs > 0
+
+  state.pane_id = pane_id
+  state.managed = managed
+  state.session = current and current.session or nil
+
+  _G.__r_repl_state = {
+    pane_id = pane_id,
+    managed = managed,
+  }
+end
+
+local function update_active_index(index)
+  state.active_index = index
+  sync_compat_state()
+end
+
+sync_compat_state()
+
 local function resolve_pane_percent(config)
   for _, key in ipairs(config.pane_width_env_keys or {}) do
     local from_format = run_tmux({ "display-message", "-p", "#{" .. key .. "}" })
@@ -90,6 +162,15 @@ local function resolve_pane_percent(config)
   end
 
   return tostring(config.pane_percent)
+end
+
+local function current_tmux_pane()
+  local pane_id, err = run_tmux({ "display-message", "-p", "#{pane_id}" })
+  if not pane_id then
+    return nil, "failed to determine current tmux pane: " .. tostring(err or "unknown")
+  end
+
+  return pane_id, nil
 end
 
 local function current_session(pane_id)
@@ -121,7 +202,11 @@ local function current_session(pane_id)
   }, nil
 end
 
-local function configure_slime_target(pane_id)
+local function filetype_enabled(filetypes, filetype)
+  return vim.tbl_contains(filetypes or {}, filetype)
+end
+
+local function configure_slime_target(pane_id, filetypes)
   local session, err = current_session(pane_id)
   if not session then
     return nil, err
@@ -132,7 +217,12 @@ local function configure_slime_target(pane_id)
     socket_name = session.tmux_socket,
     target_pane = pane_id,
   }
-  vim.b.slime_config = vim.g.slime_default_config
+
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(bufnr) and filetype_enabled(filetypes, vim.bo[bufnr].filetype) then
+      vim.b[bufnr].slime_config = vim.deepcopy(vim.g.slime_default_config)
+    end
+  end
 
   return session
 end
@@ -235,6 +325,7 @@ local function read_startup_status(session, config)
   payload.pid = tonumber(payload.pid)
   payload.ts = tonumber(payload.ts)
   payload.repl_ts = tonumber(payload.repl_ts)
+  payload.repl_seq = tonumber(payload.repl_seq)
   payload.auth_token = type(payload.auth_token) == "string" and payload.auth_token or ""
   payload.repl_ready = payload.repl_ready == true or payload.repl_ready == 1
   payload.log_path = type(payload.log_path) == "string" and payload.log_path or nil
@@ -379,45 +470,383 @@ local function prompt_ready(session)
   return last_line:sub(-1) == ">"
 end
 
-local function wait_for_ready_status(session, config)
-  local function ready_status()
-    local status = read_startup_status(session, config)
-    local repl_ready = status and (status.repl_ready == true or prompt_ready(session))
-    if status and repl_ready then
-      status.repl_ready = true
+local function refresh_visible_tab_session(index)
+  local tab = state.tabs[index]
+  if type(tab) ~= "table" or tab.visible ~= true or not tab.pane_id or not pane_exists(tab.pane_id) then
+    return tab and tab.session or nil
+  end
+
+  local session, err = current_session(tab.pane_id)
+  if not session then
+    vim.schedule(function()
+      vim.notify(err, vim.log.levels.WARN, { title = "ark.nvim" })
+    end)
+    return tab.session
+  end
+
+  tab.session = session
+  return session
+end
+
+local function parking_session_name()
+  if type(state.parking_session_name) == "string" and state.parking_session_name ~= "" then
+    return state.parking_session_name
+  end
+
+  state.parking_session_name = "__ark_nvim_parking__" .. tostring(vim.fn.getpid())
+  return state.parking_session_name
+end
+
+local function ensure_parking_session()
+  local session_name = parking_session_name()
+  if session_exists(session_name) then
+    return session_name, nil
+  end
+
+  local created, err = run_tmux({
+    "new-session",
+    "-d",
+    "-P",
+    "-F",
+    "#{session_name}",
+    "-s",
+    session_name,
+    "-n",
+    "__ark_keepalive__",
+    "sleep 1000000",
+  })
+  if not created then
+    return nil, "failed to create ark.nvim parking session: " .. tostring(err or "unknown")
+  end
+
+  state.parking_session_name = created
+  return created, nil
+end
+
+local function cleanup_parking_session()
+  local parked = false
+  for _, tab in ipairs(state.tabs) do
+    if tab.visible ~= true and pane_exists(tab.pane_id) then
+      parked = true
+      break
     end
-    if status
-      and status.status == "ready"
-      and repl_ready
-      and status.port
-      and ping_bridge(session, status, 250)
-    then
-      return status
+  end
+
+  if parked then
+    if state.parking_session_name and not session_exists(state.parking_session_name) then
+      state.parking_session_name = nil
     end
+    return
+  end
+
+  if state.parking_session_name and session_exists(state.parking_session_name) then
+    run_tmux({ "kill-session", "-t", state.parking_session_name })
+  end
+  state.parking_session_name = nil
+end
+
+local function prune_dead_tabs()
+  local removed_active = false
+  for index = #state.tabs, 1, -1 do
+    local tab = state.tabs[index]
+    if not pane_exists(tab.pane_id) then
+      table.remove(state.tabs, index)
+      if state.active_index == index then
+        removed_active = true
+      elseif state.active_index and state.active_index > index then
+        state.active_index = state.active_index - 1
+      end
+    end
+  end
+
+  if #state.tabs == 0 then
+    state.active_index = nil
+    state.anchor_pane_id = nil
+    cleanup_parking_session()
+  elseif removed_active and not state.tabs[state.active_index or 0] then
+    state.active_index = nil
+  end
+
+  sync_compat_state()
+end
+
+local function set_active_tab(index)
+  if not index then
+    update_active_index(nil)
+    return
+  end
+
+  refresh_visible_tab_session(index)
+  update_active_index(index)
+end
+
+local function ensure_anchor_pane()
+  if state.anchor_pane_id and pane_exists(state.anchor_pane_id) then
+    return state.anchor_pane_id, nil
+  end
+
+  if state.anchor_pane_id and #state.tabs > 0 then
+    return nil, "ark.nvim anchor pane disappeared; run :ArkPaneStart from the pane that should host Ark"
+  end
+
+  local pane_id, err = current_tmux_pane()
+  if not pane_id then
+    return nil, err
+  end
+
+  state.anchor_pane_id = pane_id
+  return pane_id, nil
+end
+
+local function window_width(target)
+  local width, err = run_tmux({ "display-message", "-p", "-t", target, "#{window_width}" })
+  if not width then
+    return nil, "failed to resolve tmux window width: " .. tostring(err or "unknown")
+  end
+
+  width = tonumber(width)
+  if not width or width <= 0 then
+    return nil, "failed to parse tmux window width: " .. tostring(width)
+  end
+
+  return width, nil
+end
+
+local function current_pane_width(pane_id)
+  local width, err = run_tmux({ "display-message", "-p", "-t", pane_id, "#{pane_width}" })
+  if not width then
+    return nil, "failed to resolve tmux pane width: " .. tostring(err or "unknown")
+  end
+
+  width = tonumber(width)
+  if not width or width <= 0 then
+    return nil, "failed to parse tmux pane width: " .. tostring(width)
+  end
+
+  return width, nil
+end
+
+local function desired_slot_width(anchor_pane_id, config)
+  if state.slot_width_cells and state.slot_width_cells > 0 then
+    return tostring(state.slot_width_cells), nil
+  end
+
+  local width, err = window_width(anchor_pane_id)
+  if not width then
+    return nil, err
+  end
+
+  local pct = tonumber(resolve_pane_percent(config)) or tonumber(config.pane_percent) or 33
+  local cells = math.floor((width * pct) / 100)
+  if cells < 10 then
+    cells = 10
+  elseif cells >= width then
+    cells = math.max(10, width - 1)
+  end
+
+  return tostring(cells), nil
+end
+
+local function insert_tab(tab, index)
+  if index and index >= 1 and index <= (#state.tabs + 1) then
+    table.insert(state.tabs, index, tab)
+    return index
+  end
+
+  table.insert(state.tabs, tab)
+  return #state.tabs
+end
+
+local function next_tab_record(pane_id, visible)
+  local id = state.next_tab_id
+  state.next_tab_id = id + 1
+  return {
+    id = id,
+    pane_id = pane_id,
+    session = nil,
+    visible = visible == true,
+    managed = true,
+    label = "R " .. tostring(id),
+    parking_window_id = nil,
+  }
+end
+
+local function create_visible_tab(opts, insert_index)
+  local anchor_pane_id, anchor_err = ensure_anchor_pane()
+  if not anchor_pane_id then
+    return nil, anchor_err
+  end
+
+  local pane_id, split_err = run_tmux({
+    "split-window",
+    "-h",
+    "-p",
+    resolve_pane_percent(opts.tmux),
+    "-d",
+    "-P",
+    "-F",
+    "#{pane_id}",
+    "-t",
+    anchor_pane_id,
+    M.pane_command(opts.tmux),
+  })
+  if not pane_id then
+    return nil, "failed to create pane: " .. tostring(split_err or "unknown")
+  end
+
+  local index = insert_tab(next_tab_record(pane_id, true), insert_index)
+  refresh_visible_tab_session(index)
+  set_active_tab(index)
+  return pane_id, nil
+end
+
+local function parking_window_name(tab)
+  return "__ark_tab_" .. tostring(tab.id) .. "__"
+end
+
+local function park_tab(index)
+  local tab = state.tabs[index]
+  if not tab or tab.visible ~= true or not tab.pane_id or not pane_exists(tab.pane_id) then
+    return true, nil
+  end
+
+  local session = refresh_visible_tab_session(index)
+  if session then
+    tab.session = session
+  end
+  local width = current_pane_width(tab.pane_id)
+  if width then
+    state.slot_width_cells = width
+  end
+
+  local parking_name, parking_err = ensure_parking_session()
+  if not parking_name then
+    return nil, parking_err
+  end
+
+  local window_id, err = run_tmux({
+    "break-pane",
+    "-d",
+    "-P",
+    "-F",
+    "#{window_id}",
+    "-s",
+    tab.pane_id,
+    "-t",
+    parking_name .. ":",
+    "-n",
+    parking_window_name(tab),
+  })
+  if not window_id then
+    return nil, "failed to park pane: " .. tostring(err or "unknown")
+  end
+
+  tab.visible = false
+  tab.parking_window_id = window_id
+  if state.active_index == index then
+    update_active_index(nil)
+  end
+
+  return true, nil
+end
+
+local function restore_tab(index, config)
+  local tab = state.tabs[index]
+  if not tab then
+    return nil, "ark.nvim tab does not exist"
+  end
+  if tab.visible == true and pane_exists(tab.pane_id) then
+    set_active_tab(index)
+    return tab.pane_id, nil
+  end
+
+  local anchor_pane_id, anchor_err = ensure_anchor_pane()
+  if not anchor_pane_id then
+    return nil, anchor_err
+  end
+
+  local width, width_err = desired_slot_width(anchor_pane_id, config)
+  if not width then
+    return nil, width_err
+  end
+
+  local _, join_err = run_tmux({
+    "join-pane",
+    "-d",
+    "-h",
+    "-l",
+    width,
+    "-s",
+    tab.pane_id,
+    "-t",
+    anchor_pane_id,
+  })
+  if join_err then
+    return nil, "failed to restore pane: " .. tostring(join_err or "unknown")
+  end
+
+  tab.visible = true
+  tab.parking_window_id = nil
+  refresh_visible_tab_session(index)
+  set_active_tab(index)
+  cleanup_parking_session()
+  return tab.pane_id, nil
+end
+
+local function swap_active_tab(index)
+  local current_index = state.active_index
+  local current = current_index and state.tabs[current_index] or nil
+  local target = state.tabs[index]
+  if not current or not target then
+    return nil, "ark.nvim tab does not exist"
+  end
+  if current.visible ~= true or target.visible == true then
+    return nil, "ark.nvim tab swap requires one visible and one parked tab"
+  end
+  if not pane_exists(current.pane_id) or not pane_exists(target.pane_id) then
+    return nil, "ark.nvim tab swap requires live panes"
+  end
+
+  local current_session = refresh_visible_tab_session(current_index)
+  if current_session then
+    current.session = current_session
+  end
+  local width = current_pane_width(current.pane_id)
+  if width then
+    state.slot_width_cells = width
+  end
+
+  local _, swap_err = run_tmux({
+    "swap-pane",
+    "-d",
+    "-s",
+    target.pane_id,
+    "-t",
+    current.pane_id,
+  })
+  if swap_err then
+    return nil, "failed to swap pane: " .. tostring(swap_err or "unknown")
+  end
+
+  current.visible = false
+  current.parking_window_id = target.parking_window_id
+  target.visible = true
+  target.parking_window_id = nil
+
+  refresh_visible_tab_session(index)
+  set_active_tab(index)
+  cleanup_parking_session()
+  return target.pane_id, nil
+end
+
+local function active_startup_session()
+  prune_dead_tabs()
+  local current = active_tab()
+  if not current or current.visible ~= true or not current.pane_id or not pane_exists(current.pane_id) then
     return nil
   end
 
-  local wait_ms = tonumber(config.bridge_wait_ms) or 0
-  if wait_ms <= 0 then
-    return ready_status()
-  end
-
-  local ready = nil
-  vim.wait(wait_ms, function()
-    local status = ready_status()
-    if status then
-      ready = status
-      return true
-    end
-    return false
-  end, 40, false)
-
-  return ready
-end
-
-local function update_state_session(session)
-  state.session = session
-  sync_compat_state()
+  return M.session()
 end
 
 function M.pane_command(config)
@@ -433,24 +862,21 @@ function M.pane_command(config)
 end
 
 function M.session()
-  if not pane_exists(state.pane_id) then
+  prune_dead_tabs()
+  local current = active_tab()
+  if not current or current.visible ~= true or not pane_exists(current.pane_id) then
     return nil
   end
 
-  local session, err = current_session(state.pane_id)
-  if not session then
-    vim.schedule(function()
-      vim.notify(err, vim.log.levels.WARN, { title = "ark.nvim" })
-    end)
-    return state.session
+  local session = refresh_visible_tab_session(state.active_index)
+  if session then
+    update_active_index(state.active_index)
   end
-
-  update_state_session(session)
-  return vim.deepcopy(state.session)
+  return session and vim.deepcopy(session) or nil
 end
 
 function M.startup_status(config)
-  local session = M.session()
+  local session = active_startup_session()
   if not session then
     return nil
   end
@@ -464,7 +890,7 @@ function M.startup_status(config)
 end
 
 function M.startup_status_authoritative(config)
-  local session = M.session()
+  local session = active_startup_session()
   if not session then
     return nil
   end
@@ -473,7 +899,7 @@ function M.startup_status_authoritative(config)
 end
 
 function M.startup_status_path(config)
-  local session = M.session()
+  local session = active_startup_session()
   if not session then
     return nil
   end
@@ -481,12 +907,12 @@ function M.startup_status_path(config)
   return status_file_path(session, config)
 end
 
-function M.bridge_env(config, opts)
+function M.bridge_env(config)
   if type(config.session_kind) ~= "string" or config.session_kind == "" then
     return nil
   end
 
-  local session = M.session()
+  local session = active_startup_session()
   if not session then
     return nil
   end
@@ -506,7 +932,33 @@ function M.bridge_env(config, opts)
   }
 end
 
+local function tab_summaries(config)
+  local tabs = {}
+  for index, tab in ipairs(state.tabs) do
+    local alive = pane_exists(tab.pane_id)
+    local session = tab.session
+    if tab.visible == true and alive then
+      session = refresh_visible_tab_session(index)
+    end
+    tabs[#tabs + 1] = {
+      id = tab.id,
+      index = index,
+      label = tab.label,
+      pane_id = tab.pane_id,
+      visible = tab.visible == true,
+      active = state.active_index == index,
+      alive = alive,
+      managed = tab.managed ~= false,
+      session = session,
+      startup_status_path = session and status_file_path(session, config or {}) or nil,
+      parking_window_id = tab.parking_window_id,
+    }
+  end
+  return tabs
+end
+
 function M.status(config)
+  prune_dead_tabs()
   local session = M.session()
   local startup_status = session and M.startup_status(config or {}) or nil
   local bridge_ready = session and startup_status and startup_status.status == "ready"
@@ -523,81 +975,289 @@ function M.status(config)
     startup_status_path = session and status_file_path(session, config or {}) or nil,
     bridge_ready = bridge_ready,
     repl_ready = bridge_ready and startup_status and startup_status.repl_ready == true or false,
+    anchor_pane_id = state.anchor_pane_id,
+    parking_session_name = state.parking_session_name,
+    slot_width_cells = state.slot_width_cells,
+    active_index = state.active_index,
+    tab_count = #state.tabs,
+    tabs = tab_summaries(config),
   }
 end
 
-function M.ensure(config)
+function M.tab_new(opts)
   if not vim.env.TMUX or vim.env.TMUX == "" then
     return nil, "ark.nvim requires Neovim to run inside tmux"
   end
 
-  if pane_exists(state.pane_id) then
-    local session = M.session()
-    if session then
-      update_state_session(session)
+  prune_dead_tabs()
+  if state.active_index then
+    local _, err = park_tab(state.active_index)
+    if err then
+      return nil, err
+    end
+  end
+
+  local pane_id, create_err = create_visible_tab(opts)
+  if not pane_id then
+    return nil, create_err
+  end
+
+  if opts.configure_slime then
+    local session, slime_err = configure_slime_target(pane_id, opts.filetypes)
+    if not session then
+      return nil, slime_err
+    end
+    state.session = session
+  end
+
+  return pane_id, nil
+end
+
+function M.tab_select(index, opts)
+  prune_dead_tabs()
+  if #state.tabs == 0 then
+    return nil, "ark.nvim has no managed tabs"
+  end
+
+  index = tonumber(index)
+  if not index or not state.tabs[index] then
+    return nil, "ark.nvim tab index is out of range"
+  end
+
+  if state.active_index == index and active_tab() and active_tab().visible == true and pane_exists(state.pane_id) then
+    if opts.configure_slime then
+      local session, slime_err = configure_slime_target(state.pane_id, opts.filetypes)
+      if not session then
+        return nil, slime_err
+      end
+      state.session = session
     end
     return state.pane_id, nil
   end
 
-  local pane_id, split_err = run_tmux({
-    "split-window",
-    "-h",
-    "-p",
-    resolve_pane_percent(config),
-    "-d",
-    "-P",
-    "-F",
-    "#{pane_id}",
-    M.pane_command(config),
-  })
+  if state.active_index and active_tab() and active_tab().visible == true then
+    local pane_id, swap_err = swap_active_tab(index)
+    if not pane_id then
+      return nil, swap_err
+    end
 
+    if opts.configure_slime then
+      local session, slime_err = configure_slime_target(pane_id, opts.filetypes)
+      if not session then
+        return nil, slime_err
+      end
+      state.session = session
+    end
+
+    return pane_id, nil
+  end
+
+  local pane_id, restore_err = restore_tab(index, opts.tmux)
   if not pane_id then
-    return nil, "failed to create pane: " .. tostring(split_err or "unknown")
+    return nil, restore_err
   end
 
-  state.pane_id = pane_id
-  state.managed = true
-
-  local session = M.session()
-  if session then
-    update_state_session(session)
+  if opts.configure_slime then
+    local session, slime_err = configure_slime_target(pane_id, opts.filetypes)
+    if not session then
+      return nil, slime_err
+    end
+    state.session = session
   end
 
-  sync_compat_state()
   return pane_id, nil
 end
 
+function M.tab_go(index, opts)
+  return M.tab_select(index, opts)
+end
+
+function M.tab_next(opts)
+  prune_dead_tabs()
+  if #state.tabs == 0 then
+    return nil, "ark.nvim has no managed tabs"
+  end
+
+  local index = state.active_index or 1
+  index = index + 1
+  if index > #state.tabs then
+    index = 1
+  end
+
+  return M.tab_select(index, opts)
+end
+
+function M.tab_prev(opts)
+  prune_dead_tabs()
+  if #state.tabs == 0 then
+    return nil, "ark.nvim has no managed tabs"
+  end
+
+  local index = state.active_index or 1
+  index = index - 1
+  if index < 1 then
+    index = #state.tabs
+  end
+
+  return M.tab_select(index, opts)
+end
+
+function M.tab_close(opts)
+  prune_dead_tabs()
+  local current = active_tab()
+  if not current then
+    return nil, "ark.nvim has no active tab"
+  end
+
+  local closing_index = state.active_index
+  if #state.tabs == 0 then
+    if pane_exists(current.pane_id) then
+      run_tmux({ "kill-pane", "-t", current.pane_id })
+    end
+    table.remove(state.tabs, closing_index)
+    state.active_index = nil
+    cleanup_parking_session()
+    state.anchor_pane_id = nil
+    sync_compat_state()
+    return nil, nil
+  end
+
+  local next_index = math.min(closing_index, #state.tabs)
+  if next_index == closing_index then
+    next_index = math.max(1, closing_index - 1)
+  end
+
+  local promoted_pane_id = nil
+  if next_index ~= closing_index and state.tabs[next_index] and state.tabs[next_index].visible ~= true then
+    local swapped_pane_id, swap_err = swap_active_tab(next_index)
+    if not swapped_pane_id then
+      return nil, swap_err
+    end
+    promoted_pane_id = swapped_pane_id
+
+    if pane_exists(current.pane_id) then
+      run_tmux({ "kill-pane", "-t", current.pane_id })
+    end
+
+    if next_index < closing_index then
+      table.remove(state.tabs, closing_index)
+      state.active_index = next_index
+    else
+      table.remove(state.tabs, closing_index)
+      state.active_index = next_index - 1
+    end
+    sync_compat_state()
+    cleanup_parking_session()
+    if opts.configure_slime then
+      local session, slime_err = configure_slime_target(promoted_pane_id, opts.filetypes)
+      if not session then
+        return nil, slime_err
+      end
+      state.session = session
+    end
+    return promoted_pane_id, nil
+  end
+
+  if pane_exists(current.pane_id) then
+    run_tmux({ "kill-pane", "-t", current.pane_id })
+  end
+  table.remove(state.tabs, closing_index)
+  state.active_index = nil
+  sync_compat_state()
+  local pane_id, err = M.tab_select(next_index, opts)
+  if not pane_id then
+    return nil, err
+  end
+  return pane_id, nil
+end
+
+function M.tab_list()
+  prune_dead_tabs()
+  return vim.deepcopy(tab_summaries({}))
+end
+
 function M.start(opts)
-  local pane_id, err = M.ensure(opts.tmux)
+  if not vim.env.TMUX or vim.env.TMUX == "" then
+    return nil, "ark.nvim requires Neovim to run inside tmux"
+  end
+
+  prune_dead_tabs()
+
+  if state.active_index and active_tab() and active_tab().visible == true and pane_exists(state.pane_id) then
+    if opts.configure_slime then
+      local session, slime_err = configure_slime_target(state.pane_id, opts.filetypes)
+      if not session then
+        return nil, slime_err
+      end
+      state.session = session
+    end
+    return state.pane_id, nil
+  end
+
+  if #state.tabs > 0 then
+    return M.tab_select(state.active_index or 1, opts)
+  end
+
+  return M.tab_new(opts)
+end
+
+function M.stop_all()
+  for _, tab in ipairs(state.tabs) do
+    if pane_exists(tab.pane_id) then
+      run_tmux({ "kill-pane", "-t", tab.pane_id })
+    end
+  end
+
+  cleanup_parking_session()
+
+  state.tabs = {}
+  state.active_index = nil
+  state.anchor_pane_id = nil
+  state.parking_session_name = nil
+  state.session = nil
+  state.pane_id = nil
+  state.managed = false
+  sync_compat_state()
+end
+
+function M.stop()
+  M.stop_all()
+end
+
+function M.restart(opts)
+  if not vim.env.TMUX or vim.env.TMUX == "" then
+    return nil, "ark.nvim requires Neovim to run inside tmux"
+  end
+
+  prune_dead_tabs()
+  if not active_tab() then
+    return M.start(opts)
+  end
+
+  local restart_index = state.active_index
+  local current = active_tab()
+  if current and pane_exists(current.pane_id) then
+    run_tmux({ "kill-pane", "-t", current.pane_id })
+  end
+
+  table.remove(state.tabs, restart_index)
+  state.active_index = nil
+  sync_compat_state()
+
+  local pane_id, err = create_visible_tab(opts, restart_index)
   if not pane_id then
     return nil, err
   end
 
   if opts.configure_slime then
-    local session, slime_err = configure_slime_target(pane_id)
+    local session, slime_err = configure_slime_target(pane_id, opts.filetypes)
     if not session then
       return nil, slime_err
     end
-    update_state_session(session)
+    state.session = session
   end
 
   return pane_id, nil
-end
-
-function M.stop()
-  if state.managed and pane_exists(state.pane_id) then
-    run_tmux({ "kill-pane", "-t", state.pane_id })
-  end
-
-  state.pane_id = nil
-  state.managed = false
-  state.session = nil
-  sync_compat_state()
-end
-
-function M.restart(opts)
-  M.stop()
-  return M.start(opts)
 end
 
 return M

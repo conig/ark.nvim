@@ -147,6 +147,7 @@ local({
   .quiet_log <- .log_file_path()
   .quiet_con <- file(.quiet_log, open = "wt")
   .launcher_started_at <- Sys.time()
+  .repl_seq <- 0L
 
   .timestamp_iso <- function(time = Sys.time()) {
     format(time, "%Y-%m-%dT%H:%M:%OS3%z")
@@ -250,6 +251,16 @@ local({
     )
 
     invisible(NULL)
+  }
+
+  .write_ready_status <- function(port, auth_token) {
+    .write_status("ready", list(
+      port = as.integer(port),
+      auth_token = auth_token,
+      repl_ready = TRUE,
+      repl_ts = as.integer(Sys.time()),
+      repl_seq = .repl_seq
+    ))
   }
 
   .user_profile <- Sys.getenv("ARK_ORIG_R_PROFILE_USER", unset = "")
@@ -588,10 +599,12 @@ local({
         force = TRUE
       )
 
-      .write_status("ready", list(
-        port = as.integer(.svc\$port),
-        auth_token = .auth_token
-      ))
+      .write_ready_status(.svc\$port, .auth_token)
+      addTaskCallback(function(expr, value, ok, visible) {
+        .repl_seq <<- .repl_seq + 1L
+        try(.write_ready_status(.svc\$port, .auth_token), silent = TRUE)
+        TRUE
+      })
       .log_line("[ready] ipc service started on port ", as.integer(.svc\$port))
       invisible(.svc)
     }

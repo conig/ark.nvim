@@ -151,6 +151,71 @@ function M.start_pane()
   return pane_id
 end
 
+function M.new_tab()
+  ensure_setup()
+  local pane_id, err = tmux.tab_new(options)
+  if not pane_id then
+    notify(err, vim.log.levels.ERROR)
+    return nil, err
+  end
+
+  lsp.sync_sessions(options)
+  return pane_id
+end
+
+function M.next_tab()
+  ensure_setup()
+  local pane_id, err = tmux.tab_next(options)
+  if not pane_id then
+    notify(err, vim.log.levels.ERROR)
+    return nil, err
+  end
+
+  lsp.sync_sessions(options)
+  return pane_id
+end
+
+function M.prev_tab()
+  ensure_setup()
+  local pane_id, err = tmux.tab_prev(options)
+  if not pane_id then
+    notify(err, vim.log.levels.ERROR)
+    return nil, err
+  end
+
+  lsp.sync_sessions(options)
+  return pane_id
+end
+
+function M.go_tab(index)
+  ensure_setup()
+  local pane_id, err = tmux.tab_go(index, options)
+  if not pane_id then
+    notify(err, vim.log.levels.ERROR)
+    return nil, err
+  end
+
+  lsp.sync_sessions(options)
+  return pane_id
+end
+
+function M.close_tab()
+  ensure_setup()
+  local pane_id, err = tmux.tab_close(options)
+  if err then
+    notify(err, vim.log.levels.ERROR)
+    return nil, err
+  end
+
+  lsp.sync_sessions(options)
+  return pane_id
+end
+
+function M.list_tabs()
+  ensure_setup()
+  return tmux.tab_list()
+end
+
 function M.restart_pane()
   ensure_setup()
   local pane_id, err = tmux.restart(options)
@@ -160,7 +225,7 @@ function M.restart_pane()
   end
 
   lsp.sync_sessions(options)
-  notify("managed R pane restarted: " .. pane_id)
+  notify("managed R tab restarted: " .. pane_id)
   return pane_id
 end
 
@@ -168,7 +233,7 @@ function M.stop_pane()
   ensure_setup()
   tmux.stop()
   lsp.sync_sessions(options)
-  notify("managed R pane stopped")
+  notify("managed R tabs stopped")
 end
 
 function M.start_lsp(bufnr)
