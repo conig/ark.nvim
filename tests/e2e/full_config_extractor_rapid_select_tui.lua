@@ -1,0 +1,148 @@
+local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test.lua"))
+
+local repo_root = vim.fs.normalize(vim.fn.getcwd())
+local session_name = "ark_tui_extractor_rapid_select"
+local trace_path = "/tmp/ark_tui_blink_trace.log"
+
+local function tmux(args, allow_failure)
+  local output = vim.fn.system(vim.list_extend({ "tmux" }, args))
+  if vim.v.shell_error ~= 0 and not allow_failure then
+    ark_test.fail("tmux command failed: " .. output)
+  end
+  return output
+end
+
+local function cleanup()
+  tmux({ "kill-session", "-t", session_name }, true)
+end
+
+local function read_trace()
+  if vim.fn.filereadable(trace_path) ~= 1 then
+    return {}
+  end
+
+  local events = {}
+  for _, line in ipairs(vim.fn.readfile(trace_path)) do
+    if line ~= "" then
+      local ok, decoded = pcall(vim.json.decode, line)
+      if ok and type(decoded) == "table" then
+        events[#events + 1] = decoded
+      end
+    end
+  end
+  return events
+end
+
+local function latest_matching(predicate)
+  local events = read_trace()
+  for index = #events, 1, -1 do
+    if predicate(events[index]) then
+      return events[index]
+    end
+  end
+end
+
+cleanup()
+vim.fn.delete(trace_path)
+
+local nvim_cmd = table.concat({
+  "XDG_STATE_HOME=/tmp/ark-tui-extractor-rapid-select",
+  "nvim",
+  "-u",
+  "/home/marine/.config/nvim/init.lua",
+  "/tmp/ark_tui_extractor_rapid_select.R",
+  "-c",
+  "'set shadafile=NONE'",
+  "-c",
+  "'luafile " .. repo_root .. "/tests/e2e/tui_blink_trace.lua'",
+}, " ")
+
+tmux({ "new-session", "-d", "-s", session_name, nvim_cmd })
+
+ark_test.wait_for("trace load", 15000, function()
+  return latest_matching(function(event)
+    return event.label == "loaded"
+  end) ~= nil
+end)
+
+local pane_output = tmux({ "list-panes", "-t", session_name, "-F", "#{pane_id}\t#{pane_active}" })
+local nvim_pane = pane_output:match("^([^\t]+)\t1")
+if not nvim_pane then
+  cleanup()
+  ark_test.fail("failed to identify active Neovim pane: " .. pane_output)
+end
+
+tmux({
+  "send-keys",
+  "-t",
+  nvim_pane,
+  "Escape",
+  ":call setline(1, [''])",
+  "Enter",
+  "gg0i",
+  "mtcars",
+  "Escape",
+  "A",
+  "$",
+})
+
+ark_test.wait_for("mtcars extractor menu", 10000, function()
+  local event = latest_matching(function(candidate)
+    local trigger = candidate.trigger or {}
+    return candidate.label == "BlinkCmpShow"
+      and candidate.line == "mtcars$"
+      and trigger.kind == "trigger_character"
+      and trigger.character == "$"
+  end)
+  return event ~= nil
+end)
+
+local start_ts = latest_matching(function(candidate)
+  local trigger = candidate.trigger or {}
+  return candidate.label == "BlinkCmpShow"
+    and candidate.line == "mtcars$"
+    and trigger.kind == "trigger_character"
+    and trigger.character == "$"
+end).ts_ms
+
+tmux({ "send-keys", "-t", nvim_pane, "C-j", "C-j", "C-j", "C-j", "Escape" })
+
+ark_test.wait_for("rapid select insert leave", 10000, function()
+  local event = latest_matching(function(candidate)
+    return candidate.label == "InsertLeave" and (candidate.ts_ms or 0) > start_ts
+  end)
+  return event ~= nil
+end)
+
+cleanup()
+
+local bad_events = {}
+for _, event in ipairs(read_trace()) do
+  if (event.ts_ms or 0) > start_ts then
+    if type(event.line) == "string" and event.line ~= "" and event.line ~= "mtcars$" then
+      bad_events[#bad_events + 1] = {
+        label = event.label,
+        line = event.line,
+        diagnostics = event.diagnostics,
+      }
+    end
+
+    for _, diagnostic in ipairs(event.diagnostics or {}) do
+      if diagnostic.message ~= "No symbol named 'mtcars' in scope." then
+        bad_events[#bad_events + 1] = {
+          label = event.label,
+          line = event.line,
+          diagnostic = diagnostic.message,
+        }
+      end
+    end
+  end
+end
+
+if #bad_events > 0 then
+  ark_test.fail("rapid extractor selection mutated the buffer or produced garbage diagnostics: " .. vim.inspect(bad_events))
+end
+
+vim.print({
+  status = "ok",
+})

@@ -53,6 +53,7 @@ function M.setup(opts)
   blink.configure_blink_sources()
   blink.register_lsp_commands()
   blink.patch_blink_context()
+  blink.patch_blink_selection()
   blink.patch_blink_trigger()
 
   local group = vim.api.nvim_create_augroup("ArkNvim", { clear = true })

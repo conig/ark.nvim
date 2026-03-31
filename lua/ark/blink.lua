@@ -2,6 +2,7 @@ local M = {}
 local commands_registered = false
 local context_patched = false
 local sources_configured = false
+local selection_patched = false
 local trigger_patched = false
 
 local ark_filetypes = { "r", "rmd", "qmd", "quarto" }
@@ -251,6 +252,37 @@ function M.patch_blink_trigger()
   end
 
   trigger_patched = true
+end
+
+function M.patch_blink_selection()
+  if selection_patched then
+    return
+  end
+
+  local ok_config, blink_config = pcall(require, "blink.cmp.config")
+  if not ok_config or type(blink_config.completion) ~= "table" then
+    return
+  end
+
+  local list = blink_config.completion.list
+  local selection = type(list) == "table" and list.selection or nil
+  if type(selection) ~= "table" then
+    return
+  end
+
+  local base_auto_insert = selection.auto_insert
+  selection.auto_insert = function(context, items)
+    local bufnr = vim.api.nvim_get_current_buf()
+    if in_ark_filetype(bufnr) and is_extractor_trigger(context) then
+      return false
+    end
+    if type(base_auto_insert) == "function" then
+      return base_auto_insert(context, items)
+    end
+    return base_auto_insert
+  end
+
+  selection_patched = true
 end
 
 function M.handle_insert_char_pre(bufnr, char)
