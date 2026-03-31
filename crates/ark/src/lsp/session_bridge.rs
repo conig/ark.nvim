@@ -377,12 +377,22 @@ impl SessionBridge {
         let merge_static = matches!(plan, CompletionPlan::Composite(_));
 
         let items = match plan {
-            CompletionPlan::Unique(request) => self.completion_items_for_request(&request)?,
+            CompletionPlan::Unique(request) => {
+                match self.completion_items_for_request(&request) {
+                    Ok(items) => items,
+                    Err(err) if is_eval_missing_object_error(&err) => Vec::new(),
+                    Err(err) => return Err(err),
+                }
+            },
             CompletionPlan::Composite(requests) => {
                 let mut items = Vec::new();
 
                 for request in requests {
-                    items.extend(self.completion_items_for_request(&request)?);
+                    match self.completion_items_for_request(&request) {
+                        Ok(request_items) => items.extend(request_items),
+                        Err(err) if is_eval_missing_object_error(&err) => {},
+                        Err(err) => return Err(err),
+                    }
                 }
 
                 dedupe_and_sort_completion_items(items)
@@ -1166,6 +1176,16 @@ pub(crate) fn is_ipc_auth_error(err: &anyhow::Error) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn is_eval_missing_object_error(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<SessionBridgeResponseError>()
+        .map(|err| {
+            err.code == "E_EVAL"
+                && err.message.starts_with("object '")
+                && err.message.ends_with("not found")
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn is_bridge_unavailable(err: &anyhow::Error) -> bool {
     err.downcast_ref::<SessionBridgeUnavailableError>()
         .is_some()
@@ -1445,7 +1465,7 @@ fn completion_request_from_extractor(
     });
 
     let Some(operator) = operator else {
-        return Ok(None);
+        return Ok(completion_request_from_extractor_text(context));
     };
 
     let Some(lhs) = operator.child_by_field_name("lhs") else {
@@ -1472,6 +1492,38 @@ fn completion_request_from_extractor(
         close_string: false,
         subset_kind: None,
     }))
+}
+
+fn completion_request_from_extractor_text(context: &DocumentContext) -> Option<CompletionRequest> {
+    static EXTRACTOR_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*(?P<accessor>\$|@)(?P<prefix>[A-Za-z0-9._]*)$"#,
+        )
+        .unwrap()
+    });
+
+    let trigger = context.trigger.as_deref()?;
+    if !matches!(trigger, "$" | "@") {
+        return None;
+    }
+
+    let line = context.document.get_line(context.point.row)?;
+    let prefix = line.chars().take(context.point.column).collect::<String>();
+    let captures = EXTRACTOR_RE.captures(prefix.as_str())?;
+    let accessor = captures.name("accessor")?.as_str();
+
+    if accessor != trigger {
+        return None;
+    }
+
+    Some(CompletionRequest {
+        expr: captures.name("expr")?.as_str().to_string(),
+        flavor: CompletionFlavor::Extractor,
+        prefix: capture_prefix(&captures, "prefix"),
+        accessor: Some(accessor.to_string()),
+        close_string: false,
+        subset_kind: None,
+    })
 }
 
 fn completion_request_from_namespace(
@@ -2778,6 +2830,20 @@ mod tests {
     }
 
     #[test]
+    fn test_extractor_completion_request_text_fallback_supports_empty_rhs() {
+        let (text, point) = point_from_cursor("mylist$@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("$")));
+
+        let request = completion_request_from_extractor_text(&context)
+            .expect("expected text fallback extractor completion request");
+
+        assert_eq!(request.expr, "mylist");
+        assert_eq!(request.accessor, Some(String::from("$")));
+        assert_eq!(request.prefix, None);
+    }
+
+    #[test]
     fn test_extractor_completion_request_supports_prefixed_rhs() {
         let (text, point) = point_from_cursor("mtcars$mp@");
         let document = Document::new(text.as_str(), None);
@@ -2790,6 +2856,20 @@ mod tests {
         assert_eq!(request.expr, "mtcars");
         assert_eq!(request.accessor, Some(String::from("$")));
         assert_eq!(request.prefix, Some(String::from("mp")));
+    }
+
+    #[test]
+    fn test_extractor_completion_request_text_fallback_supports_prefixed_rhs() {
+        let (text, point) = point_from_cursor("mylist$xy@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("$")));
+
+        let request = completion_request_from_extractor_text(&context)
+            .expect("expected text fallback extractor completion request");
+
+        assert_eq!(request.expr, "mylist");
+        assert_eq!(request.accessor, Some(String::from("$")));
+        assert_eq!(request.prefix, Some(String::from("xy")));
     }
 
     #[test]

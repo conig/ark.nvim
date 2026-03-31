@@ -924,6 +924,20 @@ function M.bridge_env(config)
     return nil
   end
 
+  local authoritative_status = M.startup_status_authoritative(config)
+  if type(authoritative_status) ~= "table" then
+    return nil
+  end
+  if authoritative_status.status ~= "ready" or authoritative_status.port == nil then
+    return nil
+  end
+  if type(authoritative_status.auth_token) ~= "string" or authoritative_status.auth_token == "" then
+    return nil
+  end
+  if not ping_bridge(session, authoritative_status, 150) then
+    return nil
+  end
+
   local status_path = status_file_path(session, config)
   if type(status_path) ~= "string" or status_path == "" then
     return nil

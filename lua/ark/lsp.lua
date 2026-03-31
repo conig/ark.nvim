@@ -11,6 +11,8 @@ local session_watch_cleanup = {}
 local session_watch_polls = {}
 local client_session_payloads = {}
 local managed_client_ids = {}
+local session_watch_finished
+local session_poll_finished
 
 local function filetype_enabled(filetypes, filetype)
   return vim.tbl_contains(filetypes or {}, filetype)
@@ -281,7 +283,7 @@ end
 
 local function notify_sessions(opts, bufnr, payload)
   local clients = session_clients(opts, bufnr)
-  local normalized = payload or session_payload(opts)
+  local normalized = payload or session_payload(opts, { fast = true })
   for _, client in ipairs(clients) do
     notify_client_session(client, normalized)
   end
@@ -312,8 +314,15 @@ local function schedule_session_syncs(opts, bufnr, client_id)
 
   local function attempt(index)
     local client = vim.lsp.get_client_by_id(client_id)
-    if live_client(client) then
-      notify_client_session(client, session_payload(opts))
+    if not live_client(client) then
+      return
+    end
+
+    local payload = session_payload(opts, { fast = true })
+    notify_client_session(client, payload)
+
+    if session_watch_finished(opts, bufnr, payload) or session_poll_finished(opts, bufnr, payload) then
+      return
     end
 
     local next_index = index + 1
@@ -372,7 +381,7 @@ local function watch_status_file(status_path, on_change)
   return nil
 end
 
-local function session_watch_finished(opts, bufnr, payload)
+session_watch_finished = function(opts, bufnr, payload)
   if next(payload) == nil or payload.status == "error" then
     return true
   end
@@ -380,7 +389,7 @@ local function session_watch_finished(opts, bufnr, payload)
   return false
 end
 
-local function session_poll_finished(opts, bufnr, payload)
+session_poll_finished = function(opts, bufnr, payload)
   return payload.status == "ready" and session_payload_delivered(opts, bufnr, payload)
 end
 
@@ -395,7 +404,7 @@ local function ensure_session_watch(opts, bufnr, payload)
     return
   end
 
-  local current_payload = payload or session_payload(opts)
+  local current_payload = payload or session_payload(opts, { fast = true })
   notify_sessions(opts, nil, current_payload)
 
   if session_watch_finished(opts, bufnr, current_payload) then
@@ -411,7 +420,7 @@ local function ensure_session_watch(opts, bufnr, payload)
 
   if not session_watchers[bufnr] then
     local watcher = watch_status_file(status_path, function()
-      local current = session_payload(opts)
+      local current = session_payload(opts, { fast = true })
       notify_sessions(opts, nil, current)
       if session_watch_finished(opts, bufnr, current) then
         stop_session_watch(bufnr)
@@ -435,7 +444,7 @@ local function ensure_session_watch(opts, bufnr, payload)
       return
     end
 
-    local current = session_payload(opts)
+    local current = session_payload(opts, { fast = true })
     notify_sessions(opts, nil, current)
     if session_watch_finished(opts, bufnr, current) then
       stop_session_watch(bufnr)
@@ -456,7 +465,7 @@ end
 
 function M.config(opts, bufnr, _config_opts)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
-  local cmd, cmd_err = dev.ensure_current_detached_lsp_cmd(opts.lsp.cmd)
+  local cmd, cmd_err = dev.ensure_current_detached_lsp_cmd(opts.lsp.cmd, _config_opts)
   if not cmd then
     return nil, cmd_err
   end
@@ -476,8 +485,28 @@ local function start_client(opts, bufnr, start_opts)
     return nil
   end
 
-  local desired, config_err = M.config(opts, bufnr, start_opts)
+  local desired, config_err = M.config(opts, bufnr, vim.tbl_extend("force", start_opts or {}, {
+    on_build_complete = function(result)
+      if type(result) ~= "table" or result.ok ~= true then
+        return
+      end
+
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(bufnr) then
+          return
+        end
+        if not filetype_enabled(opts.filetypes, vim.bo[bufnr].filetype) then
+          return
+        end
+
+        start_client(opts, bufnr, start_opts)
+      end)
+    end,
+  }))
   if not desired then
+    if type(config_err) == "table" and config_err.kind == "build_pending" then
+      return nil
+    end
     vim.notify(config_err, vim.log.levels.ERROR, { title = "ark.nvim" })
     return nil
   end
@@ -540,7 +569,10 @@ function M.start_async(opts, bufnr)
 end
 
 function M.sync_sessions(opts, bufnr, sync_opts)
-  local payload = session_payload(opts, sync_opts)
+  local payload_opts = vim.tbl_extend("keep", sync_opts or {}, {
+    fast = true,
+  })
+  local payload = session_payload(opts, payload_opts)
 
   if bufnr then
     ensure_session_watch(opts, bufnr, payload)

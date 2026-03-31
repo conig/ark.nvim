@@ -67,6 +67,7 @@ use crate::lsp::references::find_references;
 use crate::lsp::selection_range::convert_selection_range_from_tree_sitter_to_lsp;
 use crate::lsp::selection_range::selection_range;
 use crate::lsp::session_bridge::is_bridge_unavailable;
+use crate::lsp::session_bridge::is_eval_missing_object_error;
 use crate::lsp::session_bridge::is_ipc_auth_error;
 use crate::lsp::signature_help::r_signature_help;
 use crate::lsp::state::WorldState;
@@ -273,6 +274,8 @@ pub(crate) fn handle_completion(
                 Err(err) => {
                     if is_bridge_unavailable(&err) {
                         None
+                    } else if is_eval_missing_object_error(&err) {
+                        None
                     } else if is_ipc_auth_error(&err) {
                         log_detached_bridge_auth_fallback("completion", &err);
                         None
@@ -291,7 +294,7 @@ pub(crate) fn handle_completion(
             }
 
             let detached = detached.unwrap_or_default();
-            if !detached.merge_static {
+            if !detached.merge_static || !detached.items.is_empty() {
                 return Ok(completion_response_from_items(detached.items));
             }
 
@@ -326,6 +329,8 @@ pub(crate) fn handle_completion_resolve(
                 Ok(item) => Ok(item),
                 Err(err) => {
                     if is_bridge_unavailable(&err) {
+                        Ok(unresolved)
+                    } else if is_eval_missing_object_error(&err) {
                         Ok(unresolved)
                     } else if is_ipc_auth_error(&err) {
                         log_detached_bridge_auth_fallback("completion resolve", &err);
@@ -372,6 +377,8 @@ pub(crate) fn handle_hover(params: HoverParams, state: &WorldState) -> LspResult
                 Ok(result) => Ok(result),
                 Err(err) => {
                     if is_bridge_unavailable(&err) {
+                        Ok(None)
+                    } else if is_eval_missing_object_error(&err) {
                         Ok(None)
                     } else if is_ipc_auth_error(&err) {
                         log_detached_bridge_auth_fallback("hover", &err);
@@ -425,6 +432,8 @@ pub(crate) fn handle_signature_help(
                 Ok(result) => Ok(result),
                 Err(err) => {
                     if is_bridge_unavailable(&err) {
+                        Ok(None)
+                    } else if is_eval_missing_object_error(&err) {
                         Ok(None)
                     } else if is_ipc_auth_error(&err) {
                         log_detached_bridge_auth_fallback("signature help", &err);
@@ -518,6 +527,41 @@ mod tests {
         .expect("expected session bridge")
     }
 
+    fn eval_error_bridge(message: &str) -> SessionBridge {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+        let message = message.to_string();
+
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("expected bridge request");
+            let mut request = String::new();
+            stream
+                .read_to_string(&mut request)
+                .expect("expected bridge request payload");
+            assert!(!request.is_empty(), "expected bridge request body");
+            stream
+                .write_all(
+                    format!(r#"{{"error":{{"code":"E_EVAL","message":"{}"}}}}"#, message).as_bytes(),
+                )
+                .expect("expected bridge error response");
+        });
+
+        SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port,
+            auth_token: String::from("test-token"),
+            status_file: None,
+            tmux_socket: String::from("/tmp/ark-test.sock"),
+            tmux_session: String::from("ark-test"),
+            tmux_pane: String::from("%1"),
+            timeout_ms: 1000,
+        })
+        .expect("expected session bridge")
+    }
+
     fn unavailable_status_file_bridge() -> SessionBridge {
         let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
         let port = listener
@@ -602,6 +646,59 @@ mod tests {
         );
 
         assert!(result.expect("expected detached hover fallback").is_none());
+    }
+
+    #[test]
+    fn test_detached_hover_missing_object_degrades_to_none() {
+        let uri = Url::parse("file:///tmp/ark_hover_missing_object.R").expect("expected uri");
+        let mut state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            session_bridge: Some(eval_error_bridge("object 'ggplot' not found")),
+            ..Default::default()
+        };
+        state
+            .documents
+            .insert(uri.clone(), Document::new("ggplot", Some(1)));
+
+        let result = handle_hover(
+            HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position::new(0, 2),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            &state,
+        );
+
+        assert!(result.expect("expected detached hover fallback").is_none());
+    }
+
+    #[test]
+    fn test_detached_signature_help_missing_object_degrades_to_none() {
+        let uri = Url::parse("file:///tmp/ark_signature_missing_object.R").expect("expected uri");
+        let mut state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            session_bridge: Some(eval_error_bridge("object 'ggplot' not found")),
+            ..Default::default()
+        };
+        state
+            .documents
+            .insert(uri.clone(), Document::new("ggplot(", Some(1)));
+
+        let result = handle_signature_help(
+            SignatureHelpParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position::new(0, 7),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                context: None,
+            },
+            &state,
+        );
+
+        assert!(result.expect("expected detached signature help fallback").is_none());
     }
 }
 

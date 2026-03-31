@@ -11,6 +11,13 @@ local options = nil
 local startup_tokens = {}
 local pending_session_sync = 0
 
+local function is_ark_buffer(bufnr)
+  return bufnr ~= nil
+    and vim.api.nvim_buf_is_valid(bufnr)
+    and options ~= nil
+    and vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype)
+end
+
 local function notify(message, level)
   vim.notify(message, level or vim.log.levels.INFO, { title = "ark.nvim" })
 end
@@ -46,6 +53,7 @@ function M.setup(opts)
   blink.configure_blink_sources()
   blink.register_lsp_commands()
   blink.patch_blink_context()
+  blink.patch_blink_trigger()
 
   local group = vim.api.nvim_create_augroup("ArkNvim", { clear = true })
   vim.api.nvim_create_autocmd("FileType", {
@@ -93,17 +101,24 @@ function M.setup(opts)
 
   vim.api.nvim_create_autocmd("InsertCharPre", {
     group = group,
-    pattern = options.filetypes,
+    pattern = "*",
     callback = function(args)
-      blink.record_insert_char(args.buf)
+      if not is_ark_buffer(args.buf) then
+        return
+      end
+      blink.handle_insert_char_pre(args.buf)
     end,
     desc = "Track opening-pair insertions for Ark completion recovery",
   })
 
   vim.api.nvim_create_autocmd("CursorMovedI", {
     group = group,
-    pattern = options.filetypes,
+    pattern = "*",
     callback = function(args)
+      if not is_ark_buffer(args.buf) then
+        return
+      end
+      blink.maybe_hide_after_extractor(args.buf)
       blink.maybe_show_after_pair(args.buf)
     end,
     desc = "Re-show Blink completion after autopairs inserts closing delimiters",
@@ -111,10 +126,11 @@ function M.setup(opts)
 
   vim.api.nvim_create_autocmd("TextChangedI", {
     group = group,
-    pattern = options.filetypes,
+    pattern = "*",
     callback = function(args)
       vim.schedule(function()
-        if vim.api.nvim_buf_is_valid(args.buf) then
+        if is_ark_buffer(args.buf) then
+          blink.maybe_hide_after_extractor(args.buf)
           blink.maybe_show_after_pair(args.buf)
         end
       end)
@@ -133,13 +149,12 @@ function M.setup(opts)
   did_setup = true
 
   vim.api.nvim_create_user_command("ArkBuildLsp", function()
-    local binary_path, err = dev.build_detached_lsp()
-    if not binary_path then
+    local ok, err = dev.build_detached_lsp({
+      show_output = true,
+    })
+    if not ok then
       notify(err, vim.log.levels.ERROR)
-      return
     end
-
-    notify("detached ark-lsp binary rebuilt: " .. binary_path)
   end, { desc = "Rebuild the detached ark-lsp binary used by ark.nvim" })
 
   return options

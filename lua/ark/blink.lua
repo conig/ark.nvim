@@ -2,6 +2,7 @@ local M = {}
 local commands_registered = false
 local context_patched = false
 local sources_configured = false
+local trigger_patched = false
 
 local ark_filetypes = { "r", "rmd", "qmd", "quarto" }
 
@@ -15,6 +16,41 @@ local function in_ark_filetype(bufnr)
   return vim.tbl_contains(ark_filetypes, filetype)
 end
 
+local function hide_visible_blink_menu()
+  local ok_blink, blink = pcall(require, "blink.cmp")
+  if not ok_blink or not blink.is_visible() then
+    return
+  end
+
+  local ok_trigger, trigger = pcall(require, "blink.cmp.completion.trigger")
+  if ok_trigger and type(trigger.hide) == "function" then
+    pcall(trigger.hide)
+  end
+
+  local ok_menu, menu = pcall(require, "blink.cmp.completion.windows.menu")
+  if ok_menu and menu and type(menu.close) == "function" then
+    pcall(menu.close)
+    if menu.win and type(menu.win.get_buf) == "function" then
+      local menu_buf = menu.win:get_buf()
+      if vim.api.nvim_buf_is_valid(menu_buf) then
+        local line_count = math.max(vim.api.nvim_buf_line_count(menu_buf), 1)
+        local blank_lines = {}
+        for i = 1, line_count do
+          blank_lines[i] = ""
+        end
+        pcall(vim.api.nvim_set_option_value, "modifiable", true, { buf = menu_buf })
+        pcall(vim.api.nvim_buf_set_lines, menu_buf, 0, -1, false, blank_lines)
+        pcall(vim.api.nvim_set_option_value, "modifiable", false, { buf = menu_buf })
+      end
+    end
+  end
+
+  local ok_docs, docs = pcall(require, "blink.cmp.completion.windows.documentation")
+  if ok_docs and docs and type(docs.close) == "function" then
+    pcall(docs.close)
+  end
+end
+
 local function ark_provider(base_provider, overrides)
   return vim.tbl_deep_extend("force", vim.deepcopy(base_provider or {}), overrides or {})
 end
@@ -26,6 +62,13 @@ local function ark_auto_keyword_min_length(context)
     return 0
   end
   return 1
+end
+
+local function is_extractor_trigger(context)
+  local trigger = type(context) == "table" and context.trigger or nil
+  local kind = type(trigger) == "table" and trigger.kind or nil
+  local character = type(trigger) == "table" and trigger.character or nil
+  return kind == "trigger_character" and (character == "$" or character == "@")
 end
 
 local function ark_should_show_auto_items(context)
@@ -44,6 +87,13 @@ local function ark_should_show_auto_items(context)
 
   local prefix = line:sub(1, col)
   return prefix:match("^%s*$") == nil
+end
+
+local function ark_should_show_non_lsp_items(context)
+  if is_extractor_trigger(context) then
+    return false
+  end
+  return ark_should_show_auto_items(context)
 end
 
 function M.configure_blink_sources()
@@ -69,7 +119,7 @@ function M.configure_blink_sources()
   if has_buffer and providers.ark_buffer == nil then
     blink.add_source_provider("ark_buffer", ark_provider(providers.buffer, {
       min_keyword_length = 1,
-      should_show_items = ark_should_show_auto_items,
+      should_show_items = ark_should_show_non_lsp_items,
     }))
   end
 
@@ -85,14 +135,14 @@ function M.configure_blink_sources()
     blink.add_source_provider("ark_path", ark_provider(providers.path, {
       min_keyword_length = ark_auto_keyword_min_length,
       fallbacks = {},
-      should_show_items = ark_should_show_auto_items,
+      should_show_items = ark_should_show_non_lsp_items,
     }))
   end
 
   if type(providers.snippets) == "table" and providers.ark_snippets == nil then
     blink.add_source_provider("ark_snippets", ark_provider(providers.snippets, {
       min_keyword_length = ark_auto_keyword_min_length,
-      should_show_items = ark_should_show_auto_items,
+      should_show_items = ark_should_show_non_lsp_items,
     }))
   end
 
@@ -156,9 +206,62 @@ function M.patch_blink_context()
   context_patched = true
 end
 
-function M.record_insert_char(bufnr)
-  if vim.v.char == "(" or vim.v.char == "[" then
-    vim.b[bufnr].ark_pending_pair_completion = vim.v.char
+function M.patch_blink_trigger()
+  if trigger_patched then
+    return
+  end
+
+  local ok_trigger, trigger = pcall(require, "blink.cmp.completion.trigger")
+  if not ok_trigger or type(trigger.show) ~= "function" then
+    return
+  end
+
+  local base_show = trigger.show
+  trigger.show = function(opts)
+    local bufnr = vim.api.nvim_get_current_buf()
+    local trigger_kind = type(opts) == "table" and opts.trigger_kind or nil
+    local trigger_character = type(opts) == "table" and opts.trigger_character or nil
+
+    if not in_ark_filetype(bufnr)
+      or trigger_kind ~= "trigger_character"
+      or not (trigger_character == "$" or trigger_character == "@")
+    then
+      return base_show(opts)
+    end
+
+    if type(trigger.hide) == "function" then
+      trigger.hide()
+    end
+
+    local scheduled_bufnr = bufnr
+    local scheduled_opts = vim.deepcopy(opts or {})
+    vim.defer_fn(function()
+      if not vim.api.nvim_buf_is_valid(scheduled_bufnr) then
+        return
+      end
+      if vim.api.nvim_get_current_buf() ~= scheduled_bufnr then
+        return
+      end
+      if not active_ark_client(scheduled_bufnr) then
+        return
+      end
+
+      base_show(scheduled_opts)
+    end, 20)
+  end
+
+  trigger_patched = true
+end
+
+function M.handle_insert_char_pre(bufnr, char)
+  char = char or vim.v.char
+
+  if (char == "$" or char == "@") and active_ark_client(bufnr) then
+    hide_visible_blink_menu()
+  end
+
+  if char == "(" or char == "[" then
+    vim.b[bufnr].ark_pending_pair_completion = char
   else
     vim.b[bufnr].ark_pending_pair_completion = nil
   end
@@ -191,6 +294,31 @@ function M.maybe_show_after_pair(bufnr)
     trigger_kind = "trigger_character",
     trigger_character = trigger_character,
   })
+end
+
+function M.maybe_hide_after_extractor(bufnr)
+  if not active_ark_client(bufnr) then
+    return
+  end
+
+  local mode = vim.api.nvim_get_mode().mode
+  if mode ~= "i" then
+    return
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local line = vim.api.nvim_get_current_line()
+  local col = cursor[2]
+  if type(col) ~= "number" or col <= 0 then
+    return
+  end
+
+  local prev_char = line:sub(col, col)
+  if prev_char ~= "$" and prev_char ~= "@" then
+    return
+  end
+
+  hide_visible_blink_menu()
 end
 
 function M.register_lsp_commands()
