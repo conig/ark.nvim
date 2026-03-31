@@ -9,6 +9,7 @@ local M = {}
 local did_setup = false
 local options = nil
 local startup_tokens = {}
+local pending_session_sync = 0
 
 local function notify(message, level)
   vim.notify(message, level or vim.log.levels.INFO, { title = "ark.nvim" })
@@ -22,6 +23,22 @@ local function ensure_setup()
   if not did_setup then
     M.setup({})
   end
+end
+
+local function sync_sessions_soon()
+  pending_session_sync = pending_session_sync + 1
+  local token = pending_session_sync
+
+  vim.schedule(function()
+    if token ~= pending_session_sync then
+      return
+    end
+    if not options then
+      return
+    end
+
+    lsp.sync_sessions(options, nil, { fast = true })
+  end)
 end
 
 function M.setup(opts)
@@ -159,7 +176,7 @@ function M.new_tab()
     return nil, err
   end
 
-  lsp.sync_sessions(options)
+  sync_sessions_soon()
   return pane_id
 end
 
@@ -171,7 +188,7 @@ function M.next_tab()
     return nil, err
   end
 
-  lsp.sync_sessions(options)
+  sync_sessions_soon()
   return pane_id
 end
 
@@ -183,7 +200,7 @@ function M.prev_tab()
     return nil, err
   end
 
-  lsp.sync_sessions(options)
+  sync_sessions_soon()
   return pane_id
 end
 
@@ -195,7 +212,7 @@ function M.go_tab(index)
     return nil, err
   end
 
-  lsp.sync_sessions(options)
+  sync_sessions_soon()
   return pane_id
 end
 
@@ -207,13 +224,23 @@ function M.close_tab()
     return nil, err
   end
 
-  lsp.sync_sessions(options)
+  sync_sessions_soon()
   return pane_id
 end
 
 function M.list_tabs()
   ensure_setup()
   return tmux.tab_list()
+end
+
+function M.tab_state()
+  ensure_setup()
+  return tmux.tab_state()
+end
+
+function M.tab_badge()
+  ensure_setup()
+  return tmux.tab_badge()
 end
 
 function M.restart_pane()
@@ -224,7 +251,7 @@ function M.restart_pane()
     return nil, err
   end
 
-  lsp.sync_sessions(options)
+  sync_sessions_soon()
   notify("managed R tab restarted: " .. pane_id)
   return pane_id
 end
@@ -232,7 +259,7 @@ end
 function M.stop_pane()
   ensure_setup()
   tmux.stop()
-  lsp.sync_sessions(options)
+  sync_sessions_soon()
   notify("managed R tabs stopped")
 end
 

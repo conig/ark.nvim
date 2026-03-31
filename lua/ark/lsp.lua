@@ -186,8 +186,12 @@ local function normalize_repl_ready(status)
   return status.repl_ready == true or status.repl_ready == 1
 end
 
-local function session_snapshot(opts)
-  local tmux_status = tmux.status and tmux.status(opts.tmux) or nil
+local function session_snapshot(opts, snapshot_opts)
+  snapshot_opts = snapshot_opts or {}
+  local tmux_status = nil
+  if snapshot_opts.fast ~= true and tmux.status then
+    tmux_status = tmux.status(opts.tmux)
+  end
   local session = type(tmux_status) == "table" and tmux_status.session or nil
   if type(session) ~= "table" and type(tmux.session) == "function" then
     session = tmux.session()
@@ -207,7 +211,10 @@ local function session_snapshot(opts)
   end
 
   local startup_status = type(tmux_status) == "table" and tmux_status.startup_status or nil
-  if type(startup_status) ~= "table" and type(tmux.startup_status) == "function" then
+  if snapshot_opts.fast ~= true
+    and type(startup_status) ~= "table"
+    and type(tmux.startup_status) == "function"
+  then
     startup_status = tmux.startup_status(opts.tmux)
   end
 
@@ -225,8 +232,8 @@ local function session_snapshot(opts)
   }
 end
 
-local function session_payload(opts)
-  local snapshot = session_snapshot(opts)
+local function session_payload(opts, payload_opts)
+  local snapshot = session_snapshot(opts, payload_opts)
   if type(snapshot) ~= "table" then
     return {}
   end
@@ -377,7 +384,7 @@ local function session_poll_finished(opts, bufnr, payload)
   return payload.status == "ready" and session_payload_delivered(opts, bufnr, payload)
 end
 
-local function ensure_session_watch(opts, bufnr)
+local function ensure_session_watch(opts, bufnr, payload)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   if not vim.api.nvim_buf_is_valid(bufnr) then
     stop_session_watch(bufnr)
@@ -388,15 +395,15 @@ local function ensure_session_watch(opts, bufnr)
     return
   end
 
-  local payload = session_payload(opts)
-  notify_sessions(opts, nil, payload)
+  local current_payload = payload or session_payload(opts)
+  notify_sessions(opts, nil, current_payload)
 
-  if session_watch_finished(opts, bufnr, payload) then
+  if session_watch_finished(opts, bufnr, current_payload) then
     stop_session_watch(bufnr)
     return
   end
 
-  local status_path = payload.statusFile
+  local status_path = current_payload.statusFile
   if type(status_path) ~= "string" or status_path == "" then
     stop_session_watch(bufnr)
     return
@@ -532,17 +539,19 @@ function M.start_async(opts, bufnr)
   })
 end
 
-function M.sync_sessions(opts, bufnr)
+function M.sync_sessions(opts, bufnr, sync_opts)
+  local payload = session_payload(opts, sync_opts)
+
   if bufnr then
-    ensure_session_watch(opts, bufnr)
+    ensure_session_watch(opts, bufnr, payload)
     return
   end
 
   for _, buffer in ipairs(session_buffers(opts)) do
-    ensure_session_watch(opts, buffer)
+    ensure_session_watch(opts, buffer, payload)
   end
 
-  notify_sessions(opts, nil)
+  notify_sessions(opts, nil, payload)
 end
 
 function M.refresh(opts, bufnr)

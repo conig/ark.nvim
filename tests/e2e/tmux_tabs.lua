@@ -10,7 +10,6 @@ local main_session = "project"
 local current_pane = "%anchor"
 local next_pane = 100
 local next_window = 20
-local parking_session = nil
 local commands = {}
 
 local panes = {
@@ -96,18 +95,10 @@ vim.fn.system = function(command)
     return pane_id .. "\n"
   end
 
-  if command[2] == "new-session" then
-    local session_name
-    for index = 1, #command do
-      if command[index] == "-s" then
-        session_name = command[index + 1]
-      end
-    end
-    sessions[session_name] = true
-    parking_session = session_name
-    local keepalive_pane = new_pane(session_name)
-    panes[keepalive_pane].keepalive = true
-    return session_name .. "\n"
+  if command[2] == "new-window" then
+    local pane_id = new_pane(main_session)
+    local window_id = new_window_id()
+    return pane_id .. "\n" .. window_id .. "\n"
   end
 
   if command[2] == "break-pane" then
@@ -172,7 +163,6 @@ vim.fn.system = function(command)
   if command[2] == "kill-session" then
     local session_name = command[4]
     sessions[session_name] = nil
-    parking_session = nil
     for _, pane in pairs(panes) do
       if pane.session == session_name and pane.keepalive == true then
         pane.exists = false
@@ -205,10 +195,32 @@ local ok, err = pcall(function()
   if first_pane ~= "%101" then
     error("expected first visible pane to be %101, got " .. tostring(first_pane), 0)
   end
+  local tab_state_after_start = tmux.tab_state()
+  if tab_state_after_start.active_index ~= 1 or tab_state_after_start.tab_count ~= 1 or tab_state_after_start.text ~= "[1]" then
+    error("expected tab state after start to report one active tab, got " .. vim.inspect(tab_state_after_start), 0)
+  end
 
   local second_pane = assert(tmux.tab_new(opts))
   if second_pane == first_pane then
     error("expected ArkTabNew to create a distinct visible pane, got " .. tostring(second_pane), 0)
+  end
+  local split_count = 0
+  local new_window_count = 0
+  local swap_count = 0
+  for _, command in ipairs(commands) do
+    if type(command) == "table" and command[2] == "split-window" then
+      split_count = split_count + 1
+    elseif type(command) == "table" and command[2] == "new-window" then
+      new_window_count = new_window_count + 1
+    elseif type(command) == "table" and command[2] == "swap-pane" then
+      swap_count = swap_count + 1
+    end
+  end
+  if split_count ~= 1 then
+    error("expected only the initial Ark slot creation to use split-window, got commands: " .. vim.inspect(commands), 0)
+  end
+  if new_window_count < 1 or swap_count < 1 then
+    error("expected ArkTabNew to create a hidden window and swap it into place, got commands: " .. vim.inspect(commands), 0)
   end
 
   local status_after_new = tmux.status(opts.tmux)
@@ -218,14 +230,15 @@ local ok, err = pcall(function()
   if status_after_new.active_index ~= 2 then
     error("expected second tab to be active after ArkTabNew, got " .. vim.inspect(status_after_new), 0)
   end
-  if not parking_session or status_after_new.parking_session_name ~= parking_session then
-    error("expected parking session to exist, got " .. vim.inspect(status_after_new), 0)
-  end
   if status_after_new.tabs[1].visible ~= false then
     error("expected first tab to be parked, got " .. vim.inspect(status_after_new.tabs), 0)
   end
   if status_after_new.tabs[1].session.tmux_session ~= main_session then
     error("expected parked tab to retain startup session metadata, got " .. vim.inspect(status_after_new.tabs[1]), 0)
+  end
+  local tab_state_after_new = tmux.tab_state()
+  if tab_state_after_new.active_index ~= 2 or tab_state_after_new.tab_count ~= 2 or tab_state_after_new.text ~= "[2/2]" then
+    error("expected tab state after ArkTabNew to report the new active tab, got " .. vim.inspect(tab_state_after_new), 0)
   end
 
   local restored = assert(tmux.tab_prev(opts))
@@ -256,6 +269,10 @@ local ok, err = pcall(function()
   if status_after_prev.tabs[2].visible ~= false then
     error("expected second tab to be parked after ArkTabPrev, got " .. vim.inspect(status_after_prev.tabs), 0)
   end
+  local tab_state_after_prev = tmux.tab_state()
+  if tab_state_after_prev.active_index ~= 1 or tab_state_after_prev.tab_count ~= 2 or tab_state_after_prev.text ~= "[1/2]" then
+    error("expected tab state after ArkTabPrev to report the restored tab, got " .. vim.inspect(tab_state_after_prev), 0)
+  end
 
   local active_after_close = assert(tmux.tab_close(opts))
   if active_after_close ~= second_pane then
@@ -267,13 +284,44 @@ local ok, err = pcall(function()
     error("expected one visible tab after close, got " .. vim.inspect(status_after_close), 0)
   end
   if status_after_close.parking_session_name ~= nil then
-    error("expected parking session cleanup after only one tab remains, got " .. vim.inspect(status_after_close), 0)
+    error("expected no detached parking session after close, got " .. vim.inspect(status_after_close), 0)
+  end
+
+  local restarted_pane = assert(tmux.restart(opts))
+  if restarted_pane == second_pane then
+    error("expected restart to replace the active pane, got " .. tostring(restarted_pane), 0)
+  end
+  split_count = 0
+  new_window_count = 0
+  swap_count = 0
+  for _, command in ipairs(commands) do
+    if type(command) == "table" and command[2] == "split-window" then
+      split_count = split_count + 1
+    elseif type(command) == "table" and command[2] == "new-window" then
+      new_window_count = new_window_count + 1
+    elseif type(command) == "table" and command[2] == "swap-pane" then
+      swap_count = swap_count + 1
+    end
+  end
+  if split_count ~= 1 then
+    error("expected restart to preserve the visible slot without extra split-window churn, got commands: " .. vim.inspect(commands), 0)
+  end
+  if new_window_count < 2 or swap_count < 3 then
+    error("expected restart to create a hidden replacement and swap it into place, got commands: " .. vim.inspect(commands), 0)
+  end
+  local tab_state_after_restart = tmux.tab_state()
+  if tab_state_after_restart.active_index ~= 1 or tab_state_after_restart.tab_count ~= 1 or tab_state_after_restart.text ~= "[1]" then
+    error("expected tab state after restart to report the replacement tab, got " .. vim.inspect(tab_state_after_restart), 0)
   end
 
   tmux.stop_all()
   local final = tmux.status(opts.tmux)
   if final.tab_count ~= 0 or final.anchor_pane_id ~= nil then
     error("expected Ark stop_all() to clear tab state, got " .. vim.inspect(final), 0)
+  end
+  local final_tab_state = tmux.tab_state()
+  if final_tab_state.active_index ~= nil or final_tab_state.tab_count ~= 0 or final_tab_state.text ~= nil then
+    error("expected Ark stop_all() to clear lightweight tab state, got " .. vim.inspect(final_tab_state), 0)
   end
 end)
 

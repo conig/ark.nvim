@@ -79,8 +79,10 @@ showing multiple Ark panes on screen at once.
 The intended behavior is:
 
 - exactly one Ark pane is visible beside Neovim at a time
-- inactive Ark tabs are parked off-screen in a dedicated detached tmux session
-- each parked tab lives in its own tmux window inside that parking session
+- inactive Ark tabs are parked off-screen in hidden tmux windows inside the
+  same tmux session as the visible Ark slot
+- each parked tab lives in its own tmux window so hidden tabs do not fight each
+  other for geometry
 - switching tabs moves the live pane back into the visible slot and retargets
   both `vim-slime` and the detached LSP session metadata
 
@@ -88,17 +90,19 @@ This design is deliberate.
 
 - It avoids carving up the visible tmux window into many tiny panes.
 - It avoids the geometry coupling that would come from storing multiple hidden
-  tabs in one parking window.
+  tabs in one hidden window.
 - It preserves the current Ark architecture of one active live session per
   Neovim instance.
-- It stays on the same tmux server so Ark can move the exact live pane back and
-  forth with `break-pane` and `join-pane`.
+- It keeps parked tabs in the same tmux session that the launcher snapshots at
+  startup, so status-file identity and bridge metadata remain correct even while
+  tabs are off-screen.
+- It lets Ark reduce redraw churn by creating new or restarted tabs in hidden
+  windows and swapping them into the fixed visible slot with `swap-pane`.
 
 Important constraint:
 
-- parked tabs may temporarily reside in a different tmux session, but the
-  launcher snapshots the visible-session identity at startup and Ark only treats
-  the restored visible tab as the active bridge target
+- the bridge still treats only one visible tab as the active live session for a
+  given Neovim instance
 
 ### Neovim plugin layer
 
