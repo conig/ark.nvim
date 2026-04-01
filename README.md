@@ -200,11 +200,9 @@ The managed R pane uses the repo-local launcher:
 scripts/ark-r-launcher.sh
 ```
 
-That launcher bootstraps the vendored `packages/rscope` bridge package into:
-
-```text
-stdpath("data") .. "/ark/r-lib"
-```
+That launcher installs the vendored `packages/arkbridge` bridge package into the
+first writable directory from the session's normal `.libPaths()` by default, or
+into `ARK_NVIM_SESSION_LIB` when you explicitly set one.
 
 and writes trusted readiness metadata under:
 
@@ -220,7 +218,7 @@ The main overrides are:
 - `ARK_NVIM_R_ARGS`
 - `ARK_NVIM_LSP_BIN`
 - `ARK_NVIM_LAUNCHER`
-- `ARK_NVIM_SESSION_LIB`
+- `ARK_NVIM_SESSION_LIB` (optional override for a dedicated bridge library)
 - `ARK_NVIM_SESSION_PKG_PATH`
 - `ARK_STATUS_DIR`
 

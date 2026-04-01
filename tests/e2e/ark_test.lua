@@ -1,7 +1,72 @@
 local M = {}
 
+local function sanitize_token(value)
+  value = tostring(value or "")
+  value = value:gsub("[^%w_%-]", "_")
+  value = value:gsub("_+", "_")
+  value = value:gsub("^_+", "")
+  value = value:gsub("_+$", "")
+  if value == "" then
+    return "unknown"
+  end
+  return value
+end
+
 function M.fail(message)
   error(message, 0)
+end
+
+function M.run_id()
+  local env_run_id = vim.env.ARK_TEST_RUN_ID
+  if type(env_run_id) == "string" and env_run_id ~= "" then
+    return sanitize_token(env_run_id)
+  end
+  return sanitize_token(vim.fn.getpid())
+end
+
+function M.run_tmpdir()
+  local env_tmpdir = vim.env.ARK_TEST_TMPDIR
+  if type(env_tmpdir) == "string" and env_tmpdir ~= "" then
+    return vim.fs.normalize(env_tmpdir)
+  end
+  return vim.fs.normalize("/tmp/arktest-" .. M.run_id())
+end
+
+function M.tmux_session_name(base)
+  local suffix = sanitize_token(base or "session")
+  return "arktest_" .. M.run_id() .. "_" .. suffix
+end
+
+function M.register_tmux_session(name)
+  local manifest = vim.env.ARK_TEST_TMUX_MANIFEST
+  if type(manifest) == "string" and manifest ~= "" then
+    vim.fn.writefile({ name }, manifest, "a")
+  end
+  return name
+end
+
+function M.start_watchdog(timeout_ms, label)
+  local timer = vim.uv.new_timer()
+  if not timer then
+    M.fail("failed to create watchdog timer for " .. label)
+  end
+
+  timer:start(timeout_ms, 0, vim.schedule_wrap(function()
+    if timer:is_closing() then
+      return
+    end
+    timer:stop()
+    timer:close()
+    vim.api.nvim_err_writeln("test watchdog fired: " .. label)
+    vim.cmd("cquit 1")
+  end))
+
+  return function()
+    if timer and not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
+  end
 end
 
 function M.wait_for(label, timeout_ms, predicate)

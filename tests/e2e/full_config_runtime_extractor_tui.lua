@@ -1,8 +1,9 @@
 local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test.lua"))
 
 local repo_root = vim.fs.normalize(vim.fn.getcwd())
-local session_name = "ark_tui_runtime_extractor"
-local trace_path = "/tmp/ark_tui_blink_trace.log"
+local session_name = ark_test.register_tmux_session(ark_test.tmux_session_name("runtime_extractor"))
+local trace_path = vim.fs.normalize(ark_test.run_tmpdir() .. "/runtime_extractor_trace.log")
+local stop_watchdog = ark_test.start_watchdog(90000, "full_config_runtime_extractor_tui")
 
 local function tmux(args, allow_failure)
   local output = vim.fn.system(vim.list_extend({ "tmux" }, args))
@@ -69,126 +70,132 @@ local function cleanup()
   tmux({ "kill-session", "-t", session_name }, true)
 end
 
-cleanup()
-vim.fn.delete(trace_path)
+local ok, err = xpcall(function()
+  cleanup()
+  vim.fn.delete(trace_path)
 
-local nvim_cmd = table.concat({
-  "XDG_STATE_HOME=/tmp/ark-tui-runtime-extractor",
-  "nvim",
-  "-u",
-  "/home/marine/.config/nvim/init.lua",
-  "/tmp/ark_tui_runtime_extractor.R",
-  "-c",
-  "'set shadafile=NONE'",
-  "-c",
-  "'luafile " .. repo_root .. "/tests/e2e/tui_blink_trace.lua'",
-}, " ")
+  local nvim_cmd = table.concat({
+    "XDG_STATE_HOME=/tmp/ark-tui-runtime-extractor",
+    "ARK_TUI_TRACE_LOG=" .. trace_path,
+    "nvim",
+    "-u",
+    "/home/marine/.config/nvim/init.lua",
+    "/tmp/ark_tui_runtime_extractor.R",
+    "-c",
+    "'set shadafile=NONE'",
+    "-c",
+    "'luafile " .. repo_root .. "/tests/e2e/tui_blink_trace.lua'",
+  }, " ")
 
-tmux({ "new-session", "-d", "-s", session_name, nvim_cmd })
+  tmux({ "new-session", "-d", "-s", session_name, nvim_cmd })
 
-ark_test.wait_for("initial trace load", 15000, function()
-  return latest_matching(function(event)
-    return event.label == "loaded"
-  end) ~= nil
-end)
+  ark_test.wait_for("initial trace load", 15000, function()
+    return latest_matching(function(event)
+      return event.label == "loaded"
+    end) ~= nil
+  end)
 
-ark_test.wait_for("ark panes ready", 30000, function()
-  local panes = session_panes()
-  if #panes < 2 then
+  ark_test.wait_for("ark panes ready", 30000, function()
+    local panes = session_panes()
+    if #panes < 2 then
+      return false
+    end
+    for _, pane in ipairs(panes) do
+      if pane.command == "sh" and pane_contains(pane.pane_id, ">") then
+        return true
+      end
+    end
     return false
-  end
-  for _, pane in ipairs(panes) do
-    if pane.command == "sh" and pane_contains(pane.pane_id, ">") then
-      return true
+  end)
+
+  local nvim_pane, r_pane
+  for _, pane in ipairs(session_panes()) do
+    if pane.active then
+      nvim_pane = pane.pane_id
+    elseif pane.command == "sh" then
+      r_pane = pane.pane_id
     end
   end
-  return false
-end)
 
-local nvim_pane, r_pane
-for _, pane in ipairs(session_panes()) do
-  if pane.active then
-    nvim_pane = pane.pane_id
-  elseif pane.command == "sh" then
-    r_pane = pane.pane_id
+  if not nvim_pane or not r_pane then
+    ark_test.fail("failed to identify Neovim and R panes: " .. vim.inspect(session_panes()))
   end
-end
 
-if not nvim_pane or not r_pane then
-  cleanup()
-  ark_test.fail("failed to identify Neovim and R panes: " .. vim.inspect(session_panes()))
-end
-
-tmux({ "send-keys", "-t", r_pane, 'mylist <- list(x = 1, y = iris)', "Enter" })
-ark_test.wait_for("runtime mylist in R pane", 10000, function()
-  local capture = tmux({ "capture-pane", "-p", "-t", r_pane })
-  return capture:find("mylist <- list", 1, true) ~= nil and capture:find("iris", 1, true) ~= nil
-end)
-
-tmux({
-  "send-keys",
-  "-t",
-  nvim_pane,
-  "Escape",
-  ":call setline(1, ['mylist <- list(x = 1, y = iris)', ''])",
-  "Enter",
-  "2G$",
-  "A",
-  "mylist",
-})
-
-ark_test.wait_for("typed mylist in Neovim pane", 10000, function()
-  local lines = pane_lines(nvim_pane)
-  return lines[2] ~= nil and lines[2]:find("mylist", 1, true) ~= nil
-end)
-
-tmux({ "send-keys", "-t", nvim_pane, "C-Space" })
-ark_test.wait_for("manual mylist completion", 10000, function()
-  local event = latest_matching(function(candidate)
-    local trigger = candidate.trigger or {}
-    return candidate.label == "BlinkCmpShow"
-      and trigger.kind == "manual"
-      and candidate.line == "mylist"
+  tmux({ "send-keys", "-t", r_pane, 'mylist <- list(x = 1, y = iris)', "Enter" })
+  ark_test.wait_for("runtime mylist in R pane", 10000, function()
+    local capture = tmux({ "capture-pane", "-p", "-t", r_pane })
+    return capture:find("mylist <- list", 1, true) ~= nil and capture:find("iris", 1, true) ~= nil
   end)
-  return event ~= nil
-end)
 
-tmux({ "send-keys", "-t", nvim_pane, "$" })
+  tmux({
+    "send-keys",
+    "-t",
+    nvim_pane,
+    "Escape",
+    ":call setline(1, ['mylist <- list(x = 1, y = iris)', ''])",
+    "Enter",
+    "2G$",
+    "A",
+    "mylist",
+  })
 
-local extractor_show = nil
-ark_test.wait_for("runtime extractor completion show", 10000, function()
-  extractor_show = latest_matching(function(candidate)
-    local trigger = candidate.trigger or {}
-    return candidate.label == "BlinkCmpShow"
-      and trigger.kind == "trigger_character"
-      and trigger.character == "$"
-      and candidate.line == "mylist$"
+  ark_test.wait_for("typed mylist in Neovim pane", 10000, function()
+    local lines = pane_lines(nvim_pane)
+    return lines[2] ~= nil and lines[2]:find("mylist", 1, true) ~= nil
   end)
-  return extractor_show ~= nil
-end)
+
+  tmux({ "send-keys", "-t", nvim_pane, "C-Space" })
+  ark_test.wait_for("manual mylist completion", 10000, function()
+    local event = latest_matching(function(candidate)
+      local trigger = candidate.trigger or {}
+      return candidate.label == "BlinkCmpShow"
+        and trigger.kind == "manual"
+        and candidate.line == "mylist"
+    end)
+    return event ~= nil
+  end)
+
+  tmux({ "send-keys", "-t", nvim_pane, "$" })
+
+  local extractor_show = nil
+  ark_test.wait_for("runtime extractor completion show", 10000, function()
+    extractor_show = latest_matching(function(candidate)
+      local trigger = candidate.trigger or {}
+      return candidate.label == "BlinkCmpShow"
+        and trigger.kind == "trigger_character"
+        and trigger.character == "$"
+        and candidate.line == "mylist$"
+    end)
+    return extractor_show ~= nil
+  end)
+
+  local labels = {}
+  local foreign = {}
+  for _, item in ipairs(extractor_show.items or {}) do
+    labels[#labels + 1] = item.label
+    if item.source_id ~= "ark_lsp" then
+      foreign[#foreign + 1] = item
+    end
+  end
+
+  if not vim.tbl_contains(labels, "x") or not vim.tbl_contains(labels, "y") then
+    ark_test.fail("runtime extractor show missing x/y: " .. vim.inspect(extractor_show))
+  end
+
+  if #foreign > 0 then
+    ark_test.fail("non-Ark providers leaked into runtime extractor TUI completion: " .. vim.inspect({
+      foreign = foreign,
+      extractor_show = extractor_show,
+    }))
+  end
+
+  vim.print({
+    extractor_show = extractor_show,
+  })
+end, debug.traceback)
 
 cleanup()
-
-local labels = {}
-local foreign = {}
-for _, item in ipairs(extractor_show.items or {}) do
-  labels[#labels + 1] = item.label
-  if item.source_id ~= "ark_lsp" then
-    foreign[#foreign + 1] = item
-  end
+stop_watchdog()
+if not ok then
+  error(err, 0)
 end
-
-if not vim.tbl_contains(labels, "x") or not vim.tbl_contains(labels, "y") then
-  ark_test.fail("runtime extractor show missing x/y: " .. vim.inspect(extractor_show))
-end
-
-if #foreign > 0 then
-  ark_test.fail("non-Ark providers leaked into runtime extractor TUI completion: " .. vim.inspect({
-    foreign = foreign,
-    extractor_show = extractor_show,
-  }))
-end
-
-vim.print({
-  extractor_show = extractor_show,
-})

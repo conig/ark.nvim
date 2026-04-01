@@ -3,7 +3,7 @@ set -eu
 
 PKG_PATH=""
 R_BIN="${ARK_NVIM_R_BIN:-${RSCOPE_R_BIN:-R}}"
-BOOTSTRAP_LIB="${ARK_NVIM_SESSION_LIB:-${RSCOPE_R_LIB:-$HOME/.local/share/nvim/ark/r-lib}}"
+BOOTSTRAP_LIB="${ARK_NVIM_SESSION_LIB:-${RSCOPE_R_LIB:-}}"
 R_ARGS="${ARK_NVIM_R_ARGS:-${RSCOPE_R_ARGS:---quiet --no-save}}"
 STATUS_DIR="${ARK_STATUS_DIR:-${RSCOPE_STATUS_DIR:-$HOME/.local/state/nvim/ark-status}}"
 IPC_MAX_REQUEST_BYTES="${ARK_IPC_MAX_REQUEST_BYTES:-${RSCOPE_IPC_MAX_REQUEST_BYTES:-65536}}"
@@ -479,7 +479,9 @@ local({
         ")"
       ))
     }
-    .libPaths(unique(c(.install_lib, .libPaths())))
+    if (nzchar(.bootstrap_lib)) {
+      .libPaths(unique(c(.install_lib, .libPaths())))
+    }
 
     .pkg_path <- "$PKG_PATH_R"
     .auth_token <- Sys.getenv("ARK_IPC_AUTH_TOKEN", unset = "")

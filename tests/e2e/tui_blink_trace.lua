@@ -1,4 +1,4 @@
-local log_path = "/tmp/ark_tui_blink_trace.log"
+local log_path = vim.env.ARK_TUI_TRACE_LOG or "/tmp/ark_tui_blink_trace.log"
 vim.fn.writefile({}, log_path)
 
 local function append(value)
@@ -53,6 +53,7 @@ local function snapshot(label, extra)
     mode = vim.api.nvim_get_mode().mode,
     line = vim.api.nvim_get_current_line(),
     cursor = vim.api.nvim_win_get_cursor(0),
+    ark_clients = #(vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" }) or {}),
     visible = ok_blink and blink.is_visible() or false,
     menu_open = menu_open,
     menu_lines = menu_lines,
@@ -184,6 +185,28 @@ end
 
 vim.keymap.set("i", "<C-J>", function()
   trace_select_next()
+end, { buffer = 0 })
+
+local function trace_show_trigger(trigger_character)
+  local ok_trigger, trigger = pcall(require, "blink.cmp.completion.trigger")
+  snapshot("ArkTraceShowTrigger:before", {
+    trigger_character = trigger_character,
+  })
+  if ok_trigger and trigger and type(trigger.show) == "function" then
+    trigger.show({
+      trigger_kind = "trigger_character",
+      trigger_character = trigger_character,
+    })
+  end
+  vim.defer_fn(function()
+    snapshot("ArkTraceShowTrigger:after", {
+      trigger_character = trigger_character,
+    })
+  end, 20)
+end
+
+vim.keymap.set("i", "<C-Q>", function()
+  trace_show_trigger('"')
 end, { buffer = 0 })
 
 snapshot("loaded")

@@ -45,6 +45,6 @@ if selection.auto_insert(extractor_context, { { label = "mpg" } }) ~= false then
   error("extractor auto_insert should be disabled in Ark buffers")
 end
 
-if selection.auto_insert(keyword_context, { { label = "mtcars" } }) ~= true then
-  error("non-extractor auto_insert should preserve base behavior")
+if selection.auto_insert(keyword_context, { { label = "mtcars" } }) ~= false then
+  error("keyword auto_insert should also be disabled in Ark buffers")
 end

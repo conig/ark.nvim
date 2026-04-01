@@ -273,7 +273,7 @@ function M.patch_blink_selection()
   local base_auto_insert = selection.auto_insert
   selection.auto_insert = function(context, items)
     local bufnr = vim.api.nvim_get_current_buf()
-    if in_ark_filetype(bufnr) and is_extractor_trigger(context) then
+    if in_ark_filetype(bufnr) then
       return false
     end
     if type(base_auto_insert) == "function" then

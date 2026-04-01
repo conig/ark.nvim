@@ -860,8 +860,11 @@ function M.pane_command(config)
   local exports = {
     "ARK_STATUS_DIR=" .. vim.fn.shellescape(config.startup_status_dir),
     "ARK_NVIM_SESSION_PKG_PATH=" .. vim.fn.shellescape(config.session_pkg_path),
-    "ARK_NVIM_SESSION_LIB=" .. vim.fn.shellescape(config.session_lib_path),
   }
+
+  if type(config.session_lib_path) == "string" and config.session_lib_path ~= "" then
+    table.insert(exports, "ARK_NVIM_SESSION_LIB=" .. vim.fn.shellescape(config.session_lib_path))
+  end
 
   return "export " .. table.concat(exports, " ")
     .. "; clear && exec "
