@@ -194,6 +194,126 @@ The repo now has a real Neovim E2E suite, including:
 
 That is the correct testing direction for this product.
 
+### The right reproduction boundary is often the real TUI, not headless state alone
+
+Recent Blink and tmux regressions taught a more specific lesson:
+
+- headless direct-LSP checks are excellent for proving server semantics
+- headless Blink checks are good for provider policy and simple menu visibility rules
+- real TUI tmux harnesses are required when the bug depends on:
+  - insert-mode key timing
+  - Blink auto-insert or selection movement
+  - mode transitions like `InsertLeave`
+  - redraw order
+  - interactions between Neovim mappings, Blink, and the managed tmux pane
+
+The practical rule is:
+
+- if the user reports "this exact typing sequence" or "rapid arrowing" or "it only
+  happens in my real config", prefer a live tmux-driven TUI repro over another
+  synthetic headless approximation
+
+The repo should preserve that lesson in its test design.
+
+### What the live trace harness should capture
+
+The current trace harness in [tests/e2e/tui_blink_trace.lua](/home/marine/repos/ark.nvim/tests/e2e/tui_blink_trace.lua)
+proved valuable because it logs the state transitions that actually explain these
+bugs:
+
+- current line text
+- cursor position
+- Blink menu visibility and rendered menu lines
+- completion items with `source_id` / `client_name`
+- trigger metadata
+- current diagnostics
+- timestamps
+
+That combination made it possible to separate three bug classes that otherwise
+look similar in user reports:
+
+1. stale old menu state surviving into a new trigger
+2. foreign providers leaking into an Ark-owned completion context
+3. rapid auto-insert selection corrupting document / diagnostic state
+
+Future trace harnesses should keep that shape rather than logging only one layer.
+
+### Harnesses must fail closed
+
+One stale `nvim --headless` run was enough to consume tens of GiB of RAM for
+hours after a prior agent session. The lesson is not just "kill the bad PID."
+The lesson is that ecologically valid harnesses must also be operationally safe.
+
+For any tmux-backed or real-config E2E that can wait on editor state, panes, or
+runtime readiness:
+
+- install an explicit watchdog timer and hard-fail the test if it fires
+- stop that watchdog on both success and failure paths
+- wrap the test body so cleanup always runs before rethrowing errors
+- use per-test trace files and temp artifacts rather than one shared `/tmp`
+  path
+- kill any dedicated tmux session the test created, even on failure
+
+If a test cannot prove it will eventually exit, it is not a safe regression
+test yet.
+
+### The parent runner owns child lifetime
+
+Neovim-side watchdogs are necessary but not sufficient. A pathological full-config
+test can still wedge hard enough that its own event-loop timer never fires. For
+that reason, dangerous E2Es must also be run through the outer supervisor in
+[scripts/run-e2e-test.sh](/home/marine/repos/ark.nvim/scripts/run-e2e-test.sh).
+
+That runner is the fail-closed boundary. It:
+
+- creates a unique `ARK_TEST_RUN_ID`
+- gives the run a unique temp/state root under `/tmp`
+- runs Neovim in its own process group under a hard wall-clock timeout
+- records tmux sessions created by the test
+- kills the whole process group and any registered tmux sessions on exit
+
+Practical rule:
+
+- use the runner for real-config tests and tmux-backed TUI tests
+- do not rely on `qa!` or in-test timers alone to prevent stale `nvim --headless`
+  zombies
+- if a test needs a scratch R buffer under the real config, prefer the runner's
+  `--open-r-buffer` option over ad hoc `/tmp` filenames
+
+### The specific Blink lesson
+
+For Ark completions, Blink selection movement is not harmless UI state. With
+`preselect = true` and `auto_insert = true`, rapid selection changes actively
+rewrite the buffer and can race Neovim's incremental text sync and Ark
+diagnostics. That can manufacture garbage diagnostics from transient
+intermediate text that the user never intended to commit.
+
+The practical product rule is:
+
+- for Ark-owned completion menus, navigation and acceptance should be treated as
+  separate operations
+- movement should not rewrite the buffer
+- explicit accept may rewrite the buffer
+
+That is why disabling Blink auto-insert in Ark buffers is the cleaner fix than
+trying to chase every rapid-selection race one context at a time.
+
+### Testing guidance for future agents
+
+When a completion or diagnostic regression smells like integration rather than
+pure server logic:
+
+1. first reproduce in the user's real config
+2. if the report depends on typing rhythm or arrow keys, move quickly to a
+   tmux-driven TUI harness
+3. log both buffer text and diagnostics, not just completion items
+4. do not run tmux-backed full-config repros in parallel
+5. only after the TUI path is understood, add the smallest focused headless test
+   that captures the actual invariant
+
+That sequence is slower than guessing, but faster than chasing false positives
+from synthetic harnesses that cannot see the real failure mode.
+
 ### The bridge is the right abstraction
 
 Runtime-aware language intelligence is being routed through an explicit local IPC
