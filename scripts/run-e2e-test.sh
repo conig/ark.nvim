@@ -175,7 +175,7 @@ env \
   timeout --foreground --kill-after="${kill_after_secs}s" "${timeout_secs}s" "${cmd[@]}" \
   >"$log_path" 2>&1 &
 runner_pid=$!
-runner_pgid=$(ps -o pgid= "$runner_pid" | tr -d ' ')
+runner_pgid=$(ps -o pgid= "$runner_pid" 2>/dev/null | tr -d ' ' || true)
 
 set +e
 wait "$runner_pid"

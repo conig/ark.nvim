@@ -143,6 +143,7 @@ foo()
         ExecuteRequestOptions {
             positron: Some(ExecuteRequestPositron {
                 code_location: Some(symlink_location(&file)),
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -194,6 +195,7 @@ norf()
         ExecuteRequestOptions {
             positron: Some(ExecuteRequestPositron {
                 code_location: Some(real_location(&file)),
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -245,6 +247,7 @@ qux()
         ExecuteRequestOptions {
             positron: Some(ExecuteRequestPositron {
                 code_location: Some(symlink_location(&file)),
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -332,6 +335,7 @@ greet()
         ExecuteRequestOptions {
             positron: Some(ExecuteRequestPositron {
                 code_location: Some(source_file_location(&file)),
+                ..Default::default()
             }),
             ..Default::default()
         },

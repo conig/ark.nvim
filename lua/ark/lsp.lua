@@ -223,6 +223,8 @@ local function session_snapshot(opts, snapshot_opts)
   local authoritative_status = nil
   if type(tmux.startup_status_authoritative) == "function" then
     authoritative_status = tmux.startup_status_authoritative(opts.tmux)
+  elseif type(tmux.startup_status) == "function" then
+    authoritative_status = tmux.startup_status(opts.tmux)
   end
 
   return {

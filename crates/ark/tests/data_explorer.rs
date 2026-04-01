@@ -72,6 +72,7 @@ use ark::comm_handler::CommHandlerContext;
 use ark::comm_handler::EnvironmentChanged;
 use ark::data_explorer::format::format_column;
 use ark::data_explorer::format::format_string;
+use ark::data_explorer::r_data_explorer::DataExplorerMode;
 use ark::data_explorer::r_data_explorer::DataObjectEnvInfo;
 use ark::data_explorer::r_data_explorer::RDataExplorer;
 use ark::r_task::r_task;
@@ -106,7 +107,7 @@ fn open_data_explorer(dataset: String) -> TestSetup {
 
     let inner = r_task(|| unsafe {
         let data = RObject::new(Rf_eval(r_symbol!(&dataset), R_GlobalEnv));
-        let handler = RDataExplorer::new(dataset, data, None).unwrap();
+        let handler = RDataExplorer::new(dataset, data, None, DataExplorerMode::Full).unwrap();
         TestInner(handler, ctx)
     });
 
@@ -131,7 +132,8 @@ fn open_data_explorer_from_expression(expr: &str, bind: Option<&str>) -> anyhow:
             name: name.to_string(),
             env: RObject::view(R_ENVS.global),
         });
-        let handler = RDataExplorer::new(String::from("obj"), object, binding)?;
+        let handler =
+            RDataExplorer::new(String::from("obj"), object, binding, DataExplorerMode::Full)?;
         Ok(TestInner(handler, ctx))
     })?;
 
@@ -189,7 +191,13 @@ impl TestSetup {
         let inner = &self.inner;
         let closed = r_task(|| {
             let TestInner(handler, ctx) = &mut *inner.lock().unwrap();
-            handler.handle_environment(EnvironmentChanged::Execution, ctx);
+            handler.handle_environment(
+                &EnvironmentChanged::Execution {
+                    input_prompt: String::from("> "),
+                    continuation_prompt: String::from("+ "),
+                },
+                ctx,
+            );
             ctx.is_closed()
         });
         if closed {

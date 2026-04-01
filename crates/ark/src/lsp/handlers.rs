@@ -272,9 +272,7 @@ pub(crate) fn handle_completion(
             let detached = match session_bridge.completion_items(&context) {
                 Ok(detached) => detached,
                 Err(err) => {
-                    if is_bridge_unavailable(&err) {
-                        None
-                    } else if is_eval_missing_object_error(&err) {
+                    if is_bridge_unavailable(&err) || is_eval_missing_object_error(&err) {
                         None
                     } else if is_ipc_auth_error(&err) {
                         log_detached_bridge_auth_fallback("completion", &err);
@@ -328,9 +326,7 @@ pub(crate) fn handle_completion_resolve(
             return match session_bridge.resolve_completion_item(item) {
                 Ok(item) => Ok(item),
                 Err(err) => {
-                    if is_bridge_unavailable(&err) {
-                        Ok(unresolved)
-                    } else if is_eval_missing_object_error(&err) {
+                    if is_bridge_unavailable(&err) || is_eval_missing_object_error(&err) {
                         Ok(unresolved)
                     } else if is_ipc_auth_error(&err) {
                         log_detached_bridge_auth_fallback("completion resolve", &err);
@@ -376,9 +372,7 @@ pub(crate) fn handle_hover(params: HoverParams, state: &WorldState) -> LspResult
             return match session_bridge.hover(&context) {
                 Ok(result) => Ok(result),
                 Err(err) => {
-                    if is_bridge_unavailable(&err) {
-                        Ok(None)
-                    } else if is_eval_missing_object_error(&err) {
+                    if is_bridge_unavailable(&err) || is_eval_missing_object_error(&err) {
                         Ok(None)
                     } else if is_ipc_auth_error(&err) {
                         log_detached_bridge_auth_fallback("hover", &err);
@@ -431,9 +425,7 @@ pub(crate) fn handle_signature_help(
             return match session_bridge.signature_help(&context) {
                 Ok(result) => Ok(result),
                 Err(err) => {
-                    if is_bridge_unavailable(&err) {
-                        Ok(None)
-                    } else if is_eval_missing_object_error(&err) {
+                    if is_bridge_unavailable(&err) || is_eval_missing_object_error(&err) {
                         Ok(None)
                     } else if is_ipc_auth_error(&err) {
                         log_detached_bridge_auth_fallback("signature help", &err);

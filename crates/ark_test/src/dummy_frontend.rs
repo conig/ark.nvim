@@ -602,6 +602,21 @@ impl DummyArkFrontend {
         }
     }
 
+    /// Receive from IOPub and assert ExecuteResult message.
+    /// Returns the full data map.
+    /// Automatically skips any Stream messages.
+    #[track_caller]
+    pub fn recv_iopub_execute_result_data(&self) -> serde_json::Map<String, serde_json::Value> {
+        let msg = self.recv_iopub_next();
+        match msg {
+            Message::ExecuteResult(data) => match data.content.data {
+                serde_json::Value::Object(map) => map,
+                other => panic!("Expected ExecuteResult data to be Object, got {:?}", other),
+            },
+            other => panic!("Expected ExecuteResult, got {:?}", other),
+        }
+    }
+
     /// Receive from IOPub and assert ExecuteError message.
     /// Automatically skips any Stream messages.
     /// Returns the `evalue` field.
@@ -625,6 +640,17 @@ impl DummyArkFrontend {
         }
     }
 
+    /// Receive from IOPub and assert DisplayData message, returning the content.
+    /// Automatically skips any Stream messages.
+    #[track_caller]
+    pub fn recv_iopub_display_data_content(&self) -> amalthea::wire::display_data::DisplayData {
+        let msg = self.recv_iopub_next();
+        match msg {
+            Message::DisplayData(data) => data.content,
+            other => panic!("Expected DisplayData, got {:?}", other),
+        }
+    }
+
     /// Receive from IOPub and assert CommMsg message.
     /// Automatically skips any Stream messages.
     #[track_caller]
@@ -634,36 +660,6 @@ impl DummyArkFrontend {
             Message::CommMsg(data) => data.content,
             other => panic!("Expected CommMsg, got {:?}", other),
         }
-    }
-
-    /// Receive a CommMsg and Idle from IOPub in either order.
-    ///
-    /// Some comm RPC replies race with the shell's Idle status because the
-    /// reply is sent from a separate thread (e.g. the UI comm thread). This
-    /// helper accepts both orderings and returns the CommMsg content.
-    #[track_caller]
-    pub fn recv_iopub_comm_msg_and_idle(&self) -> amalthea::wire::comm_msg::CommWireMsg {
-        let first = self.recv_iopub_next();
-        let second = self.recv_iopub_next();
-
-        let (comm_msg, idle) = match (first, second) {
-            (Message::CommMsg(comm), Message::Status(status)) => (comm, status),
-            (Message::Status(status), Message::CommMsg(comm)) => (comm, status),
-            (a, b) => panic!(
-                "Expected CommMsg and Idle in either order, got {:?} and {:?}",
-                a, b
-            ),
-        };
-
-        assert_eq!(
-            idle.content.execution_state,
-            amalthea::wire::status::ExecutionState::Idle,
-            "Expected Idle status"
-        );
-
-        self.flush_streams_at_boundary();
-
-        comm_msg.content
     }
 
     /// Receive from IOPub and assert CommOpen message.
@@ -990,6 +986,7 @@ impl DummyArkFrontend {
             ExecuteRequestOptions {
                 positron: Some(ExecuteRequestPositron {
                     code_location: Some(code_location),
+                    ..Default::default()
                 }),
                 ..Default::default()
             },
@@ -1102,26 +1099,30 @@ impl DummyArkFrontend {
         // sends an EstablishUiCommChannel kernel request to the console.
         // The UI comm then sends events (prompt_state, working_directory)
         // as CommMsg on IOPub. These can arrive in any order relative to
-        // the busy/idle. We wait for the prompt_state CommMsg as evidence
-        // that the UI comm has been established, draining everything.
+        // the busy/idle, so wait until we have the authoritative comm
+        // messages and at least one idle.
         let deadline = Instant::now() + RECV_TIMEOUT;
         let mut got_prompt_state = false;
+        let mut got_working_directory = false;
         let mut idle_count = 0u32;
 
-        // We need to see the prompt_state AND at least one idle
-        while !got_prompt_state || idle_count == 0 {
+        while !got_prompt_state || !got_working_directory || idle_count == 0 {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let Some(msg) = self.recv_iopub_with_timeout(remaining) else {
                 panic!(
                     "Timed out waiting for UI comm (got_prompt_state={got_prompt_state}, \
-                     idle_count={idle_count})"
+                     got_working_directory={got_working_directory}, idle_count={idle_count})"
                 );
             };
             match &msg {
                 Message::CommMsg(data) => {
                     if let Some(method) = data.content.data.get("method").and_then(|v| v.as_str()) {
                         if method == "prompt_state" {
+                            assert_eq!(data.content.comm_id, comm_id);
                             got_prompt_state = true;
+                        } else if method == "working_directory" {
+                            assert_eq!(data.content.comm_id, comm_id);
+                            got_working_directory = true;
                         }
                     }
                 },
@@ -1138,13 +1139,10 @@ impl DummyArkFrontend {
             }
         }
 
-        // The UI comm sends events asynchronously. Some may arrive after
-        // idle. Drain any stragglers with a short timeout.
         while let Some(msg) = self.recv_iopub_with_timeout(Duration::from_millis(200)) {
             if let Message::Stream(ref data) = msg {
                 self.buffer_stream(&data.content);
             }
-            // Discard late comm messages and other events
         }
 
         comm_id
@@ -1178,6 +1176,7 @@ impl DummyArkFrontend {
             ExecuteRequestOptions {
                 positron: Some(ExecuteRequestPositron {
                     code_location: Some(file.location()),
+                    ..Default::default()
                 }),
                 ..Default::default()
             },
@@ -1847,6 +1846,52 @@ impl Deref for DummyArkFrontendNotebook {
 }
 
 impl DerefMut for DummyArkFrontendNotebook {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+/// Wrapper around `DummyArkFrontend` that uses `SessionMode::Notebook` and
+/// sets the `POSITRON` env var to simulate running inside Positron.
+pub struct DummyArkPositronNotebook {
+    inner: DummyArkFrontend,
+}
+
+impl DummyArkPositronNotebook {
+    /// Lock a Positron notebook frontend.
+    ///
+    /// NOTE: Only one `DummyArkFrontend` variant should call `lock()` within
+    /// a given process.
+    pub fn lock() -> Self {
+        Self::init();
+
+        Self {
+            inner: DummyArkFrontend::lock(),
+        }
+    }
+
+    /// Initialize with Notebook session mode and `POSITRON=1`
+    fn init() {
+        unsafe { std::env::set_var("POSITRON", "1") };
+
+        let options = DummyArkFrontendOptions {
+            session_mode: SessionMode::Notebook,
+            ..Default::default()
+        };
+        FRONTEND.get_or_init(|| Arc::new(Mutex::new(DummyArkFrontend::init(options))));
+    }
+}
+
+// Allow method calls to be forwarded to inner type
+impl Deref for DummyArkPositronNotebook {
+    type Target = DummyArkFrontend;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for DummyArkPositronNotebook {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
