@@ -4,8 +4,11 @@ use std::net::Shutdown;
 use std::net::TcpStream;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::RwLock;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use anyhow::anyhow;
 use harp::syntax::sym_quote_invalid;
@@ -78,6 +81,19 @@ struct SessionBridgeConnection {
 #[derive(Clone, Debug)]
 struct StatusFileSessionBridgeSource {
     status_file: PathBuf,
+    cached_connection: Arc<RwLock<Option<CachedStatusFileConnection>>>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedStatusFileConnection {
+    fingerprint: StatusFileFingerprint,
+    connection: SessionBridgeConnection,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StatusFileFingerprint {
+    modified: Option<SystemTime>,
+    len: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -343,7 +359,10 @@ impl SessionBridge {
             .status_file
             .filter(|status_file| !status_file.as_os_str().is_empty())
         {
-            SessionBridgeSource::StatusFile(StatusFileSessionBridgeSource { status_file })
+            SessionBridgeSource::StatusFile(StatusFileSessionBridgeSource {
+                status_file,
+                cached_connection: Arc::new(RwLock::new(None)),
+            })
         } else {
             if config.host.is_empty() {
                 return Err(anyhow!("session bridge host is missing"));
@@ -974,7 +993,7 @@ impl SessionBridge {
                 Ok(payload) => return Ok(payload),
                 Err(err) if should_retry_dynamic_request(&err) => {
                     let retry_io = err.downcast_ref::<std::io::Error>().is_some();
-                    let refreshed = source.current_connection()?;
+                    let refreshed = source.refresh_connection()?;
 
                     if refreshed != connection {
                         connection = refreshed;
@@ -1124,42 +1143,103 @@ impl SessionBridge {
 
 impl StatusFileSessionBridgeSource {
     fn current_connection(&self) -> anyhow::Result<SessionBridgeConnection> {
-        let status = read_session_status(self.status_file.as_path())?;
+        self.current_connection_with_policy(StatusFileCachePolicy::AllowCached)
+    }
 
-        if status.status != "ready" {
-            return Err(SessionBridgeUnavailableError {
-                message: if status.status.is_empty() {
-                    format!(
-                        "startup status file '{}' has no ready state yet",
-                        self.status_file.display()
-                    )
-                } else {
-                    format!(
-                        "startup status file '{}' is '{}'",
-                        self.status_file.display(),
-                        status.status
-                    )
-                },
+    fn refresh_connection(&self) -> anyhow::Result<SessionBridgeConnection> {
+        self.current_connection_with_policy(StatusFileCachePolicy::Refresh)
+    }
+
+    fn current_connection_with_policy(
+        &self,
+        policy: StatusFileCachePolicy,
+    ) -> anyhow::Result<SessionBridgeConnection> {
+        let path = self.status_file.as_path();
+        let fingerprint = trusted_status_file_fingerprint(path)?;
+
+        if matches!(policy, StatusFileCachePolicy::AllowCached) {
+            if let Some(connection) = self.cached_connection(&fingerprint) {
+                return Ok(connection);
             }
-            .into());
         }
 
-        let Some(port) = status.port else {
-            return Err(SessionBridgeUnavailableError {
-                message: format!(
-                    "startup status file '{}' does not publish a bridge port",
-                    self.status_file.display()
-                ),
-            }
-            .into());
-        };
-
-        Ok(SessionBridgeConnection {
-            host: String::from("127.0.0.1"),
-            port,
-            auth_token: status.auth_token,
-        })
+        let (fingerprint, status) = read_session_status(path)?;
+        let connection = connection_from_status(path, status)?;
+        self.store_cached_connection(fingerprint, connection.clone());
+        Ok(connection)
     }
+
+    fn cached_connection(
+        &self,
+        fingerprint: &StatusFileFingerprint,
+    ) -> Option<SessionBridgeConnection> {
+        let cache = self.cached_connection.read().ok()?;
+        let cached = cache.as_ref()?;
+
+        if &cached.fingerprint != fingerprint {
+            return None;
+        }
+
+        Some(cached.connection.clone())
+    }
+
+    fn store_cached_connection(
+        &self,
+        fingerprint: StatusFileFingerprint,
+        connection: SessionBridgeConnection,
+    ) {
+        if let Ok(mut cache) = self.cached_connection.write() {
+            *cache = Some(CachedStatusFileConnection {
+                fingerprint,
+                connection,
+            });
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StatusFileCachePolicy {
+    AllowCached,
+    Refresh,
+}
+
+fn connection_from_status(
+    status_file: &Path,
+    status: SessionStatusPayload,
+) -> anyhow::Result<SessionBridgeConnection> {
+    if status.status != "ready" {
+        return Err(SessionBridgeUnavailableError {
+            message: if status.status.is_empty() {
+                format!(
+                    "startup status file '{}' has no ready state yet",
+                    status_file.display()
+                )
+            } else {
+                format!(
+                    "startup status file '{}' is '{}'",
+                    status_file.display(),
+                    status.status
+                )
+            },
+        }
+        .into());
+    }
+
+    let Some(port) = status.port else {
+        return Err(SessionBridgeUnavailableError {
+            message: format!(
+                "startup status file '{}' does not publish a bridge port",
+                status_file.display()
+            ),
+        }
+        .into());
+    };
+
+    Ok(SessionBridgeConnection {
+        host: String::from("127.0.0.1"),
+        port,
+        auth_token: status.auth_token,
+    })
 }
 
 pub(crate) fn is_ipc_auth_error(err: &anyhow::Error) -> bool {
@@ -1203,7 +1283,16 @@ fn unavailable_from_io_error(err: anyhow::Error) -> anyhow::Error {
     .into()
 }
 
-fn read_session_status(path: &Path) -> anyhow::Result<SessionStatusPayload> {
+fn read_session_status(
+    path: &Path,
+) -> anyhow::Result<(StatusFileFingerprint, SessionStatusPayload)> {
+    let fingerprint = trusted_status_file_fingerprint(path)?;
+    let payload = std::fs::read_to_string(path)?;
+    let status: SessionStatusPayload = serde_json::from_str(payload.as_str())?;
+    Ok((fingerprint, status))
+}
+
+fn trusted_status_file_fingerprint(path: &Path) -> anyhow::Result<StatusFileFingerprint> {
     if !path.exists() {
         return Err(SessionBridgeUnavailableError {
             message: format!(
@@ -1214,20 +1303,21 @@ fn read_session_status(path: &Path) -> anyhow::Result<SessionStatusPayload> {
         .into());
     }
 
-    if !status_file_trusted(path)? {
+    let metadata = std::fs::metadata(path)?;
+    if !status_file_trusted_metadata(&metadata)? {
         return Err(SessionBridgeUnavailableError {
             message: format!("startup status file '{}' is not trusted", path.display()),
         }
         .into());
     }
 
-    let payload = std::fs::read_to_string(path)?;
-    let status: SessionStatusPayload = serde_json::from_str(payload.as_str())?;
-    Ok(status)
+    Ok(StatusFileFingerprint {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+    })
 }
 
-fn status_file_trusted(path: &Path) -> anyhow::Result<bool> {
-    let metadata = std::fs::metadata(path)?;
+fn status_file_trusted_metadata(metadata: &std::fs::Metadata) -> anyhow::Result<bool> {
     if !metadata.is_file() {
         return Ok(false);
     }
@@ -3238,6 +3328,130 @@ mod tests {
             connections.load(Ordering::SeqCst),
             3,
             "bootstrap command error should fall back to legacy inspect requests"
+        );
+    }
+
+    #[test]
+    fn test_status_file_current_connection_refreshes_when_file_changes() {
+        let status = tempfile::NamedTempFile::new().expect("expected temp status file");
+        std::fs::write(
+            status.path(),
+            r#"{"status":"ready","port":41001,"auth_token":"token-one","repl_ready":true}"#,
+        )
+        .expect("expected status file");
+
+        let source = StatusFileSessionBridgeSource {
+            status_file: status.path().to_path_buf(),
+            cached_connection: Arc::new(RwLock::new(None)),
+        };
+
+        let first = source
+            .current_connection()
+            .expect("expected initial connection");
+        assert_eq!(first.auth_token, "token-one");
+        assert!(source.cached_connection.read().unwrap().is_some());
+
+        std::fs::write(
+            status.path(),
+            r#"{"status":"ready","port":41002,"auth_token":"token-two-longer","repl_ready":true}"#,
+        )
+        .expect("expected updated status file");
+
+        let second = source
+            .current_connection()
+            .expect("expected refreshed connection");
+        assert_eq!(second.port, 41002);
+        assert_eq!(second.auth_token, "token-two-longer");
+    }
+
+    #[test]
+    fn test_bootstrap_dynamic_refreshes_connection_after_auth_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+        let status = tempfile::NamedTempFile::new().expect("expected temp status file");
+        std::fs::write(
+            status.path(),
+            format!(
+                r#"{{"status":"ready","port":{},"auth_token":"token-one","repl_ready":true}}"#,
+                port
+            ),
+        )
+        .expect("expected initial status file");
+        let status_path = status.path().to_path_buf();
+
+        let handle = thread::spawn(move || {
+            let (mut first, _) = listener.accept().expect("expected first bootstrap request");
+            let mut request = String::new();
+            first
+                .read_to_string(&mut request)
+                .expect("expected first request payload");
+            let payload: serde_json::Value =
+                serde_json::from_str(request.trim()).expect("expected json bootstrap request");
+            assert_eq!(
+                payload
+                    .get("auth_token")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                "token-one"
+            );
+
+            std::fs::write(
+                &status_path,
+                format!(
+                    r#"{{"status":"ready","port":{},"auth_token":"token-two","repl_ready":true}}"#,
+                    port
+                ),
+            )
+            .expect("expected rotated status file");
+
+            first
+                .write_all(br#"{"error":{"code":"E_IPC_AUTH","message":"stale token"}}"#)
+                .expect("expected auth error response");
+
+            let (mut second, _) = listener
+                .accept()
+                .expect("expected second bootstrap request");
+            let mut request = String::new();
+            second
+                .read_to_string(&mut request)
+                .expect("expected second request payload");
+            let payload: serde_json::Value =
+                serde_json::from_str(request.trim()).expect("expected json bootstrap request");
+            assert_eq!(
+                payload
+                    .get("auth_token")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                "token-two"
+            );
+
+            second
+                .write_all(
+                    br#"{"status":"ok","search_path_symbols":["library","mtcars"],"library_paths":["/tmp/ark-test-library"]}"#,
+                )
+                .expect("expected successful bootstrap response");
+        });
+
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            status_file: Some(status.path().to_path_buf()),
+            timeout_ms: 50,
+            ..Default::default()
+        })
+        .expect("expected bridge");
+
+        let bootstrap = bridge.bootstrap().expect("expected bootstrap to recover");
+        handle.join().expect("expected listener thread to join");
+
+        assert_eq!(
+            bootstrap.search_path_symbols,
+            vec![String::from("library"), String::from("mtcars")]
+        );
+        assert_eq!(
+            bootstrap.library_paths,
+            vec![PathBuf::from("/tmp/ark-test-library")]
         );
     }
 }
