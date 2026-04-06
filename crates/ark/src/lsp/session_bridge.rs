@@ -377,12 +377,10 @@ impl SessionBridge {
         let merge_static = matches!(plan, CompletionPlan::Composite(_));
 
         let items = match plan {
-            CompletionPlan::Unique(request) => {
-                match self.completion_items_for_request(&request) {
-                    Ok(items) => items,
-                    Err(err) if is_eval_missing_object_error(&err) => Vec::new(),
-                    Err(err) => return Err(err),
-                }
+            CompletionPlan::Unique(request) => match self.completion_items_for_request(&request) {
+                Ok(items) => items,
+                Err(err) if is_eval_missing_object_error(&err) => Vec::new(),
+                Err(err) => return Err(err),
             },
             CompletionPlan::Composite(requests) => {
                 let mut items = Vec::new();
@@ -409,7 +407,9 @@ impl SessionBridge {
         match self.bootstrap_via_command() {
             Ok(bootstrap) => Ok(bootstrap),
             Err(err) => {
-                log::warn!("Detached bootstrap command failed, falling back to legacy bootstrap: {err:?}");
+                log::warn!(
+                    "Detached bootstrap command failed, falling back to legacy bootstrap: {err:?}"
+                );
                 self.bootstrap_legacy()
             },
         }
@@ -2875,11 +2875,7 @@ mod tests {
     #[test]
     fn test_extractor_completion_request_treats_next_line_as_rhs_continuation() {
         let document = Document::new("mtcars$\nmtcars$mp\n", None);
-        let context = DocumentContext::new(
-            &document,
-            Point::new(0, 7),
-            Some(String::from("$")),
-        );
+        let context = DocumentContext::new(&document, Point::new(0, 7), Some(String::from("$")));
 
         let request = completion_request_from_extractor(&context)
             .unwrap()
@@ -2893,11 +2889,7 @@ mod tests {
     #[test]
     fn test_extractor_completion_request_supports_single_line_with_trailing_newline() {
         let document = Document::new("mtcars$\n", None);
-        let context = DocumentContext::new(
-            &document,
-            Point::new(0, 7),
-            Some(String::from("$")),
-        );
+        let context = DocumentContext::new(&document, Point::new(0, 7), Some(String::from("$")));
 
         let request = completion_request_from_extractor(&context)
             .unwrap()

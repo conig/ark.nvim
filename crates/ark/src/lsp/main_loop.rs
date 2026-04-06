@@ -42,8 +42,6 @@ use crate::lsp::document::Document;
 use crate::lsp::handlers;
 use crate::lsp::indexer;
 use crate::lsp::inputs::library::Library;
-use crate::lsp::session_bridge::is_bridge_unavailable;
-use crate::lsp::session_bridge::is_ipc_auth_error;
 use crate::lsp::state::RuntimeMode;
 use crate::lsp::state::WorldState;
 use crate::lsp::state_handlers;
@@ -90,6 +88,7 @@ type TaskList<T> = futures::stream::FuturesUnordered<Pin<Box<dyn AnyhowJoinHandl
 pub(crate) enum Event {
     Lsp(LspMessage),
     Kernel(KernelNotification),
+    Internal(InternalEvent),
 }
 
 #[derive(Debug)]
@@ -98,6 +97,11 @@ pub(crate) enum KernelNotification {
     DidChangeConsoleInputs(ConsoleInputs),
     DidOpenVirtualDocument(DidOpenVirtualDocumentParams),
     DidCloseVirtualDocument(DidCloseVirtualDocumentParams),
+}
+
+#[derive(Debug)]
+pub(crate) enum InternalEvent {
+    DetachedSessionHydrationCompleted(state_handlers::DetachedSessionHydrationOutput),
 }
 
 /// A thin wrapper struct with a custom `Debug` method more appropriate for trace logs
@@ -239,26 +243,9 @@ impl GlobalState {
                 };
             },
             RuntimeMode::Detached => {
-                if let Some(session_bridge) = state.world.session_bridge.as_ref() {
-                    match session_bridge.bootstrap() {
-                        Ok(bootstrap) => {
-                            state.world.console_scopes = vec![bootstrap.search_path_symbols];
-                            state.world.installed_packages = bootstrap.installed_packages;
-                            state.world.library = Library::new(bootstrap.library_paths);
-                        },
-                        Err(err) => {
-                            if is_ipc_auth_error(&err) {
-                                log::warn!(
-                                    "Detached bootstrap hit stale bridge auth; waiting for ark_lsp refresh: {err}"
-                                );
-                            } else if is_bridge_unavailable(&err) {
-                                log::info!("Detached bootstrap waiting for managed session readiness: {err}");
-                            } else {
-                                log::error!("Can't bootstrap detached session inputs: {err:?}");
-                            }
-                        },
-                    }
-                }
+                // Detached session hydration is driven by `ark/updateSession`
+                // notifications and document events. Avoid blocking startup on
+                // an opportunistic bridge bootstrap here.
             },
         }
 
@@ -334,7 +321,9 @@ impl GlobalState {
                             handlers::handle_initialized(&self.client, &self.lsp_state).await?;
                         },
                         LspNotification::SessionUpdate(params) => {
-                            state_handlers::did_update_session(params, &mut self.world)?;
+                            let hydration =
+                                state_handlers::did_update_session(params, &mut self.world)?;
+                            self.spawn_detached_session_hydration(hydration);
                         },
                         LspNotification::DidChangeWorkspaceFolders(_params) => {
                             // TODO: Restart indexer with new folders.
@@ -346,10 +335,14 @@ impl GlobalState {
                             // TODO: Re-index the changed files.
                         },
                         LspNotification::DidOpenTextDocument(params) => {
-                            state_handlers::did_open(params, &mut self.lsp_state, &mut self.world)?;
+                            let hydration =
+                                state_handlers::did_open(params, &mut self.lsp_state, &mut self.world)?;
+                            self.spawn_detached_session_hydration(hydration);
                         },
                         LspNotification::DidChangeTextDocument(params) => {
-                            state_handlers::did_change(params, &mut self.lsp_state, &mut self.world)?;
+                            let hydration =
+                                state_handlers::did_change(params, &mut self.lsp_state, &mut self.world)?;
+                            self.spawn_detached_session_hydration(hydration);
                         },
                         LspNotification::DidSaveTextDocument(_params) => {
                             // Currently ignored
@@ -455,6 +448,11 @@ impl GlobalState {
                     }
                 }
             },
+            Event::Internal(event) => match event {
+                InternalEvent::DetachedSessionHydrationCompleted(output) => {
+                    state_handlers::finish_detached_session_hydration(output, &mut self.world);
+                },
+            },
         }
 
         // TODO Make this threshold configurable by the client
@@ -484,6 +482,28 @@ impl GlobalState {
         Handler: Send + 'static,
     {
         lsp::spawn_blocking(move || respond(response_tx, handler, into_lsp_response).and(Ok(None)))
+    }
+
+    fn spawn_detached_session_hydration(
+        &self,
+        request: Option<state_handlers::DetachedSessionHydrationRequest>,
+    ) {
+        let Some(request) = request else {
+            return;
+        };
+
+        let events_tx = self.events_tx.clone();
+        spawn_blocking(move || {
+            let output = state_handlers::run_detached_session_hydration(request);
+            events_tx
+                .send(Event::Internal(
+                    InternalEvent::DetachedSessionHydrationCompleted(output),
+                ))
+                .map_err(|err| {
+                    anyhow!("Failed to queue detached session hydration result: {err}")
+                })?;
+            Ok(None)
+        });
     }
 }
 

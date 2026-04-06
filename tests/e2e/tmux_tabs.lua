@@ -92,13 +92,13 @@ vim.fn.system = function(command)
 
   if command[2] == "split-window" then
     local pane_id = new_pane(main_session)
-    return pane_id .. "\n"
+    return pane_id .. "\n" .. socket_path .. "\n" .. main_session .. "\n"
   end
 
   if command[2] == "new-window" then
     local pane_id = new_pane(main_session)
     local window_id = new_window_id()
-    return pane_id .. "\n" .. window_id .. "\n"
+    return pane_id .. "\n" .. window_id .. "\n" .. socket_path .. "\n" .. main_session .. "\n"
   end
 
   if command[2] == "break-pane" then
@@ -194,6 +194,20 @@ local ok, err = pcall(function()
   local first_pane = assert(tmux.start(opts))
   if first_pane ~= "%101" then
     error("expected first visible pane to be %101, got " .. tostring(first_pane), 0)
+  end
+  local startup_session_queries = 0
+  for _, command in ipairs(commands) do
+    if type(command) == "table"
+      and command[2] == "display-message"
+      and command[3] == "-p"
+      and command[4] == "-t"
+      and command[6] == "#{socket_path}\n#{session_name}"
+    then
+      startup_session_queries = startup_session_queries + 1
+    end
+  end
+  if startup_session_queries ~= 1 then
+    error("expected initial start to resolve pane session metadata once, got commands: " .. vim.inspect(commands), 0)
   end
   local tab_state_after_start = tmux.tab_state()
   if tab_state_after_start.active_index ~= 1 or tab_state_after_start.tab_count ~= 1 or tab_state_after_start.text ~= "[1]" then

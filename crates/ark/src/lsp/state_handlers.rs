@@ -61,6 +61,7 @@ use crate::lsp::main_loop::DidOpenVirtualDocumentParams;
 use crate::lsp::main_loop::LspState;
 use crate::lsp::session_bridge::is_bridge_unavailable;
 use crate::lsp::session_bridge::is_ipc_auth_error;
+use crate::lsp::session_bridge::SessionBootstrap;
 use crate::lsp::session_bridge::SessionBridge;
 use crate::lsp::session_bridge::SessionBridgeConfig;
 use crate::lsp::state::workspace_uris;
@@ -75,42 +76,89 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-pub(crate) fn refresh_detached_session_inputs(state: &mut WorldState, force: bool) {
+#[derive(Debug)]
+pub(crate) struct DetachedSessionHydrationRequest {
+    pub generation: u64,
+    pub repl_seq: Option<u64>,
+    pub session_bridge: SessionBridge,
+}
+
+#[derive(Debug)]
+pub(crate) struct DetachedSessionHydrationOutput {
+    pub generation: u64,
+    pub repl_seq: Option<u64>,
+    pub result: anyhow::Result<SessionBootstrap>,
+}
+
+pub(crate) fn begin_detached_session_hydration(
+    state: &mut WorldState,
+    force: bool,
+) -> Option<DetachedSessionHydrationRequest> {
     if state.runtime_mode != RuntimeMode::Detached {
-        return;
+        return None;
     }
 
     let now = now_ms();
-    let bootstrap_incomplete = state.console_scopes.is_empty() || state.library.library_paths.is_empty();
+    let bootstrap_incomplete =
+        state.console_scopes.is_empty() || state.library.library_paths.is_empty();
     let retry_cooldown_elapsed = state
         .detached_session_status
         .last_bootstrap_attempt_ms
         .map(|last| now.saturating_sub(last) >= 500)
         .unwrap_or(true);
     let retry_failed_bootstrap = state.detached_session_bootstrap_attempted
-        && state.detached_session_status.last_bootstrap_success_ms.is_none()
-        && !state.detached_session_status.last_bootstrap_error.is_empty()
+        && state
+            .detached_session_status
+            .last_bootstrap_success_ms
+            .is_none()
+        && !state
+            .detached_session_status
+            .last_bootstrap_error
+            .is_empty()
         && bootstrap_incomplete
         && retry_cooldown_elapsed;
+    let current_generation = state.detached_session_update_generation;
+    let current_repl_seq = state.detached_session_status.last_session_update_repl_seq;
+    let current_repl_is_hydrated = current_repl_seq.is_some()
+        && current_repl_seq == state.detached_session_status.last_bootstrap_repl_seq
+        && state
+            .detached_session_status
+            .last_bootstrap_error
+            .is_empty()
+        && !bootstrap_incomplete;
 
-    if !force && state.detached_session_bootstrap_attempted && !retry_failed_bootstrap {
-        return;
+    if state.detached_session_pending_generation == Some(current_generation) {
+        return None;
+    }
+
+    if !force {
+        if current_repl_is_hydrated {
+            return None;
+        }
+
+        if state.detached_session_bootstrap_attempted && !retry_failed_bootstrap {
+            return None;
+        }
     }
 
     state.detached_session_bootstrap_attempted = true;
     state.detached_session_status.last_bootstrap_attempt_ms = Some(now);
     state.detached_session_status.last_bootstrap_duration_ms = None;
-    state.detached_session_status.last_bootstrap_search_path_symbols_ms = None;
-    state.detached_session_status.last_bootstrap_library_paths_ms = None;
+    state
+        .detached_session_status
+        .last_bootstrap_search_path_symbols_ms = None;
+    state
+        .detached_session_status
+        .last_bootstrap_library_paths_ms = None;
 
     let needs_bootstrap = force || bootstrap_incomplete;
     if !needs_bootstrap {
-        return;
+        return None;
     }
 
-    let Some(session_bridge) = state.session_bridge.as_ref() else {
+    let Some(session_bridge) = state.session_bridge.clone() else {
         state.detached_session_status.last_bootstrap_error = String::from("session bridge missing");
-        return;
+        return None;
     };
 
     tracing::info!(
@@ -118,10 +166,58 @@ pub(crate) fn refresh_detached_session_inputs(state: &mut WorldState, force: boo
         console_scope_count = state.console_scopes.len(),
         installed_package_count = state.installed_packages.len(),
         library_path_count = state.library.library_paths.len(),
-        "Attempting detached session bootstrap refresh"
+        generation = current_generation,
+        "Queueing detached session bootstrap refresh"
     );
 
-    match session_bridge.bootstrap() {
+    state.detached_session_pending_generation = Some(current_generation);
+
+    Some(DetachedSessionHydrationRequest {
+        generation: current_generation,
+        repl_seq: current_repl_seq,
+        session_bridge,
+    })
+}
+
+pub(crate) fn run_detached_session_hydration(
+    request: DetachedSessionHydrationRequest,
+) -> DetachedSessionHydrationOutput {
+    DetachedSessionHydrationOutput {
+        generation: request.generation,
+        repl_seq: request.repl_seq,
+        result: request.session_bridge.bootstrap(),
+    }
+}
+
+pub(crate) fn finish_detached_session_hydration(
+    output: DetachedSessionHydrationOutput,
+    state: &mut WorldState,
+) {
+    if state.runtime_mode != RuntimeMode::Detached {
+        return;
+    }
+
+    let current_generation = state.detached_session_update_generation;
+    let current_repl_seq = state.detached_session_status.last_session_update_repl_seq;
+    let stale_generation = output.generation != current_generation;
+    let stale_repl_seq = output.repl_seq.is_some() && output.repl_seq != current_repl_seq;
+
+    if stale_generation || stale_repl_seq {
+        tracing::info!(
+            output_generation = output.generation,
+            current_generation,
+            output_repl_seq = ?output.repl_seq,
+            current_repl_seq = ?current_repl_seq,
+            "Ignoring stale detached session hydration result"
+        );
+        return;
+    }
+
+    if state.detached_session_pending_generation == Some(output.generation) {
+        state.detached_session_pending_generation = None;
+    }
+
+    match output.result {
         Ok(bootstrap) => {
             tracing::info!(
                 search_path_symbols = bootstrap.search_path_symbols.len(),
@@ -136,12 +232,19 @@ pub(crate) fn refresh_detached_session_inputs(state: &mut WorldState, force: boo
             state.installed_packages = bootstrap.installed_packages;
             state.library = Library::new(bootstrap.library_paths);
             state.detached_session_status.last_bootstrap_success_ms = Some(now_ms());
-            state.detached_session_status.last_bootstrap_duration_ms = Some(bootstrap.timings.total_ms);
-            state.detached_session_status.last_bootstrap_search_path_symbols_ms =
+            state.detached_session_status.last_bootstrap_duration_ms =
+                Some(bootstrap.timings.total_ms);
+            state
+                .detached_session_status
+                .last_bootstrap_search_path_symbols_ms =
                 Some(bootstrap.timings.search_path_symbols_ms);
-            state.detached_session_status.last_bootstrap_library_paths_ms =
-                Some(bootstrap.timings.library_paths_ms);
+            state
+                .detached_session_status
+                .last_bootstrap_library_paths_ms = Some(bootstrap.timings.library_paths_ms);
+            state.detached_session_status.last_bootstrap_repl_seq = output.repl_seq;
             state.detached_session_status.last_bootstrap_error.clear();
+            state.detached_session_completed_generation = Some(output.generation);
+            lsp::diagnostics_refresh_all(state);
         },
         Err(err) => {
             state.detached_session_status.last_bootstrap_error = err.to_string();
@@ -347,7 +450,7 @@ pub(crate) fn did_open(
     params: DidOpenTextDocumentParams,
     lsp_state: &mut LspState,
     state: &mut WorldState,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<DetachedSessionHydrationRequest>> {
     let contents = params.text_document.text.as_str();
     let uri = params.text_document.uri;
     let version = params.text_document.version;
@@ -365,11 +468,11 @@ pub(crate) fn did_open(
 
     // NOTE: Do we need to call `update_config()` here?
     // update_config(vec![uri]).await;
-    refresh_detached_session_inputs(state, false);
+    let hydration = begin_detached_session_hydration(state, false);
 
     lsp::main_loop::diagnostics_refresh_all_from_state(state);
 
-    Ok(())
+    Ok(hydration)
 }
 
 #[tracing::instrument(level = "info", skip_all)]
@@ -377,7 +480,7 @@ pub(crate) fn did_change(
     params: DidChangeTextDocumentParams,
     lsp_state: &mut LspState,
     state: &mut WorldState,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<DetachedSessionHydrationRequest>> {
     let uri = &params.text_document.uri;
     let document = state.get_document_mut(uri)?;
 
@@ -387,7 +490,7 @@ pub(crate) fn did_change(
         .ok_or(anyhow!("No parser for {uri}"))?;
 
     document.on_did_change(parser, &params);
-    refresh_detached_session_inputs(state, false);
+    let hydration = begin_detached_session_hydration(state, false);
     lsp::main_loop::index_update(vec![uri.clone()], state.clone());
     lsp::main_loop::diagnostics_refresh_all_from_state(state);
 
@@ -399,7 +502,7 @@ pub(crate) fn did_change(
         )))
         .log_err();
 
-    Ok(())
+    Ok(hydration)
 }
 
 #[tracing::instrument(level = "info", skip_all)]
@@ -510,9 +613,9 @@ pub(crate) async fn did_change_configuration(
 pub(crate) fn did_update_session(
     params: SessionUpdateParams,
     state: &mut WorldState,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<DetachedSessionHydrationRequest>> {
     if state.runtime_mode != RuntimeMode::Detached {
-        return Ok(());
+        return Ok(None);
     }
 
     tracing::info!(
@@ -527,16 +630,24 @@ pub(crate) fn did_update_session(
     state.detached_session_status.last_session_update_ms = Some(now_ms());
     state.detached_session_status.last_session_update_status = params.status.clone();
     state.detached_session_status.last_session_update_repl_ready = params.repl_ready;
+    state.detached_session_status.last_session_update_repl_seq = params.repl_seq;
     state.session_bridge = session_bridge_from_update(&params)?;
+    state.detached_session_update_generation =
+        state.detached_session_update_generation.saturating_add(1);
+    state.detached_session_pending_generation = None;
     state.detached_session_bootstrap_attempted = false;
 
-    if params.status == "ready" && state.session_bridge.is_some() {
-        refresh_detached_session_inputs(state, true);
+    let hydration = if params.status == "ready" && state.session_bridge.is_some() {
+        begin_detached_session_hydration(state, true)
+    } else {
+        None
+    };
+
+    if hydration.is_none() {
+        lsp::diagnostics_refresh_all(state);
     }
 
-    lsp::diagnostics_refresh_all(state);
-
-    Ok(())
+    Ok(hydration)
 }
 
 #[tracing::instrument(level = "info", skip_all)]
@@ -631,7 +742,10 @@ async fn update_config(
         ));
     }
 
-    let global_item_count: usize = GLOBAL_SETTINGS.iter().map(|mapping| mapping.keys.len()).sum();
+    let global_item_count: usize = GLOBAL_SETTINGS
+        .iter()
+        .map(|mapping| mapping.keys.len())
+        .sum();
     let document_item_count_per_uri: usize = DOCUMENT_SETTINGS
         .iter()
         .map(|mapping| mapping.keys.len())
@@ -769,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detached_session_update_bootstraps_console_scopes_when_bridge_is_ready() {
+    fn test_detached_session_update_queues_bootstrap_when_bridge_is_ready() {
         let auth_token = "ark-test-token";
         let port = spawn_bootstrap_bridge(auth_token);
         let status = tempfile::NamedTempFile::new().expect("expected temp status file");
@@ -784,7 +898,7 @@ mod tests {
 
         let mut state = WorldState::detached();
 
-        did_update_session(
+        let hydration = did_update_session(
             SessionUpdateParams {
                 kind: Some(String::from("ark")),
                 status_file: Some(status.path().to_path_buf()),
@@ -794,23 +908,34 @@ mod tests {
                 timeout_ms: Some(1000),
                 status: String::from("ready"),
                 repl_ready: false,
+                repl_seq: Some(42),
             },
             &mut state,
         )
         .expect("expected session update to succeed");
 
+        assert!(
+            state.console_scopes.is_empty(),
+            "session update should not synchronously hydrate detached session inputs"
+        );
+
+        let hydration = hydration.expect("expected ready detached session to queue hydration");
+        let output = run_detached_session_hydration(hydration);
+        finish_detached_session_hydration(output, &mut state);
+
         assert_eq!(
             state.console_scopes,
             vec![vec![String::from("library"), String::from("mtcars")]]
         );
-        assert_eq!(
-            state.installed_packages,
-            Vec::<String>::new()
-        );
+        assert_eq!(state.installed_packages, Vec::<String>::new());
         assert_eq!(state.library.library_paths.len(), 1);
         assert_eq!(
             state.library.library_paths[0],
             std::path::PathBuf::from("/tmp/ark-test-library")
+        );
+        assert_eq!(
+            state.detached_session_status.last_bootstrap_repl_seq,
+            Some(42)
         );
     }
 
@@ -845,14 +970,52 @@ mod tests {
             ),
             ..Default::default()
         };
-        refresh_detached_session_inputs(&mut state, false);
-        refresh_detached_session_inputs(&mut state, false);
+        if let Some(request) = begin_detached_session_hydration(&mut state, false) {
+            let output = run_detached_session_hydration(request);
+            finish_detached_session_hydration(output, &mut state);
+        }
+        if let Some(request) = begin_detached_session_hydration(&mut state, false) {
+            let output = run_detached_session_hydration(request);
+            finish_detached_session_hydration(output, &mut state);
+        }
 
         assert_eq!(
             bridge_hits.load(Ordering::SeqCst),
             1,
             "non-forced detached refresh should only run one bridge probe cycle"
         );
+    }
+
+    #[test]
+    fn test_stale_detached_session_hydration_result_is_ignored() {
+        let mut state = WorldState {
+            runtime_mode: crate::lsp::state::RuntimeMode::Detached,
+            detached_session_update_generation: 2,
+            detached_session_pending_generation: Some(2),
+            detached_session_status: crate::lsp::state::DetachedSessionStatus {
+                last_session_update_repl_seq: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        finish_detached_session_hydration(
+            DetachedSessionHydrationOutput {
+                generation: 1,
+                repl_seq: Some(1),
+                result: Ok(SessionBootstrap {
+                    search_path_symbols: vec![String::from("stale")],
+                    installed_packages: Vec::new(),
+                    library_paths: vec![std::path::PathBuf::from("/tmp/stale")],
+                    ..Default::default()
+                }),
+            },
+            &mut state,
+        );
+
+        assert!(state.console_scopes.is_empty());
+        assert!(state.library.library_paths.is_empty());
+        assert_eq!(state.detached_session_pending_generation, Some(2));
     }
 }
 

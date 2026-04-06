@@ -1161,8 +1161,8 @@ impl Console {
             // requires comm support. Other Jupyter frontends don't understand
             // this MIME type, so we gate on the POSITRON env var to avoid
             // sending it to vanilla Jupyter notebooks.
-            if self.session_mode == SessionMode::Notebook &&
-                std::env::var("POSITRON").as_deref() == Ok("1")
+            if self.session_mode == SessionMode::Notebook
+                && std::env::var("POSITRON").as_deref() == Ok("1")
             {
                 match self.open_inline_data_explorer(value) {
                     Ok(mime_data) => {

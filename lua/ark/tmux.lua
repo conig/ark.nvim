@@ -202,12 +202,34 @@ local function current_session(pane_id)
   }, nil
 end
 
+local function session_from_parts(pane_id, socket_path, session_name)
+  if type(pane_id) ~= "string" or pane_id == "" then
+    return nil
+  end
+  if type(socket_path) ~= "string" or socket_path == "" then
+    return nil
+  end
+  if type(session_name) ~= "string" or session_name == "" then
+    return nil
+  end
+
+  return {
+    tmux_socket = socket_path,
+    tmux_session = session_name,
+    tmux_pane = pane_id,
+  }
+end
+
 local function filetype_enabled(filetypes, filetype)
   return vim.tbl_contains(filetypes or {}, filetype)
 end
 
-local function configure_slime_target(pane_id, filetypes)
-  local session, err = current_session(pane_id)
+local function configure_slime_target(pane_id, filetypes, known_session)
+  local session = known_session
+  local err = nil
+  if type(session) ~= "table" or session.tmux_pane ~= pane_id then
+    session, err = current_session(pane_id)
+  end
   if not session then
     return nil, err
   end
@@ -651,10 +673,10 @@ end
 local function create_visible_tab(opts, insert_index)
   local anchor_pane_id, anchor_err = ensure_anchor_pane()
   if not anchor_pane_id then
-    return nil, anchor_err
+    return nil, nil, anchor_err
   end
 
-  local pane_id, split_err = run_tmux({
+  local output, split_err = run_tmux({
     "split-window",
     "-h",
     "-p",
@@ -662,19 +684,26 @@ local function create_visible_tab(opts, insert_index)
     "-d",
     "-P",
     "-F",
-    "#{pane_id}",
+    "#{pane_id}\n#{socket_path}\n#{session_name}",
     "-t",
     anchor_pane_id,
     M.pane_command(opts.tmux),
   })
-  if not pane_id then
-    return nil, "failed to create pane: " .. tostring(split_err or "unknown")
+  if not output then
+    return nil, nil, "failed to create pane: " .. tostring(split_err or "unknown")
   end
 
-  local index = insert_tab(next_tab_record(pane_id, true), insert_index)
-  refresh_visible_tab_session(index)
+  local pane_id, socket_path, session_name = output:match("^([^\n]+)\n([^\n]+)\n([^\n]+)$")
+  if not pane_id or not socket_path or not session_name then
+    return nil, nil, "failed to parse pane session info: " .. tostring(output)
+  end
+
+  local session = session_from_parts(pane_id, socket_path, session_name)
+  local tab = next_tab_record(pane_id, true)
+  tab.session = session
+  local index = insert_tab(tab, insert_index)
   set_active_tab(index)
-  return pane_id, nil
+  return pane_id, session, nil
 end
 
 local function create_hidden_tab(opts, insert_index)
@@ -689,7 +718,7 @@ local function create_hidden_tab(opts, insert_index)
     "-d",
     "-P",
     "-F",
-    "#{pane_id}\n#{window_id}",
+    "#{pane_id}\n#{window_id}\n#{socket_path}\n#{session_name}",
     "-t",
     session_name .. ":",
     "-n",
@@ -700,14 +729,14 @@ local function create_hidden_tab(opts, insert_index)
     return nil, nil, "failed to create hidden ark.nvim tab: " .. tostring(err or "unknown")
   end
 
-  local pane_id, window_id = output:match("^([^\n]+)\n([^\n]+)$")
-  if not pane_id or not window_id then
+  local pane_id, window_id, socket_path, new_session_name = output:match("^([^\n]+)\n([^\n]+)\n([^\n]+)\n([^\n]+)$")
+  if not pane_id or not window_id or not socket_path or not new_session_name then
     return nil, nil, "failed to parse hidden ark.nvim tab identifiers: " .. tostring(output)
   end
 
   tab.pane_id = pane_id
   tab.parking_window_id = window_id
-  tab.session = current_session(pane_id)
+  tab.session = session_from_parts(pane_id, socket_path, new_session_name)
 
   local index = insert_tab(tab, insert_index)
   return pane_id, index, nil
@@ -1042,11 +1071,12 @@ function M.tab_new(opts)
     end
     pane_id = swapped_pane_id
   elseif #state.tabs == 0 then
-    local created_pane_id, create_err = create_visible_tab(opts)
+    local created_pane_id, created_session, create_err = create_visible_tab(opts)
     if not created_pane_id then
       return nil, create_err
     end
     pane_id = created_pane_id
+    state.session = created_session
   else
     local _, index, create_err = create_hidden_tab(opts)
     if not index then
@@ -1061,7 +1091,8 @@ function M.tab_new(opts)
   end
 
   if opts.configure_slime then
-    local session, slime_err = configure_slime_target(pane_id, opts.filetypes)
+    local known_session = state.session
+    local session, slime_err = configure_slime_target(pane_id, opts.filetypes, known_session)
     if not session then
       return nil, slime_err
     end
@@ -1084,7 +1115,7 @@ function M.tab_select(index, opts)
 
   if state.active_index == index and active_tab() and active_tab().visible == true and pane_exists(state.pane_id) then
     if opts.configure_slime then
-      local session, slime_err = configure_slime_target(state.pane_id, opts.filetypes)
+      local session, slime_err = configure_slime_target(state.pane_id, opts.filetypes, active_tab() and active_tab().session or nil)
       if not session then
         return nil, slime_err
       end
@@ -1100,7 +1131,7 @@ function M.tab_select(index, opts)
     end
 
     if opts.configure_slime then
-      local session, slime_err = configure_slime_target(pane_id, opts.filetypes)
+      local session, slime_err = configure_slime_target(pane_id, opts.filetypes, state.tabs[index] and state.tabs[index].session or nil)
       if not session then
         return nil, slime_err
       end
@@ -1116,7 +1147,7 @@ function M.tab_select(index, opts)
   end
 
   if opts.configure_slime then
-    local session, slime_err = configure_slime_target(pane_id, opts.filetypes)
+    local session, slime_err = configure_slime_target(pane_id, opts.filetypes, state.tabs[index] and state.tabs[index].session or nil)
     if not session then
       return nil, slime_err
     end
@@ -1241,7 +1272,7 @@ function M.start(opts)
 
   if state.active_index and active_tab() and active_tab().visible == true and pane_exists(state.pane_id) then
     if opts.configure_slime then
-      local session, slime_err = configure_slime_target(state.pane_id, opts.filetypes)
+      local session, slime_err = configure_slime_target(state.pane_id, opts.filetypes, active_tab() and active_tab().session or nil)
       if not session then
         return nil, slime_err
       end
@@ -1318,15 +1349,16 @@ function M.restart(opts)
     state.active_index = nil
     sync_compat_state()
 
-    local created_pane_id, err = create_visible_tab(opts, restart_index)
+    local created_pane_id, created_session, err = create_visible_tab(opts, restart_index)
     if not created_pane_id then
       return nil, err
     end
     pane_id = created_pane_id
+    state.session = created_session
   end
 
   if opts.configure_slime then
-    local session, slime_err = configure_slime_target(pane_id, opts.filetypes)
+    local session, slime_err = configure_slime_target(pane_id, opts.filetypes, state.session)
     if not session then
       return nil, slime_err
     end

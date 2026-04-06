@@ -112,6 +112,8 @@ pub(crate) struct SessionUpdateParams {
     pub status: String,
     #[serde(default)]
     pub repl_ready: bool,
+    #[serde(default)]
+    pub repl_seq: Option<u64>,
 }
 
 fn log_detached_bridge_auth_fallback(feature: &str, err: &anyhow::Error) {
@@ -232,7 +234,8 @@ pub(crate) async fn handle_execute_command(client: &Client) -> LspResult<Option<
 }
 
 pub(crate) fn handle_status(_params: StatusParams, state: &WorldState) -> LspResult<Value> {
-    serde_json::to_value(state.detached_status_snapshot()).map_err(|err| LspError::Anyhow(err.into()))
+    serde_json::to_value(state.detached_status_snapshot())
+        .map_err(|err| LspError::Anyhow(err.into()))
 }
 
 #[tracing::instrument(level = "info", skip_all)]
@@ -536,7 +539,8 @@ mod tests {
             assert!(!request.is_empty(), "expected bridge request body");
             stream
                 .write_all(
-                    format!(r#"{{"error":{{"code":"E_EVAL","message":"{}"}}}}"#, message).as_bytes(),
+                    format!(r#"{{"error":{{"code":"E_EVAL","message":"{}"}}}}"#, message)
+                        .as_bytes(),
                 )
                 .expect("expected bridge error response");
         });
@@ -690,7 +694,9 @@ mod tests {
             &state,
         );
 
-        assert!(result.expect("expected detached signature help fallback").is_none());
+        assert!(result
+            .expect("expected detached signature help fallback")
+            .is_none());
     }
 }
 

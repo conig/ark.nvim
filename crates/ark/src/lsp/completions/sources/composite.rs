@@ -58,7 +58,10 @@ pub(crate) fn get_completions(
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
     log::info!("Getting completions from composite sources");
 
-    if completion_context.document_context.is_empty_assignment_rhs() {
+    if completion_context
+        .document_context
+        .is_empty_assignment_rhs()
+    {
         return Ok(Some(vec![]));
     }
 
@@ -113,7 +116,10 @@ pub(crate) fn get_completions(
 pub(crate) fn get_detached_static_completions(
     completion_context: &CompletionContext,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
-    if completion_context.document_context.is_empty_assignment_rhs() {
+    if completion_context
+        .document_context
+        .is_empty_assignment_rhs()
+    {
         return Ok(Some(vec![]));
     }
 

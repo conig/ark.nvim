@@ -13,8 +13,8 @@ use crate::lsp::document::DocumentKind;
 use crate::lsp::inputs::library::Library;
 use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::session_bridge::SessionBridge;
-use crate::lsp::session_bridge::SessionBridgeDebugInfo;
 use crate::lsp::session_bridge::SessionBridgeConfig;
+use crate::lsp::session_bridge::SessionBridgeDebugInfo;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum RuntimeMode {
@@ -77,6 +77,9 @@ pub(crate) struct WorldState {
     pub(crate) session_bridge: Option<SessionBridge>,
 
     pub(crate) detached_session_bootstrap_attempted: bool,
+    pub(crate) detached_session_update_generation: u64,
+    pub(crate) detached_session_pending_generation: Option<u64>,
+    pub(crate) detached_session_completed_generation: Option<u64>,
     pub(crate) detached_session_status: DetachedSessionStatus,
 }
 
@@ -86,11 +89,13 @@ pub(crate) struct DetachedSessionStatus {
     pub last_session_update_ms: Option<u64>,
     pub last_session_update_status: String,
     pub last_session_update_repl_ready: bool,
+    pub last_session_update_repl_seq: Option<u64>,
     pub last_bootstrap_attempt_ms: Option<u64>,
     pub last_bootstrap_success_ms: Option<u64>,
     pub last_bootstrap_duration_ms: Option<u64>,
     pub last_bootstrap_search_path_symbols_ms: Option<u64>,
     pub last_bootstrap_library_paths_ms: Option<u64>,
+    pub last_bootstrap_repl_seq: Option<u64>,
     pub last_bootstrap_error: String,
 }
 
@@ -149,7 +154,10 @@ impl WorldState {
                 RuntimeMode::Detached => String::from("detached"),
             },
             session_bridge_configured: self.session_bridge.is_some(),
-            session_bridge: self.session_bridge.as_ref().map(|bridge| bridge.debug_info()),
+            session_bridge: self
+                .session_bridge
+                .as_ref()
+                .map(|bridge| bridge.debug_info()),
             detached_session_bootstrap_attempted: self.detached_session_bootstrap_attempted,
             console_scope_count: self.console_scopes.len(),
             console_scope_symbol_count: self.console_scopes.iter().map(|scope| scope.len()).sum(),
@@ -174,6 +182,9 @@ impl Default for WorldState {
             runtime_mode: RuntimeMode::Attached,
             session_bridge: None,
             detached_session_bootstrap_attempted: false,
+            detached_session_update_generation: 0,
+            detached_session_pending_generation: None,
+            detached_session_completed_generation: None,
             detached_session_status: DetachedSessionStatus::default(),
         }
     }

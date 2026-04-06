@@ -39,8 +39,8 @@ use crate::lsp::handlers::SessionUpdateParams;
 use crate::lsp::handlers::StatusParams;
 use crate::lsp::handlers::VirtualDocumentParams;
 use crate::lsp::handlers::VirtualDocumentResponse;
-use crate::lsp::handlers::ARK_STATUS_REQUEST;
 use crate::lsp::handlers::ARK_SESSION_UPDATE_NOTIFICATION;
+use crate::lsp::handlers::ARK_STATUS_REQUEST;
 use crate::lsp::handlers::ARK_VDOC_REQUEST;
 use crate::lsp::help_topic;
 use crate::lsp::help_topic::HelpTopicParams;
@@ -543,7 +543,10 @@ impl Backend {
     }
 
     async fn notification(&self, params: Option<Value>) {
-        log::info!("Received legacy positron/notification payload: {:?}", params);
+        log::info!(
+            "Received legacy positron/notification payload: {:?}",
+            params
+        );
     }
 
     async fn update_session(&self, params: Value) {
