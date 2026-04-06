@@ -18,10 +18,12 @@ local build_state = {
   output_buf = nil,
   output_win = nil,
   running = false,
+  background = false,
   show_output = false,
   spinner_index = 1,
   spinner_timer = nil,
   started_at = nil,
+  user_initiated = false,
 }
 
 local function normalize_path(path)
@@ -116,6 +118,12 @@ local function stop_spinner()
     build_state.spinner_timer:close()
     build_state.spinner_timer = nil
   end
+end
+
+local function current_binary_cmd(cmd, binary)
+  local updated = vim.deepcopy(cmd)
+  updated[1] = binary
+  return updated
 end
 
 local function spinner_message()
@@ -235,25 +243,37 @@ local function finish_build(result)
 
   local listeners = build_state.listeners
   build_state.listeners = {}
+  local background = build_state.background == true
+  local user_initiated = build_state.user_initiated == true
 
   if result.ok then
     checked = {}
     local ms = elapsed_ms()
     local suffix = ms and string.format(" in %d ms", ms) or ""
-    notify("detached ark-lsp rebuilt" .. suffix, vim.log.levels.INFO, {
-      replace = build_state.notify_id,
-    })
+    if not background or user_initiated then
+      notify("detached ark-lsp rebuilt" .. suffix, vim.log.levels.INFO, {
+        replace = build_state.notify_id,
+      })
+    end
   else
-    build_state.show_output = true
-    ensure_output_window()
-    notify("detached ark-lsp rebuild failed; cargo output opened in a floating window", vim.log.levels.ERROR, {
-      replace = build_state.notify_id,
-    })
+    if background and not user_initiated then
+      notify("background detached ark-lsp rebuild failed; continuing with current binary", vim.log.levels.WARN, {
+        replace = build_state.notify_id,
+      })
+    else
+      build_state.show_output = true
+      ensure_output_window()
+      notify("detached ark-lsp rebuild failed; cargo output opened in a floating window", vim.log.levels.ERROR, {
+        replace = build_state.notify_id,
+      })
+    end
   end
 
   build_state.notify_id = nil
   build_state.started_at = nil
+  build_state.background = false
   build_state.spinner_index = 1
+  build_state.user_initiated = false
 
   for _, listener in ipairs(listeners) do
     pcall(listener, result)
@@ -273,14 +293,24 @@ local function start_build(opts)
     if opts and opts.on_complete then
       build_state.listeners[#build_state.listeners + 1] = opts.on_complete
     end
+    if opts and opts.background ~= true then
+      build_state.background = false
+    end
+    if opts and opts.user_initiated == true then
+      build_state.user_initiated = true
+    end
     if opts and opts.show_output == true then
       build_state.show_output = true
       ensure_output_window()
+    end
+    if not build_state.background and not build_state.spinner_timer then
+      start_spinner()
     end
     return true, nil
   end
 
   build_state.running = true
+  build_state.background = opts and opts.background == true or false
   build_state.show_output = opts and opts.show_output == true or false
   build_state.listeners = {}
   if opts and opts.on_complete then
@@ -288,11 +318,14 @@ local function start_build(opts)
   end
   build_state.started_at = ((uv and uv.hrtime) and uv.hrtime()) or vim.loop.hrtime()
   build_state.spinner_index = 1
+  build_state.user_initiated = opts and opts.user_initiated == true or false
   reset_output()
   if build_state.show_output then
     ensure_output_window()
   end
-  start_spinner()
+  if not build_state.background then
+    start_spinner()
+  end
 
   local job_id = vim.fn.jobstart(BUILD_CMD, {
     cwd = ROOT,
@@ -334,8 +367,10 @@ local function start_build(opts)
   if job_id <= 0 then
     build_state.running = false
     stop_spinner()
+    build_state.background = false
     build_state.notify_id = nil
     build_state.started_at = nil
+    build_state.user_initiated = false
     return false, "failed to start cargo build for detached ark-lsp"
   end
 
@@ -363,18 +398,33 @@ function M.ensure_current_detached_lsp_cmd(cmd, opts)
   }, "::")
 
   if checked[cache_key] then
-    local updated = vim.deepcopy(cmd)
-    updated[1] = binary
-    return updated, nil
+    return current_binary_cmd(cmd, binary), nil
   end
 
-  if binary_mtime == 0 or (type(newest_mtime) == "number" and newest_mtime > binary_mtime) then
+  local stale = type(newest_mtime) == "number" and newest_mtime > binary_mtime
+  if binary_mtime == 0 or stale then
     local ok, build_err = start_build({
       on_complete = opts.on_build_complete,
+      background = binary_mtime ~= 0,
       show_output = opts.show_build_output == true,
       user_initiated = opts.user_initiated == true,
     })
     if not ok then
+      if binary_mtime ~= 0 then
+        checked[cache_key] = true
+        vim.schedule(function()
+          vim.notify(
+            string.format(
+              "background detached ark-lsp rebuild could not start; using current binary (%s)",
+              tostring(build_err)
+            ),
+            vim.log.levels.WARN,
+            { title = "ark.nvim" }
+          )
+        end)
+        return current_binary_cmd(cmd, binary), nil
+      end
+
       return nil, string.format(
         "detached ark-lsp binary is stale relative to %s and rebuild failed to start: %s",
         newest_path or "Rust sources",
@@ -382,17 +432,19 @@ function M.ensure_current_detached_lsp_cmd(cmd, opts)
       )
     end
 
-    return nil, {
-      kind = "build_pending",
-      message = "Rebuilding detached ark-lsp...",
-    }
+    if binary_mtime == 0 then
+      return nil, {
+        kind = "build_pending",
+        message = "Rebuilding detached ark-lsp...",
+      }
+    end
+
+    return current_binary_cmd(cmd, binary), nil
   end
 
   checked[cache_key] = true
 
-  local updated = vim.deepcopy(cmd)
-  updated[1] = binary
-  return updated, nil
+  return current_binary_cmd(cmd, binary), nil
 end
 
 function M.detached_lsp_build_fingerprint(path)
