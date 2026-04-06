@@ -406,6 +406,13 @@ impl SessionBridge {
     pub(crate) fn bootstrap(&self) -> anyhow::Result<SessionBootstrap> {
         match self.bootstrap_via_command() {
             Ok(bootstrap) => Ok(bootstrap),
+            Err(err)
+                if is_bridge_unavailable(&err)
+                    || is_ipc_auth_error(&err)
+                    || err.downcast_ref::<std::io::Error>().is_some() =>
+            {
+                Err(err)
+            },
             Err(err) => {
                 log::warn!(
                     "Detached bootstrap command failed, falling back to legacy bootstrap: {err:?}"
@@ -847,40 +854,9 @@ impl SessionBridge {
         &self,
         source: &StatusFileSessionBridgeSource,
     ) -> anyhow::Result<SessionBootstrap> {
-        let mut connection = source.current_connection()?;
-        let max_attempts = 4;
-
-        for attempt in 0..max_attempts {
-            match self.bootstrap_with_connection(&connection) {
-                Ok(payload) => return Ok(payload),
-                Err(err) if should_retry_dynamic_request(&err) => {
-                    let retry_io = err.downcast_ref::<std::io::Error>().is_some();
-                    let refreshed = source.current_connection()?;
-
-                    if refreshed != connection {
-                        connection = refreshed;
-                        continue;
-                    }
-
-                    if retry_io && attempt + 1 < max_attempts {
-                        std::thread::sleep(Duration::from_millis(50));
-                        continue;
-                    }
-
-                    return if retry_io {
-                        Err(unavailable_from_io_error(err))
-                    } else {
-                        Err(err)
-                    };
-                },
-                Err(err) => return Err(err),
-            }
-        }
-
-        Err(SessionBridgeUnavailableError {
-            message: String::from("bridge bootstrap retry loop exhausted"),
-        }
-        .into())
+        self.run_dynamic_request(source, "bridge bootstrap", |connection| {
+            self.bootstrap_with_connection(connection)
+        })
     }
 
     fn inspect_dynamic(
@@ -889,40 +865,9 @@ impl SessionBridge {
         expr: &str,
         options: Option<InspectOptions>,
     ) -> anyhow::Result<InspectResponse> {
-        let mut connection = source.current_connection()?;
-        let max_attempts = 4;
-
-        for attempt in 0..max_attempts {
-            match self.inspect_with_connection(&connection, expr, options.clone()) {
-                Ok(payload) => return Ok(payload),
-                Err(err) if should_retry_dynamic_request(&err) => {
-                    let retry_io = err.downcast_ref::<std::io::Error>().is_some();
-                    let refreshed = source.current_connection()?;
-
-                    if refreshed != connection {
-                        connection = refreshed;
-                        continue;
-                    }
-
-                    if retry_io && attempt + 1 < max_attempts {
-                        std::thread::sleep(Duration::from_millis(50));
-                        continue;
-                    }
-
-                    return if retry_io {
-                        Err(unavailable_from_io_error(err))
-                    } else {
-                        Err(err)
-                    };
-                },
-                Err(err) => return Err(err),
-            }
-        }
-
-        Err(SessionBridgeUnavailableError {
-            message: String::from("bridge request retry loop exhausted"),
-        }
-        .into())
+        self.run_dynamic_request(source, "bridge request", |connection| {
+            self.inspect_with_connection(connection, expr, options.clone())
+        })
     }
 
     fn inspect_with_connection(
@@ -1010,6 +955,53 @@ impl SessionBridge {
                 library_paths_ms: 0,
             },
         })
+    }
+
+    fn run_dynamic_request<T, Request>(
+        &self,
+        source: &StatusFileSessionBridgeSource,
+        exhausted_message: &'static str,
+        mut request: Request,
+    ) -> anyhow::Result<T>
+    where
+        Request: FnMut(&SessionBridgeConnection) -> anyhow::Result<T>,
+    {
+        let mut connection = source.current_connection()?;
+        let max_attempts = 3;
+
+        for attempt in 0..max_attempts {
+            match request(&connection) {
+                Ok(payload) => return Ok(payload),
+                Err(err) if should_retry_dynamic_request(&err) => {
+                    let retry_io = err.downcast_ref::<std::io::Error>().is_some();
+                    let refreshed = source.current_connection()?;
+
+                    if refreshed != connection {
+                        connection = refreshed;
+                        continue;
+                    }
+
+                    if retry_io && attempt + 1 < max_attempts {
+                        if attempt > 0 {
+                            std::thread::sleep(Duration::from_millis(15));
+                        }
+                        continue;
+                    }
+
+                    return if retry_io {
+                        Err(unavailable_from_io_error(err))
+                    } else {
+                        Err(err)
+                    };
+                },
+                Err(err) => return Err(err),
+            }
+        }
+
+        Err(SessionBridgeUnavailableError {
+            message: String::from(exhausted_message),
+        }
+        .into())
     }
 
     fn completion_payload(&self, request: &CompletionRequest) -> anyhow::Result<InspectResponse> {
@@ -2642,6 +2634,13 @@ mod tests {
     use super::*;
     use crate::fixtures::point_from_cursor;
     use crate::lsp::document::Document;
+    use std::io::Read;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::thread;
 
     #[test]
     fn test_symbol_prefix_prefers_typed_subset_identifier() {
@@ -3105,6 +3104,140 @@ mod tests {
         assert_eq!(
             item.command.map(|command| command.command),
             Some(String::from("ark.completeStringDelimiter"))
+        );
+    }
+
+    #[test]
+    fn test_bootstrap_does_not_fallback_to_legacy_on_transient_io_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        listener
+            .set_nonblocking(true)
+            .expect("expected nonblocking listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let connections_bg = connections.clone();
+
+        let handle = thread::spawn(move || {
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_millis(250) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        connections_bg.fetch_add(1, Ordering::SeqCst);
+                        drop(stream);
+                    },
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    },
+                    Err(err) => panic!("unexpected accept error: {err}"),
+                }
+            }
+        });
+
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port,
+            auth_token: String::from("ark-test-token"),
+            timeout_ms: 50,
+            ..Default::default()
+        })
+        .expect("expected bridge");
+
+        let err = bridge.bootstrap().expect_err("expected bootstrap failure");
+        handle.join().expect("expected listener thread to join");
+
+        assert!(
+            err.downcast_ref::<std::io::Error>().is_some() || is_bridge_unavailable(&err),
+            "expected transient bootstrap error, got: {err:?}"
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            1,
+            "transient bootstrap failure should not fall back to legacy inspect requests"
+        );
+    }
+
+    #[test]
+    fn test_bootstrap_falls_back_to_legacy_on_bootstrap_command_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+        let connections = Arc::new(AtomicUsize::new(0));
+        let connections_bg = connections.clone();
+
+        let handle = thread::spawn(move || {
+            for expected in ["bootstrap", "search_path", "library_paths"] {
+                let (mut stream, _) = listener.accept().expect("expected bridge request");
+                connections_bg.fetch_add(1, Ordering::SeqCst);
+                let mut request = String::new();
+                stream
+                    .read_to_string(&mut request)
+                    .expect("expected bridge request payload");
+
+                match expected {
+                    "bootstrap" => {
+                        let payload: serde_json::Value = serde_json::from_str(request.trim())
+                            .expect("expected bootstrap request");
+                        assert_eq!(
+                            payload
+                                .get("command")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default(),
+                            "bootstrap"
+                        );
+                        stream
+                            .write_all(
+                                br#"{"error":{"code":"E_IPC_BOOTSTRAP","message":"bootstrap unavailable"}}"#,
+                            )
+                            .expect("expected bootstrap error response");
+                    },
+                    "search_path" => {
+                        stream
+                            .write_all(
+                                br#"{"members":[{"name_raw":"library"},{"name_raw":"mtcars"}]}"#,
+                            )
+                            .expect("expected search path response");
+                    },
+                    "library_paths" => {
+                        stream
+                            .write_all(br#"{"members":[{"name_raw":"/tmp/ark-test-library"}]}"#)
+                            .expect("expected library path response");
+                    },
+                    _ => unreachable!(),
+                }
+            }
+        });
+
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port,
+            auth_token: String::from("ark-test-token"),
+            timeout_ms: 50,
+            ..Default::default()
+        })
+        .expect("expected bridge");
+
+        let bootstrap = bridge
+            .bootstrap()
+            .expect("expected legacy fallback bootstrap");
+        handle.join().expect("expected listener thread to join");
+
+        assert_eq!(
+            bootstrap.search_path_symbols,
+            vec![String::from("library"), String::from("mtcars")]
+        );
+        assert_eq!(
+            bootstrap.library_paths,
+            vec![PathBuf::from("/tmp/ark-test-library")]
+        );
+        assert_eq!(
+            connections.load(Ordering::SeqCst),
+            3,
+            "bootstrap command error should fall back to legacy inspect requests"
         );
     }
 }
