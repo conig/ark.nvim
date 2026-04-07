@@ -228,6 +228,14 @@ pub(crate) fn generate_diagnostics(
         Err(err) => log::error!("Error while generating syntax diagnostics: {err:?}"),
     }
 
+    // In detached mode, defer semantic diagnostics until the current session
+    // update has been fully hydrated. This avoids startup noise where every
+    // session-provided symbol looks undefined before Ark has authoritative
+    // search-path and library information.
+    if !state.detached_session_hydrated() {
+        return diagnostics;
+    }
+
     // Collect semantic related diagnostics
     match semantic_diagnostics(root, &mut context) {
         Ok(mut semantic_diagnostics) => diagnostics.append(&mut semantic_diagnostics),

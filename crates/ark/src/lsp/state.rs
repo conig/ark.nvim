@@ -147,6 +147,28 @@ impl WorldState {
         self.runtime_mode == RuntimeMode::Attached
     }
 
+    pub(crate) fn detached_session_hydrated(&self) -> bool {
+        if self.runtime_mode != RuntimeMode::Detached {
+            return true;
+        }
+
+        let bootstrap_incomplete =
+            self.console_scopes.is_empty() || self.library.library_paths.is_empty();
+        if bootstrap_incomplete {
+            return false;
+        }
+
+        if self.detached_session_status.last_session_update_status != "ready" {
+            return false;
+        }
+
+        if !self.detached_session_status.last_bootstrap_error.is_empty() {
+            return false;
+        }
+
+        self.detached_session_completed_generation == Some(self.detached_session_update_generation)
+    }
+
     pub(crate) fn detached_status_snapshot(&self) -> DetachedStatusSnapshot {
         DetachedStatusSnapshot {
             runtime_mode: match self.runtime_mode {

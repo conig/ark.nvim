@@ -54,10 +54,6 @@ ark_test.wait_for("initial static lsp client", 15000, function()
   return client ~= nil and client.initialized == true and not client:is_stopped()
 end)
 
-ark_test.wait_for("initial tar_map diagnostic", 10000, function()
-  return contains(diagnostic_messages(), diagnostic_message)
-end)
-
 local pane_id, pane_err = require("ark").start_pane()
 if not pane_id then
   ark_test.fail(pane_err or "managed pane id missing")
@@ -69,6 +65,10 @@ end)
 
 ark_test.wait_for("managed R repl ready", 20000, function()
   return require("ark").status().repl_ready == true
+end)
+
+ark_test.wait_for("tar_map diagnostic after hydration", 10000, function()
+  return contains(diagnostic_messages(), diagnostic_message)
 end)
 
 ark_test.tmux({

@@ -744,6 +744,48 @@ local function sync_sessions_soon()
   end)
 end
 
+local function start_managed_buffer(bufnr)
+  if not options or type(bufnr) ~= "number" then
+    return
+  end
+
+  local token = (startup_tokens[bufnr] or 0) + 1
+  startup_tokens[bufnr] = token
+
+  local function start_buffer()
+    if startup_tokens[bufnr] ~= token then
+      return
+    end
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+    if not vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype) then
+      return
+    end
+
+    if options.auto_start_pane then
+      local _, pane_err = tmux.start(options)
+      if pane_err then
+        notify(pane_err, vim.log.levels.WARN)
+      end
+    end
+
+    if options.auto_start_lsp then
+      if options.async_startup then
+        lsp.start_async(options, bufnr)
+      else
+        lsp.start(options, bufnr)
+      end
+    end
+  end
+
+  if options.async_startup then
+    vim.defer_fn(start_buffer, 20)
+  else
+    start_buffer()
+  end
+end
+
 function M.setup(opts)
   options = merged_opts(options, opts)
   blink.configure_blink_sources()
@@ -757,41 +799,7 @@ function M.setup(opts)
     group = group,
     pattern = options.filetypes,
     callback = function(args)
-      local token = (startup_tokens[args.buf] or 0) + 1
-      startup_tokens[args.buf] = token
-
-      local function start_buffer()
-        if startup_tokens[args.buf] ~= token then
-          return
-        end
-        if not vim.api.nvim_buf_is_valid(args.buf) then
-          return
-        end
-        if not vim.tbl_contains(options.filetypes, vim.bo[args.buf].filetype) then
-          return
-        end
-
-        if options.auto_start_pane then
-          local _, pane_err = tmux.start(options)
-          if pane_err then
-            notify(pane_err, vim.log.levels.WARN)
-          end
-        end
-
-        if options.auto_start_lsp then
-          if options.async_startup then
-            lsp.start_async(options, args.buf)
-          else
-            lsp.start(options, args.buf)
-          end
-        end
-      end
-
-      if options.async_startup then
-        vim.defer_fn(start_buffer, 20)
-      else
-        start_buffer()
-      end
+      start_managed_buffer(args.buf)
     end,
     desc = "Start ark.nvim pane and LSP for R-family buffers",
   })
@@ -844,6 +852,12 @@ function M.setup(opts)
   })
 
   did_setup = true
+
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(bufnr) and vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype) then
+      start_managed_buffer(bufnr)
+    end
+  end
 
   vim.api.nvim_create_user_command("ArkBuildLsp", function()
     local ok, err = dev.build_detached_lsp({

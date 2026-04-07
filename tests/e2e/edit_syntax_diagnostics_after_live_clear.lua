@@ -46,15 +46,19 @@ ark_test.wait_for("initial static lsp client", 15000, function()
   return client ~= nil and client.initialized == true and not client:is_stopped()
 end)
 
-ark_test.wait_for("initial static diagnostics", 10000, function()
-  local messages = diagnostic_messages()
-  return contains(messages, "No symbol named 'file.path' in scope.")
-    and contains(messages, "No symbol named 'dir.create' in scope.")
-    and contains(messages, "No symbol named 'grep' in scope.")
-    and contains(messages, "No symbol named 'list' in scope.")
-end)
+vim.wait(500, function()
+  return false
+end, 100, false)
 
 local initial_messages = diagnostic_messages()
+
+if #initial_messages > 0 then
+  error(vim.inspect({
+    initial_diagnostics = initial_messages,
+    stage = "before pane startup",
+    status = require("ark").status({ include_lsp = true }),
+  }), 0)
+end
 
 local pane_id, pane_err = require("ark").start_pane()
 if not pane_id then
@@ -69,7 +73,7 @@ ark_test.wait_for("managed R repl ready", 20000, function()
   return require("ark").status().repl_ready == true
 end)
 
-ark_test.wait_for("live diagnostics clear static builtins", 10000, function()
+ark_test.wait_for("live diagnostics remain clear after hydration", 10000, function()
   return #diagnostic_messages() == 0
 end)
 

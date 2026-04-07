@@ -24,10 +24,11 @@ local function completion_labels(result)
 end
 
 -- Ecologically valid startup flow:
--- 1. static diagnostics may appear before the managed R session exists
--- 2. the user starts the managed pane
--- 3. the user keeps editing
--- 4. visible diagnostics should reflect the live session after that edit
+-- 1. syntax diagnostics may appear before the managed R session exists
+-- 2. semantic "unknown symbol" linting must wait until detached hydration is ready
+-- 3. the user starts the managed pane
+-- 4. the user keeps editing
+-- 5. visible diagnostics should reflect the live session after hydration
 require("ark").setup({
   auto_start_pane = false,
   auto_start_lsp = false,
@@ -54,11 +55,27 @@ ark_test.wait_for("initial static lsp client", 15000, function()
   return client ~= nil and client.initialized == true and not client:is_stopped()
 end)
 
-ark_test.wait_for("initial diagnostics", 10000, function()
+ark_test.wait_for("initial syntax diagnostics", 10000, function()
   return #vim.diagnostic.get(0) > 0
 end)
 
 local initial_messages = diagnostic_messages()
+
+if contains(initial_messages, "No symbol named 'mtcars' in scope.") then
+  error(vim.inspect({
+    stage = "initial diagnostics before pane startup",
+    initial_diagnostics = initial_messages,
+    status = require("ark").status({ include_lsp = true }),
+  }), 0)
+end
+
+if not contains(initial_messages, "Unmatched opening delimiter. Missing a closing ')'." ) then
+  error(vim.inspect({
+    stage = "initial diagnostics before pane startup",
+    initial_diagnostics = initial_messages,
+    status = require("ark").status({ include_lsp = true }),
+  }), 0)
+end
 
 local pane_id, pane_err = require("ark").start_pane()
 if not pane_id then

@@ -170,6 +170,11 @@ The startup path today is effectively:
 
 This contract is viable. It is also still too implicit.
 
+Important current rule:
+
+- detached startup diagnostics should be syntax-only until step 8 completes
+- semantic "unknown symbol" linting should wait for hydrated session inputs so Ark does not mark session-provided symbols as missing during startup
+
 ## What Is Working Well
 
 ### The product split is directionally correct
