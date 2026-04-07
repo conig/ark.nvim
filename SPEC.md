@@ -18,12 +18,12 @@ rules. This spec is narrower and more opinionated. It records:
 
 ## Upstream Divergence
 
-As of 2026-03-20:
+As of 2026-04-07:
 
-- current `ark.nvim` HEAD: `45313412`
-- compared upstream ref: `upstream/main` at `9c899e2d`
-- merge-base with upstream: `7f8487f2`
-- divergence from that merge-base: 148 files changed, about 15.9k insertions and 975 deletions
+- current `ark.nvim` HEAD: `62b8d329`
+- compared upstream ref: `upstream/main` at `09d4397f`
+- merge-base with upstream: `09d4397f`
+- divergence from that merge-base: 175 files changed, 23.7k insertions and 1.0k deletions
 
 That divergence is not random churn. It is a deliberate product split away from
 upstream Ark's kernel and Positron orientation.
