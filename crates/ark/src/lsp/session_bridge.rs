@@ -123,6 +123,23 @@ pub(crate) struct SessionBridgeConfig {
     pub timeout_ms: u64,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HelpReference {
+    pub label: String,
+    pub topic: String,
+    #[serde(default)]
+    pub package: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HelpPage {
+    pub text: String,
+    #[serde(default)]
+    pub references: Vec<HelpReference>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct InspectRequest {
     request_id: String,
@@ -257,6 +274,27 @@ struct BootstrapResponse {
     search_path_symbols: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_string_vec")]
     library_paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct HelpTextRequest {
+    request_id: String,
+    auth_token: String,
+    command: String,
+    topic: String,
+    session: BridgeSession,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct HelpTextResponse {
+    #[serde(default)]
+    error: Option<BridgeError>,
+    #[serde(default)]
+    found: bool,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    references: Vec<HelpReference>,
 }
 
 #[derive(Clone, Debug)]
@@ -582,6 +620,28 @@ impl SessionBridge {
             }],
             active_signature: None,
             active_parameter,
+        }))
+    }
+
+    pub(crate) fn help_text(&self, topic: &str) -> anyhow::Result<Option<HelpPage>> {
+        let payload = match &self.source {
+            SessionBridgeSource::Fixed(connection) => {
+                self.help_text_with_connection(connection, topic)
+            },
+            SessionBridgeSource::StatusFile(source) => {
+                self.run_dynamic_request(source, "bridge help text", |connection| {
+                    self.help_text_with_connection(connection, topic)
+                })
+            },
+        }?;
+
+        if !payload.found || payload.text.trim().is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(HelpPage {
+            text: payload.text,
+            references: payload.references,
         }))
     }
 
@@ -974,6 +1034,43 @@ impl SessionBridge {
                 library_paths_ms: 0,
             },
         })
+    }
+
+    fn help_text_with_connection(
+        &self,
+        connection: &SessionBridgeConnection,
+        topic: &str,
+    ) -> anyhow::Result<HelpTextResponse> {
+        let mut stream = TcpStream::connect((connection.host.as_str(), connection.port))?;
+        stream.set_read_timeout(Some(self.timeout))?;
+        stream.set_write_timeout(Some(self.timeout))?;
+
+        let request = HelpTextRequest {
+            request_id: format!("ark-{}", Uuid::new_v4()),
+            auth_token: connection.auth_token.clone(),
+            command: String::from("help_text"),
+            topic: String::from(topic),
+            session: self.session.clone(),
+        };
+
+        let payload = serde_json::to_vec(&request)?;
+        stream.write_all(payload.as_slice())?;
+        stream.write_all(b"\n")?;
+        stream.shutdown(Shutdown::Write)?;
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+
+        let payload: HelpTextResponse = serde_json::from_str(response.as_str())?;
+        if let Some(error) = payload.error.as_ref() {
+            return Err(SessionBridgeResponseError {
+                code: error.code.clone(),
+                message: error.message.clone(),
+            }
+            .into());
+        }
+
+        Ok(payload)
     }
 
     fn run_dynamic_request<T, Request>(
@@ -3452,6 +3549,70 @@ mod tests {
         assert_eq!(
             bootstrap.library_paths,
             vec![PathBuf::from("/tmp/ark-test-library")]
+        );
+    }
+
+    #[test]
+    fn test_help_text_request_returns_full_text() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("expected help text request");
+            let mut request = String::new();
+            stream
+                .read_to_string(&mut request)
+                .expect("expected request payload");
+
+            let payload: serde_json::Value =
+                serde_json::from_str(request.trim()).expect("expected json help request");
+            assert_eq!(
+                payload
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                "help_text"
+            );
+            assert_eq!(
+                payload
+                    .get("topic")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                "dplyr::mutate"
+            );
+
+            stream
+                .write_all(br#"{"found":true,"text":"mutate {dplyr}\n\nModify columns.","references":[{"label":"group_by()","topic":"group_by","package":"dplyr"}]}"#)
+                .expect("expected help text response");
+        });
+
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port,
+            auth_token: String::from("ark-test-token"),
+            timeout_ms: 50,
+            ..Default::default()
+        })
+        .expect("expected bridge");
+
+        let page = bridge
+            .help_text("dplyr::mutate")
+            .expect("expected help text request to succeed");
+        handle.join().expect("expected listener thread to join");
+
+        assert_eq!(
+            page,
+            Some(HelpPage {
+                text: String::from("mutate {dplyr}\n\nModify columns."),
+                references: vec![HelpReference {
+                    label: String::from("group_by()"),
+                    topic: String::from("group_by"),
+                    package: Some(String::from("dplyr")),
+                }],
+            })
         );
     }
 }

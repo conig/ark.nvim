@@ -170,6 +170,14 @@
     return(.rscope_bootstrap_payload(session))
   }
 
+  if (identical(req$command %||% "", "help_text")) {
+    topic <- req$topic %||% ""
+    if (!is.character(topic) || length(topic) != 1L || !nzchar(topic)) {
+      return(.emit_json(.new_error_payload("E_IPC_REQUEST", "missing topic", "ipc_request", session)))
+    }
+    return(.rscope_help_text_payload(session, topic))
+  }
+
   expr <- req$expr %||% ""
   if (!is.character(expr) || length(expr) != 1L || !nzchar(expr)) {
     return(.emit_json(.new_error_payload("E_IPC_REQUEST", "missing expr", "ipc_request", session)))

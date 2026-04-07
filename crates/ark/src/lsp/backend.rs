@@ -35,10 +35,13 @@ use tower_lsp::Server;
 use super::main_loop::LSP_HAS_CRASHED;
 use crate::console::Console;
 use crate::console::ConsoleNotification;
+use crate::lsp::handlers::HelpTextParams;
+use crate::lsp::session_bridge::HelpPage;
 use crate::lsp::handlers::SessionUpdateParams;
 use crate::lsp::handlers::StatusParams;
 use crate::lsp::handlers::VirtualDocumentParams;
 use crate::lsp::handlers::VirtualDocumentResponse;
+use crate::lsp::handlers::ARK_HELP_TEXT_REQUEST;
 use crate::lsp::handlers::ARK_SESSION_UPDATE_NOTIFICATION;
 use crate::lsp::handlers::ARK_STATUS_REQUEST;
 use crate::lsp::handlers::ARK_VDOC_REQUEST;
@@ -170,6 +173,7 @@ pub(crate) enum LspRequest {
     CodeAction(CodeActionParams),
     VirtualDocument(VirtualDocumentParams),
     Status(StatusParams),
+    HelpText(HelpTextParams),
     InputBoundaries(InputBoundariesParams),
 }
 
@@ -195,6 +199,7 @@ pub(crate) enum LspResponse {
     CodeAction(Option<CodeActionResponse>),
     VirtualDocument(VirtualDocumentResponse),
     Status(Value),
+    HelpText(Option<HelpPage>),
     InputBoundaries(InputBoundariesResponse),
 }
 
@@ -531,6 +536,14 @@ impl Backend {
         )
     }
 
+    async fn help_text(&self, params: HelpTextParams) -> tower_lsp::jsonrpc::Result<Option<HelpPage>> {
+        cast_response!(
+            self,
+            self.request(LspRequest::HelpText(params)).await,
+            LspResponse::HelpText
+        )
+    }
+
     async fn input_boundaries(
         &self,
         params: InputBoundariesParams,
@@ -633,6 +646,7 @@ pub(crate) fn start_lsp(
             .custom_method(help_topic::POSITRON_HELP_TOPIC_REQUEST, Backend::help_topic)
             .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
             .custom_method(ARK_STATUS_REQUEST, Backend::status)
+            .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
             // In principle this should probably be a Jupyter request
             .custom_method(
                 input_boundaries::POSITRON_INPUT_BOUNDARIES_REQUEST,
@@ -700,6 +714,7 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         .custom_method(help_topic::POSITRON_HELP_TOPIC_REQUEST, Backend::help_topic)
         .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
         .custom_method(ARK_STATUS_REQUEST, Backend::status)
+        .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
         .custom_method(
             input_boundaries::POSITRON_INPUT_BOUNDARIES_REQUEST,
             Backend::input_boundaries,

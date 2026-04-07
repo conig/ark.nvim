@@ -4,6 +4,8 @@ local tmux = require("ark.tmux")
 local uv = vim.uv or vim.loop
 
 local SESSION_UPDATE_METHOD = "ark/updateSession"
+local HELP_TOPIC_METHOD = "positron/textDocument/helpTopic"
+local HELP_TEXT_METHOD = "ark/internal/helpText"
 local STATUS_REQUEST_METHOD = "ark/internal/status"
 
 local session_watchers = {}
@@ -16,6 +18,74 @@ local session_poll_finished
 
 local function filetype_enabled(filetypes, filetype)
   return vim.tbl_contains(filetypes or {}, filetype)
+end
+
+local function topic_char_at(text, index)
+  if type(text) ~= "string" or index < 0 or index >= #text then
+    return nil
+  end
+
+  return text:sub(index + 1, index + 1)
+end
+
+local function is_topic_char(ch)
+  return type(ch) == "string" and ch:match("[A-Za-z0-9._:$]") ~= nil
+end
+
+local function lexical_help_topic(bufnr, position)
+  if type(position) ~= "table" or type(position.line) ~= "number" or type(position.character) ~= "number" then
+    return nil
+  end
+
+  local line = vim.api.nvim_buf_get_lines(bufnr, position.line, position.line + 1, false)[1] or ""
+  local anchor = nil
+
+  if is_topic_char(topic_char_at(line, position.character)) then
+    anchor = position.character
+  elseif is_topic_char(topic_char_at(line, position.character - 1)) then
+    anchor = position.character - 1
+  end
+
+  if anchor == nil then
+    return nil
+  end
+
+  local start_col = anchor
+  while is_topic_char(topic_char_at(line, start_col - 1)) do
+    start_col = start_col - 1
+  end
+
+  local end_col = anchor
+  while is_topic_char(topic_char_at(line, end_col + 1)) do
+    end_col = end_col + 1
+  end
+
+  local candidate = line:sub(start_col + 1, end_col + 1)
+  if candidate == "" then
+    return nil
+  end
+
+  if candidate:match("^[A-Za-z.][A-Za-z0-9._]*$") then
+    return candidate
+  end
+
+  if candidate:match("^[A-Za-z.][A-Za-z0-9._]*::[A-Za-z.][A-Za-z0-9._]*$") then
+    return candidate
+  end
+
+  if candidate:match("^[A-Za-z.][A-Za-z0-9._]*:::[A-Za-z.][A-Za-z0-9._]*$") then
+    return candidate
+  end
+
+  if candidate:match("^[A-Za-z.][A-Za-z0-9._]*%$[A-Za-z.][A-Za-z0-9._]*$") then
+    return candidate
+  end
+
+  if candidate:match("^[A-Za-z.][A-Za-z0-9._]*::[A-Za-z.][A-Za-z0-9._]*%$[A-Za-z.][A-Za-z0-9._]*$") then
+    return candidate
+  end
+
+  return nil
 end
 
 local function live_client(client)
@@ -692,6 +762,116 @@ function M.status(opts, bufnr)
     buffer_named_clients = #buffer_named_clients,
     clients = all_clients,
   }, response.result or {})
+end
+
+function M.help_topic(opts, bufnr, position)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+  local current_filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or nil
+  if not filetype_enabled(opts.filetypes, current_filetype) then
+    return nil, "current buffer filetype is not managed by ark.nvim"
+  end
+
+  local client = live_clients(opts, bufnr)[1]
+  if not live_client(client) then
+    return nil, "ark_lsp client unavailable"
+  end
+
+  local text_document = vim.lsp.util.make_versioned_text_document_params
+      and vim.lsp.util.make_versioned_text_document_params(bufnr)
+    or vim.lsp.util.make_text_document_params(bufnr)
+
+  local target_position = position
+  if type(target_position) ~= "table" then
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    target_position = {
+      line = cursor[1] - 1,
+      character = cursor[2],
+    }
+  end
+
+  local function request_topic(request_position)
+    local response, err = client:request_sync(HELP_TOPIC_METHOD, {
+      textDocument = text_document,
+      position = request_position,
+    }, 1000, bufnr)
+
+    if err then
+      return nil, err
+    end
+
+    if not response then
+      return nil, "no response"
+    end
+
+    if response.error then
+      return nil, vim.inspect(response.error)
+    end
+
+    local result = response.result
+    if type(result) ~= "table" or type(result.topic) ~= "string" or result.topic == "" then
+      return nil, "no help topic found"
+    end
+
+    return result.topic, nil
+  end
+
+  local topic, err = request_topic(target_position)
+  if topic then
+    return topic, nil
+  end
+
+  local fallback_topic = lexical_help_topic(bufnr, target_position)
+  if fallback_topic then
+    return fallback_topic, nil
+  end
+
+  return nil, err
+end
+
+function M.help_text(opts, bufnr, topic)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+  local current_filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or nil
+  if not filetype_enabled(opts.filetypes, current_filetype) then
+    return nil, "current buffer filetype is not managed by ark.nvim"
+  end
+
+  if type(topic) ~= "string" or topic == "" then
+    return nil, "missing help topic"
+  end
+
+  local client = live_clients(opts, bufnr)[1]
+  if not live_client(client) then
+    return nil, "ark_lsp client unavailable"
+  end
+
+  local response, err = client:request_sync(HELP_TEXT_METHOD, {
+    topic = topic,
+  }, 3000, bufnr)
+
+  if err then
+    return nil, err
+  end
+
+  if not response then
+    return nil, "no response"
+  end
+
+  if response.error then
+    return nil, vim.inspect(response.error)
+  end
+
+  local result = response.result
+  if type(result) ~= "table" or type(result.text) ~= "string" or result.text == "" then
+    return nil, "no help text found"
+  end
+
+  if not vim.islist(result.references) then
+    result.references = {}
+  end
+
+  return result, nil
 end
 
 return M

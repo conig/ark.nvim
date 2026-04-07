@@ -68,6 +68,7 @@ use crate::lsp::selection_range::convert_selection_range_from_tree_sitter_to_lsp
 use crate::lsp::selection_range::selection_range;
 use crate::lsp::session_bridge::is_bridge_unavailable;
 use crate::lsp::session_bridge::is_eval_missing_object_error;
+use crate::lsp::session_bridge::HelpPage;
 use crate::lsp::session_bridge::is_ipc_auth_error;
 use crate::lsp::signature_help::r_signature_help;
 use crate::lsp::state::WorldState;
@@ -79,6 +80,7 @@ use crate::r_task;
 
 pub static ARK_VDOC_REQUEST: &str = "ark/internal/virtualDocument";
 pub static ARK_STATUS_REQUEST: &str = "ark/internal/status";
+pub static ARK_HELP_TEXT_REQUEST: &str = "ark/internal/helpText";
 pub static ARK_SESSION_UPDATE_NOTIFICATION: &str = "ark/updateSession";
 
 #[derive(Debug, Eq, PartialEq, Clone, serde::Deserialize, serde::Serialize)]
@@ -92,6 +94,13 @@ pub(crate) type VirtualDocumentResponse = String;
 #[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StatusParams {}
+
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HelpTextParams {
+    #[serde(default)]
+    pub topic: String,
+}
 
 #[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -236,6 +245,31 @@ pub(crate) async fn handle_execute_command(client: &Client) -> LspResult<Option<
 pub(crate) fn handle_status(_params: StatusParams, state: &WorldState) -> LspResult<Value> {
     serde_json::to_value(state.detached_status_snapshot())
         .map_err(|err| LspError::Anyhow(err.into()))
+}
+
+pub(crate) fn handle_help_text(
+    params: HelpTextParams,
+    state: &WorldState,
+) -> LspResult<Option<HelpPage>> {
+    if !state.has_attached_runtime() {
+        let Some(session_bridge) = state.session_bridge.as_ref() else {
+            return Ok(None);
+        };
+
+        return match session_bridge.help_text(params.topic.as_str()) {
+            Ok(text) => Ok(text),
+            Err(err) => {
+                if is_ipc_auth_error(&err) || is_bridge_unavailable(&err) {
+                    log_detached_bridge_auth_fallback("help text", &err);
+                    Ok(None)
+                } else {
+                    Err(LspError::Anyhow(err))
+                }
+            },
+        };
+    }
+
+    runtime_required(state)
 }
 
 #[tracing::instrument(level = "info", skip_all)]

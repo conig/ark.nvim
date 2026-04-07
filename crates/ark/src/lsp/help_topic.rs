@@ -123,6 +123,11 @@ mod tests {
             ("t@f$abs(x)", "tf$abs"),
             // With the package namespace
             ("tensorflow::tf$ab@s(x)", "tensorflow::tf$abs"),
+            // Snake case function names should work across the identifier.
+            ("ge@om_point()", "geom_point"),
+            ("geom@_point()", "geom_point"),
+            ("geom_@point()", "geom_point"),
+            ("geom_point@()", "geom_point"),
         ];
 
         for (code, expected) in cases {

@@ -985,6 +985,24 @@ function M.bridge_env(config)
   }
 end
 
+function M.send_text(text)
+  local session = active_startup_session()
+  if not session or type(session.tmux_pane) ~= "string" or session.tmux_pane == "" then
+    return nil, "ark.nvim has no active managed pane"
+  end
+
+  if type(text) ~= "string" or text == "" then
+    return nil, "ark.nvim send_text() requires non-empty text"
+  end
+
+  local _, err = run_tmux({ "send-keys", "-t", session.tmux_pane, text, "Enter" })
+  if err then
+    return nil, err
+  end
+
+  return true, nil
+end
+
 local function tab_summaries(config)
   local tabs = {}
   for index, tab in ipairs(state.tabs) do
