@@ -256,6 +256,19 @@ pub(super) enum ReadConsolePendingAction {
     #[default]
     None,
 
+    /// An error longjumped out of our eval. Give R one REPL iteration to
+    /// restore internal state (`R_EvalDepth`, `R_PPStackTop`, etc.) before
+    /// we do anything else.
+    ///
+    /// Technically this also resets time limits (see
+    /// `base::setTimeLimit()`) but these aren't supported in Ark
+    /// because they cause errors when we poll R events.
+    ///
+    /// References:
+    /// - R_PPStackTop: https://github.com/r-devel/r-svn/blob/74cd0af4/src/main/main.c#L227
+    /// - R_EvalDepth:  https://github.com/r-devel/r-svn/blob/74cd0af4/src/main/main.c#L260
+    RecoverFromError,
+
     /// We just evaluated `.ark_capture_current_environment()` to capture the
     /// top-level environment into `.ark_current_env`. Now retrieve it and
     /// push onto the frame stack.
@@ -505,6 +518,12 @@ impl Console {
             startup::source_user_r_profile();
         }
 
+        // Apply Positron's default options after profiles so that user-defined
+        // options take precedence over our defaults
+        if let Some(ref ns) = console.positron_ns {
+            modules::initialize_options(ns.sexp).log_err();
+        }
+
         // Start the REPL. Does not return!
         crate::sys::console::run_r();
     }
@@ -572,11 +591,12 @@ impl Console {
             continuation_prompt: Some(continuation_prompt),
         };
 
+        // Set `R_INIT` before broadcasting so that threads unblocked by the
+        // broadcast (the LSP in particular) see R as initialized.
+        R_INIT.set(()).expect("`R_INIT` can only be set once");
+
         log::info!("Sending kernel info: {version}");
         kernel_init_tx.broadcast(kernel_info);
-
-        // Thread-safe initialisation flag for R
-        R_INIT.set(()).expect("`R_INIT` can only be set once");
     }
 
     fn new(
@@ -600,6 +620,7 @@ impl Console {
             iopub_tx,
             kernel_request_rx,
             active_request: None,
+            comm_msg_originator: None,
             execution_count: 0,
             autoprint_output: String::new(),
             ui_comm_id: None,
@@ -1144,18 +1165,10 @@ impl Console {
             return data;
         }
 
-        // If this is a data frame, add HTML representation and open inline explorer
+        // If this is a data frame, optionally open an inline data explorer
         // (only in Positron notebook mode)
         if r_is_data_frame(value.sexp) {
             let value = value.sexp;
-            match to_html(value) {
-                Ok(html) => {
-                    data.insert("text/html".to_string(), json!(html));
-                },
-                Err(err) => {
-                    log::error!("{err:?}");
-                },
-            };
 
             // The inline data explorer is a Positron-specific feature that
             // requires comm support. Other Jupyter frontends don't understand
@@ -1419,18 +1432,31 @@ impl Console {
         buf: *mut c_uchar,
         buflen: c_int,
     ) -> ConsoleResult {
-        if let Some(req) = &self.active_request {
-            // Send request to frontend. We'll wait for an `input_reply`
-            // from the frontend in the event loop in `read_console()`.
-            // The active request remains active.
-            self.request_input(req.originator.clone(), String::from(&info.input_prompt));
-
-            // Run the event loop, waiting for stdin replies but not execute requests
-            self.run_event_loop(info, buf, buflen, WaitFor::InputReply)
-        } else {
+        let Some(originator) = self
+            .active_request
+            .as_ref()
+            .map(|req| req.originator.clone())
+        else {
             // Invalid input request, propagate error to R
-            self.handle_invalid_input_request(buf, buflen)
+            return self.handle_invalid_input_request(buf, buflen);
+        };
+
+        // Flush any buffered autoprint output as stream stdout so it
+        // appears in the console before the input prompt. This happens
+        // when `readline()` or `menu()` is called during auto-print of
+        // an object (e.g. a print method that asks a question).
+        let autoprint = std::mem::take(&mut self.autoprint_output);
+        if !autoprint.is_empty() {
+            self.emit_stdout(autoprint);
         }
+
+        // Send request to frontend. We'll wait for an `input_reply`
+        // from the frontend in the event loop in `read_console()`.
+        // The active request remains active.
+        self.request_input(originator, String::from(&info.input_prompt));
+
+        // Run the event loop, waiting for stdin replies but not execute requests
+        self.run_event_loop(info, buf, buflen, WaitFor::InputReply)
     }
 
     fn handle_pending_input(
@@ -1899,9 +1925,12 @@ impl Console {
             KernelRequest::CommMsg {
                 comm_id,
                 msg,
+                originator,
                 done_tx,
             } => {
+                self.comm_msg_originator = Some(*originator);
                 self.comm_handle_msg(&comm_id, msg);
+                self.comm_msg_originator = None;
                 done_tx.send(()).log_err();
             },
             KernelRequest::CommClose { comm_id, done_tx } => {
@@ -2348,6 +2377,14 @@ impl Console {
     }
 
     fn read_console_exit(&mut self) {
+        // If an error longjumped out of our eval, schedule a recovery
+        // iteration so R can restore its internal state
+        if self.last_error.is_some() && self.read_console_threw_error.get() {
+            self.read_console_threw_error.set(false);
+            self.read_console_pending_action
+                .set(ReadConsolePendingAction::RecoverFromError);
+        }
+
         // We're exiting, decrease depth of nested consoles
         self.read_console_depth
             .set(self.read_console_depth.get() - 1);
@@ -2382,25 +2419,10 @@ impl Console {
         }
     }
 
-    /// Check if this is a browser prompt for which we need to capture the
-    /// evaluation environment
-    fn needs_browser_capture(&self, prompt: *const c_char) -> bool {
+    fn is_browser_prompt(&self, prompt: *const c_char) -> bool {
         let prompt_str = unsafe { std::ffi::CStr::from_ptr(prompt) }.to_string_lossy();
-        let is_browser = RE_DEBUG_PROMPT.is_match(&prompt_str);
-
-        // Skip capture if there's a pending error, we need `read_console()` to
-        // process it via `take_exception()` first.
-        is_browser && self.last_error.is_none()
+        RE_DEBUG_PROMPT.is_match(&prompt_str)
     }
-}
-
-/// Converts a data frame to HTML
-fn to_html(frame: SEXP) -> Result<String> {
-    let result = RFunction::from(".ps.format.toHtml")
-        .add(frame)
-        .call()?
-        .to::<String>()?;
-    Ok(result)
 }
 
 // Inputs generated by `ReadConsole` for the LSP
@@ -2494,23 +2516,23 @@ pub extern "C-unwind" fn r_read_console(
     // These are multi-step operations that required returning control to R.
     let env: RObject = match console.read_console_pending_action.take() {
         ReadConsolePendingAction::None => {
-            // Check if this is a browser prompt that needs environment capture.
-            // If so, return capture call WITHOUT doing any entry bookkeeping.
-            if console.needs_browser_capture(prompt) {
+            // For browser prompts, capture the evaluation environment.
+            // There is no way to reliably get this environment via regular
+            // evaluation:
+            //
+            // - Evaluating requires supplying an environment, which
+            //   interferes with approaches based on `parent.frame()`.
+            // - Looking at the call stack via `sys.frames()` does not work
+            //   when the browser is evaluating a promise or some other
+            //   C-level `Rf_eval()`.
+            //
+            // Instead we return an expression to R that basically does
+            // `parent.frame()` and stores it in a base symbol.
+            if console.is_browser_prompt(prompt) {
                 console
                     .read_console_pending_action
                     .set(ReadConsolePendingAction::CaptureEnv);
 
-                // For browser REPLs, we capture the top-level environment by
-                // returning an expression to R that basically does
-                // `parent.frame()` and store it in a base symbol. There is no
-                // way to reliably get this environment via regular evaluation:
-                //
-                // - Evaluating requires supplying an environment, which
-                //   interferes with approaches based on `parent.frame()`.
-                // - Looking at the call stack via `sys.frames()` does not work
-                //   when the browser is evaluating a promise or some other
-                //   C-level `Rf_eval()`.
                 let input = String::from("base::.ark_capture_current_environment()");
                 Console::on_console_input(buf, buflen, input).unwrap();
                 return 1;
@@ -2518,6 +2540,18 @@ pub extern "C-unwind" fn r_read_console(
 
             // At top-level: Use global env
             R_ENVS.global.into()
+        },
+
+        ReadConsolePendingAction::RecoverFromError => {
+            // Evaluate last value so that `base::.Last.value` remains the same
+            // after the recovery process
+            Console::on_console_input(
+                buf,
+                buflen,
+                String::from("base::invisible(base::.Last.value)"),
+            )
+            .unwrap();
+            return 1;
         },
 
         ReadConsolePendingAction::ExecuteInput(next_input) => {
@@ -2547,28 +2581,6 @@ pub extern "C-unwind" fn r_read_console(
             }
         },
     };
-
-    // In case of error, we haven't had a chance to evaluate ".ark_last_value".
-    // So we return to the R REPL to give R a chance to run the state
-    // restoration that occurs between `R_ReadConsole()` and `eval()`:
-    // - R_PPStackTop: https://github.com/r-devel/r-svn/blob/74cd0af4/src/main/main.c#L227
-    // - R_EvalDepth:  https://github.com/r-devel/r-svn/blob/74cd0af4/src/main/main.c#L260
-    //
-    // Technically this also resets time limits (see `base::setTimeLimit()`) but
-    // these aren't supported in Ark because they cause errors when we poll R
-    // events.
-    if console.last_error.is_some() && console.read_console_threw_error.get() {
-        console.read_console_threw_error.set(false);
-
-        // Evaluate last value so that `base::.Last.value` remains the same
-        Console::on_console_input(
-            buf,
-            buflen,
-            String::from("base::invisible(base::.Last.value)"),
-        )
-        .unwrap();
-        return 1;
-    }
 
     // Entry bookkeeping: increment depth, set flags, push frame.
     // Cleanup happens in the exit branch of `exec_with_cleanup()`.

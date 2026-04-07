@@ -68,6 +68,21 @@ If a change improves Positron or Jupyter but does not move the Neovim product fo
 Upstream now expects `just clippy` to pass for Rust changes. Use it when you
 touch Rust code that may be affected by the new lint baseline.
 
+### Formatting
+
+```sh
+cargo +nightly fmt --all
+```
+
+This requires the nightly toolchain because `.rustfmt.toml` uses nightly-only options.
+
+### Legacy kernel and DAP test infrastructure
+
+Upstream kernel and debugger tests still live in `crates/ark/tests/` and use
+utilities from `crates/ark_test/`. They remain useful when upstream changes
+touch retained kernel-oriented code, even though they are not the target
+product surface for `ark.nvim`.
+
 This repository currently starts from upstream Ark. That means the tree still contains:
 
 - Jupyter kernel infrastructure in `crates/amalthea`
