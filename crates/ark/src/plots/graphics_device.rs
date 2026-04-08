@@ -862,9 +862,9 @@ impl DeviceContext {
         let name = self.generate_plot_name(&kind);
         let origin = self.take_pending_origin(ctx);
 
-        self.plot_contexts.borrow_mut().insert(
-            id.clone(),
-            PlotContext {
+        self.plot_contexts
+            .borrow_mut()
+            .insert(id.clone(), PlotContext {
                 metadata: PlotMetadata {
                     name,
                     kind,
@@ -873,8 +873,7 @@ impl DeviceContext {
                     origin,
                 },
                 intrinsic_size: ctx.intrinsic_size.clone(),
-            },
-        );
+            });
     }
 
     fn process_update_plot(&self, id: &PlotId) {

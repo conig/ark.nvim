@@ -52,8 +52,8 @@ use crate::lsp::config::DOCUMENT_SETTINGS;
 use crate::lsp::config::GLOBAL_SETTINGS;
 use crate::lsp::document::Document;
 use crate::lsp::document::DocumentKind;
-use crate::lsp::handlers::SessionUpdateParams;
 use crate::lsp::handlers::SessionBootstrapResponse;
+use crate::lsp::handlers::SessionUpdateParams;
 use crate::lsp::inputs::library::Library;
 use crate::lsp::inputs::package::Package;
 use crate::lsp::inputs::source_root::SourceRoot;
@@ -107,26 +107,26 @@ pub(crate) fn begin_detached_session_hydration(
         .last_bootstrap_attempt_ms
         .map(|last| now.saturating_sub(last) >= 500)
         .unwrap_or(true);
-    let retry_failed_bootstrap = state.detached_session_bootstrap_attempted
-        && state
+    let retry_failed_bootstrap = state.detached_session_bootstrap_attempted &&
+        state
             .detached_session_status
             .last_bootstrap_success_ms
-            .is_none()
-        && !state
+            .is_none() &&
+        !state
             .detached_session_status
             .last_bootstrap_error
-            .is_empty()
-        && bootstrap_incomplete
-        && retry_cooldown_elapsed;
+            .is_empty() &&
+        bootstrap_incomplete &&
+        retry_cooldown_elapsed;
     let current_generation = state.detached_session_update_generation;
     let current_repl_seq = state.detached_session_status.last_session_update_repl_seq;
-    let current_repl_is_hydrated = current_repl_seq.is_some()
-        && current_repl_seq == state.detached_session_status.last_bootstrap_repl_seq
-        && state
+    let current_repl_is_hydrated = current_repl_seq.is_some() &&
+        current_repl_seq == state.detached_session_status.last_bootstrap_repl_seq &&
+        state
             .detached_session_status
             .last_bootstrap_error
-            .is_empty()
-        && !bootstrap_incomplete;
+            .is_empty() &&
+        !bootstrap_incomplete;
 
     if state.detached_session_pending_generation == Some(current_generation) {
         return None;
@@ -808,7 +808,6 @@ async fn update_config(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Read;
     use std::io::Write;
     use std::net::TcpListener;
@@ -816,6 +815,8 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::thread;
+
+    use super::*;
     fn spawn_bootstrap_bridge(auth_token: &str) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
         let port = listener
@@ -939,10 +940,10 @@ mod tests {
         let output = run_detached_session_hydration(hydration);
         finish_detached_session_hydration(output, &mut state);
 
-        assert_eq!(
-            state.console_scopes,
-            vec![vec![String::from("library"), String::from("mtcars")]]
-        );
+        assert_eq!(state.console_scopes, vec![vec![
+            String::from("library"),
+            String::from("mtcars")
+        ]]);
         assert_eq!(state.installed_packages, Vec::<String>::new());
         assert_eq!(state.library.library_paths.len(), 1);
         assert_eq!(
@@ -991,10 +992,10 @@ mod tests {
             response.hydrated,
             "bootstrap session request should synchronously hydrate detached inputs"
         );
-        assert_eq!(
-            state.console_scopes,
-            vec![vec![String::from("library"), String::from("mtcars")]]
-        );
+        assert_eq!(state.console_scopes, vec![vec![
+            String::from("library"),
+            String::from("mtcars")
+        ]]);
         assert_eq!(state.library.library_paths.len(), 1);
         assert_eq!(
             state.library.library_paths[0],

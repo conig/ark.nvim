@@ -345,15 +345,15 @@ impl NodeTypeExt for Node<'_> {
     fn is_keyword(&self) -> bool {
         matches!(
             self.node_type(),
-            NodeType::Return
-                | NodeType::Next
-                | NodeType::Break
-                | NodeType::True
-                | NodeType::False
-                | NodeType::Null
-                | NodeType::Inf
-                | NodeType::Nan
-                | NodeType::Na(_)
+            NodeType::Return |
+                NodeType::Next |
+                NodeType::Break |
+                NodeType::True |
+                NodeType::False |
+                NodeType::Null |
+                NodeType::Inf |
+                NodeType::Nan |
+                NodeType::Na(_)
         )
     }
 

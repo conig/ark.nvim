@@ -402,28 +402,25 @@ fn test_plot_get_metadata_with_origin() {
     let origin_uri = "file:///path/to/analysis.R";
 
     // Send execute_request with a code_location
-    frontend.send_execute_request(
-        code,
-        ExecuteRequestOptions {
-            positron: Some(ExecuteRequestPositron {
-                code_location: Some(JupyterPositronLocation {
-                    uri: origin_uri.to_string(),
-                    range: JupyterPositronRange {
-                        start: JupyterPositronPosition {
-                            line: 5,
-                            character: 0,
-                        },
-                        end: JupyterPositronPosition {
-                            line: 5,
-                            character: 10,
-                        },
+    frontend.send_execute_request(code, ExecuteRequestOptions {
+        positron: Some(ExecuteRequestPositron {
+            code_location: Some(JupyterPositronLocation {
+                uri: origin_uri.to_string(),
+                range: JupyterPositronRange {
+                    start: JupyterPositronPosition {
+                        line: 5,
+                        character: 0,
                     },
-                }),
-                ..Default::default()
+                    end: JupyterPositronPosition {
+                        line: 5,
+                        character: 10,
+                    },
+                },
             }),
-            ..ExecuteRequestOptions::default()
-        },
-    );
+            ..Default::default()
+        }),
+        ..ExecuteRequestOptions::default()
+    });
     frontend.recv_iopub_busy();
 
     let input = frontend.recv_iopub_execute_input();
@@ -623,17 +620,14 @@ fn test_plot_with_fig_size_metadata() {
     let frontend = DummyArkFrontend::lock();
 
     let code = "plot(1:10)";
-    frontend.send_execute_request(
-        code,
-        ExecuteRequestOptions {
-            positron: Some(ExecuteRequestPositron {
-                fig_width: Some(5.0),
-                fig_height: Some(4.0),
-                ..Default::default()
-            }),
-            ..ExecuteRequestOptions::default()
-        },
-    );
+    frontend.send_execute_request(code, ExecuteRequestOptions {
+        positron: Some(ExecuteRequestPositron {
+            fig_width: Some(5.0),
+            fig_height: Some(4.0),
+            ..Default::default()
+        }),
+        ..ExecuteRequestOptions::default()
+    });
     frontend.recv_iopub_busy();
     frontend.recv_iopub_execute_input();
 
@@ -659,16 +653,13 @@ fn test_plot_with_output_width_metadata() {
     let frontend = DummyArkFrontend::lock();
 
     let code = "plot(1:10)";
-    frontend.send_execute_request(
-        code,
-        ExecuteRequestOptions {
-            positron: Some(ExecuteRequestPositron {
-                output_width_px: Some(600.0),
-                ..Default::default()
-            }),
-            ..ExecuteRequestOptions::default()
-        },
-    );
+    frontend.send_execute_request(code, ExecuteRequestOptions {
+        positron: Some(ExecuteRequestPositron {
+            output_width_px: Some(600.0),
+            ..Default::default()
+        }),
+        ..ExecuteRequestOptions::default()
+    });
     frontend.recv_iopub_busy();
     frontend.recv_iopub_execute_input();
 

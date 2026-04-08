@@ -41,6 +41,7 @@ local function show_pair_completion(line, column, trigger_character, label)
   vim.b.ark_pending_pair_completion = trigger_character
   ark_blink.maybe_show_after_pair(0)
   wait_for_item(label)
+  ark_test.assert_no_snippet_items(list.items, label)
   blink.hide()
   vim.cmd("stopinsert")
 end
@@ -53,6 +54,7 @@ local function show_trigger_completion(line, column, trigger_character, label)
     trigger_character = trigger_character,
   })
   wait_for_item(label)
+  ark_test.assert_no_snippet_items(list.items, label)
   blink.hide()
   vim.cmd("stopinsert")
 end

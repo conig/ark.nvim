@@ -83,8 +83,8 @@ pub(crate) fn get_completions(
     // To offer the rest of the general completions, we should be completing:
     // * on an empty line, outside of any function or expression, or
     // * something that looks like an identifier
-    if completion_context.document_context.node.is_program()
-        || is_identifier_like(completion_context.document_context.node)
+    if completion_context.document_context.node.is_program() ||
+        is_identifier_like(completion_context.document_context.node)
     {
         push_completions(keyword::KeywordSource, completion_context, &mut completions)?;
 
@@ -125,8 +125,8 @@ pub(crate) fn get_detached_static_completions(
 
     let mut completions = HashMap::new();
 
-    if completion_context.document_context.node.is_program()
-        || is_identifier_like(completion_context.document_context.node)
+    if completion_context.document_context.node.is_program() ||
+        is_identifier_like(completion_context.document_context.node)
     {
         push_completions(keyword::KeywordSource, completion_context, &mut completions)?;
 
@@ -186,13 +186,10 @@ where
                     source_name
                 );
             } else {
-                completions.insert(
-                    key,
-                    CompletionItemWithSource {
-                        item,
-                        source: source_name.to_string(),
-                    },
-                );
+                completions.insert(key, CompletionItemWithSource {
+                    item,
+                    source: source_name.to_string(),
+                });
             }
         }
     }

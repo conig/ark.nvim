@@ -122,6 +122,9 @@ local function type_and_capture_completion(prefix, expected_label)
   local blink_labels = vim.tbl_map(function(item)
     return item.label
   end, list.items)
+  if blink_visible and index ~= nil then
+    ark_test.assert_no_snippet_items(list.items, expected_label)
+  end
   local lsp_labels = completion_labels_at_cursor(prefix)
   local cursor = vim.api.nvim_win_get_cursor(0)
   local line = vim.api.nvim_get_current_line()

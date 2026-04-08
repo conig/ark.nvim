@@ -5,9 +5,10 @@
 //
 //
 
+use std::path::PathBuf;
+
 use anyhow::anyhow;
 use serde_json::Value;
-use std::path::PathBuf;
 use stdext::result::ResultExt;
 use stdext::unwrap;
 use tower_lsp::lsp_types::CodeActionParams;
@@ -68,8 +69,8 @@ use crate::lsp::selection_range::convert_selection_range_from_tree_sitter_to_lsp
 use crate::lsp::selection_range::selection_range;
 use crate::lsp::session_bridge::is_bridge_unavailable;
 use crate::lsp::session_bridge::is_eval_missing_object_error;
-use crate::lsp::session_bridge::HelpPage;
 use crate::lsp::session_bridge::is_ipc_auth_error;
+use crate::lsp::session_bridge::HelpPage;
 use crate::lsp::signature_help::r_signature_help;
 use crate::lsp::state::WorldState;
 use crate::lsp::statement_range::statement_range;
@@ -513,13 +514,13 @@ pub(crate) fn handle_goto_definition(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fs;
     use std::io::Read;
     use std::io::Write;
     use std::net::TcpListener;
     use std::path::PathBuf;
     use std::thread;
+
     use tempfile::tempdir;
     use tower_lsp::lsp_types::Position;
     use tower_lsp::lsp_types::TextDocumentIdentifier;
@@ -527,6 +528,7 @@ mod tests {
     use tower_lsp::lsp_types::WorkDoneProgressParams;
     use url::Url;
 
+    use super::*;
     use crate::lsp::document::Document;
     use crate::lsp::session_bridge::SessionBridge;
     use crate::lsp::session_bridge::SessionBridgeConfig;

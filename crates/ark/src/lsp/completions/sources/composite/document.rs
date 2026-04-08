@@ -49,10 +49,10 @@ pub fn completions_from_document(
     }
     if matches!(
         node.node_type(),
-        NodeType::NamespaceOperator(_)
-            | NodeType::ExtractOperator(_)
-            | NodeType::Subset
-            | NodeType::Subset2
+        NodeType::NamespaceOperator(_) |
+            NodeType::ExtractOperator(_) |
+            NodeType::Subset |
+            NodeType::Subset2
     ) {
         log::error!("Should have been handled by alternative completion source.");
         return Ok(None);
@@ -102,9 +102,9 @@ fn completions_from_document_variables(
         }
 
         match node.node_type() {
-            NodeType::BinaryOperator(BinaryOperatorType::EqualsAssignment)
-            | NodeType::BinaryOperator(BinaryOperatorType::LeftAssignment)
-            | NodeType::BinaryOperator(BinaryOperatorType::LeftSuperAssignment) => {
+            NodeType::BinaryOperator(BinaryOperatorType::EqualsAssignment) |
+            NodeType::BinaryOperator(BinaryOperatorType::LeftAssignment) |
+            NodeType::BinaryOperator(BinaryOperatorType::LeftSuperAssignment) => {
                 // check that the left-hand side is an identifier or a string
                 if let Some(child) = node.child(0) {
                     if child.is_identifier_or_string() {
@@ -119,8 +119,8 @@ fn completions_from_document_variables(
                 true
             },
 
-            NodeType::BinaryOperator(BinaryOperatorType::RightAssignment)
-            | NodeType::BinaryOperator(BinaryOperatorType::RightSuperAssignment) => {
+            NodeType::BinaryOperator(BinaryOperatorType::RightAssignment) |
+            NodeType::BinaryOperator(BinaryOperatorType::RightSuperAssignment) => {
                 // return true for nested assignments
                 true
             },

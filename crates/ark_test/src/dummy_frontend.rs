@@ -980,17 +980,13 @@ impl DummyArkFrontend {
     where
         F: FnOnce(String),
     {
-        self.execute_request_with_options(
-            code,
-            result_check,
-            ExecuteRequestOptions {
-                positron: Some(ExecuteRequestPositron {
-                    code_location: Some(code_location),
-                    ..Default::default()
-                }),
+        self.execute_request_with_options(code, result_check, ExecuteRequestOptions {
+            positron: Some(ExecuteRequestPositron {
+                code_location: Some(code_location),
                 ..Default::default()
-            },
-        )
+            }),
+            ..Default::default()
+        })
     }
 
     #[track_caller]
@@ -1127,8 +1123,8 @@ impl DummyArkFrontend {
                     }
                 },
                 Message::Status(ref data)
-                    if data.content.execution_state
-                        == amalthea::wire::status::ExecutionState::Idle =>
+                    if data.content.execution_state ==
+                        amalthea::wire::status::ExecutionState::Idle =>
                 {
                     idle_count += 1;
                 },
@@ -1201,16 +1197,13 @@ impl DummyArkFrontend {
     #[track_caller]
     pub fn execute_file(&self, file: &SourceFile) {
         let code = std::fs::read_to_string(&file.path).unwrap();
-        self.send_execute_request(
-            &code,
-            ExecuteRequestOptions {
-                positron: Some(ExecuteRequestPositron {
-                    code_location: Some(file.location()),
-                    ..Default::default()
-                }),
+        self.send_execute_request(&code, ExecuteRequestOptions {
+            positron: Some(ExecuteRequestPositron {
+                code_location: Some(file.location()),
                 ..Default::default()
-            },
-        );
+            }),
+            ..Default::default()
+        });
         self.recv_iopub_busy();
         self.recv_iopub_execute_input();
         self.recv_iopub_idle();
@@ -1765,14 +1758,13 @@ impl Drop for DummyArkFrontend {
             match msg {
                 Message::Stream(_) => true,
                 Message::CommMsg(comm) => {
-                    comm.content.data.get("method").and_then(|v| v.as_str()) == Some("execute")
-                        && comm
-                            .content
+                    comm.content.data.get("method").and_then(|v| v.as_str()) == Some("execute") &&
+                        comm.content
                             .data
                             .get("params")
                             .and_then(|p| p.get("command"))
-                            .and_then(|c| c.as_str())
-                            == Some("Q")
+                            .and_then(|c| c.as_str()) ==
+                            Some("Q")
                 },
                 _ => false,
             }

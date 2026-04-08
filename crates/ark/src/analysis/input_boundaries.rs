@@ -287,13 +287,9 @@ mod tests {
         boundary(start, end, InputBoundaryKind::Incomplete)
     }
     fn invalid(start: u32, end: u32) -> InputBoundary {
-        boundary(
-            start,
-            end,
-            InputBoundaryKind::Invalid {
-                message: String::from("placeholder"),
-            },
-        )
+        boundary(start, end, InputBoundaryKind::Invalid {
+            message: String::from("placeholder"),
+        })
     }
 
     #[test]
@@ -312,26 +308,20 @@ mod tests {
                 whitespace(0, 1),
             ]);
 
-            assert_eq!(
-                p("\n\n  \n"),
-                vec![
-                    whitespace(0, 1),
-                    whitespace(1, 2),
-                    whitespace(2, 3),
-                    whitespace(3, 4),
-                ]
-            );
+            assert_eq!(p("\n\n  \n"), vec![
+                whitespace(0, 1),
+                whitespace(1, 2),
+                whitespace(2, 3),
+                whitespace(3, 4),
+            ]);
 
-            assert_eq!(
-                p("\n  foo\n  \n\n"),
-                vec![
-                    whitespace(0, 1),
-                    complete(1, 2),
-                    whitespace(2, 3),
-                    whitespace(3, 4),
-                    whitespace(4, 5),
-                ]
-            );
+            assert_eq!(p("\n  foo\n  \n\n"), vec![
+                whitespace(0, 1),
+                complete(1, 2),
+                whitespace(2, 3),
+                whitespace(3, 4),
+                whitespace(4, 5),
+            ]);
         })
     }
 
@@ -403,13 +393,10 @@ mod tests {
     fn test_input_boundaries_invalid_message() {
         r_task(|| {
             let boundaries = input_boundaries("foo )").unwrap();
-            assert_eq!(
-                boundaries,
-                vec![InputBoundary::invalid(
-                    LineRange::new(0, 1),
-                    String::from("unexpected ')'")
-                ),]
-            );
+            assert_eq!(boundaries, vec![InputBoundary::invalid(
+                LineRange::new(0, 1),
+                String::from("unexpected ')'")
+            ),]);
         });
     }
 }

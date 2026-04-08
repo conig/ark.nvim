@@ -107,8 +107,8 @@ impl ExecuteRequest {
         let range = &location.range;
 
         // Validate that range is not inverted
-        if range.end.line < range.start.line
-            || (range.end.line == range.start.line && range.end.character < range.start.character)
+        if range.end.line < range.start.line ||
+            (range.end.line == range.start.line && range.end.character < range.start.character)
         {
             return Err(anyhow::anyhow!(
                 "Invalid range: end ({}, {}) is before start ({}, {})",

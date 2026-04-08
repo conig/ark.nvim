@@ -390,12 +390,12 @@ pub(crate) fn spawn(task: RTask) {
     if stdext::IS_TESTING && !Console::is_initialized() {
         let _lock = harp::fixtures::R_TEST_LOCK.lock();
         let fut = match task {
-            RTask::Interrupt(fut)
-            | RTask::Idle(fut)
-            | RTask::IdleAnyPrompt(fut)
-            | RTask::SendInterrupt(fut)
-            | RTask::SendIdle(fut)
-            | RTask::SendIdleAnyPrompt(fut) => fut,
+            RTask::Interrupt(fut) |
+            RTask::Idle(fut) |
+            RTask::IdleAnyPrompt(fut) |
+            RTask::SendInterrupt(fut) |
+            RTask::SendIdle(fut) |
+            RTask::SendIdleAnyPrompt(fut) => fut,
         };
         futures::executor::block_on(fut);
         return;

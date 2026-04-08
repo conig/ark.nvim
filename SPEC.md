@@ -308,6 +308,14 @@ The practical product rule is:
   separate operations
 - movement should not rewrite the buffer
 - explicit accept may rewrite the buffer
+- foreign snippet / path / buffer providers should not leak into Ark-owned
+  trigger contexts such as `$`, `@`, subset triggers, comparison-string
+  completions, or enum-like quoted argument values
+
+Verification rule:
+
+- when a Blink-facing E2E inspects an Ark-owned menu, it should assert not just
+  that the expected item appears, but also that snippet-shaped items are absent
 
 That is why disabling Blink auto-insert in Ark buffers is the cleaner fix than
 trying to chase every rapid-selection race one context at a time.

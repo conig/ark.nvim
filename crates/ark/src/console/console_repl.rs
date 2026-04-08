@@ -1174,8 +1174,8 @@ impl Console {
             // requires comm support. Other Jupyter frontends don't understand
             // this MIME type, so we gate on the POSITRON env var to avoid
             // sending it to vanilla Jupyter notebooks.
-            if self.session_mode == SessionMode::Notebook
-                && std::env::var("POSITRON").as_deref() == Ok("1")
+            if self.session_mode == SessionMode::Notebook &&
+                std::env::var("POSITRON").as_deref() == Ok("1")
             {
                 match self.open_inline_data_explorer(value) {
                     Ok(mime_data) => {
@@ -1398,8 +1398,8 @@ impl Console {
                 // Evaluate first expression if there is one
                 if let Some(input) = self.pop_pending() {
                     Some(self.handle_pending_input(input, buf, buflen))
-                } else if self.debug_is_debugging
-                    && !harp::options::get_option_bool("browserNLdisabled")
+                } else if self.debug_is_debugging &&
+                    !harp::options::get_option_bool("browserNLdisabled")
                 {
                     // Empty input in the debugger counts as `n` unless
                     // `browserNLdisabled` is TRUE. This matches RStudio
@@ -1480,8 +1480,8 @@ impl Console {
                 // frame is the hidden handler that called `browser()`. Remap
                 // "step over" to "step out" so the user leaves the handler
                 // frame instead of stepping through internal code.
-                if sym == "n"
-                    && matches!(
+                if sym == "n" &&
+                    matches!(
                         self.debug_stopped_reason,
                         Some(DebugStoppedReason::Condition { .. } | DebugStoppedReason::Pause)
                     )

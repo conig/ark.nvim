@@ -138,16 +138,13 @@ foo()
     // Send execute request with the symlinked URI (as Positron would).
     // `UrlId::from_code_location` must resolve this to the same canonical
     // key that `set_breakpoints` used.
-    frontend.send_execute_request(
-        &file.code(),
-        ExecuteRequestOptions {
-            positron: Some(ExecuteRequestPositron {
-                code_location: Some(symlink_location(&file)),
-                ..Default::default()
-            }),
+    frontend.send_execute_request(&file.code(), ExecuteRequestOptions {
+        positron: Some(ExecuteRequestPositron {
+            code_location: Some(symlink_location(&file)),
             ..Default::default()
-        },
-    );
+        }),
+        ..Default::default()
+    });
     frontend.recv_iopub_busy();
     frontend.recv_iopub_execute_input();
 
@@ -190,16 +187,13 @@ norf()
     let bp_id = breakpoints[0].id;
 
     // Execute via the real path
-    frontend.send_execute_request(
-        &file.code(),
-        ExecuteRequestOptions {
-            positron: Some(ExecuteRequestPositron {
-                code_location: Some(real_location(&file)),
-                ..Default::default()
-            }),
+    frontend.send_execute_request(&file.code(), ExecuteRequestOptions {
+        positron: Some(ExecuteRequestPositron {
+            code_location: Some(real_location(&file)),
             ..Default::default()
-        },
-    );
+        }),
+        ..Default::default()
+    });
     frontend.recv_iopub_busy();
     frontend.recv_iopub_execute_input();
 
@@ -242,16 +236,13 @@ qux()
     let bp_id = breakpoints[0].id;
 
     // Execute via the *symlinked* path
-    frontend.send_execute_request(
-        &file.code(),
-        ExecuteRequestOptions {
-            positron: Some(ExecuteRequestPositron {
-                code_location: Some(symlink_location(&file)),
-                ..Default::default()
-            }),
+    frontend.send_execute_request(&file.code(), ExecuteRequestOptions {
+        positron: Some(ExecuteRequestPositron {
+            code_location: Some(symlink_location(&file)),
             ..Default::default()
-        },
-    );
+        }),
+        ..Default::default()
+    });
     frontend.recv_iopub_busy();
     frontend.recv_iopub_execute_input();
 
@@ -330,16 +321,13 @@ greet()
     let bp_id = breakpoints[0].id;
 
     let code = std::fs::read_to_string(&file.path).unwrap();
-    frontend.send_execute_request(
-        &code,
-        ExecuteRequestOptions {
-            positron: Some(ExecuteRequestPositron {
-                code_location: Some(source_file_location(&file)),
-                ..Default::default()
-            }),
+    frontend.send_execute_request(&code, ExecuteRequestOptions {
+        positron: Some(ExecuteRequestPositron {
+            code_location: Some(source_file_location(&file)),
             ..Default::default()
-        },
-    );
+        }),
+        ..Default::default()
+    });
     frontend.recv_iopub_busy();
     frontend.recv_iopub_execute_input();
 

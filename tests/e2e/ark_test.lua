@@ -183,6 +183,20 @@ function M.insert_text(item)
   return item.insertText or item.insert_text
 end
 
+function M.assert_no_snippet_items(items, label)
+  local snippet_kind = vim.lsp.protocol.CompletionItemKind.Snippet
+  local snippet_format = vim.lsp.protocol.InsertTextFormat.Snippet
+
+  for _, item in ipairs(items or {}) do
+    if item.kind == snippet_kind
+      or item.insertTextFormat == snippet_format
+      or item.insert_text_format == snippet_format
+    then
+      M.fail(string.format("unexpected snippet item for %s: %s", label, vim.inspect(item)))
+    end
+  end
+end
+
 function M.setup_managed_buffer(test_file, lines)
   require("ark").setup({
     auto_start_pane = false,

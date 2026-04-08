@@ -115,10 +115,11 @@ mod tests {
         crate::r_task(|| {
             let mut x = vec![RSymbol::from("z"), RSymbol::from("m"), RSymbol::from("a")];
             x.sort();
-            assert_eq!(
-                x,
-                vec![RSymbol::from("a"), RSymbol::from("m"), RSymbol::from("z")]
-            );
+            assert_eq!(x, vec![
+                RSymbol::from("a"),
+                RSymbol::from("m"),
+                RSymbol::from("z")
+            ]);
         })
     }
 }

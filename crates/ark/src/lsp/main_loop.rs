@@ -1123,13 +1123,13 @@ pub(crate) fn diagnostics_refresh_all_latest() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::net::TcpListener;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::thread;
 
+    use super::*;
     use crate::lsp::session_bridge::SessionBridge;
     use crate::lsp::session_bridge::SessionBridgeConfig;
 

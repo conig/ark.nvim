@@ -589,8 +589,8 @@ fn recurse_function(node: Node, row: usize) -> Result<Option<Node>> {
         return Ok(Some(node));
     }
 
-    if body.is_braced_expression()
-        && (row == body.start_position().row || row == body.end_position().row)
+    if body.is_braced_expression() &&
+        (row == body.start_position().row || row == body.end_position().row)
     {
         // For the most common `{` bodies, if we are on the `{` or the `}` rows, then we select the
         // entire function. This avoids sending a `{` block without its leading `function` node if
@@ -616,8 +616,8 @@ fn recurse_loop(node: Node, row: usize) -> Result<Option<Node>> {
         return Ok(Some(node));
     }
 
-    if body.is_braced_expression()
-        && (row == body.start_position().row || row == body.end_position().row)
+    if body.is_braced_expression() &&
+        (row == body.start_position().row || row == body.end_position().row)
     {
         // For the most common `{` bodies, if we are on the `{` or the `}` rows, then we select the
         // entire loop. This avoids sending a `{` block without its leading loop node if
@@ -637,8 +637,8 @@ fn recurse_if(node: Node, row: usize) -> Result<Option<Node>> {
     if row >= consequence.start_position().row && row <= consequence.end_position().row {
         // We are somewhere inside the `consequence`
 
-        if consequence.is_braced_expression()
-            && (row == consequence.start_position().row || row == consequence.end_position().row)
+        if consequence.is_braced_expression() &&
+            (row == consequence.start_position().row || row == consequence.end_position().row)
         {
             // On `{` or `}` row of a `{` node, select entire if statement
             return Ok(Some(node));
@@ -656,8 +656,8 @@ fn recurse_if(node: Node, row: usize) -> Result<Option<Node>> {
     if row >= alternative.start_position().row && row <= alternative.end_position().row {
         // We are somewhere inside the `alternative`, possibly in an `else if`
 
-        if alternative.is_braced_expression()
-            && (row == alternative.start_position().row || row == alternative.end_position().row)
+        if alternative.is_braced_expression() &&
+            (row == alternative.start_position().row || row == alternative.end_position().row)
         {
             // On `{` or `}` row of a `{` node, select entire if statement
             return Ok(Some(node));

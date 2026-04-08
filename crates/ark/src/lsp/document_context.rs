@@ -87,8 +87,8 @@ impl<'a> DocumentContext<'a> {
         // the 'Argument' node (with text "a = ").
         // In this case, `closest_node` is the anonymous "=" node and is a
         // better candidate for completions.
-        let node = if node.node_type() == NodeType::Arguments
-            && closest_node.node_type() == NodeType::Anonymous(String::from("="))
+        let node = if node.node_type() == NodeType::Arguments &&
+            closest_node.node_type() == NodeType::Anonymous(String::from("="))
         {
             closest_node
         } else {
@@ -126,8 +126,8 @@ impl<'a> DocumentContext<'a> {
 
         matches!(
             parent.node_type(),
-            NodeType::BinaryOperator(BinaryOperatorType::LeftAssignment)
-                | NodeType::BinaryOperator(BinaryOperatorType::LeftSuperAssignment)
+            NodeType::BinaryOperator(BinaryOperatorType::LeftAssignment) |
+                NodeType::BinaryOperator(BinaryOperatorType::LeftSuperAssignment)
         ) && parent.child_by_field_name("rhs") == Some(closest)
     }
 }

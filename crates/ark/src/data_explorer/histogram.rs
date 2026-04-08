@@ -192,14 +192,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            hist,
-            ColumnHistogram {
-                bin_edges: bin_edges.into_iter().map(|v| v.to_string()).collect(),
-                bin_counts,
-                quantiles: vec![]
-            }
-        )
+        assert_eq!(hist, ColumnHistogram {
+            bin_edges: bin_edges.into_iter().map(|v| v.to_string()).collect(),
+            bin_counts,
+            quantiles: vec![]
+        })
     }
 
     fn test_histogram_method(code: &str, method: &str, bin_edges: Vec<&str>, bin_counts: Vec<i64>) {
@@ -226,14 +223,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            hist,
-            ColumnHistogram {
-                bin_edges: bin_edges.into_iter().map(|v| v.to_string()).collect(),
-                bin_counts,
-                quantiles: vec![]
-            }
-        )
+        assert_eq!(hist, ColumnHistogram {
+            bin_edges: bin_edges.into_iter().map(|v| v.to_string()).collect(),
+            bin_counts,
+            quantiles: vec![]
+        })
     }
 
     fn test_quantiles<T>(code: &str, quantiles: Vec<f64>, expected: T)
@@ -280,28 +274,22 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            freq_table,
-            ColumnFrequencyTable {
-                values: format_string(RObject::from(values).sexp, &default_options())
-                    .into_iter()
-                    .map(ColumnValue::FormattedValue)
-                    .collect(),
-                counts,
-                other_count
-            }
-        );
+        assert_eq!(freq_table, ColumnFrequencyTable {
+            values: format_string(RObject::from(values).sexp, &default_options())
+                .into_iter()
+                .map(ColumnValue::FormattedValue)
+                .collect(),
+            counts,
+            other_count
+        });
     }
 
     #[test]
     fn test_basic_histograms() {
         r_task(|| {
-            test_histogram(
-                "0:10",
-                5,
-                vec!["0", "2", "4", "6", "8", "10"],
-                vec![3, 2, 2, 2, 2],
-            );
+            test_histogram("0:10", 5, vec!["0", "2", "4", "6", "8", "10"], vec![
+                3, 2, 2, 2, 2,
+            ]);
             test_histogram_method(
                 "0:10",
                 "sturges",
@@ -309,12 +297,9 @@ mod tests {
                 vec![3, 2, 2, 2, 2],
             );
             test_histogram_method("0:10", "scott", vec!["0", "5", "10"], vec![6, 5]);
-            test_histogram_method(
-                "0:10",
-                "fd",
-                vec!["0.00", "3.33", "6.67", "10.00"],
-                vec![4, 3, 4],
-            );
+            test_histogram_method("0:10", "fd", vec!["0.00", "3.33", "6.67", "10.00"], vec![
+                4, 3, 4,
+            ]);
         })
     }
 
@@ -416,12 +401,9 @@ mod tests {
                 vec![100, 0, 100],
             );
 
-            test_histogram(
-                "rep(c(1L, 3L), 100)",
-                2,
-                vec!["1", "2", "3"],
-                vec![100, 100],
-            );
+            test_histogram("rep(c(1L, 3L), 100)", 2, vec!["1", "2", "3"], vec![
+                100, 100,
+            ]);
 
             test_histogram_method(
                 "rep(c(1L, 3L), 100)",

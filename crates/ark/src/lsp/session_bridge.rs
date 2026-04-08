@@ -484,9 +484,9 @@ impl SessionBridge {
         match self.bootstrap_via_command() {
             Ok(bootstrap) => Ok(bootstrap),
             Err(err)
-                if is_bridge_unavailable(&err)
-                    || is_ipc_auth_error(&err)
-                    || err.downcast_ref::<std::io::Error>().is_some() =>
+                if is_bridge_unavailable(&err) ||
+                    is_ipc_auth_error(&err) ||
+                    err.downcast_ref::<std::io::Error>().is_some() =>
             {
                 Err(err)
             },
@@ -731,6 +731,12 @@ impl SessionBridge {
         if let Some(request) = completion_request_from_comparison_string(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
+        if let Some(request) = completion_request_from_library_string(context)? {
+            return Ok(Some(CompletionPlan::Unique(request)));
+        }
+        if let Some(request) = completion_request_from_argument_string(context)? {
+            return Ok(Some(CompletionPlan::Unique(request)));
+        }
         if let Some(request) = completion_request_from_string_subset(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
@@ -758,9 +764,6 @@ impl SessionBridge {
                 return Ok(Some(CompletionPlan::Composite(requests)));
             }
 
-            return Ok(Some(CompletionPlan::Unique(request)));
-        }
-        if let Some(request) = completion_request_from_library_string(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_library_call(context)? {
@@ -1411,9 +1414,9 @@ pub(crate) fn is_ipc_auth_error(err: &anyhow::Error) -> bool {
 pub(crate) fn is_eval_missing_object_error(err: &anyhow::Error) -> bool {
     err.downcast_ref::<SessionBridgeResponseError>()
         .map(|err| {
-            err.code == "E_EVAL"
-                && err.message.starts_with("object '")
-                && err.message.ends_with("not found")
+            err.code == "E_EVAL" &&
+                err.message.starts_with("object '") &&
+                err.message.ends_with("not found")
         })
         .unwrap_or(false)
 }
@@ -1514,10 +1517,10 @@ fn completion_item(
             }
         },
         CompletionFlavor::ComparisonString => escape_r_double_quoted(member.name_raw.as_str()),
-        CompletionFlavor::Extractor
-        | CompletionFlavor::Namespace
-        | CompletionFlavor::Package
-        | CompletionFlavor::Symbol => member.name_raw.clone(),
+        CompletionFlavor::Extractor |
+        CompletionFlavor::Namespace |
+        CompletionFlavor::Package |
+        CompletionFlavor::Symbol => member.name_raw.clone(),
         CompletionFlavor::Pipe => sym_quote_invalid(member.name_raw.as_str()),
         CompletionFlavor::Subset => subset_insert_text(
             member.name_raw.as_str(),
@@ -1951,6 +1954,77 @@ fn completion_request_from_library_string_text(
             .map(|capture| capture.as_str().to_string()),
         accessor: None,
         close_string: true,
+        subset_kind: None,
+    })
+}
+
+fn completion_request_from_argument_string(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<CompletionRequest>> {
+    let Some(string_node) = node_find_string(&context.node) else {
+        return Ok(completion_request_from_argument_string_text(context));
+    };
+
+    let Some(call) = analyze_call_context(context)? else {
+        return Ok(completion_request_from_argument_string_text(context));
+    };
+
+    let Some(formal_name) = call.active_argument.as_deref() else {
+        return Ok(completion_request_from_argument_string_text(context));
+    };
+
+    let prefix = string_prefix(&string_node, context)?;
+    if prefix.is_none() && context.trigger.is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(CompletionRequest {
+        expr: literal_character_choices_completion_expr(call.callee.as_str(), formal_name),
+        flavor: CompletionFlavor::ComparisonString,
+        prefix,
+        accessor: None,
+        close_string: false,
+        subset_kind: None,
+    }))
+}
+
+fn completion_request_from_argument_string_text(
+    context: &DocumentContext,
+) -> Option<CompletionRequest> {
+    static ARGUMENT_STRING_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)
+            ^\s*
+            (?P<callee>
+                [A-Za-z.][A-Za-z0-9._]*
+                (?:
+                    :{2,3}[A-Za-z.][A-Za-z0-9._]*
+                )?
+            )
+            \s*\(
+            .*?
+            (?:^|,)\s*
+            (?P<formal>[A-Za-z.][A-Za-z0-9._]*)\s*=\s*"(?P<prefix>[^"]*)$
+            "#,
+        )
+        .unwrap()
+    });
+
+    let line = context.document.get_line(context.point.row)?;
+    let prefix = line.chars().take(context.point.column).collect::<String>();
+    let captures = ARGUMENT_STRING_RE.captures(prefix.as_str())?;
+
+    Some(CompletionRequest {
+        expr: literal_character_choices_completion_expr(
+            captures.name("callee")?.as_str(),
+            captures.name("formal")?.as_str(),
+        ),
+        flavor: CompletionFlavor::ComparisonString,
+        prefix: captures
+            .name("prefix")
+            .map(|capture| capture.as_str().to_string()),
+        accessor: None,
+        close_string: false,
         subset_kind: None,
     })
 }
@@ -2757,6 +2831,14 @@ fn call_formals_completion_expr(callee: &str) -> String {
     )
 }
 
+fn literal_character_choices_completion_expr(callee: &str, formal_name: &str) -> String {
+    let formal_name = escape_r_string(formal_name);
+
+    format!(
+        "local({{ .f <- tryCatch(formals({callee}), error = function(e) NULL); if (is.null(.f)) {{ stats::setNames(list(), character()) }} else {{ .arg <- .f[[\"{formal_name}\"]]; .vals <- character(); if (is.character(.arg)) {{ .vals <- .arg }} else if (is.call(.arg) && length(.arg) >= 2L && identical(.arg[[1]], as.name(\"c\"))) {{ .elts <- as.list(.arg)[-1]; if (length(.elts) && all(vapply(.elts, function(x) is.character(x) && length(x) == 1L, logical(1)))) {{ .vals <- unlist(.elts, use.names = FALSE) }} }}; .vals <- .vals[!is.na(.vals)]; .vals <- unique(as.character(.vals)); stats::setNames(vector(\"list\", length(.vals)), .vals) }} }})"
+    )
+}
+
 fn library_paths_completion_expr() -> String {
     String::from(
         "local({ .x <- base::.libPaths(); stats::setNames(vector(\"list\", length(.x)), .x) })",
@@ -2881,9 +2963,6 @@ fn is_within_call_parentheses(point: &Point, node: &Node) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::fixtures::point_from_cursor;
-    use crate::lsp::document::Document;
     use std::io::Read;
     use std::io::Write;
     use std::net::TcpListener;
@@ -2891,6 +2970,10 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use std::thread;
+
+    use super::*;
+    use crate::fixtures::point_from_cursor;
+    use crate::lsp::document::Document;
 
     #[test]
     fn test_symbol_prefix_prefers_typed_subset_identifier() {
@@ -2974,19 +3057,16 @@ mod tests {
         let arguments = call_arguments(context.document.contents.as_str(), &call)
             .expect("expected call arguments");
 
-        assert_eq!(
-            arguments,
-            vec![
-                CallArgument {
-                    name: None,
-                    value_expr: String::from("mpg"),
-                },
-                CallArgument {
-                    name: None,
-                    value_expr: String::from("cyl"),
-                },
-            ]
-        );
+        assert_eq!(arguments, vec![
+            CallArgument {
+                name: None,
+                value_expr: String::from("mpg"),
+            },
+            CallArgument {
+                name: None,
+                value_expr: String::from("cyl"),
+            },
+        ]);
     }
 
     #[test]
@@ -3476,14 +3556,13 @@ mod tests {
             .expect("expected legacy fallback bootstrap");
         handle.join().expect("expected listener thread to join");
 
-        assert_eq!(
-            bootstrap.search_path_symbols,
-            vec![String::from("library"), String::from("mtcars")]
-        );
-        assert_eq!(
-            bootstrap.library_paths,
-            vec![PathBuf::from("/tmp/ark-test-library")]
-        );
+        assert_eq!(bootstrap.search_path_symbols, vec![
+            String::from("library"),
+            String::from("mtcars")
+        ]);
+        assert_eq!(bootstrap.library_paths, vec![PathBuf::from(
+            "/tmp/ark-test-library"
+        )]);
         assert_eq!(
             connections.load(Ordering::SeqCst),
             3,
@@ -3605,14 +3684,13 @@ mod tests {
         let bootstrap = bridge.bootstrap().expect("expected bootstrap to recover");
         handle.join().expect("expected listener thread to join");
 
-        assert_eq!(
-            bootstrap.search_path_symbols,
-            vec![String::from("library"), String::from("mtcars")]
-        );
-        assert_eq!(
-            bootstrap.library_paths,
-            vec![PathBuf::from("/tmp/ark-test-library")]
-        );
+        assert_eq!(bootstrap.search_path_symbols, vec![
+            String::from("library"),
+            String::from("mtcars")
+        ]);
+        assert_eq!(bootstrap.library_paths, vec![PathBuf::from(
+            "/tmp/ark-test-library"
+        )]);
     }
 
     #[test]
@@ -3646,14 +3724,13 @@ mod tests {
         .expect("expected bridge");
 
         let bootstrap = bridge.bootstrap().expect("expected cached bootstrap");
-        assert_eq!(
-            bootstrap.search_path_symbols,
-            vec![String::from("library"), String::from("mtcars")]
-        );
-        assert_eq!(
-            bootstrap.library_paths,
-            vec![PathBuf::from("/tmp/ark-test-library")]
-        );
+        assert_eq!(bootstrap.search_path_symbols, vec![
+            String::from("library"),
+            String::from("mtcars")
+        ]);
+        assert_eq!(bootstrap.library_paths, vec![PathBuf::from(
+            "/tmp/ark-test-library"
+        )]);
         assert_eq!(bootstrap.timings.total_ms, 9);
         assert_eq!(bootstrap.timings.search_path_symbols_ms, 4);
         assert_eq!(bootstrap.timings.library_paths_ms, 1);
@@ -3717,17 +3794,18 @@ mod tests {
         })
         .expect("expected bridge");
 
-        let bootstrap = bridge.bootstrap().expect("expected live bootstrap fallback");
+        let bootstrap = bridge
+            .bootstrap()
+            .expect("expected live bootstrap fallback");
         handle.join().expect("expected listener thread to join");
 
-        assert_eq!(
-            bootstrap.search_path_symbols,
-            vec![String::from("library"), String::from("mtcars")]
-        );
-        assert_eq!(
-            bootstrap.library_paths,
-            vec![PathBuf::from("/tmp/ark-test-library")]
-        );
+        assert_eq!(bootstrap.search_path_symbols, vec![
+            String::from("library"),
+            String::from("mtcars")
+        ]);
+        assert_eq!(bootstrap.library_paths, vec![PathBuf::from(
+            "/tmp/ark-test-library"
+        )]);
     }
 
     #[test]

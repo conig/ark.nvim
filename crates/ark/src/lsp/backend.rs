@@ -37,7 +37,6 @@ use crate::console::Console;
 use crate::console::ConsoleNotification;
 use crate::lsp::handlers::HelpTextParams;
 use crate::lsp::handlers::SessionBootstrapResponse;
-use crate::lsp::session_bridge::HelpPage;
 use crate::lsp::handlers::SessionUpdateParams;
 use crate::lsp::handlers::StatusParams;
 use crate::lsp::handlers::VirtualDocumentParams;
@@ -56,6 +55,7 @@ use crate::lsp::input_boundaries::InputBoundariesResponse;
 use crate::lsp::main_loop::Event;
 use crate::lsp::main_loop::GlobalState;
 use crate::lsp::main_loop::TokioUnboundedSender;
+use crate::lsp::session_bridge::HelpPage;
 use crate::lsp::state::RuntimeMode;
 use crate::lsp::statement_range;
 use crate::lsp::statement_range::StatementRangeParams;
@@ -540,7 +540,10 @@ impl Backend {
         )
     }
 
-    async fn help_text(&self, params: HelpTextParams) -> tower_lsp::jsonrpc::Result<Option<HelpPage>> {
+    async fn help_text(
+        &self,
+        params: HelpTextParams,
+    ) -> tower_lsp::jsonrpc::Result<Option<HelpPage>> {
         cast_response!(
             self,
             self.request(LspRequest::HelpText(params)).await,
@@ -662,10 +665,7 @@ pub(crate) fn start_lsp(
             .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
             .custom_method(ARK_STATUS_REQUEST, Backend::status)
             .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
-            .custom_method(
-                ARK_SESSION_BOOTSTRAP_REQUEST,
-                Backend::bootstrap_session,
-            )
+            .custom_method(ARK_SESSION_BOOTSTRAP_REQUEST, Backend::bootstrap_session)
             // In principle this should probably be a Jupyter request
             .custom_method(
                 input_boundaries::POSITRON_INPUT_BOUNDARIES_REQUEST,
@@ -734,10 +734,7 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
         .custom_method(ARK_STATUS_REQUEST, Backend::status)
         .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
-        .custom_method(
-            ARK_SESSION_BOOTSTRAP_REQUEST,
-            Backend::bootstrap_session,
-        )
+        .custom_method(ARK_SESSION_BOOTSTRAP_REQUEST, Backend::bootstrap_session)
         .custom_method(
             input_boundaries::POSITRON_INPUT_BOUNDARIES_REQUEST,
             Backend::input_boundaries,

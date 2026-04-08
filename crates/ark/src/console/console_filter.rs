@@ -240,12 +240,9 @@ impl ConsoleFilter {
         let mut debug_update: Option<DebugCallText> = None;
 
         // Process current state
-        match std::mem::replace(
-            &mut self.state,
-            ConsoleFilterState::Passthrough {
-                at_line_start: true,
-            },
-        ) {
+        match std::mem::replace(&mut self.state, ConsoleFilterState::Passthrough {
+            at_line_start: true,
+        }) {
             ConsoleFilterState::Passthrough { .. } => {},
             ConsoleFilterState::Filtering {
                 pattern, buffer, ..
@@ -373,9 +370,9 @@ fn find_debug_at_expression_start(buffer: &str) -> Option<usize> {
 pub(super) fn strip_step_lines(text: &mut String) {
     let mut pos = 0;
     for line in text.split_inclusive('\n') {
-        let is_debug = line.starts_with(MatchedPattern::CalledFrom.prefix())
-            || line.starts_with(MatchedPattern::DebugAt.prefix())
-            || line.starts_with(MatchedPattern::Debug.prefix());
+        let is_debug = line.starts_with(MatchedPattern::CalledFrom.prefix()) ||
+            line.starts_with(MatchedPattern::DebugAt.prefix()) ||
+            line.starts_with(MatchedPattern::Debug.prefix());
         if is_debug {
             text.truncate(pos);
             return;

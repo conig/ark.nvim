@@ -700,8 +700,8 @@ fn recurse_namespace(
     // lazy library resolution in detached mode where bootstrap intentionally
     // avoids enumerating every installed package for startup speed.
     let package = lhs.node_as_str(&context.doc.contents)?;
-    let package_exists = context.installed_packages.contains(package)
-        || (!context.library.library_paths.is_empty() && context.library.get(package).is_some());
+    let package_exists = context.installed_packages.contains(package) ||
+        (!context.library.library_paths.is_empty() && context.library.get(package).is_some());
 
     if !package_exists {
         let range = lhs.range();

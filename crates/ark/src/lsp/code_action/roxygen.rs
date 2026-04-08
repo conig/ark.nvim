@@ -39,8 +39,8 @@ pub(crate) fn roxygen_documentation(
     // Parent must be a `<-` or `=` assignment node
     let assignment = node.parent()?;
 
-    if !assignment.is_binary_operator_of_kind(BinaryOperatorType::LeftAssignment)
-        && !assignment.is_binary_operator_of_kind(BinaryOperatorType::EqualsAssignment)
+    if !assignment.is_binary_operator_of_kind(BinaryOperatorType::LeftAssignment) &&
+        !assignment.is_binary_operator_of_kind(BinaryOperatorType::EqualsAssignment)
     {
         return None;
     }
@@ -70,8 +70,8 @@ pub(crate) fn roxygen_documentation(
             if previous_line
                 .next()
                 .map(|byte| byte == b'#')
-                .unwrap_or(false)
-                && previous_line
+                .unwrap_or(false) &&
+                previous_line
                     .next()
                     .map(|byte| byte == b'\'')
                     .unwrap_or(false)
@@ -237,70 +237,52 @@ mod tests {
 
     #[test]
     fn test_adds_parameters() {
-        let new_text = roxygen_documentation_test(
-            "fu@n <- function(a, b = 2) {}",
-            Position {
-                line: 0,
-                character: 0,
-            },
-        );
+        let new_text = roxygen_documentation_test("fu@n <- function(a, b = 2) {}", Position {
+            line: 0,
+            character: 0,
+        });
         insta::assert_snapshot!(new_text);
 
-        let new_text = roxygen_documentation_test(
-            "fu@n <- function(...) {}",
-            Position {
-                line: 0,
-                character: 0,
-            },
-        );
+        let new_text = roxygen_documentation_test("fu@n <- function(...) {}", Position {
+            line: 0,
+            character: 0,
+        });
         insta::assert_snapshot!(new_text);
 
         // Mock some new lines and indentation
         // (It's correct for the first line to not be indented in the snapshot,
         // since the `Position` handles the indentation through `character`)
-        let new_text = roxygen_documentation_test(
-            "\n\n    fu@n <- function(...) {}",
-            Position {
-                line: 2,
-                character: 4,
-            },
-        );
+        let new_text = roxygen_documentation_test("\n\n    fu@n <- function(...) {}", Position {
+            line: 2,
+            character: 4,
+        });
         insta::assert_snapshot!(new_text);
     }
 
     #[test]
     fn test_no_parameters() {
-        let new_text = roxygen_documentation_test(
-            "fu@n <- function() {}",
-            Position {
-                line: 0,
-                character: 0,
-            },
-        );
+        let new_text = roxygen_documentation_test("fu@n <- function() {}", Position {
+            line: 0,
+            character: 0,
+        });
         insta::assert_snapshot!(new_text);
     }
 
     #[test]
     fn test_supports_equals_assignment() {
-        let new_text = roxygen_documentation_test(
-            "fu@n = function(a, b = 2) {}",
-            Position {
-                line: 0,
-                character: 0,
-            },
-        );
+        let new_text = roxygen_documentation_test("fu@n = function(a, b = 2) {}", Position {
+            line: 0,
+            character: 0,
+        });
         insta::assert_snapshot!(new_text);
     }
 
     #[test]
     fn test_adds_documentation_when_direct_preceding_line_is_not_documentation() {
-        let new_text = roxygen_documentation_test(
-            "#'\n\nfu@n = function(a, b = 2) {}",
-            Position {
-                line: 2,
-                character: 0,
-            },
-        );
+        let new_text = roxygen_documentation_test("#'\n\nfu@n = function(a, b = 2) {}", Position {
+            line: 2,
+            character: 0,
+        });
         insta::assert_snapshot!(new_text);
     }
 

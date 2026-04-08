@@ -93,16 +93,16 @@ pub extern "C-unwind" fn ark_display_value_rs(x: libr::SEXP) -> *const ffi::c_ch
             ),
             // TODO: Show some values (not with ALTREP objects as that could
             // materialise or cause side effects)
-            libr::LGLSXP
-            | libr::INTSXP
-            | libr::REALSXP
-            | libr::CPLXSXP
-            | libr::RAWSXP
-            | libr::STRSXP
-            | libr::VECSXP
-            | libr::SPECIALSXP
-            | libr::BUILTINSXP
-            | libr::PROMSXP => {
+            libr::LGLSXP |
+            libr::INTSXP |
+            libr::REALSXP |
+            libr::CPLXSXP |
+            libr::RAWSXP |
+            libr::STRSXP |
+            libr::VECSXP |
+            libr::SPECIALSXP |
+            libr::BUILTINSXP |
+            libr::PROMSXP => {
                 format!("{tag} [{len}]", len = libr::Rf_xlength(x))
             },
 

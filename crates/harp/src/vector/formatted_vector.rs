@@ -41,10 +41,9 @@ pub struct FormattedVector {
 
 impl FormattedVector {
     pub fn new(vector: RObject) -> anyhow::Result<Self> {
-        r_assert_type(
-            vector.sexp,
-            &[RAWSXP, LGLSXP, INTSXP, REALSXP, STRSXP, CPLXSXP],
-        )?;
+        r_assert_type(vector.sexp, &[
+            RAWSXP, LGLSXP, INTSXP, REALSXP, STRSXP, CPLXSXP,
+        ])?;
         Ok(Self { vector })
     }
 

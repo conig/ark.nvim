@@ -318,8 +318,8 @@ fn index_assignment(
 ) -> anyhow::Result<()> {
     if !matches!(
         node.node_type(),
-        NodeType::BinaryOperator(BinaryOperatorType::LeftAssignment)
-            | NodeType::BinaryOperator(BinaryOperatorType::EqualsAssignment)
+        NodeType::BinaryOperator(BinaryOperatorType::LeftAssignment) |
+            NodeType::BinaryOperator(BinaryOperatorType::EqualsAssignment)
     ) {
         return Ok(());
     }
@@ -333,8 +333,8 @@ fn index_assignment(
         return Ok(());
     };
 
-    if crate::treesitter::node_is_call(&rhs, "R6Class", &doc.contents)
-        || crate::treesitter::node_is_namespaced_call(&rhs, "R6", "R6Class", &doc.contents)
+    if crate::treesitter::node_is_call(&rhs, "R6Class", &doc.contents) ||
+        crate::treesitter::node_is_namespaced_call(&rhs, "R6", "R6Class", &doc.contents)
     {
         index_r6_class_methods(doc, &rhs, entries)?;
         // Fallthrough to index the variable to which the R6 class is assigned

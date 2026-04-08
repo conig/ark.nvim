@@ -209,10 +209,11 @@ mod tests {
         let pkg = Package::load_from_folder(dir.path()).unwrap().unwrap();
 
         // Should include all exports and all index names, sorted and deduped
-        assert_eq!(
-            pkg.exported_symbols,
-            vec!["path_to_file", "penguins", "penguins_raw"]
-        );
+        assert_eq!(pkg.exported_symbols, vec![
+            "path_to_file",
+            "penguins",
+            "penguins_raw"
+        ]);
         assert_eq!(pkg.description.name, "penguins");
     }
 }

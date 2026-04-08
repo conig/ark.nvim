@@ -189,8 +189,8 @@ fn is_inside_help_operator(node: &Node) -> bool {
 
     matches!(
         parent.node_type(),
-        NodeType::UnaryOperator(UnaryOperatorType::Help)
-            | NodeType::BinaryOperator(BinaryOperatorType::Help)
+        NodeType::UnaryOperator(UnaryOperatorType::Help) |
+            NodeType::BinaryOperator(BinaryOperatorType::Help)
     )
 }
 
@@ -219,8 +219,8 @@ fn determine_arguments_status(function_container_node: &Node) -> ArgumentsStatus
     };
 
     // Check if "(" is followed immediately by ")"
-    if open_paren.end_position().row == close_paren.start_position().row
-        && open_paren.end_position().column == close_paren.start_position().column
+    if open_paren.end_position().row == close_paren.start_position().row &&
+        open_paren.end_position().column == close_paren.start_position().column
     {
         ArgumentsStatus::Empty
     } else {

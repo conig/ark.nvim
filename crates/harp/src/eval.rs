@@ -25,33 +25,24 @@ impl Default for RParseEvalOptions {
 }
 
 pub fn parse_eval0(code: &str, env: impl Into<RObject>) -> harp::Result<RObject> {
-    harp::parse_eval(
-        code,
-        RParseEvalOptions {
-            env: env.into(),
-            ..Default::default()
-        },
-    )
+    harp::parse_eval(code, RParseEvalOptions {
+        env: env.into(),
+        ..Default::default()
+    })
 }
 
 pub fn parse_eval_global(code: &str) -> harp::Result<RObject> {
-    harp::parse_eval(
-        code,
-        RParseEvalOptions {
-            env: R_ENVS.global.into(),
-            ..Default::default()
-        },
-    )
+    harp::parse_eval(code, RParseEvalOptions {
+        env: R_ENVS.global.into(),
+        ..Default::default()
+    })
 }
 
 pub fn parse_eval_base(code: &str) -> harp::Result<RObject> {
-    harp::parse_eval(
-        code,
-        RParseEvalOptions {
-            env: R_ENVS.base.into(),
-            ..Default::default()
-        },
-    )
+    harp::parse_eval(code, RParseEvalOptions {
+        env: R_ENVS.base.into(),
+        ..Default::default()
+    })
 }
 
 pub fn parse_eval(code: &str, options: RParseEvalOptions) -> harp::Result<RObject> {

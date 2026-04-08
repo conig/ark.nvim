@@ -12,6 +12,7 @@ local list = require("blink.cmp.completion.list")
 local test_file = "/tmp/ark_string_accept_completion.R"
 local lines = {
   'iris$Species == ""',
+  'cor(mtcars, method = "")',
   'mtcars[, c("")]',
   'library("u")',
 }
@@ -27,7 +28,7 @@ local function item_index(label)
 end
 
 local function completion_cursor(line)
-  if line == 3 then
+  if line == 4 then
     local start_index = assert(lines[line]:find('"u"', 1, true))
     return start_index + 1
   end
@@ -46,7 +47,8 @@ local function wait_for_item(label)
   end)
 end
 
-local function accept_string_completion(line, label, expected_line, expected_under_cursor)
+local function accept_string_completion(line, label, expected_line, expected_under_cursor, opts)
+  opts = opts or {}
   vim.api.nvim_win_set_cursor(0, { line, completion_cursor(line) })
   vim.cmd("startinsert")
   require("blink.cmp.completion.trigger").show({
@@ -54,6 +56,10 @@ local function accept_string_completion(line, label, expected_line, expected_und
     trigger_character = '"',
   })
   wait_for_item(label)
+
+  if opts.expect_no_snippets then
+    ark_test.assert_no_snippet_items(list.items, label)
+  end
 
   local index = item_index(label)
   if not index then
@@ -110,12 +116,20 @@ local function accept_string_completion(line, label, expected_line, expected_und
   vim.cmd("stopinsert")
 end
 
-accept_string_completion(1, "setosa", 'iris$Species == "setosa"', "")
-accept_string_completion(2, "mpg", 'mtcars[, c("mpg")]', ")")
-accept_string_completion(3, "utils", 'library("utils")', ")")
+accept_string_completion(1, "setosa", 'iris$Species == "setosa"', "", {
+  expect_no_snippets = true,
+})
+accept_string_completion(2, "pearson", 'cor(mtcars, method = "pearson")', ")", {
+  expect_no_snippets = true,
+})
+accept_string_completion(3, "mpg", 'mtcars[, c("mpg")]', ")", {
+  expect_no_snippets = true,
+})
+accept_string_completion(4, "utils", 'library("utils")', ")")
 
 vim.print({
   comparison = true,
+  argument = true,
   subset = true,
   library = true,
 })

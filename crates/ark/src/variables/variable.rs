@@ -382,13 +382,11 @@ impl WorkspaceVariableDisplayValue {
     }
 
     fn try_from_method(value: SEXP) -> Option<Self> {
-        let display_value = ArkGenerics::VariableDisplayValue.try_dispatch::<String>(
-            value,
-            vec![RArgument::new(
+        let display_value =
+            ArkGenerics::VariableDisplayValue.try_dispatch::<String>(value, vec![RArgument::new(
                 "width",
                 RObject::from(MAX_DISPLAY_VALUE_LENGTH as i32),
-            )],
-        );
+            )]);
 
         let display_value = unwrap!(display_value, Err(err) => {
             log::error!("Failed to apply '{}': {err:?}", ArkGenerics::VariableDisplayValue);
@@ -1098,13 +1096,11 @@ impl PositronVariable {
         match parse_custom_access_key(access_key) {
             Ok(None) => {}, // Do nothing and proceed,
             Ok(Some((name, index))) => {
-                let node = ArkGenerics::VariableGetChildAt.try_dispatch::<RObject>(
-                    object.sexp,
-                    vec![
+                let node =
+                    ArkGenerics::VariableGetChildAt.try_dispatch::<RObject>(object.sexp, vec![
                         RArgument::new("index", RObject::from(index + 1)), // Index is 0-based, so we convert to 1-based for R.
                         RArgument::new("name", name),
-                    ],
-                );
+                    ]);
                 match node {
                     Ok(None) => {
                         // The object doesn't have a custom get_child_at method. We continue to built-in methods.
@@ -1447,8 +1443,8 @@ impl PositronVariable {
                     false
                 } else {
                     match &b.value {
-                        BindingValue::Standard { object, .. }
-                        | BindingValue::Altrep { object, .. } => {
+                        BindingValue::Standard { object, .. } |
+                        BindingValue::Altrep { object, .. } => {
                             if r_typeof(object.sexp) == CLOSXP {
                                 has_methods = true;
                                 false
@@ -1937,14 +1933,11 @@ mod tests {
             let fields = PositronVariable::inspect(env.clone(), &path).unwrap();
             assert_eq!(fields.len(), 3);
             let names: Vec<String> = fields.iter().map(|v| v.display_name.clone()).collect();
-            assert_eq!(
-                names,
-                vec![
-                    String::from("clone"),
-                    String::from("greet"),
-                    String::from("initialize")
-                ]
-            );
+            assert_eq!(names, vec![
+                String::from("clone"),
+                String::from("greet"),
+                String::from("initialize")
+            ]);
 
             // Can we get a list of private methods?
             let path = vec![String::from("x"), String::from("<private>")];

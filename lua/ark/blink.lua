@@ -72,6 +72,61 @@ local function is_extractor_trigger(context)
   return kind == "trigger_character" and (character == "$" or character == "@")
 end
 
+local function line_prefix_at_cursor(context)
+  local line = type(context) == "table" and context.line or nil
+  local cursor = type(context) == "table" and context.cursor or nil
+  local col = type(cursor) == "table" and cursor[2] or nil
+  if type(line) ~= "string" or type(col) ~= "number" or col < 0 then
+    return nil
+  end
+  return line:sub(1, col)
+end
+
+local function is_lsp_string_trigger(context)
+  local trigger = type(context) == "table" and context.trigger or nil
+  local kind = type(trigger) == "table" and trigger.kind or nil
+  local character = type(trigger) == "table" and trigger.character or nil
+  if kind ~= "trigger_character" or character ~= '"' then
+    return false
+  end
+
+  local prefix = line_prefix_at_cursor(context)
+  if type(prefix) ~= "string" then
+    return false
+  end
+
+  return prefix:match('==%s*"[^"]*$') ~= nil
+    or prefix:match('!=%s*"[^"]*$') ~= nil
+    or prefix:match('^%s*library%s*%(%s*"[^"]*$') ~= nil
+    or prefix:match('^%s*require%s*%(%s*"[^"]*$') ~= nil
+    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%[%s*"[^"]*$') ~= nil
+    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*"[^"]*$') ~= nil
+    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*"[^"]*$') ~= nil
+    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*c%s*%(%s*"[^"]*$') ~= nil
+    or prefix:match('[,(]%s*[A-Za-z.][A-Za-z0-9._]*%s*=%s*"[^"]*$') ~= nil
+end
+
+local function is_lsp_subset_trigger(context)
+  local trigger = type(context) == "table" and context.trigger or nil
+  local kind = type(trigger) == "table" and trigger.kind or nil
+  local character = type(trigger) == "table" and trigger.character or nil
+  if kind ~= "trigger_character" or not (character == "[" or character == "(" or character == "," or character == " ") then
+    return false
+  end
+
+  local prefix = line_prefix_at_cursor(context)
+  if type(prefix) ~= "string" then
+    return false
+  end
+
+  return prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*$') ~= nil
+    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%[%s*$') ~= nil
+    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*%.%(%s*$') ~= nil
+    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*c%s*%(%s*$') ~= nil
+    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*%.%([^%]]*,%s*$') ~= nil
+    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*c%s*%([^%]]*,%s*$') ~= nil
+end
+
 local function ark_should_show_auto_items(context)
   local trigger = type(context) == "table" and context.trigger or nil
   local initial_kind = type(trigger) == "table" and trigger.initial_kind or nil
@@ -91,7 +146,7 @@ local function ark_should_show_auto_items(context)
 end
 
 local function ark_should_show_non_lsp_items(context)
-  if is_extractor_trigger(context) then
+  if is_extractor_trigger(context) or is_lsp_string_trigger(context) or is_lsp_subset_trigger(context) then
     return false
   end
   return ark_should_show_auto_items(context)

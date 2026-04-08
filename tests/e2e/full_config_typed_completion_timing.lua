@@ -127,6 +127,9 @@ local function probe_completion(prefix, expected_label)
   local blink_labels = vim.tbl_map(function(item)
     return item.label
   end, list.items)
+  if blink.is_visible() and item_index(expected_label) ~= nil then
+    ark_test.assert_no_snippet_items(list.items, expected_label)
+  end
   local result = {
     prefix = prefix,
     expected_label = expected_label,

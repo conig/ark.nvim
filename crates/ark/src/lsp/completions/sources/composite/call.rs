@@ -66,9 +66,9 @@ fn completions_from_call(
         CallNodePositionType::Ambiguous => (),
         // We shouldn't provide argument completions, let another source
         // contribute completions
-        CallNodePositionType::Value
-        | CallNodePositionType::Outside
-        | CallNodePositionType::Unknown => return Ok(None),
+        CallNodePositionType::Value |
+        CallNodePositionType::Outside |
+        CallNodePositionType::Unknown => return Ok(None),
     };
 
     // Get the caller text.
@@ -188,13 +188,10 @@ fn completions_from_session_arguments(
     // If we can find it, this is the most accurate way to provide completions,
     // as it represents the current state of the world and adds completions
     // for S3 methods based on `object`.
-    let r_callable = harp::parse_eval(
-        callable,
-        RParseEvalOptions {
-            forbid_function_calls: true,
-            env: console::selected_env(),
-        },
-    );
+    let r_callable = harp::parse_eval(callable, RParseEvalOptions {
+        forbid_function_calls: true,
+        env: console::selected_env(),
+    });
 
     let r_callable = match r_callable {
         Ok(r_callable) => r_callable,

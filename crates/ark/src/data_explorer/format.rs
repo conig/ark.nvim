@@ -597,19 +597,16 @@ mod tests {
             )
             .unwrap();
             let formatted = format_column(data.sexp, &default_options());
-            assert_eq!(
-                formatted,
-                vec![
-                    FormattedValue::Na.into(),
-                    FormattedValue::Nan.into(),
-                    FormattedValue::Inf.into(),
-                    FormattedValue::NegInf.into(),
-                    ColumnValue::FormattedValue("0.00".to_string()),
-                    ColumnValue::FormattedValue("1.00".to_string()),
-                    ColumnValue::FormattedValue("1.00e+09".to_string()),
-                    ColumnValue::FormattedValue("-1.00e+09".to_string())
-                ]
-            );
+            assert_eq!(formatted, vec![
+                FormattedValue::Na.into(),
+                FormattedValue::Nan.into(),
+                FormattedValue::Inf.into(),
+                FormattedValue::NegInf.into(),
+                ColumnValue::FormattedValue("0.00".to_string()),
+                ColumnValue::FormattedValue("1.00".to_string()),
+                ColumnValue::FormattedValue("1.00e+09".to_string()),
+                ColumnValue::FormattedValue("-1.00e+09".to_string())
+            ]);
         })
     }
 
@@ -618,14 +615,11 @@ mod tests {
         r_task(|| {
             let data = harp::parse_eval_global("list(0, NULL, NA_real_)").unwrap();
             let formatted = format_column(data.sexp, &default_options());
-            assert_eq!(
-                formatted,
-                vec![
-                    ColumnValue::FormattedValue("<numeric [1]>".to_string()),
-                    FormattedValue::Null.into(),
-                    ColumnValue::FormattedValue("<numeric [1]>".to_string())
-                ]
-            );
+            assert_eq!(formatted, vec![
+                ColumnValue::FormattedValue("<numeric [1]>".to_string()),
+                FormattedValue::Null.into(),
+                ColumnValue::FormattedValue("<numeric [1]>".to_string())
+            ]);
         })
     }
 
@@ -635,17 +629,14 @@ mod tests {
             let data =
                 harp::parse_eval_global("as.integer(c(1, 1000, 0, -100000, NA, 1000000))").unwrap();
             let formatted = format_column(data.sexp, &default_options());
-            assert_eq!(
-                formatted,
-                vec![
-                    ColumnValue::FormattedValue("1".to_string()),
-                    ColumnValue::FormattedValue("1,000".to_string()),
-                    ColumnValue::FormattedValue("0".to_string()),
-                    ColumnValue::FormattedValue("-100,000".to_string()),
-                    FormattedValue::Na.into(),
-                    ColumnValue::FormattedValue("1,000,000".to_string())
-                ]
-            );
+            assert_eq!(formatted, vec![
+                ColumnValue::FormattedValue("1".to_string()),
+                ColumnValue::FormattedValue("1,000".to_string()),
+                ColumnValue::FormattedValue("0".to_string()),
+                ColumnValue::FormattedValue("-100,000".to_string()),
+                FormattedValue::Na.into(),
+                ColumnValue::FormattedValue("1,000,000".to_string())
+            ]);
         })
     }
 
@@ -654,17 +645,14 @@ mod tests {
         r_task(|| {
             let data = harp::parse_eval_global("c('a', 'b', 'c', NA, 'd', 'e')").unwrap();
             let formatted = format_column(data.sexp, &default_options());
-            assert_eq!(
-                formatted,
-                vec![
-                    ColumnValue::FormattedValue("a".to_string()),
-                    ColumnValue::FormattedValue("b".to_string()),
-                    ColumnValue::FormattedValue("c".to_string()),
-                    FormattedValue::Na.into(),
-                    ColumnValue::FormattedValue("d".to_string()),
-                    ColumnValue::FormattedValue("e".to_string())
-                ]
-            );
+            assert_eq!(formatted, vec![
+                ColumnValue::FormattedValue("a".to_string()),
+                ColumnValue::FormattedValue("b".to_string()),
+                ColumnValue::FormattedValue("c".to_string()),
+                FormattedValue::Na.into(),
+                ColumnValue::FormattedValue("d".to_string()),
+                ColumnValue::FormattedValue("e".to_string())
+            ]);
         })
     }
 
@@ -674,17 +662,14 @@ mod tests {
             let data =
                 harp::parse_eval_global("factor(c('aaaaa', 'b', 'c', NA, 'd', 'e'))").unwrap();
             let formatted = format_column(data.sexp, &default_options());
-            assert_eq!(
-                formatted,
-                vec![
-                    ColumnValue::FormattedValue("aaaaa".to_string()),
-                    ColumnValue::FormattedValue("b".to_string()),
-                    ColumnValue::FormattedValue("c".to_string()),
-                    FormattedValue::Na.into(),
-                    ColumnValue::FormattedValue("d".to_string()),
-                    ColumnValue::FormattedValue("e".to_string())
-                ]
-            );
+            assert_eq!(formatted, vec![
+                ColumnValue::FormattedValue("aaaaa".to_string()),
+                ColumnValue::FormattedValue("b".to_string()),
+                ColumnValue::FormattedValue("c".to_string()),
+                FormattedValue::Na.into(),
+                ColumnValue::FormattedValue("d".to_string()),
+                ColumnValue::FormattedValue("e".to_string())
+            ]);
         })
     }
 
@@ -700,16 +685,13 @@ mod tests {
             )
             .unwrap();
             let formatted = format_column(data.sexp, &default_options());
-            assert_eq!(
-                formatted,
-                vec![
-                    ColumnValue::FormattedValue("306".to_string()),
-                    ColumnValue::FormattedValue("455".to_string()),
-                    ColumnValue::FormattedValue("1010+".to_string()),
-                    ColumnValue::FormattedValue("210".to_string()),
-                    ColumnValue::FormattedValue("883".to_string())
-                ]
-            );
+            assert_eq!(formatted, vec![
+                ColumnValue::FormattedValue("306".to_string()),
+                ColumnValue::FormattedValue("455".to_string()),
+                ColumnValue::FormattedValue("1010+".to_string()),
+                ColumnValue::FormattedValue("210".to_string()),
+                ColumnValue::FormattedValue("883".to_string())
+            ]);
         })
     }
 
@@ -724,17 +706,14 @@ mod tests {
                 harp::parse_eval_global("c(1+1i, 2+2i, 3+3i, NA, 1000000000+1000000000i, 5+5i)")
                     .unwrap();
             let formatted = format_column(data.sexp, &default_options());
-            assert_eq!(
-                formatted,
-                vec![
-                    ColumnValue::FormattedValue("1+1i".to_string()),
-                    ColumnValue::FormattedValue("2+2i".to_string()),
-                    ColumnValue::FormattedValue("3+3i".to_string()),
-                    FormattedValue::Na.into(),
-                    ColumnValue::FormattedValue("1000000000+1000000000i".to_string()),
-                    ColumnValue::FormattedValue("5+5i".to_string())
-                ]
-            );
+            assert_eq!(formatted, vec![
+                ColumnValue::FormattedValue("1+1i".to_string()),
+                ColumnValue::FormattedValue("2+2i".to_string()),
+                ColumnValue::FormattedValue("3+3i".to_string()),
+                FormattedValue::Na.into(),
+                ColumnValue::FormattedValue("1000000000+1000000000i".to_string()),
+                ColumnValue::FormattedValue("5+5i".to_string())
+            ]);
         })
     }
 
@@ -743,17 +722,14 @@ mod tests {
         r_task(|| {
             let data = harp::parse_eval_global("c(TRUE, FALSE, NA, TRUE, FALSE, TRUE)").unwrap();
             let formatted = format_column(data.sexp, &default_options());
-            assert_eq!(
-                formatted,
-                vec![
-                    ColumnValue::FormattedValue("TRUE".to_string()),
-                    ColumnValue::FormattedValue("FALSE".to_string()),
-                    FormattedValue::Na.into(),
-                    ColumnValue::FormattedValue("TRUE".to_string()),
-                    ColumnValue::FormattedValue("FALSE".to_string()),
-                    ColumnValue::FormattedValue("TRUE".to_string())
-                ]
-            );
+            assert_eq!(formatted, vec![
+                ColumnValue::FormattedValue("TRUE".to_string()),
+                ColumnValue::FormattedValue("FALSE".to_string()),
+                FormattedValue::Na.into(),
+                ColumnValue::FormattedValue("TRUE".to_string()),
+                ColumnValue::FormattedValue("FALSE".to_string()),
+                ColumnValue::FormattedValue("TRUE".to_string())
+            ]);
         })
     }
 
@@ -763,28 +739,22 @@ mod tests {
             let data = harp::parse_eval_global(r#"as.POSIXct(c("2012-01-01", NA, "2017-05-27"))"#)
                 .unwrap();
             let formatted = format_column(data.sexp, &default_options());
-            assert_eq!(
-                formatted,
-                vec![
-                    ColumnValue::FormattedValue("2012-01-01".to_string()),
-                    FormattedValue::Na.into(),
-                    ColumnValue::FormattedValue("2017-05-27".to_string())
-                ]
-            );
+            assert_eq!(formatted, vec![
+                ColumnValue::FormattedValue("2012-01-01".to_string()),
+                FormattedValue::Na.into(),
+                ColumnValue::FormattedValue("2017-05-27".to_string())
+            ]);
 
             let data = harp::parse_eval_global(
                 r#"as.POSIXct(c("2012-01-01 00:01:00", NA, "2017-05-27 00:00:01"))"#,
             )
             .unwrap();
             let formatted = format_column(data.sexp, &default_options());
-            assert_eq!(
-                formatted,
-                vec![
-                    ColumnValue::FormattedValue("2012-01-01 00:01:00".to_string()),
-                    FormattedValue::Na.into(),
-                    ColumnValue::FormattedValue("2017-05-27 00:00:01".to_string())
-                ]
-            );
+            assert_eq!(formatted, vec![
+                ColumnValue::FormattedValue("2012-01-01 00:01:00".to_string()),
+                FormattedValue::Na.into(),
+                ColumnValue::FormattedValue("2017-05-27 00:00:01".to_string())
+            ]);
         })
     }
 
@@ -796,29 +766,24 @@ mod tests {
 
             let data = harp::parse_eval_global(r#"c("aaaaa", "aaaaaaaa", "aa")"#).unwrap();
             let formatted = format_column(data.sexp, &options);
-            assert_eq!(
-                formatted,
-                vec![
-                    ColumnValue::FormattedValue("aaa".to_string()),
-                    ColumnValue::FormattedValue("aaa".to_string()),
-                    ColumnValue::FormattedValue("aa".to_string()),
-                ]
-            );
+            assert_eq!(formatted, vec![
+                ColumnValue::FormattedValue("aaa".to_string()),
+                ColumnValue::FormattedValue("aaa".to_string()),
+                ColumnValue::FormattedValue("aa".to_string()),
+            ]);
 
             let data = harp::parse_eval_global(r#"c("ボルテックス")"#).unwrap();
             let formatted = format_column(data.sexp, &options);
-            assert_eq!(
-                formatted,
-                vec![ColumnValue::FormattedValue("ボルテ".to_string()),]
-            );
+            assert_eq!(formatted, vec![ColumnValue::FormattedValue(
+                "ボルテ".to_string()
+            ),]);
 
             options.max_value_length = 4;
             let data = harp::parse_eval_global(r#"c("नमस्ते")"#).unwrap();
             let formatted = format_column(data.sexp, &options);
-            assert_eq!(
-                formatted,
-                vec![ColumnValue::FormattedValue("नमस्".to_string()),]
-            );
+            assert_eq!(formatted, vec![ColumnValue::FormattedValue(
+                "नमस्".to_string()
+            ),]);
         })
     }
 }
