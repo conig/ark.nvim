@@ -492,6 +492,27 @@ local function prompt_ready(session)
   return last_line:sub(-1) == ">"
 end
 
+local function bridge_env_payload(config, session, status_path)
+  if type(config.session_kind) ~= "string" or config.session_kind == "" then
+    return nil
+  end
+  if type(session) ~= "table" then
+    return nil
+  end
+  if type(status_path) ~= "string" or status_path == "" then
+    return nil
+  end
+
+  return {
+    ARK_SESSION_KIND = config.session_kind,
+    ARK_SESSION_STATUS_FILE = status_path,
+    ARK_SESSION_TMUX_SOCKET = session.tmux_socket,
+    ARK_SESSION_TMUX_SESSION = session.tmux_session,
+    ARK_SESSION_TMUX_PANE = session.tmux_pane,
+    ARK_SESSION_TIMEOUT_MS = tostring(config.session_timeout_ms or 1000),
+  }
+end
+
 local function refresh_visible_tab_session(index)
   local tab = state.tabs[index]
   if type(tab) ~= "table" or tab.visible ~= true or not tab.pane_id or not pane_exists(tab.pane_id) then
@@ -914,75 +935,77 @@ function M.session()
   return session and vim.deepcopy(session) or nil
 end
 
-function M.startup_status(config)
-  local session = active_startup_session()
-  if not session then
-    return nil
-  end
-
-  local status = read_startup_status(session, config)
-  if status and status.repl_ready ~= true and prompt_ready(session) then
-    status.repl_ready = true
-  end
-
-  return status
-end
-
-function M.startup_status_authoritative(config)
-  local session = active_startup_session()
-  if not session then
-    return nil
-  end
-
-  return read_startup_status(session, config)
-end
-
-function M.startup_status_path(config)
-  local session = active_startup_session()
-  if not session then
-    return nil
-  end
-
-  return status_file_path(session, config)
-end
-
-function M.bridge_env(config)
-  if type(config.session_kind) ~= "string" or config.session_kind == "" then
-    return nil
-  end
+function M.startup_snapshot(config, snapshot_opts)
+  config = config or {}
+  snapshot_opts = snapshot_opts or {}
 
   local session = active_startup_session()
   if not session then
-    return nil
-  end
-
-  local authoritative_status = M.startup_status_authoritative(config)
-  if type(authoritative_status) ~= "table" then
-    return nil
-  end
-  if authoritative_status.status ~= "ready" or authoritative_status.port == nil then
-    return nil
-  end
-  if type(authoritative_status.auth_token) ~= "string" or authoritative_status.auth_token == "" then
-    return nil
-  end
-  if not ping_bridge(session, authoritative_status, 150) then
     return nil
   end
 
   local status_path = status_file_path(session, config)
-  if type(status_path) ~= "string" or status_path == "" then
-    return nil
+  local authoritative_status = read_startup_status(session, config)
+  local startup_status = authoritative_status and vim.deepcopy(authoritative_status) or nil
+  if startup_status and startup_status.repl_ready ~= true and snapshot_opts.include_prompt_ready == true then
+    if prompt_ready(session) then
+      startup_status.repl_ready = true
+    end
+  end
+
+  local bridge_ready = false
+  if type(authoritative_status) == "table"
+    and authoritative_status.status == "ready"
+    and authoritative_status.port ~= nil
+    and type(authoritative_status.auth_token) == "string"
+    and authoritative_status.auth_token ~= ""
+  then
+    if snapshot_opts.validate_bridge == false then
+      bridge_ready = true
+    else
+      local timeout_ms = tonumber(snapshot_opts.bridge_timeout_ms or snapshot_opts.timeout_ms or 150) or 150
+      bridge_ready = ping_bridge(session, authoritative_status, timeout_ms)
+    end
   end
 
   return {
-    ARK_SESSION_KIND = config.session_kind,
-    ARK_SESSION_STATUS_FILE = status_path,
-    ARK_SESSION_TMUX_SOCKET = session.tmux_socket,
-    ARK_SESSION_TMUX_SESSION = session.tmux_session,
-    ARK_SESSION_TMUX_PANE = session.tmux_pane,
-    ARK_SESSION_TIMEOUT_MS = tostring(config.session_timeout_ms or 1000),
+    session = vim.deepcopy(session),
+    status_path = status_path,
+    startup_status_path = status_path,
+    startup_status = startup_status,
+    authoritative_status = authoritative_status and vim.deepcopy(authoritative_status) or nil,
+    bridge_ready = bridge_ready,
+    cmd_env = bridge_ready and bridge_env_payload(config, session, status_path) or nil,
   }
+end
+
+function M.startup_status(config)
+  local snapshot = M.startup_snapshot(config, {
+    include_prompt_ready = true,
+    validate_bridge = false,
+  })
+  return snapshot and snapshot.startup_status or nil
+end
+
+function M.startup_status_authoritative(config)
+  local snapshot = M.startup_snapshot(config, {
+    validate_bridge = false,
+  })
+  return snapshot and snapshot.authoritative_status or nil
+end
+
+function M.startup_status_path(config)
+  local snapshot = M.startup_snapshot(config, {
+    validate_bridge = false,
+  })
+  return snapshot and snapshot.startup_status_path or nil
+end
+
+function M.bridge_env(config, snapshot)
+  local current = type(snapshot) == "table" and snapshot or M.startup_snapshot(config, {
+    validate_bridge = true,
+  })
+  return current and current.cmd_env or nil
 end
 
 function M.send_text(text)
@@ -1046,10 +1069,12 @@ end
 function M.status(config)
   prune_dead_tabs()
   local session = M.session()
-  local startup_status = session and M.startup_status(config or {}) or nil
-  local bridge_ready = session and startup_status and startup_status.status == "ready"
-    and startup_status.port ~= nil and ping_bridge(session, startup_status, 150)
-    or false
+  local snapshot = session and M.startup_snapshot(config or {}, {
+    include_prompt_ready = true,
+    validate_bridge = true,
+  }) or nil
+  local startup_status = snapshot and snapshot.startup_status or nil
+  local bridge_ready = snapshot and snapshot.bridge_ready == true or false
 
   return {
     inside_tmux = vim.env.TMUX ~= nil and vim.env.TMUX ~= "",
@@ -1058,7 +1083,7 @@ function M.status(config)
     pane_exists = pane_exists(state.pane_id),
     session = session,
     startup_status = startup_status,
-    startup_status_path = session and status_file_path(session, config or {}) or nil,
+    startup_status_path = snapshot and snapshot.startup_status_path or nil,
     bridge_ready = bridge_ready,
     repl_ready = bridge_ready and startup_status and startup_status.repl_ready == true or false,
     anchor_pane_id = state.anchor_pane_id,

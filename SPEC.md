@@ -163,12 +163,13 @@ The startup path today is effectively:
 2. [lua/ark/init.lua](/home/marine/repos/ark.nvim/lua/ark/init.lua) triggers pane and LSP startup.
 3. [lua/ark/tmux.lua](/home/marine/repos/ark.nvim/lua/ark/tmux.lua) creates or reuses a pane and computes the status-file path.
 4. [scripts/ark-r-launcher.sh](/home/marine/repos/ark.nvim/scripts/ark-r-launcher.sh) starts `R`, installs or reuses `arkbridge`, and writes startup metadata.
-5. [lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua) starts detached `ark-lsp` with bridge env pointing at that status file.
-6. The plugin sends `ark/updateSession` notifications as the status file changes.
-7. [crates/ark/src/lsp/state_handlers.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/state_handlers.rs) converts those updates into a `SessionBridge`.
-8. [crates/ark/src/lsp/session_bridge.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/session_bridge.rs) bootstraps console scopes and library paths, after which runtime-aware features become fully live.
+5. [lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua) builds one startup snapshot and starts detached `ark-lsp` with bridge env derived from that snapshot.
+6. The launcher now publishes a cached startup bootstrap payload in the trusted status file for the initial `repl_seq` when that payload is cheap to compute.
+7. In sync startup mode, the plugin sends one `ark/internal/bootstrapSession` request and waits for detached session hydration to complete; `ark-lsp` prefers the cached status-file bootstrap and only falls back to a live bridge request when that cache is missing or stale.
+8. After startup, the plugin falls back to `ark/updateSession` notifications plus the status-file watcher only for later session drift or re-readiness.
+9. [crates/ark/src/lsp/session_bridge.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/session_bridge.rs) bootstraps console scopes and library paths, after which runtime-aware features become fully live.
 
-This contract is viable. It is also still too implicit.
+This contract is viable and materially simpler than the earlier retry-heavy sync path, but detached startup still depends on tmux split time, `R` startup time, and bridge bootstrap latency.
 
 Important current rule:
 

@@ -53,6 +53,7 @@ use crate::lsp::config::GLOBAL_SETTINGS;
 use crate::lsp::document::Document;
 use crate::lsp::document::DocumentKind;
 use crate::lsp::handlers::SessionUpdateParams;
+use crate::lsp::handlers::SessionBootstrapResponse;
 use crate::lsp::inputs::library::Library;
 use crate::lsp::inputs::package::Package;
 use crate::lsp::inputs::source_root::SourceRoot;
@@ -650,6 +651,21 @@ pub(crate) fn did_update_session(
     Ok(hydration)
 }
 
+pub(crate) fn bootstrap_session(
+    params: SessionUpdateParams,
+    state: &mut WorldState,
+) -> LspResult<SessionBootstrapResponse> {
+    let hydration = did_update_session(params, state)?;
+    if let Some(request) = hydration {
+        let output = run_detached_session_hydration(request);
+        finish_detached_session_hydration(output, state);
+    }
+
+    Ok(SessionBootstrapResponse {
+        hydrated: state.detached_session_hydrated(),
+    })
+}
+
 #[tracing::instrument(level = "info", skip_all)]
 pub(crate) fn did_change_formatting_options(
     uri: &Url,
@@ -937,6 +953,54 @@ mod tests {
             state.detached_session_status.last_bootstrap_repl_seq,
             Some(42)
         );
+    }
+
+    #[test]
+    fn test_bootstrap_session_hydrates_detached_inputs_inline() {
+        let auth_token = "ark-test-token";
+        let port = spawn_bootstrap_bridge(auth_token);
+        let status = tempfile::NamedTempFile::new().expect("expected temp status file");
+        std::fs::write(
+            status.path(),
+            format!(
+                r#"{{"status":"ready","port":{},"auth_token":"{}","repl_ready":true}}"#,
+                port, auth_token
+            ),
+        )
+        .expect("expected status file");
+
+        let mut state = WorldState::detached();
+
+        let response = bootstrap_session(
+            SessionUpdateParams {
+                kind: Some(String::from("ark")),
+                status_file: Some(status.path().to_path_buf()),
+                tmux_socket: String::from("/tmp/ark-test.sock"),
+                tmux_session: String::from("ark-test"),
+                tmux_pane: String::from("%1"),
+                timeout_ms: Some(1000),
+                status: String::from("ready"),
+                repl_ready: true,
+                repl_seq: Some(42),
+            },
+            &mut state,
+        )
+        .expect("expected bootstrap session request to succeed");
+
+        assert!(
+            response.hydrated,
+            "bootstrap session request should synchronously hydrate detached inputs"
+        );
+        assert_eq!(
+            state.console_scopes,
+            vec![vec![String::from("library"), String::from("mtcars")]]
+        );
+        assert_eq!(state.library.library_paths.len(), 1);
+        assert_eq!(
+            state.library.library_paths[0],
+            std::path::PathBuf::from("/tmp/ark-test-library")
+        );
+        assert!(state.detached_session_hydrated());
     }
 
     #[test]

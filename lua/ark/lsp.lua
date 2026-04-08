@@ -4,6 +4,7 @@ local tmux = require("ark.tmux")
 local uv = vim.uv or vim.loop
 
 local SESSION_UPDATE_METHOD = "ark/updateSession"
+local SESSION_BOOTSTRAP_METHOD = "ark/internal/bootstrapSession"
 local HELP_TOPIC_METHOD = "positron/textDocument/helpTopic"
 local HELP_TEXT_METHOD = "ark/internal/helpText"
 local STATUS_REQUEST_METHOD = "ark/internal/status"
@@ -258,8 +259,53 @@ local function normalize_repl_ready(status)
   return status.repl_ready == true or status.repl_ready == 1
 end
 
+local function request_result(client, method, params, timeout_ms, bufnr)
+  local response, err = client:request_sync(method, params, timeout_ms, bufnr or 0)
+  if err then
+    return nil, err
+  end
+  if not response then
+    return nil, "no response"
+  end
+  if response.error then
+    return nil, vim.inspect(response.error)
+  end
+  if response.err then
+    return nil, vim.inspect(response.err)
+  end
+
+  return response.result, nil
+end
+
+local function cache_client_session(client, payload)
+  if not client or type(client.id) ~= "number" then
+    return
+  end
+
+  client_session_payloads[client.id] = vim.deepcopy(payload or {})
+end
+
+local function payload_present(payload)
+  return type(payload) == "table" and next(payload) ~= nil
+end
+
 local function session_snapshot(opts, snapshot_opts)
   snapshot_opts = snapshot_opts or {}
+  if type(snapshot_opts.snapshot) == "table" then
+    return snapshot_opts.snapshot
+  end
+
+  if type(tmux.startup_snapshot) == "function" then
+    local snapshot = tmux.startup_snapshot(opts.tmux, {
+      include_prompt_ready = snapshot_opts.fast ~= true,
+      validate_bridge = snapshot_opts.validate_bridge == true,
+      bridge_timeout_ms = snapshot_opts.bridge_timeout_ms,
+    })
+    if type(snapshot) == "table" then
+      return snapshot
+    end
+  end
+
   local tmux_status = nil
   if snapshot_opts.fast ~= true and tmux.status then
     tmux_status = tmux.status(opts.tmux)
@@ -303,6 +349,7 @@ local function session_snapshot(opts, snapshot_opts)
     startup_status = startup_status,
     authoritative_status = authoritative_status,
     status_path = status_path,
+    cmd_env = snapshot_opts.validate_bridge == true and tmux.bridge_env and tmux.bridge_env(opts.tmux) or nil,
   }
 end
 
@@ -349,7 +396,7 @@ local function notify_client_session(client, payload)
     return
   end
 
-  client_session_payloads[client.id] = vim.deepcopy(normalized)
+  cache_client_session(client, normalized)
   client:notify(SESSION_UPDATE_METHOD, normalized)
 end
 
@@ -412,6 +459,38 @@ local function schedule_session_syncs(opts, bufnr, client_id)
   end, delays[1])
 end
 
+local function bootstrap_timeout_ms(opts)
+  local timeout_ms = tonumber(opts.tmux and opts.tmux.bridge_wait_ms or nil)
+    or tonumber(opts.lsp and opts.lsp.restart_wait_ms or nil)
+    or 5000
+  return math.max(timeout_ms, 1000)
+end
+
+local function bootstrap_client_session(client, opts, bufnr, payload)
+  if not live_client(client) then
+    return false, "ark_lsp client unavailable"
+  end
+  if not payload_present(payload) then
+    return false, "session payload unavailable"
+  end
+
+  local result, err = request_result(
+    client,
+    SESSION_BOOTSTRAP_METHOD,
+    payload,
+    bootstrap_timeout_ms(opts),
+    bufnr
+  )
+  if err then
+    return false, err
+  end
+  if type(result) ~= "table" then
+    return false, "invalid bootstrap response"
+  end
+
+  return result.hydrated == true, nil
+end
+
 local function watch_status_file(status_path, on_change)
   if not uv or type(status_path) ~= "string" or status_path == "" then
     return nil
@@ -465,8 +544,9 @@ session_poll_finished = function(opts, bufnr, payload)
   return payload.status == "ready" and session_payload_delivered(opts, bufnr, payload)
 end
 
-local function ensure_session_watch(opts, bufnr, payload)
+local function ensure_session_watch(opts, bufnr, payload, watch_opts)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
+  watch_opts = watch_opts or {}
   if not vim.api.nvim_buf_is_valid(bufnr) then
     stop_session_watch(bufnr)
     return
@@ -477,7 +557,9 @@ local function ensure_session_watch(opts, bufnr, payload)
   end
 
   local current_payload = payload or session_payload(opts, { fast = true })
-  notify_sessions(opts, nil, current_payload)
+  if watch_opts.notify_immediately ~= false then
+    notify_sessions(opts, nil, current_payload)
+  end
 
   if session_watch_finished(opts, bufnr, current_payload) then
     stop_session_watch(bufnr)
@@ -542,11 +624,15 @@ function M.config(opts, bufnr, _config_opts)
     return nil, cmd_err
   end
 
+  local startup_snapshot = _config_opts and _config_opts.startup_snapshot or nil
+
   return {
     _ark_lsp_build_fingerprint = dev.detached_lsp_build_fingerprint(cmd[1]),
     name = opts.lsp.name,
     cmd = cmd,
-    cmd_env = tmux.bridge_env(opts.tmux),
+    cmd_env = type(startup_snapshot) == "table"
+      and startup_snapshot.cmd_env
+      or tmux.bridge_env(opts.tmux, startup_snapshot),
     root_dir = root_dir(bufnr, opts.lsp.root_markers),
   }, nil
 end
@@ -557,7 +643,18 @@ local function start_client(opts, bufnr, start_opts)
     return nil
   end
 
+  local wait_for_client_sync = not (start_opts and start_opts.wait_for_client == false)
+  local startup_snapshot = wait_for_client_sync and session_snapshot(opts, {
+    fast = true,
+    validate_bridge = true,
+  }) or nil
+  local startup_payload = session_payload(opts, {
+    fast = true,
+    snapshot = startup_snapshot,
+  })
+
   local desired, config_err = M.config(opts, bufnr, vim.tbl_extend("force", start_opts or {}, {
+    startup_snapshot = startup_snapshot,
     on_build_complete = function(result)
       if type(result) ~= "table" or result.ok ~= true then
         return
@@ -584,8 +681,28 @@ local function start_client(opts, bufnr, start_opts)
   end
   for _, client in ipairs(live_clients(opts, bufnr)) do
     if same_server(client.config, desired) then
-      ensure_session_watch(opts, bufnr)
-      notify_sessions(opts, bufnr)
+      if not wait_for_client_sync then
+        ensure_session_watch(opts, bufnr)
+        notify_sessions(opts, bufnr)
+        return client.id
+      end
+
+      local hydrated = false
+      local bootstrap_err = nil
+      if payload_present(startup_payload) then
+        hydrated, bootstrap_err = bootstrap_client_session(client, opts, bufnr, startup_payload)
+        if hydrated then
+          cache_client_session(client, startup_payload)
+        end
+      end
+      if bootstrap_err then
+        vim.notify("ark.nvim session bootstrap failed: " .. bootstrap_err, vim.log.levels.WARN, {
+          title = "ark.nvim",
+        })
+      end
+      ensure_session_watch(opts, bufnr, startup_payload, {
+        notify_immediately = hydrated ~= true,
+      })
       return client.id
     end
   end
@@ -599,16 +716,31 @@ local function start_client(opts, bufnr, start_opts)
 
   local client_id = vim.lsp.start(desired, { bufnr = bufnr })
   track_client_id(client_id)
-  ensure_session_watch(opts, bufnr)
 
-  if start_opts and start_opts.wait_for_client == false then
+  if not wait_for_client_sync then
+    ensure_session_watch(opts, bufnr)
     schedule_session_syncs(opts, bufnr, client_id)
     return client_id
   end
 
   client_id = wait_for_client(client_id, opts.lsp.restart_wait_ms)
-  notify_sessions(opts, bufnr)
-  schedule_session_syncs(opts, bufnr, client_id)
+  local client = vim.lsp.get_client_by_id(client_id)
+  local hydrated = false
+  local bootstrap_err = nil
+  if payload_present(startup_payload) then
+    hydrated, bootstrap_err = bootstrap_client_session(client, opts, bufnr, startup_payload)
+    if hydrated then
+      cache_client_session(client, startup_payload)
+    end
+  end
+  if bootstrap_err then
+    vim.notify("ark.nvim session bootstrap failed: " .. bootstrap_err, vim.log.levels.WARN, {
+      title = "ark.nvim",
+    })
+  end
+  ensure_session_watch(opts, bufnr, startup_payload, {
+    notify_immediately = hydrated ~= true,
+  })
   return client_id
 end
 

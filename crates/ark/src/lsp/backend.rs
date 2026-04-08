@@ -36,12 +36,14 @@ use super::main_loop::LSP_HAS_CRASHED;
 use crate::console::Console;
 use crate::console::ConsoleNotification;
 use crate::lsp::handlers::HelpTextParams;
+use crate::lsp::handlers::SessionBootstrapResponse;
 use crate::lsp::session_bridge::HelpPage;
 use crate::lsp::handlers::SessionUpdateParams;
 use crate::lsp::handlers::StatusParams;
 use crate::lsp::handlers::VirtualDocumentParams;
 use crate::lsp::handlers::VirtualDocumentResponse;
 use crate::lsp::handlers::ARK_HELP_TEXT_REQUEST;
+use crate::lsp::handlers::ARK_SESSION_BOOTSTRAP_REQUEST;
 use crate::lsp::handlers::ARK_SESSION_UPDATE_NOTIFICATION;
 use crate::lsp::handlers::ARK_STATUS_REQUEST;
 use crate::lsp::handlers::ARK_VDOC_REQUEST;
@@ -175,6 +177,7 @@ pub(crate) enum LspRequest {
     Status(StatusParams),
     HelpText(HelpTextParams),
     InputBoundaries(InputBoundariesParams),
+    SessionBootstrap(SessionUpdateParams),
 }
 
 #[derive(Debug)]
@@ -201,6 +204,7 @@ pub(crate) enum LspResponse {
     Status(Value),
     HelpText(Option<HelpPage>),
     InputBoundaries(InputBoundariesResponse),
+    SessionBootstrap(SessionBootstrapResponse),
 }
 
 pub(crate) type LspResult<T> = std::result::Result<T, LspError>;
@@ -555,6 +559,17 @@ impl Backend {
         )
     }
 
+    async fn bootstrap_session(
+        &self,
+        params: SessionUpdateParams,
+    ) -> tower_lsp::jsonrpc::Result<SessionBootstrapResponse> {
+        cast_response!(
+            self,
+            self.request(LspRequest::SessionBootstrap(params)).await,
+            LspResponse::SessionBootstrap
+        )
+    }
+
     async fn notification(&self, params: Option<Value>) {
         log::info!(
             "Received legacy positron/notification payload: {:?}",
@@ -647,6 +662,10 @@ pub(crate) fn start_lsp(
             .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
             .custom_method(ARK_STATUS_REQUEST, Backend::status)
             .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
+            .custom_method(
+                ARK_SESSION_BOOTSTRAP_REQUEST,
+                Backend::bootstrap_session,
+            )
             // In principle this should probably be a Jupyter request
             .custom_method(
                 input_boundaries::POSITRON_INPUT_BOUNDARIES_REQUEST,
@@ -715,6 +734,10 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
         .custom_method(ARK_STATUS_REQUEST, Backend::status)
         .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
+        .custom_method(
+            ARK_SESSION_BOOTSTRAP_REQUEST,
+            Backend::bootstrap_session,
+        )
         .custom_method(
             input_boundaries::POSITRON_INPUT_BOUNDARIES_REQUEST,
             Backend::input_boundaries,

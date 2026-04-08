@@ -256,6 +256,26 @@ struct SessionStatusPayload {
     port: Option<u16>,
     #[serde(default)]
     auth_token: String,
+    #[serde(default)]
+    repl_seq: Option<u64>,
+    #[serde(default)]
+    bootstrap: Option<StatusBootstrapPayload>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct StatusBootstrapPayload {
+    #[serde(default)]
+    repl_seq: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_string_vec")]
+    search_path_symbols: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_string_vec")]
+    library_paths: Vec<String>,
+    #[serde(default)]
+    total_ms: Option<u64>,
+    #[serde(default)]
+    search_path_symbols_ms: Option<u64>,
+    #[serde(default)]
+    library_paths_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -933,6 +953,12 @@ impl SessionBridge {
         &self,
         source: &StatusFileSessionBridgeSource,
     ) -> anyhow::Result<SessionBootstrap> {
+        let status_path = source.status_file.as_path();
+        let (_, status) = read_session_status(status_path)?;
+        if let Some(bootstrap) = bootstrap_from_status(status_path, &status) {
+            return Ok(bootstrap);
+        }
+
         self.run_dynamic_request(source, "bridge bootstrap", |connection| {
             self.bootstrap_with_connection(connection)
         })
@@ -1336,6 +1362,43 @@ fn connection_from_status(
         host: String::from("127.0.0.1"),
         port,
         auth_token: status.auth_token,
+    })
+}
+
+fn bootstrap_from_status(
+    status_file: &Path,
+    status: &SessionStatusPayload,
+) -> Option<SessionBootstrap> {
+    if status.status != "ready" {
+        return None;
+    }
+
+    let bootstrap = status.bootstrap.as_ref()?;
+    if bootstrap.search_path_symbols.is_empty() || bootstrap.library_paths.is_empty() {
+        return None;
+    }
+
+    if bootstrap.repl_seq.is_some() && bootstrap.repl_seq != status.repl_seq {
+        log::trace!(
+            "Ignoring cached startup bootstrap from '{}' because repl_seq changed",
+            status_file.display()
+        );
+        return None;
+    }
+
+    Some(SessionBootstrap {
+        search_path_symbols: bootstrap.search_path_symbols.clone(),
+        installed_packages: Vec::new(),
+        library_paths: bootstrap
+            .library_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>(),
+        timings: SessionBootstrapTimings {
+            total_ms: bootstrap.total_ms.unwrap_or(0),
+            search_path_symbols_ms: bootstrap.search_path_symbols_ms.unwrap_or(0),
+            library_paths_ms: bootstrap.library_paths_ms.unwrap_or(0),
+        },
     })
 }
 
@@ -3540,6 +3603,121 @@ mod tests {
         .expect("expected bridge");
 
         let bootstrap = bridge.bootstrap().expect("expected bootstrap to recover");
+        handle.join().expect("expected listener thread to join");
+
+        assert_eq!(
+            bootstrap.search_path_symbols,
+            vec![String::from("library"), String::from("mtcars")]
+        );
+        assert_eq!(
+            bootstrap.library_paths,
+            vec![PathBuf::from("/tmp/ark-test-library")]
+        );
+    }
+
+    #[test]
+    fn test_bootstrap_dynamic_uses_cached_status_payload_when_repl_seq_matches() {
+        let status = tempfile::NamedTempFile::new().expect("expected temp status file");
+        std::fs::write(
+            status.path(),
+            r#"{
+                "status":"ready",
+                "port":41001,
+                "auth_token":"token-one",
+                "repl_ready":true,
+                "repl_seq":0,
+                "bootstrap":{
+                    "repl_seq":0,
+                    "search_path_symbols":["library","mtcars"],
+                    "library_paths":["/tmp/ark-test-library"],
+                    "total_ms":9,
+                    "search_path_symbols_ms":4,
+                    "library_paths_ms":1
+                }
+            }"#,
+        )
+        .expect("expected status file");
+
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            status_file: Some(status.path().to_path_buf()),
+            timeout_ms: 50,
+            ..Default::default()
+        })
+        .expect("expected bridge");
+
+        let bootstrap = bridge.bootstrap().expect("expected cached bootstrap");
+        assert_eq!(
+            bootstrap.search_path_symbols,
+            vec![String::from("library"), String::from("mtcars")]
+        );
+        assert_eq!(
+            bootstrap.library_paths,
+            vec![PathBuf::from("/tmp/ark-test-library")]
+        );
+        assert_eq!(bootstrap.timings.total_ms, 9);
+        assert_eq!(bootstrap.timings.search_path_symbols_ms, 4);
+        assert_eq!(bootstrap.timings.library_paths_ms, 1);
+    }
+
+    #[test]
+    fn test_bootstrap_dynamic_ignores_stale_cached_status_payload() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+        let status = tempfile::NamedTempFile::new().expect("expected temp status file");
+        std::fs::write(
+            status.path(),
+            format!(
+                r#"{{
+                    "status":"ready",
+                    "port":{},
+                    "auth_token":"token-one",
+                    "repl_ready":true,
+                    "repl_seq":1,
+                    "bootstrap":{{
+                        "repl_seq":0,
+                        "search_path_symbols":["stale_symbol"],
+                        "library_paths":["/tmp/stale-library"]
+                    }}
+                }}"#,
+                port
+            ),
+        )
+        .expect("expected status file");
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("expected bootstrap request");
+            let mut request = String::new();
+            stream
+                .read_to_string(&mut request)
+                .expect("expected bootstrap request payload");
+            let payload: serde_json::Value =
+                serde_json::from_str(request.trim()).expect("expected json bootstrap request");
+            assert_eq!(
+                payload
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                "bootstrap"
+            );
+
+            stream
+                .write_all(
+                    br#"{"status":"ok","search_path_symbols":["library","mtcars"],"library_paths":["/tmp/ark-test-library"]}"#,
+                )
+                .expect("expected successful bootstrap response");
+        });
+
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            status_file: Some(status.path().to_path_buf()),
+            timeout_ms: 50,
+            ..Default::default()
+        })
+        .expect("expected bridge");
+
+        let bootstrap = bridge.bootstrap().expect("expected live bootstrap fallback");
         handle.join().expect("expected listener thread to join");
 
         assert_eq!(

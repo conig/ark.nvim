@@ -148,6 +148,7 @@ local({
   .quiet_con <- file(.quiet_log, open = "wt")
   .launcher_started_at <- Sys.time()
   .repl_seq <- 0L
+  .bootstrap_cache <- NULL
 
   .timestamp_iso <- function(time = Sys.time()) {
     format(time, "%Y-%m-%dT%H:%M:%OS3%z")
@@ -223,6 +224,9 @@ local({
       ),
       fields
     )
+    if (is.list(.bootstrap_cache)) {
+      .payload\$bootstrap <- .bootstrap_cache
+    }
 
     .json <- jsonlite::toJSON(
       .payload,
@@ -261,6 +265,28 @@ local({
       repl_ts = as.integer(Sys.time()),
       repl_seq = .repl_seq
     ))
+  }
+
+  .collect_bootstrap_cache <- function() {
+    .total_start <- Sys.time()
+    .search_path_start <- Sys.time()
+    envs <- lapply(search(), as.environment)
+    search_path_symbols <- unique(unlist(lapply(envs, ls, all.names = TRUE), use.names = FALSE))
+    .search_path_symbols_ms <- as.integer(round(as.numeric(difftime(Sys.time(), .search_path_start, units = "secs")) * 1000))
+
+    .library_paths_start <- Sys.time()
+    library_paths <- base::.libPaths()
+    .library_paths_ms <- as.integer(round(as.numeric(difftime(Sys.time(), .library_paths_start, units = "secs")) * 1000))
+    .total_ms <- as.integer(round(as.numeric(difftime(Sys.time(), .total_start, units = "secs")) * 1000))
+
+    list(
+      repl_seq = .repl_seq,
+      search_path_symbols = as.character(search_path_symbols),
+      library_paths = as.character(library_paths),
+      total_ms = .total_ms,
+      search_path_symbols_ms = .search_path_symbols_ms,
+      library_paths_ms = .library_paths_ms
+    )
   }
 
   .user_profile <- Sys.getenv("ARK_ORIG_R_PROFILE_USER", unset = "")
@@ -601,12 +627,29 @@ local({
         force = TRUE
       )
 
+      .bootstrap_cache <- tryCatch(
+        .collect_bootstrap_cache(),
+        error = function(e) {
+          .log_line("[bootstrap] cache generation failed: ", conditionMessage(e))
+          NULL
+        }
+      )
       .write_ready_status(.svc\$port, .auth_token)
       addTaskCallback(function(expr, value, ok, visible) {
         .repl_seq <<- .repl_seq + 1L
         try(.write_ready_status(.svc\$port, .auth_token), silent = TRUE)
         TRUE
       })
+      if (is.list(.bootstrap_cache)) {
+        .log_line(
+          "[bootstrap] cached startup payload symbols=",
+          length(.bootstrap_cache\$search_path_symbols),
+          " libpaths=",
+          length(.bootstrap_cache\$library_paths),
+          " total_ms=",
+          .string_field(.bootstrap_cache\$total_ms)
+        )
+      }
       .log_line("[ready] ipc service started on port ", as.integer(.svc\$port))
       invisible(.svc)
     }

@@ -1,0 +1,81 @@
+local start_ms = vim.loop.hrtime() / 1e6
+local marks = {}
+
+local function elapsed_ms()
+  return (vim.loop.hrtime() / 1e6) - start_ms
+end
+
+local function mark(name)
+  if marks[name] == nil then
+    marks[name] = elapsed_ms()
+  end
+end
+
+local function current_client(bufnr)
+  return vim.lsp.get_clients({ bufnr = bufnr, name = "ark_lsp" })[1]
+end
+
+local function current_status()
+  local ok, ark = pcall(require, "ark")
+  if not ok then
+    return nil
+  end
+
+  return ark.status({ include_lsp = true })
+end
+
+local bufnr = vim.api.nvim_get_current_buf()
+if vim.bo[bufnr].filetype == "" then
+  vim.cmd("setfiletype r")
+end
+
+local ok, ark = pcall(require, "ark")
+if not ok then
+  error("ark must be available for startup timing probe", 0)
+end
+
+ark.setup({
+  auto_start_pane = true,
+  auto_start_lsp = true,
+  async_startup = false,
+  configure_slime = true,
+})
+
+local function await_mark(name, timeout_ms, predicate)
+  local ready = vim.wait(timeout_ms, predicate, 20, false)
+  if not ready then
+    error("timed out waiting for " .. name, 0)
+  end
+
+  mark(name)
+end
+
+await_mark("bridge_ready", 10000, function()
+  local status = current_status()
+  return status ~= nil and status.bridge_ready == true
+end)
+
+await_mark("repl_ready", 10000, function()
+  local status = current_status()
+  return status ~= nil and status.repl_ready == true
+end)
+
+await_mark("lsp_client", 10000, function()
+  local client = current_client(bufnr)
+  return client ~= nil and client.initialized == true and not client:is_stopped()
+end)
+
+await_mark("lsp_hydrated", 10000, function()
+  local status = current_status()
+  local lsp_status = status and status.lsp_status or nil
+  return lsp_status
+    and lsp_status.available == true
+    and tonumber(lsp_status.consoleScopeCount or 0) > 0
+    and tonumber(lsp_status.libraryPathCount or 0) > 0
+end)
+
+vim.print({
+  marks = marks,
+  startup_elapsed_ms = elapsed_ms(),
+  status = current_status(),
+})

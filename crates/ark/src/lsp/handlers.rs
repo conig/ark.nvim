@@ -81,6 +81,7 @@ use crate::r_task;
 pub static ARK_VDOC_REQUEST: &str = "ark/internal/virtualDocument";
 pub static ARK_STATUS_REQUEST: &str = "ark/internal/status";
 pub static ARK_HELP_TEXT_REQUEST: &str = "ark/internal/helpText";
+pub static ARK_SESSION_BOOTSTRAP_REQUEST: &str = "ark/internal/bootstrapSession";
 pub static ARK_SESSION_UPDATE_NOTIFICATION: &str = "ark/updateSession";
 
 #[derive(Debug, Eq, PartialEq, Clone, serde::Deserialize, serde::Serialize)]
@@ -100,6 +101,13 @@ pub(crate) struct StatusParams {}
 pub(crate) struct HelpTextParams {
     #[serde(default)]
     pub topic: String,
+}
+
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionBootstrapResponse {
+    #[serde(default)]
+    pub hydrated: bool,
 }
 
 #[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]

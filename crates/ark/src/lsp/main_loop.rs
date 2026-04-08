@@ -432,6 +432,9 @@ impl GlobalState {
                         LspRequest::InputBoundaries(params) => {
                             respond(tx, || handlers::handle_input_boundaries(params), LspResponse::InputBoundaries)?;
                         },
+                        LspRequest::SessionBootstrap(params) => {
+                            respond(tx, || state_handlers::bootstrap_session(params, &mut self.world), LspResponse::SessionBootstrap)?;
+                        },
                     };
                 },
             },
