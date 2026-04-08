@@ -13,9 +13,18 @@ local session_watchers = {}
 local session_watch_cleanup = {}
 local session_watch_polls = {}
 local client_session_payloads = {}
+local client_status_payloads = {}
+local client_status_attempt_ms = {}
 local managed_client_ids = {}
 local session_watch_finished
 local session_poll_finished
+local STATUS_CACHE_TTL_MS = 250
+local STATUS_THROTTLE_MS = 100
+
+local function monotonic_ms()
+  local clock = (uv and uv.hrtime) and uv.hrtime or vim.loop.hrtime
+  return math.floor(clock() / 1e6)
+end
 
 local function filetype_enabled(filetypes, filetype)
   return vim.tbl_contains(filetypes or {}, filetype)
@@ -108,6 +117,8 @@ local function forget_client_id(client_id)
 
   managed_client_ids[client_id] = nil
   client_session_payloads[client_id] = nil
+  client_status_payloads[client_id] = nil
+  client_status_attempt_ms[client_id] = nil
 end
 
 local function client_matches(client, opts, bufnr)
@@ -283,6 +294,51 @@ local function cache_client_session(client, payload)
   end
 
   client_session_payloads[client.id] = vim.deepcopy(payload or {})
+end
+
+local function cache_client_status(client, payload)
+  if not client or type(client.id) ~= "number" then
+    return
+  end
+
+  client_status_payloads[client.id] = {
+    updated_ms = monotonic_ms(),
+    payload = vim.deepcopy(payload or {}),
+  }
+end
+
+local function cached_client_status(client, ttl_ms)
+  if not client or type(client.id) ~= "number" then
+    return nil
+  end
+
+  local cached = client_status_payloads[client.id]
+  if type(cached) ~= "table" then
+    return nil
+  end
+
+  local updated_ms = tonumber(cached.updated_ms)
+  if not updated_ms then
+    return nil
+  end
+
+  if monotonic_ms() - updated_ms > (tonumber(ttl_ms) or STATUS_CACHE_TTL_MS) then
+    return nil
+  end
+
+  return vim.deepcopy(cached.payload or {})
+end
+
+local function status_base_payload(bufnr, filetype_supported, current_filetype, all_named_clients, buffer_named_clients, all_clients, client_id)
+  return {
+    client_id = client_id,
+    bufnr = bufnr,
+    filetype = current_filetype,
+    filetype_supported = filetype_supported,
+    total_named_clients = #all_named_clients,
+    buffer_named_clients = #buffer_named_clients,
+    clients = all_clients,
+  }
 end
 
 local function payload_present(payload)
@@ -800,10 +856,12 @@ function M.refresh(opts, bufnr)
   return start_client(opts, bufnr)
 end
 
-function M.status(opts, bufnr)
+function M.status(opts, bufnr, status_opts)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
+  status_opts = status_opts or {}
 
   local current_filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or nil
+  local filetype_supported = filetype_enabled(opts.filetypes, current_filetype)
   local all_named_clients = vim.lsp.get_clients({ name = opts.lsp.name })
   local buffer_named_clients = vim.api.nvim_buf_is_valid(bufnr) and vim.lsp.get_clients({
     bufnr = bufnr,
@@ -821,7 +879,7 @@ function M.status(opts, bufnr)
   local client = live_clients(opts, bufnr)[1]
   if not live_client(client) then
     local reason = "ark_lsp client unavailable"
-    if not filetype_enabled(opts.filetypes, current_filetype) then
+    if not filetype_supported then
       reason = "current buffer filetype is not managed by ark.nvim"
     elseif #all_named_clients > 0 and #buffer_named_clients == 0 then
       reason = "ark_lsp exists, but is not attached to the current buffer"
@@ -834,66 +892,102 @@ function M.status(opts, bufnr)
       reason = reason,
       bufnr = bufnr,
       filetype = current_filetype,
-      filetype_supported = filetype_enabled(opts.filetypes, current_filetype),
+      filetype_supported = filetype_supported,
       total_named_clients = #all_named_clients,
       buffer_named_clients = #buffer_named_clients,
       clients = all_clients,
     }
   end
 
-  local response, err = client:request_sync(STATUS_REQUEST_METHOD, {}, 200, bufnr)
+  local base = status_base_payload(
+    bufnr,
+    filetype_supported,
+    current_filetype,
+    all_named_clients,
+    buffer_named_clients,
+    all_clients,
+    client.id
+  )
+  local cache_ttl_ms = tonumber(status_opts.cache_ttl_ms or STATUS_CACHE_TTL_MS) or STATUS_CACHE_TTL_MS
+  local throttle_ms = tonumber(status_opts.throttle_ms or STATUS_THROTTLE_MS) or STATUS_THROTTLE_MS
+  local request_timeout_ms = tonumber(status_opts.timeout_ms or 200) or 200
+  local cached = cached_client_status(client, cache_ttl_ms)
+  if type(cached) == "table" and next(cached) ~= nil then
+    return vim.tbl_extend("force", {
+      available = true,
+    }, base, cached)
+  end
+
+  local now_ms = monotonic_ms()
+  local last_attempt_ms = tonumber(client_status_attempt_ms[client.id]) or 0
+  if last_attempt_ms > 0 and (now_ms - last_attempt_ms) < throttle_ms then
+    local stale = client_status_payloads[client.id]
+    if type(stale) == "table" and type(stale.payload) == "table" and next(stale.payload) ~= nil then
+      return vim.tbl_extend("force", {
+        available = true,
+        stale = true,
+      }, base, vim.deepcopy(stale.payload))
+    end
+
+    return vim.tbl_extend("force", {
+      available = false,
+      reason = "status pending",
+    }, base)
+  end
+
+  client_status_attempt_ms[client.id] = now_ms
+
+  local response, err = client:request_sync(STATUS_REQUEST_METHOD, {}, request_timeout_ms, bufnr)
   if err then
-    return {
+    local stale = client_status_payloads[client.id]
+    if type(stale) == "table" and type(stale.payload) == "table" and next(stale.payload) ~= nil then
+      return vim.tbl_extend("force", {
+        available = true,
+        stale = true,
+      }, base, vim.deepcopy(stale.payload))
+    end
+
+    return vim.tbl_extend("force", {
       available = false,
       reason = err,
-      client_id = client.id,
-      bufnr = bufnr,
-      filetype = current_filetype,
-      filetype_supported = filetype_enabled(opts.filetypes, current_filetype),
-      total_named_clients = #all_named_clients,
-      buffer_named_clients = #buffer_named_clients,
-      clients = all_clients,
-    }
+    }, base)
   end
 
   if not response then
-    return {
+    local stale = client_status_payloads[client.id]
+    if type(stale) == "table" and type(stale.payload) == "table" and next(stale.payload) ~= nil then
+      return vim.tbl_extend("force", {
+        available = true,
+        stale = true,
+      }, base, vim.deepcopy(stale.payload))
+    end
+
+    return vim.tbl_extend("force", {
       available = false,
       reason = "no response",
-      client_id = client.id,
-      bufnr = bufnr,
-      filetype = current_filetype,
-      filetype_supported = filetype_enabled(opts.filetypes, current_filetype),
-      total_named_clients = #all_named_clients,
-      buffer_named_clients = #buffer_named_clients,
-      clients = all_clients,
-    }
+    }, base)
   end
 
   if response.error then
-    return {
+    local stale = client_status_payloads[client.id]
+    if type(stale) == "table" and type(stale.payload) == "table" and next(stale.payload) ~= nil then
+      return vim.tbl_extend("force", {
+        available = true,
+        stale = true,
+      }, base, vim.deepcopy(stale.payload))
+    end
+
+    return vim.tbl_extend("force", {
       available = false,
       reason = vim.inspect(response.error),
-      client_id = client.id,
-      bufnr = bufnr,
-      filetype = current_filetype,
-      filetype_supported = filetype_enabled(opts.filetypes, current_filetype),
-      total_named_clients = #all_named_clients,
-      buffer_named_clients = #buffer_named_clients,
-      clients = all_clients,
-    }
+    }, base)
   end
+
+  cache_client_status(client, response.result or {})
 
   return vim.tbl_extend("force", {
     available = true,
-    client_id = client.id,
-    bufnr = bufnr,
-    filetype = current_filetype,
-    filetype_supported = filetype_enabled(opts.filetypes, current_filetype),
-    total_named_clients = #all_named_clients,
-    buffer_named_clients = #buffer_named_clients,
-    clients = all_clients,
-  }, response.result or {})
+  }, base, response.result or {})
 end
 
 function M.help_topic(opts, bufnr, position)

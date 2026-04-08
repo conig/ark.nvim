@@ -2,6 +2,11 @@ local uv = vim.uv or vim.loop
 local bitops = bit or bit32
 
 local M = {}
+local startup_status_cache = {}
+local bridge_ping_cache = {}
+local prompt_ready_cache = {}
+local BRIDGE_PING_CACHE_TTL_MS = 100
+local PROMPT_READY_CACHE_TTL_MS = 100
 
 local state = _G.__ark_nvim_state
 if type(state) ~= "table" then
@@ -61,6 +66,11 @@ _G.__ark_nvim_state = state
 
 local function trim(s)
   return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function monotonic_ms()
+  local clock = (uv and uv.hrtime) and uv.hrtime or vim.loop.hrtime
+  return math.floor(clock() / 1e6)
 end
 
 local function run_tmux(args)
@@ -327,19 +337,34 @@ end
 local function read_startup_status(session, config)
   local path = status_file_path(session, config)
   if not path or vim.fn.filereadable(path) ~= 1 then
+    startup_status_cache[path or ""] = nil
     return nil
   end
   if not status_file_trusted(path) then
+    startup_status_cache[path] = nil
     return nil
+  end
+
+  local stat = uv and uv.fs_stat and uv.fs_stat(path) or nil
+  local cached = startup_status_cache[path]
+  if type(cached) == "table"
+    and type(stat) == "table"
+    and cached.size == stat.size
+    and cached.mtime_sec == (stat.mtime and stat.mtime.sec or nil)
+    and cached.mtime_nsec == (stat.mtime and stat.mtime.nsec or nil)
+  then
+    return vim.deepcopy(cached.payload)
   end
 
   local lines = vim.fn.readfile(path)
   if type(lines) ~= "table" or #lines == 0 then
+    startup_status_cache[path] = nil
     return nil
   end
 
   local ok, payload = pcall(vim.json.decode, table.concat(lines, "\n"))
   if not ok or type(payload) ~= "table" then
+    startup_status_cache[path] = nil
     return nil
   end
 
@@ -352,6 +377,12 @@ local function read_startup_status(session, config)
   payload.repl_ready = payload.repl_ready == true or payload.repl_ready == 1
   payload.log_path = type(payload.log_path) == "string" and payload.log_path or nil
   payload._status_path = path
+  startup_status_cache[path] = {
+    size = type(stat) == "table" and stat.size or nil,
+    mtime_sec = type(stat) == "table" and stat.mtime and stat.mtime.sec or nil,
+    mtime_nsec = type(stat) == "table" and stat.mtime and stat.mtime.nsec or nil,
+    payload = vim.deepcopy(payload),
+  }
   return payload
 end
 
@@ -385,6 +416,22 @@ local function ping_bridge(session, status, timeout_ms)
       tmux_pane = session.tmux_pane,
     },
   })
+
+  local cache_key = table.concat({
+    session.tmux_socket or "",
+    session.tmux_session or "",
+    session.tmux_pane or "",
+    tostring(port),
+    status.auth_token or "",
+    tostring(status.ts or ""),
+    tostring(status.repl_seq or ""),
+  }, "::")
+  local cached = bridge_ping_cache[cache_key]
+  local cache_ttl_ms = tonumber(timeout_ms) and math.max(50, math.floor((tonumber(timeout_ms) or 0) / 2))
+    or BRIDGE_PING_CACHE_TTL_MS
+  if type(cached) == "table" and monotonic_ms() - (tonumber(cached.checked_ms) or 0) < cache_ttl_ms then
+    return cached.result == true
+  end
 
   local client = uv.new_tcp()
   if not client then
@@ -454,20 +501,40 @@ local function ping_bridge(session, status, timeout_ms)
 
   if not ok or err_msg then
     close_client()
+    bridge_ping_cache[cache_key] = {
+      checked_ms = monotonic_ms(),
+      result = false,
+    }
     return false
   end
 
   local decoded_ok, payload = pcall(vim.json.decode, table.concat(chunks, ""))
   if not decoded_ok or type(payload) ~= "table" then
+    bridge_ping_cache[cache_key] = {
+      checked_ms = monotonic_ms(),
+      result = false,
+    }
     return false
   end
   if payload.status ~= "ok" then
+    bridge_ping_cache[cache_key] = {
+      checked_ms = monotonic_ms(),
+      result = false,
+    }
     return false
   end
   if payload.session and not same_session(session, payload.session) then
+    bridge_ping_cache[cache_key] = {
+      checked_ms = monotonic_ms(),
+      result = false,
+    }
     return false
   end
 
+  bridge_ping_cache[cache_key] = {
+    checked_ms = monotonic_ms(),
+    result = true,
+  }
   return true
 end
 
@@ -476,8 +543,17 @@ local function prompt_ready(session)
     return false
   end
 
+  local cached = prompt_ready_cache[session.tmux_pane]
+  if type(cached) == "table" and monotonic_ms() - (tonumber(cached.checked_ms) or 0) < PROMPT_READY_CACHE_TTL_MS then
+    return cached.result == true
+  end
+
   local capture = run_tmux({ "capture-pane", "-p", "-t", session.tmux_pane })
   if type(capture) ~= "string" or capture == "" then
+    prompt_ready_cache[session.tmux_pane] = {
+      checked_ms = monotonic_ms(),
+      result = false,
+    }
     return false
   end
 
@@ -489,7 +565,12 @@ local function prompt_ready(session)
   end
 
   last_line = trim((last_line or ""):gsub("\r", ""))
-  return last_line:sub(-1) == ">"
+  local ready = last_line:sub(-1) == ">"
+  prompt_ready_cache[session.tmux_pane] = {
+    checked_ms = monotonic_ms(),
+    result = ready,
+  }
+  return ready
 end
 
 local function bridge_env_payload(config, session, status_path)

@@ -21,7 +21,25 @@ local function current_status()
     return nil
   end
 
-  return ark.status({ include_lsp = true })
+  return ark.status()
+end
+
+local function current_lsp_status(bufnr)
+  local ok, ark = pcall(require, "ark")
+  if not ok then
+    return nil
+  end
+
+  local ok_lsp, lsp = pcall(require, "ark.lsp")
+  if not ok_lsp then
+    return nil
+  end
+
+  return lsp.status(ark.options(), bufnr, {
+    cache_ttl_ms = 250,
+    throttle_ms = 100,
+    timeout_ms = 50,
+  })
 end
 
 local bufnr = vim.api.nvim_get_current_buf()
@@ -66,8 +84,7 @@ await_mark("lsp_client", 10000, function()
 end)
 
 await_mark("lsp_hydrated", 10000, function()
-  local status = current_status()
-  local lsp_status = status and status.lsp_status or nil
+  local lsp_status = current_lsp_status(bufnr)
   return lsp_status
     and lsp_status.available == true
     and tonumber(lsp_status.consoleScopeCount or 0) > 0
@@ -77,5 +94,5 @@ end)
 vim.print({
   marks = marks,
   startup_elapsed_ms = elapsed_ms(),
-  status = current_status(),
+  status = require("ark").status({ include_lsp = true }),
 })

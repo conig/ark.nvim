@@ -752,14 +752,24 @@ local function start_managed_buffer(bufnr)
   local token = (startup_tokens[bufnr] or 0) + 1
   startup_tokens[bufnr] = token
 
+  local function can_start_buffer()
+    return startup_tokens[bufnr] == token
+      and vim.api.nvim_buf_is_valid(bufnr)
+      and vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype)
+  end
+
+  local function start_sync_lsp_later()
+    vim.schedule(function()
+      if not can_start_buffer() then
+        return
+      end
+
+      lsp.start(options, bufnr)
+    end)
+  end
+
   local function start_buffer()
-    if startup_tokens[bufnr] ~= token then
-      return
-    end
-    if not vim.api.nvim_buf_is_valid(bufnr) then
-      return
-    end
-    if not vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype) then
+    if not can_start_buffer() then
       return
     end
 
@@ -774,7 +784,7 @@ local function start_managed_buffer(bufnr)
       if options.async_startup then
         lsp.start_async(options, bufnr)
       else
-        lsp.start(options, bufnr)
+        start_sync_lsp_later()
       end
     end
   end
