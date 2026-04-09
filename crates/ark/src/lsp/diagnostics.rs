@@ -215,6 +215,16 @@ pub(crate) fn generate_diagnostics(
     // "symbol not found" when it shows up as an `identifier` node
     context.session_symbols.insert(String::from("_"));
 
+    // Some runtime-visible datasets are exposed via package metadata or
+    // autoloads rather than the captured search-path symbol list. Accepting
+    // these documented dataset names avoids noisy false positives like
+    // `mtcars` in interactive scripts.
+    if let Some(datasets) = state.library.get("datasets") {
+        context
+            .session_symbols
+            .extend(datasets.exported_symbols.iter().cloned());
+    }
+
     for pkg in state.installed_packages.iter() {
         context.installed_packages.insert(pkg.clone());
     }
@@ -1184,6 +1194,7 @@ mod tests {
     use crate::lsp::inputs::package::Package;
     use crate::lsp::inputs::package_description::Dcf;
     use crate::lsp::inputs::package_description::Description;
+    use crate::lsp::inputs::package_index::Index;
     use crate::lsp::inputs::package_namespace::Namespace;
     use crate::lsp::state::WorldState;
     use crate::r_task;
@@ -1266,6 +1277,44 @@ mtcars$mp";
             let document = Document::new(text, None);
             let state = WorldState {
                 console_scopes: vec![vec![String::from("library"), String::from("mtcars")]],
+                ..Default::default()
+            };
+
+            let diagnostics = generate_diagnostics(document, state);
+            let messages: Vec<String> = diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.clone())
+                .collect();
+
+            assert!(
+                !messages
+                    .iter()
+                    .any(|message| message.contains("No symbol named 'mtcars' in scope.")),
+                "unexpected diagnostics: {messages:?}"
+            );
+        })
+    }
+
+    #[test]
+    fn test_datasets_exports_prevent_runtime_dataset_false_positive() {
+        r_task(|| {
+            let text = "\
+library(ggpl
+mtcars$mp";
+            let document = Document::new(text, None);
+            let datasets = Package::new(
+                PathBuf::from("/fake/datasets"),
+                Description {
+                    name: String::from("datasets"),
+                    ..Default::default()
+                },
+                Namespace::default(),
+                Index {
+                    names: vec![String::from("mtcars")],
+                },
+            );
+            let state = WorldState {
+                library: Library::new(vec![]).insert("datasets", datasets),
                 ..Default::default()
             };
 
