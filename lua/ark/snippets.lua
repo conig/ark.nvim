@@ -161,21 +161,58 @@ local function insert_plain_text(bufnr, body)
   vim.cmd("startinsert")
 end
 
-local function expand_snippet(bufnr, body)
+local function ensure_insert_mode()
+  local mode = vim.api.nvim_get_mode().mode
+  if not mode:match("^[iR]") then
+    vim.cmd("startinsert")
+  end
+end
+
+local function settle_after_expand()
+  local next_mode = vim.api.nvim_get_mode().mode
+  if not next_mode:match("^[isS]") then
+    vim.cmd("startinsert")
+  end
+end
+
+local function expand_with_luasnip(body)
+  local ok, luasnip = pcall(require, "luasnip")
+  if not ok or type(luasnip) ~= "table" or type(luasnip.lsp_expand) ~= "function" then
+    return false
+  end
+
+  ensure_insert_mode()
+
+  local expanded = pcall(luasnip.lsp_expand, body)
+  if expanded then
+    settle_after_expand()
+    return true
+  end
+
+  return false
+end
+
+local function expand_with_builtin(body)
   if type(vim.snippet) == "table" and type(vim.snippet.expand) == "function" then
-    local mode = vim.api.nvim_get_mode().mode
-    if not mode:match("^[iR]") then
-      vim.cmd("startinsert")
-    end
+    ensure_insert_mode()
 
     local ok = pcall(vim.snippet.expand, body)
     if ok then
-      local next_mode = vim.api.nvim_get_mode().mode
-      if not next_mode:match("^[isS]") then
-        vim.cmd("startinsert")
-      end
+      settle_after_expand()
       return true
     end
+  end
+
+  return false
+end
+
+local function expand_snippet(bufnr, body)
+  if expand_with_luasnip(body) then
+    return true
+  end
+
+  if expand_with_builtin(body) then
+    return true
   end
 
   insert_plain_text(bufnr, body)
