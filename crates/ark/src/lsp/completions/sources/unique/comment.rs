@@ -58,7 +58,10 @@ impl CompletionSource for CommentSource {
         &self,
         completion_context: &CompletionContext,
     ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
-        completions_from_comment(completion_context.document_context, completion_context.state)
+        completions_from_comment(
+            completion_context.document_context,
+            completion_context.state,
+        )
     }
 }
 
@@ -276,8 +279,8 @@ fn test_comment() {
     use tree_sitter::Point;
 
     use crate::lsp::document::Document;
-    use crate::r_task;
     use crate::lsp::state::WorldState;
+    use crate::r_task;
 
     r_task(|| {
         // If not in a comment, return `None`
@@ -355,9 +358,7 @@ fn test_roxygen_tag_path_from_library() {
     assert_eq!(
         path,
         Some(
-            state
-                .library
-                .library_paths[0]
+            state.library.library_paths[0]
                 .join("roxygen2")
                 .join("roxygen2-tags.yml")
         )

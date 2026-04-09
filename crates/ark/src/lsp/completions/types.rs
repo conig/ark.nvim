@@ -48,9 +48,6 @@ pub(super) enum CompletionData {
     ScopeVariable {
         name: String,
     },
-    Snippet {
-        text: String,
-    },
     Unknown,
 }
 

@@ -574,10 +574,7 @@ impl Backend {
     }
 
     async fn notification(&self, params: Option<Value>) {
-        log::info!(
-            "Received legacy ark/notification payload: {:?}",
-            params
-        );
+        log::info!("Received legacy ark/notification payload: {:?}", params);
     }
 
     async fn update_session(&self, params: Value) {

@@ -195,21 +195,11 @@ function M.configure_blink_sources()
     }))
   end
 
-  if type(providers.snippets) == "table" and providers.ark_snippets == nil then
-    blink.add_source_provider("ark_snippets", ark_provider(providers.snippets, {
-      min_keyword_length = ark_auto_keyword_min_length,
-      should_show_items = ark_should_show_non_lsp_items,
-    }))
-  end
-
   sources.per_filetype = sources.per_filetype or {}
 
   local ark_sources = { "ark_lsp", inherit_defaults = false }
   if providers.ark_path ~= nil or providers.path ~= nil then
     ark_sources[#ark_sources + 1] = "ark_path"
-  end
-  if providers.ark_snippets ~= nil or providers.snippets ~= nil then
-    ark_sources[#ark_sources + 1] = "ark_snippets"
   end
   if ark_buffer_id ~= nil then
     ark_sources[#ark_sources + 1] = ark_buffer_id

@@ -114,6 +114,43 @@ if [[ $# -gt 0 ]]; then
   nvim_args+=("$@")
 fi
 
+run_tagged_pids() {
+  local env_path pid env_blob
+
+  for env_path in /proc/[0-9]*/environ; do
+    [[ -r "$env_path" ]] || continue
+
+    pid="${env_path#/proc/}"
+    pid="${pid%/environ}"
+
+    case "$pid" in
+      ''|*[!0-9]*)
+        continue
+        ;;
+    esac
+
+    [[ "$pid" -eq "$$" ]] && continue
+    [[ -n "${runner_pid:-}" && "$pid" -eq "$runner_pid" ]] && continue
+
+    env_blob="$(cat "$env_path" 2>/dev/null | tr '\0' '\n' || true)"
+    [[ -z "$env_blob" ]] && continue
+
+    if [[ "$env_blob" == *"ARK_TEST_RUN_ID=$run_id"* && "$env_blob" == *"ARK_TEST_TMPDIR=$run_tmpdir"* ]]; then
+      printf '%s\n' "$pid"
+    fi
+  done | sort -u
+}
+
+kill_run_tagged_processes() {
+  local signal="$1"
+  local pid
+
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    kill "-$signal" "$pid" >/dev/null 2>&1 || true
+  done < <(run_tagged_pids)
+}
+
 cleanup() {
   local exit_code="${1:-$?}"
 
@@ -136,6 +173,12 @@ cleanup() {
     sleep 1
     kill -9 -- "-$runner_pgid" >/dev/null 2>&1 || true
   fi
+
+  # Detached children can escape the runner process group, so reap only
+  # processes tagged with this run's env to keep parallel runs isolated.
+  kill_run_tagged_processes TERM
+  sleep 1
+  kill_run_tagged_processes KILL
 
   if [[ "$exit_code" -eq 0 && "$keep_artifacts" -eq 0 ]]; then
     rm -rf -- "$run_tmpdir"

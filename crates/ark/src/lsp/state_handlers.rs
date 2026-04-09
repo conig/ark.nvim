@@ -638,11 +638,12 @@ pub(crate) fn did_update_session(
     state.detached_session_pending_generation = None;
     state.detached_session_bootstrap_attempted = false;
 
-    let hydration = if params.status == "ready" && params.repl_ready && state.session_bridge.is_some() {
-        begin_detached_session_hydration(state, true)
-    } else {
-        None
-    };
+    let hydration =
+        if params.status == "ready" && params.repl_ready && state.session_bridge.is_some() {
+            begin_detached_session_hydration(state, true)
+        } else {
+            None
+        };
 
     if hydration.is_none() {
         lsp::diagnostics_refresh_all(state);

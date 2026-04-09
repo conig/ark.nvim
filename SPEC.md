@@ -108,7 +108,9 @@ part of the default supported path.
   session-aware after hydration completes.
 - R Markdown / Quarto chunk support works for completion and diagnostics.
 - Blink integration stays on the normal `lsp` source, with Ark-specific provider
-  policy handled in plugin code rather than a separate completion source.
+  policy handled in plugin code rather than a generic snippets completion source.
+- Structural code templates are exposed explicitly through the Ark Snacks picker
+  command instead of ambient completion menus.
 
 ## What Is Essentially Complete
 

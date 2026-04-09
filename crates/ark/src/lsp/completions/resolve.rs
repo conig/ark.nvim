@@ -40,7 +40,6 @@ pub fn resolve_completion(item: &mut CompletionItem) -> anyhow::Result<bool> {
         CompletionData::RoxygenTag { tag: _ } => Ok(false),
         CompletionData::ScopeVariable { name: _ } => Ok(false),
         CompletionData::ScopeParameter { name: _ } => Ok(false),
-        CompletionData::Snippet { text: _ } => Ok(false),
         CompletionData::Unknown => Ok(false),
     }
 }

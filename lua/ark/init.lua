@@ -2,6 +2,7 @@ local blink = require("ark.blink")
 local config = require("ark.config")
 local dev = require("ark.dev")
 local lsp = require("ark.lsp")
+local snippets = require("ark.snippets")
 local tmux = require("ark.tmux")
 
 local M = {}
@@ -1002,6 +1003,15 @@ end
 function M.start_lsp(bufnr)
   ensure_setup()
   return lsp.start(options, bufnr)
+end
+
+function M.snippets(bufnr)
+  ensure_setup()
+  return snippets.open({
+    bufnr = bufnr or vim.api.nvim_get_current_buf(),
+    filetypes = options.filetypes,
+    notify = notify,
+  })
 end
 
 local function show_help_page(bufnr, topic)

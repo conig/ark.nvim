@@ -26,9 +26,7 @@ pub static GLOBAL_SETTINGS: &[Setting<LspConfig>] = &[
         },
     },
     Setting {
-        keys: &[
-            "ark.r.symbols.includeAssignmentsInBlocks",
-        ],
+        keys: &["ark.r.symbols.includeAssignmentsInBlocks"],
         set: |cfg, v| {
             cfg.symbols.include_assignments_in_blocks = v
                 .as_bool()
@@ -36,9 +34,7 @@ pub static GLOBAL_SETTINGS: &[Setting<LspConfig>] = &[
         },
     },
     Setting {
-        keys: &[
-            "ark.r.workspaceSymbols.includeCommentSections",
-        ],
+        keys: &["ark.r.workspaceSymbols.includeCommentSections"],
         set: |cfg, v| {
             cfg.workspace_symbols.include_comment_sections = v
                 .as_bool()

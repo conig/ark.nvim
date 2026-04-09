@@ -49,6 +49,10 @@ vim.api.nvim_create_user_command("ArkHelpPane", function()
   require("ark").help_pane(0)
 end, { desc = "Send help for the symbol under cursor to the managed ark.nvim R pane" })
 
+vim.api.nvim_create_user_command("ArkSnippets", function()
+  require("ark").snippets(0)
+end, { desc = "Open the Ark snippets picker for the current R-family buffer" })
+
 vim.api.nvim_create_user_command("ArkRefresh", function()
   require("ark").refresh(0)
 end, { desc = "Restart ark.nvim LSP for the current buffer with current pane state" })
