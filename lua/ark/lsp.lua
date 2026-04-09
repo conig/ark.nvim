@@ -5,7 +5,7 @@ local uv = vim.uv or vim.loop
 
 local SESSION_UPDATE_METHOD = "ark/updateSession"
 local SESSION_BOOTSTRAP_METHOD = "ark/internal/bootstrapSession"
-local HELP_TOPIC_METHOD = "positron/textDocument/helpTopic"
+local HELP_TOPIC_METHOD = "ark/textDocument/helpTopic"
 local HELP_TEXT_METHOD = "ark/internal/helpText"
 local STATUS_REQUEST_METHOD = "ark/internal/status"
 

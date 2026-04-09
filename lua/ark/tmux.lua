@@ -271,9 +271,6 @@ local function status_root(config)
     root = vim.env.ARK_STATUS_DIR
   end
   if type(root) ~= "string" or root == "" then
-    root = vim.env.RSCOPE_STATUS_DIR
-  end
-  if type(root) ~= "string" or root == "" then
     root = (vim.fn.stdpath("state") or "/tmp") .. "/ark-status"
   end
   return vim.fs.normalize(root)

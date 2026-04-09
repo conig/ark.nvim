@@ -1,9 +1,9 @@
 ## Building
 
-The workspace currently declares `rust-version = "1.89"` and defaults to the
+The workspace currently declares `rust-version = "1.94"` and defaults to the
 `stable` Rust channel via `rust-toolchain.toml`.
 
-If your installed `stable` toolchain is older than `1.89`, update it first:
+If your installed `stable` toolchain is older than `1.94`, update it first:
 
 ```sh
 rustup update stable
@@ -40,6 +40,7 @@ Print the pane launcher command from Neovim:
 - The repo still contains upstream Ark crates that are not part of the intended v1 Neovim product.
 - `ark-lsp` currently defaults to `--runtime-mode detached`.
 - The Neovim plugin uses the repo-local `scripts/ark-r-launcher.sh` launcher.
-- The managed pane bootstraps the vendored `packages/rscope` runtime into `stdpath("data") .. "/ark/r-lib"` by default.
+- The managed pane bootstraps the vendored `packages/arkbridge` runtime into the first writable library path by default, or `ARK_NVIM_SESSION_LIB` when set.
 - Use `:ArkRefresh` after the managed pane becomes ready if you want to restart the buffer LSP with fresh session bridge metadata.
+- Use `:checkhealth ark` to inspect prerequisites and binary discovery without starting a pane or LSP.
 - Formatting still uses nightly-only `rustfmt` options today, so `cargo fmt` is not yet a stable-only workflow.

@@ -26,7 +26,7 @@ use crate::treesitter::node_has_error_or_missing;
 use crate::treesitter::NodeType;
 use crate::treesitter::NodeTypeExt;
 
-pub static POSITRON_STATEMENT_RANGE_REQUEST: &str = "positron/textDocument/statementRange";
+pub static ARK_STATEMENT_RANGE_REQUEST: &str = "ark/textDocument/statementRange";
 
 // ---------------------------------------------------------------------------------------
 // LSP facing types (these use LSP `Range`)

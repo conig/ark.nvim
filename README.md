@@ -52,10 +52,10 @@ You need:
 - `tmux`, and Neovim must itself be running inside tmux
 - `R >= 4.2`
 - the R package `jsonlite`
-- a Rust toolchain capable of building the workspace (`rust-version = 1.89`)
+- a Rust toolchain capable of building the workspace (`rust-version = 1.94`)
 
 The repo defaults to the `stable` Rust channel. If your installed `stable`
-toolchain is older than `1.89`, update it first:
+toolchain is older than `1.94`, update it first:
 
 ```sh
 rustup update stable
@@ -162,16 +162,27 @@ The plugin defines:
 - `:ArkPaneStart`
 - `:ArkPaneRestart`
 - `:ArkPaneStop`
+- `:ArkTabNew`
+- `:ArkTabNext`
+- `:ArkTabPrev`
+- `:ArkTabClose`
+- `:ArkTabList`
+- `:ArkTabGo`
 - `:ArkLspStart`
+- `:ArkHelp`
+- `:ArkHelpPane`
 - `:ArkRefresh`
 - `:ArkStatus`
 - `:ArkPaneCommand`
+- `:ArkBuildLsp`
 
 Useful ones in practice:
 
 - `:ArkStatus` prints the current pane, launcher, and bridge state
 - `:ArkRefresh` restarts the current buffer's LSP client using current session metadata
+- `:ArkHelp` opens a read-only floating help page for the symbol under cursor
 - `:ArkPaneCommand` prints the exact launcher command used for the managed pane
+- `:checkhealth ark` reports install/runtime prerequisites without starting a session
 
 ## Defaults
 
@@ -190,9 +201,9 @@ require("ark").setup({
 By default the plugin will try these `ark-lsp` locations in order:
 
 1. `ARK_NVIM_LSP_BIN`
-2. `ark-lsp` on your `PATH`
-3. `target/debug/ark-lsp` inside the plugin checkout
-4. `target/release/ark-lsp` inside the plugin checkout
+2. `target/debug/ark-lsp` inside the plugin checkout
+3. `target/release/ark-lsp` inside the plugin checkout
+4. `ark-lsp` on your `PATH`
 
 The managed R pane uses the repo-local launcher:
 
@@ -230,7 +241,7 @@ Pane width respects the first tmux setting it finds from:
 
 ## Build Notes
 
-The workspace still targets Rust `1.89`. If your installed `stable` toolchain is older, update it first:
+The workspace targets Rust `1.94`. If your installed `stable` toolchain is older, update it first:
 
 ```sh
 rustup update stable
@@ -248,7 +259,7 @@ nvim --headless -u NONE \
 
 ## Repo Status
 
-The repo is mid-refactor, but the direction is settled:
+The direction is settled even though retained upstream code still exists in-tree:
 
 - `ark.nvim` is the Neovim plugin surface
 - `ark-lsp` is the stdio server Neovim should run

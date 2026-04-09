@@ -77,11 +77,9 @@ function M.defaults()
         "GOOTABS_JOIN_WIDTH",
       },
       session_kind = session_kind,
-      startup_status_dir = vim.env.ARK_STATUS_DIR
-        or vim.env.RSCOPE_STATUS_DIR
-        or ((vim.fn.stdpath("state") or "/tmp") .. "/ark-status"),
+      startup_status_dir = vim.env.ARK_STATUS_DIR or ((vim.fn.stdpath("state") or "/tmp") .. "/ark-status"),
       session_pkg_path = root .. "/packages/arkbridge",
-      session_lib_path = vim.env.ARK_NVIM_SESSION_LIB or vim.env.RSCOPE_R_LIB,
+      session_lib_path = vim.env.ARK_NVIM_SESSION_LIB,
       bridge_wait_ms = 5000,
       session_timeout_ms = 1000,
     },

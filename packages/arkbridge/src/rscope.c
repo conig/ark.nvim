@@ -2,7 +2,7 @@
 #include <Rinternals.h>
 #include <string.h>
 
-SEXP C_rscope_member_names(SEXP obj, SEXP accessor) {
+SEXP C_ark_member_names(SEXP obj, SEXP accessor) {
   if (TYPEOF(accessor) != STRSXP || XLENGTH(accessor) < 1) {
     Rf_error("accessor must be character");
   }

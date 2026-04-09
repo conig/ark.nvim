@@ -26,7 +26,7 @@
 }
 
 .member_names_c <- function(obj, accessor) {
-  .Call("C_rscope_member_names", obj, accessor)
+  .Call("C_ark_member_names", obj, accessor)
 }
 
 .member_names <- function(obj, accessor, options = list()) {

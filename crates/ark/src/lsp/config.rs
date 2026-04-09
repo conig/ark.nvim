@@ -18,7 +18,7 @@ pub struct Setting<T> {
 /// document URI, add it to `DOCUMENT_SETTINGS` instead.
 pub static GLOBAL_SETTINGS: &[Setting<LspConfig>] = &[
     Setting {
-        keys: &["ark.r.diagnostics.enable", "positron.r.diagnostics.enable"],
+        keys: &["ark.r.diagnostics.enable"],
         set: |cfg, v| {
             cfg.diagnostics.enable = v
                 .as_bool()
@@ -28,7 +28,6 @@ pub static GLOBAL_SETTINGS: &[Setting<LspConfig>] = &[
     Setting {
         keys: &[
             "ark.r.symbols.includeAssignmentsInBlocks",
-            "positron.r.symbols.includeAssignmentsInBlocks",
         ],
         set: |cfg, v| {
             cfg.symbols.include_assignments_in_blocks = v
@@ -39,7 +38,6 @@ pub static GLOBAL_SETTINGS: &[Setting<LspConfig>] = &[
     Setting {
         keys: &[
             "ark.r.workspaceSymbols.includeCommentSections",
-            "positron.r.workspaceSymbols.includeCommentSections",
         ],
         set: |cfg, v| {
             cfg.workspace_symbols.include_comment_sections = v

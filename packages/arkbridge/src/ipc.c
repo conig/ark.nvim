@@ -280,7 +280,7 @@ static void rscope_ipc_stop_internal(void) {
   rscope_server_port = 0;
 }
 
-SEXP C_rscope_ipc_start(SEXP port, SEXP callback) {
+SEXP C_ark_ipc_start(SEXP port, SEXP callback) {
   int server_fd;
   int port_value;
   int opt = 1;
@@ -357,7 +357,7 @@ SEXP C_rscope_ipc_start(SEXP port, SEXP callback) {
   return Rf_ScalarInteger(port_value);
 }
 
-SEXP C_rscope_ipc_config(SEXP max_request_bytes, SEXP read_timeout_ms) {
+SEXP C_ark_ipc_config(SEXP max_request_bytes, SEXP read_timeout_ms) {
   int max_bytes;
   int timeout_ms;
 
@@ -383,12 +383,12 @@ SEXP C_rscope_ipc_config(SEXP max_request_bytes, SEXP read_timeout_ms) {
   return Rf_ScalarLogical(1);
 }
 
-SEXP C_rscope_ipc_stop(void) {
+SEXP C_ark_ipc_stop(void) {
   rscope_ipc_stop_internal();
   return Rf_ScalarLogical(1);
 }
 
-SEXP C_rscope_ipc_status(void) {
+SEXP C_ark_ipc_status(void) {
   SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
   SEXP names = PROTECT(Rf_allocVector(STRSXP, 2));
 
@@ -402,6 +402,6 @@ SEXP C_rscope_ipc_status(void) {
   return out;
 }
 
-void C_rscope_ipc_cleanup(void) {
+void C_ark_ipc_cleanup(void) {
   rscope_ipc_stop_internal();
 }

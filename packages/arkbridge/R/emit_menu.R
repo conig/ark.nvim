@@ -7,7 +7,7 @@ emit_menu <- function(expr, options = list()) {
     inspected <- inspect_object(obj, options = options)
 
     list(
-      schema_version = .rscope_schema_version(),
+      schema_version = .ark_schema_version(),
       session = session,
       object_meta = inspected$object_meta,
       members = inspected$members

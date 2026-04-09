@@ -2,7 +2,7 @@
 name = "ark"
 version = "0.1.249"
 description = """
-Ark, an R Kernel.
+Ark R tooling for Neovim and LSP workflows.
 """
 
 authors.workspace = true

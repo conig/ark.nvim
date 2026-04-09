@@ -1,4 +1,4 @@
-.rscope_parse_help_topic <- function(topic) {
+.ark_parse_help_topic <- function(topic) {
   topic <- as.character(topic %||% "")
   if (length(topic) < 1L || !nzchar(topic[[1L]])) {
     return(list(topic = "", package = NULL))
@@ -21,7 +21,7 @@
   list(topic = topic, package = NULL)
 }
 
-.rscope_help_to_rd <- function(help_page) {
+.ark_help_to_rd <- function(help_page) {
   if (inherits(help_page, "dev_topic")) {
     return(tools::parse_Rd(help_page$path))
   }
@@ -32,7 +32,7 @@
   tools::Rd_db(rd_package)[[paste0(rd_name, ".Rd")]]
 }
 
-.rscope_help_page_package <- function(help_page, fallback = NULL) {
+.ark_help_page_package <- function(help_page, fallback = NULL) {
   if (!is.null(fallback) && nzchar(fallback %||% "")) {
     return(fallback)
   }
@@ -49,7 +49,7 @@
   basename(dirname(dirname(help_path[[1L]])))
 }
 
-.rscope_strip_overstrike <- function(text) {
+.ark_strip_overstrike <- function(text) {
   if (is.null(text) || !nzchar(text)) {
     return(text)
   }
@@ -70,7 +70,7 @@
   paste(out, collapse = "")
 }
 
-.rscope_flatten_rd_text <- function(node) {
+.ark_flatten_rd_text <- function(node) {
   if (is.null(node)) {
     return("")
   }
@@ -83,11 +83,11 @@
     return("")
   }
 
-  pieces <- vapply(node, .rscope_flatten_rd_text, character(1), USE.NAMES = FALSE)
+  pieces <- vapply(node, .ark_flatten_rd_text, character(1), USE.NAMES = FALSE)
   paste(pieces, collapse = "")
 }
 
-.rscope_link_target <- function(label, rd_option = NULL, default_package = NULL) {
+.ark_link_target <- function(label, rd_option = NULL, default_package = NULL) {
   option <- trimws(as.character(rd_option %||% ""))
   label <- trimws(as.character(label %||% ""))
 
@@ -122,7 +122,7 @@
   list(topic = topic, package = default_package)
 }
 
-.rscope_collect_help_links <- function(node, default_package = NULL) {
+.ark_collect_help_links <- function(node, default_package = NULL) {
   if (is.null(node) || !is.list(node)) {
     return(list())
   }
@@ -130,8 +130,8 @@
   links <- list()
   tag <- attr(node, "Rd_tag", exact = TRUE)
   if (identical(tag, "\\link")) {
-    label <- trimws(.rscope_flatten_rd_text(node))
-    target <- .rscope_link_target(label, attr(node, "Rd_option", exact = TRUE), default_package)
+    label <- trimws(.ark_flatten_rd_text(node))
+    target <- .ark_link_target(label, attr(node, "Rd_option", exact = TRUE), default_package)
     if (!is.null(target) && nzchar(target$topic %||% "") && nzchar(label)) {
       links[[length(links) + 1L]] <- list(
         label = label,
@@ -142,7 +142,7 @@
   }
 
   for (child in node) {
-    child_links <- .rscope_collect_help_links(child, default_package)
+    child_links <- .ark_collect_help_links(child, default_package)
     if (length(child_links)) {
       links <- c(links, child_links)
     }
@@ -159,7 +159,7 @@
   links[!duplicated(keys)]
 }
 
-.rscope_render_help_page <- function(topic, package = NULL) {
+.ark_render_help_page <- function(topic, package = NULL) {
   if (is.null(package)) {
     help_page <- do.call(utils::help, list(
       topic = topic,
@@ -178,25 +178,25 @@
   }
 
   target_page <- if (inherits(help_page, "dev_topic")) help_page else help_page[[1L]]
-  rd_obj <- .rscope_help_to_rd(target_page)
-  default_package <- .rscope_help_page_package(target_page, package)
+  rd_obj <- .ark_help_to_rd(target_page)
+  default_package <- .ark_help_page_package(target_page, package)
 
   list(
-    text = .rscope_strip_overstrike(paste(capture.output(tools::Rd2txt(rd_obj)), collapse = "\n")),
-    references = .rscope_collect_help_links(rd_obj, default_package)
+    text = .ark_strip_overstrike(paste(capture.output(tools::Rd2txt(rd_obj)), collapse = "\n")),
+    references = .ark_collect_help_links(rd_obj, default_package)
   )
 }
 
-.rscope_render_help_text <- function(topic, package = NULL) {
-  page <- .rscope_render_help_page(topic, package)
+.ark_render_help_text <- function(topic, package = NULL) {
+  page <- .ark_render_help_page(topic, package)
   if (is.null(page)) {
     return(NULL)
   }
   page$text
 }
 
-.rscope_help_text_payload <- function(session, topic) {
-  parsed <- .rscope_parse_help_topic(topic)
+.ark_help_text_payload <- function(session, topic) {
+  parsed <- .ark_parse_help_topic(topic)
   if (!nzchar(parsed$topic %||% "")) {
     return(.emit_json(.new_error_payload(
       "E_IPC_REQUEST",
@@ -207,9 +207,9 @@
   }
 
   tryCatch({
-    page <- .rscope_render_help_page(parsed$topic, parsed$package)
+    page <- .ark_render_help_page(parsed$topic, parsed$package)
     .emit_json(list(
-      schema_version = .rscope_schema_version(),
+      schema_version = .ark_schema_version(),
       status = "ok",
       session = session,
       found = !is.null(page) && nzchar(page$text %||% ""),

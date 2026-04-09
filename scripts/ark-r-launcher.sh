@@ -2,12 +2,12 @@
 set -eu
 
 PKG_PATH=""
-R_BIN="${ARK_NVIM_R_BIN:-${RSCOPE_R_BIN:-R}}"
-BOOTSTRAP_LIB="${ARK_NVIM_SESSION_LIB:-${RSCOPE_R_LIB:-}}"
-R_ARGS="${ARK_NVIM_R_ARGS:-${RSCOPE_R_ARGS:---quiet --no-save}}"
-STATUS_DIR="${ARK_STATUS_DIR:-${RSCOPE_STATUS_DIR:-$HOME/.local/state/nvim/ark-status}}"
-IPC_MAX_REQUEST_BYTES="${ARK_IPC_MAX_REQUEST_BYTES:-${RSCOPE_IPC_MAX_REQUEST_BYTES:-65536}}"
-IPC_READ_TIMEOUT_MS="${ARK_IPC_READ_TIMEOUT_MS:-${RSCOPE_IPC_READ_TIMEOUT_MS:-250}}"
+R_BIN="${ARK_NVIM_R_BIN:-R}"
+BOOTSTRAP_LIB="${ARK_NVIM_SESSION_LIB:-}"
+R_ARGS="${ARK_NVIM_R_ARGS:---quiet --no-save}"
+STATUS_DIR="${ARK_STATUS_DIR:-$HOME/.local/state/nvim/ark-status}"
+IPC_MAX_REQUEST_BYTES="${ARK_IPC_MAX_REQUEST_BYTES:-65536}"
+IPC_READ_TIMEOUT_MS="${ARK_IPC_READ_TIMEOUT_MS:-250}"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DEFAULT_PKG_PATH=$(CDPATH= cd -- "$SCRIPT_DIR/../packages/arkbridge" && pwd)
@@ -50,7 +50,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ -z "$PKG_PATH" ]; then
-  PKG_PATH="${ARK_NVIM_SESSION_PKG_PATH:-${RSCOPE_PKG_PATH:-$DEFAULT_PKG_PATH}}"
+  PKG_PATH="${ARK_NVIM_SESSION_PKG_PATH:-$DEFAULT_PKG_PATH}"
 fi
 
 TMUX_SOCKET=""
@@ -63,7 +63,6 @@ if [ "$TMUX_SOCKET" != "" ] && command -v tmux >/dev/null 2>&1; then
   TMUX_SESSION=$(tmux -S "$TMUX_SOCKET" display-message -p "#{session_name}" 2>/dev/null || true)
 fi
 TMUX_PANE="${TMUX_PANE:-}"
-PROMPT_WATCH_TIMEOUT_MS="${ARK_PROMPT_WATCH_TIMEOUT_MS:-${RSCOPE_PROMPT_WATCH_TIMEOUT_MS:-10000}}"
 
 encode_status_component() {
   printf '%s' "$1" | perl -CSDA -pe 's/([^A-Za-z0-9._-])/sprintf("%%%02X", ord($1))/ge' | tr -d '\n'
@@ -92,13 +91,13 @@ local({
   .pane <- Sys.getenv("TMUX_PANE", unset = "")
   .socket <- "$TMUX_SOCKET_R"
   .session <- "$TMUX_SESSION_R"
-  .status_root <- Sys.getenv("RSCOPE_STATUS_DIR", unset = "$STATUS_DIR_R")
+  .status_root <- Sys.getenv("ARK_STATUS_DIR", unset = "$STATUS_DIR_R")
   .ipc_max_request_bytes <- suppressWarnings(as.integer(Sys.getenv(
-    "RSCOPE_IPC_MAX_REQUEST_BYTES",
+    "ARK_IPC_MAX_REQUEST_BYTES",
     unset = "$IPC_MAX_REQUEST_BYTES_R"
   )))
   .ipc_read_timeout_ms <- suppressWarnings(as.integer(Sys.getenv(
-    "RSCOPE_IPC_READ_TIMEOUT_MS",
+    "ARK_IPC_READ_TIMEOUT_MS",
     unset = "$IPC_READ_TIMEOUT_MS_R"
   )))
 
@@ -119,7 +118,7 @@ local({
 
   .log_file_path <- function() {
     if (!nzchar(.status_root)) {
-      return(tempfile("rscope-launcher-log-", fileext = ".log"))
+      return(tempfile("ark-launcher-log-", fileext = ".log"))
     }
 
     .log_dir <- file.path(.status_root, "logs")
@@ -138,7 +137,7 @@ local({
     }
 
     if (!length(.parts)) {
-      return(tempfile("rscope-launcher-log-", tmpdir = .log_dir, fileext = ".log"))
+      return(tempfile("ark-launcher-log-", tmpdir = .log_dir, fileext = ".log"))
     }
 
     file.path(.log_dir, sprintf("%s--%d.log", paste(.parts, collapse = "__"), as.integer(Sys.getpid())))
@@ -235,7 +234,7 @@ local({
       pretty = FALSE
     )
 
-    .tmp <- tempfile("rscope-status-", tmpdir = .dir, fileext = ".json")
+    .tmp <- tempfile("ark-status-", tmpdir = .dir, fileext = ".json")
     writeLines(.json, .tmp, useBytes = TRUE)
     suppressWarnings(Sys.chmod(.tmp, mode = "600", use_umask = FALSE))
     if (!isTRUE(file.rename(.tmp, .path))) {
@@ -347,8 +346,8 @@ local({
     if (!requireNamespace("arkbridge", quietly = TRUE)) return(FALSE)
     .ns <- asNamespace("arkbridge")
     exists("start_ipc_service", envir = .ns, inherits = FALSE) &&
-      exists(".rscope_dispatch_ipc_request", envir = .ns, inherits = FALSE) &&
-      exists(".rscope_resolve_eval_env", envir = .ns, inherits = FALSE)
+      exists(".ark_dispatch_ipc_request", envir = .ns, inherits = FALSE) &&
+      exists(".ark_resolve_eval_env", envir = .ns, inherits = FALSE)
   }
 
   .new_auth_token <- function() {
@@ -366,16 +365,16 @@ local({
   }
 
   .install_check_done <- function(key) {
-    .cache <- getOption("rscope.install_check_cache")
+    .cache <- getOption("arkbridge.install_check_cache")
     if (!is.list(.cache)) return(FALSE)
     isTRUE(.cache[[key]])
   }
 
   .mark_install_check_done <- function(key) {
-    .cache <- getOption("rscope.install_check_cache")
+    .cache <- getOption("arkbridge.install_check_cache")
     if (!is.list(.cache)) .cache <- list()
     .cache[[key]] <- TRUE
-    options(rscope.install_check_cache = .cache)
+    options(arkbridge.install_check_cache = .cache)
   }
 
   .latest_mtime <- function(paths) {
@@ -744,8 +743,8 @@ ARK_IPC_MAX_REQUEST_BYTES="$IPC_MAX_REQUEST_BYTES" \
 ARK_IPC_READ_TIMEOUT_MS="$IPC_READ_TIMEOUT_MS" \
 ARK_ORIG_R_PROFILE_USER="${R_PROFILE_USER:-}" \
 ARK_R_LIB="$BOOTSTRAP_LIB" \
-RSCOPE_STATUS_DIR="$STATUS_DIR" \
-RSCOPE_IPC_MAX_REQUEST_BYTES="$IPC_MAX_REQUEST_BYTES" \
-RSCOPE_IPC_READ_TIMEOUT_MS="$IPC_READ_TIMEOUT_MS" \
+ARK_TMUX_SOCKET="$TMUX_SOCKET" \
+ARK_TMUX_SESSION="$TMUX_SESSION" \
+ARK_TMUX_PANE="$TMUX_PANE" \
 R_PROFILE_USER="$PROFILE_FILE" \
 "$R_BIN" $R_ARGS

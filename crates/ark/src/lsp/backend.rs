@@ -575,7 +575,7 @@ impl Backend {
 
     async fn notification(&self, params: Option<Value>) {
         log::info!(
-            "Received legacy positron/notification payload: {:?}",
+            "Received legacy ark/notification payload: {:?}",
             params
         );
     }
@@ -658,20 +658,20 @@ pub(crate) fn start_lsp(
         let (service, socket) = LspService::build(init)
             .custom_method(ARK_SESSION_UPDATE_NOTIFICATION, Backend::update_session)
             .custom_method(
-                statement_range::POSITRON_STATEMENT_RANGE_REQUEST,
+                statement_range::ARK_STATEMENT_RANGE_REQUEST,
                 Backend::statement_range,
             )
-            .custom_method(help_topic::POSITRON_HELP_TOPIC_REQUEST, Backend::help_topic)
+            .custom_method(help_topic::ARK_HELP_TOPIC_REQUEST, Backend::help_topic)
             .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
             .custom_method(ARK_STATUS_REQUEST, Backend::status)
             .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
             .custom_method(ARK_SESSION_BOOTSTRAP_REQUEST, Backend::bootstrap_session)
             // In principle this should probably be a Jupyter request
             .custom_method(
-                input_boundaries::POSITRON_INPUT_BOUNDARIES_REQUEST,
+                input_boundaries::ARK_INPUT_BOUNDARIES_REQUEST,
                 Backend::input_boundaries,
             )
-            .custom_method("positron/notification", Backend::notification)
+            .custom_method("ark/notification", Backend::notification)
             .finish();
 
         let server = Server::new(read, write, socket);
@@ -727,19 +727,19 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
     let (service, socket) = LspService::build(init)
         .custom_method(ARK_SESSION_UPDATE_NOTIFICATION, Backend::update_session)
         .custom_method(
-            statement_range::POSITRON_STATEMENT_RANGE_REQUEST,
+            statement_range::ARK_STATEMENT_RANGE_REQUEST,
             Backend::statement_range,
         )
-        .custom_method(help_topic::POSITRON_HELP_TOPIC_REQUEST, Backend::help_topic)
+        .custom_method(help_topic::ARK_HELP_TOPIC_REQUEST, Backend::help_topic)
         .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
         .custom_method(ARK_STATUS_REQUEST, Backend::status)
         .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
         .custom_method(ARK_SESSION_BOOTSTRAP_REQUEST, Backend::bootstrap_session)
         .custom_method(
-            input_boundaries::POSITRON_INPUT_BOUNDARIES_REQUEST,
+            input_boundaries::ARK_INPUT_BOUNDARIES_REQUEST,
             Backend::input_boundaries,
         )
-        .custom_method("positron/notification", Backend::notification)
+        .custom_method("ark/notification", Backend::notification)
         .finish();
 
     let server = Server::new(stdin, stdout, socket);

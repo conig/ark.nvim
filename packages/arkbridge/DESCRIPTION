@@ -3,9 +3,9 @@ Type: Package
 Title: Runtime Object Scope Introspection for Neovim
 Version: 0.1.0
 Authors@R:
-    person(given = "arkbridge", family = "maintainers", role = c("aut", "cre"), email = "devnull@example.com")
-Author: arkbridge maintainers [aut, cre]
-Maintainer: arkbridge maintainers <devnull@example.com>
+    person(given = "Ark", family = "maintainers", role = c("aut", "cre"), email = "devnull@example.com")
+Author: Ark maintainers [aut, cre]
+Maintainer: Ark maintainers <devnull@example.com>
 Description: Provides object and member introspection helpers intended to power
     Neovim completion and member insertion workflows from live R sessions.
 License: MIT + file LICENSE

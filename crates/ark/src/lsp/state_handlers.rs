@@ -360,7 +360,7 @@ pub(crate) fn initialize(
 
     Ok(InitializeResult {
         server_info: Some(ServerInfo {
-            name: "Ark R Kernel".to_string(),
+            name: "Ark R LSP".to_string(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
         }),
         capabilities: ServerCapabilities {
