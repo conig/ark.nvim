@@ -184,6 +184,19 @@ Useful ones in practice:
 - `:ArkPaneCommand` prints the exact launcher command used for the managed pane
 - `:checkhealth ark` reports install/runtime prerequisites without starting a session
 
+## Verification
+
+For a single branch-confidence run, use:
+
+```sh
+just verify
+```
+
+That wrapper runs `cargo nextest`, `cargo clippy`, rebuilds `ark-lsp` once, and
+then executes the Neovim E2E suite serially through `scripts/run-e2e-test.sh`.
+It is the intended one-shot command when tmux-backed E2Es require a single
+escalated run outside the sandbox.
+
 ## Defaults
 
 Current defaults from `require("ark").setup()` are:

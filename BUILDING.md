@@ -19,6 +19,12 @@ Build or check the standalone LSP:
 cargo check -p ark --bin ark-lsp
 ```
 
+Run the full confidence suite:
+
+```sh
+just verify
+```
+
 Headless-load the Neovim plugin:
 
 ```sh

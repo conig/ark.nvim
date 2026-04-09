@@ -15,3 +15,7 @@ test-insta:
 # Run clippy
 clippy:
   cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Run the full verification suite
+verify *ARGS:
+  ./scripts/run-full-suite.sh {{ARGS}}
