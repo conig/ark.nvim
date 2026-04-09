@@ -257,7 +257,17 @@ local({
     invisible(NULL)
   }
 
-  .write_ready_status <- function(port, auth_token) {
+  .write_bridge_ready_status <- function(port, auth_token) {
+    .write_status("ready", list(
+      port = as.integer(port),
+      auth_token = auth_token,
+      repl_ready = FALSE,
+      repl_ts = NULL,
+      repl_seq = .repl_seq
+    ))
+  }
+
+  .write_repl_ready_status <- function(port, auth_token) {
     .write_status("ready", list(
       port = as.integer(port),
       auth_token = auth_token,
@@ -305,9 +315,33 @@ local({
     sys.source(.user_profile, envir = .GlobalEnv, keep.source = FALSE)
   }
 
+  .ensure_default_search_path <- function() {
+    .defaults <- getOption("defaultPackages")
+    if (!is.character(.defaults) || !length(.defaults) || identical(.defaults, "methods")) {
+      .defaults <- c("datasets", "utils", "grDevices", "graphics", "stats", "methods")
+    }
+
+    for (.pkg in unique(as.character(.defaults))) {
+      if (!nzchar(.pkg)) {
+        next
+      }
+
+      .search_name <- paste0("package:", .pkg)
+      if (.search_name %in% search()) {
+        next
+      }
+
+      suppressPackageStartupMessages(
+        require(.pkg, character.only = TRUE, quietly = TRUE, warn.conflicts = FALSE)
+      )
+    }
+  }
+
   if (!interactive()) {
     return(invisible(NULL))
   }
+
+  .ensure_default_search_path()
 
   .has_runtime <- function() {
     if (!requireNamespace("arkbridge", quietly = TRUE)) return(FALSE)
@@ -634,10 +668,36 @@ local({
           NULL
         }
       )
-      .write_ready_status(.svc\$port, .auth_token)
+      .write_bridge_ready_status(.svc\$port, .auth_token)
+      .user_first <- if (exists(".First", envir = .GlobalEnv, inherits = FALSE)) {
+        get(".First", envir = .GlobalEnv, inherits = FALSE)
+      } else {
+        NULL
+      }
+      assign(
+        ".First",
+        local({
+          .original_first <- .user_first
+          function() {
+            if (is.function(.original_first)) {
+              .original_first()
+            }
+            .bootstrap_cache <<- tryCatch(
+              .collect_bootstrap_cache(),
+              error = function(e) {
+                .log_line("[bootstrap] post-startup cache generation failed: ", conditionMessage(e))
+                .bootstrap_cache
+              }
+            )
+            .write_repl_ready_status(.svc\$port, .auth_token)
+            invisible(NULL)
+          }
+        }),
+        envir = .GlobalEnv
+      )
       addTaskCallback(function(expr, value, ok, visible) {
         .repl_seq <<- .repl_seq + 1L
-        try(.write_ready_status(.svc\$port, .auth_token), silent = TRUE)
+        try(.write_repl_ready_status(.svc\$port, .auth_token), silent = TRUE)
         TRUE
       })
       if (is.list(.bootstrap_cache)) {
@@ -679,15 +739,6 @@ cleanup() {
   rm -f "$PROFILE_FILE"
 }
 trap cleanup EXIT INT TERM
-
-if [ -n "$STATUS_FILE" ] && [ -n "$TMUX_SOCKET" ] && [ -n "$TMUX_PANE" ] && [ -x "$SCRIPT_DIR/ark-wait-for-repl.sh" ]; then
-  "$SCRIPT_DIR/ark-wait-for-repl.sh" \
-    --socket "$TMUX_SOCKET" \
-    --pane "$TMUX_PANE" \
-    --status-file "$STATUS_FILE" \
-    --timeout-ms "$PROMPT_WATCH_TIMEOUT_MS" \
-    >/dev/null 2>&1 &
-fi
 
 ARK_STATUS_DIR="$STATUS_DIR" \
 ARK_IPC_MAX_REQUEST_BYTES="$IPC_MAX_REQUEST_BYTES" \

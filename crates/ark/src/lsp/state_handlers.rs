@@ -638,7 +638,7 @@ pub(crate) fn did_update_session(
     state.detached_session_pending_generation = None;
     state.detached_session_bootstrap_attempted = false;
 
-    let hydration = if params.status == "ready" && state.session_bridge.is_some() {
+    let hydration = if params.status == "ready" && params.repl_ready && state.session_bridge.is_some() {
         begin_detached_session_hydration(state, true)
     } else {
         None
@@ -900,7 +900,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detached_session_update_queues_bootstrap_when_bridge_is_ready() {
+    fn test_detached_session_update_defers_bootstrap_until_repl_ready() {
         let auth_token = "ark-test-token";
         let port = spawn_bootstrap_bridge(auth_token);
         let status = tempfile::NamedTempFile::new().expect("expected temp status file");
@@ -936,24 +936,13 @@ mod tests {
             "session update should not synchronously hydrate detached session inputs"
         );
 
-        let hydration = hydration.expect("expected ready detached session to queue hydration");
-        let output = run_detached_session_hydration(hydration);
-        finish_detached_session_hydration(output, &mut state);
-
-        assert_eq!(state.console_scopes, vec![vec![
-            String::from("library"),
-            String::from("mtcars")
-        ]]);
-        assert_eq!(state.installed_packages, Vec::<String>::new());
-        assert_eq!(state.library.library_paths.len(), 1);
-        assert_eq!(
-            state.library.library_paths[0],
-            std::path::PathBuf::from("/tmp/ark-test-library")
+        assert!(
+            hydration.is_none(),
+            "detached session bootstrap should wait for repl_ready=true"
         );
-        assert_eq!(
-            state.detached_session_status.last_bootstrap_repl_seq,
-            Some(42)
-        );
+        assert!(state.console_scopes.is_empty());
+        assert!(state.library.library_paths.is_empty());
+        assert_eq!(state.detached_session_status.last_bootstrap_repl_seq, None);
     }
 
     #[test]
