@@ -523,7 +523,6 @@ local({
     on.exit({
       try(sink(type = "message"), silent = TRUE)
       try(sink(), silent = TRUE)
-      try(close(.quiet_con), silent = TRUE)
     }, add = TRUE)
 
     .bootstrap_lib <- Sys.getenv("ARK_R_LIB", unset = "$BOOTSTRAP_LIB_R")

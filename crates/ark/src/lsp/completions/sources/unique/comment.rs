@@ -25,6 +25,8 @@ use crate::lsp::completions::completion_item::completion_item;
 use crate::lsp::completions::sources::CompletionSource;
 use crate::lsp::completions::types::CompletionData;
 use crate::lsp::document_context::DocumentContext;
+use crate::lsp::inputs::library::Library;
+use crate::lsp::state::WorldState;
 use crate::lsp::traits::node::NodeExt;
 use crate::treesitter::NodeTypeExt;
 
@@ -56,12 +58,13 @@ impl CompletionSource for CommentSource {
         &self,
         completion_context: &CompletionContext,
     ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
-        completions_from_comment(completion_context.document_context)
+        completions_from_comment(completion_context.document_context, completion_context.state)
     }
 }
 
 fn completions_from_comment(
     context: &DocumentContext,
+    state: &WorldState,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
     let node = context.node;
 
@@ -80,7 +83,7 @@ fn completions_from_comment(
         return Ok(Some(completions));
     }
 
-    for entry in roxygen_tag_entries()?.iter() {
+    for entry in roxygen_tag_entries(state)?.iter() {
         let item = completion_item_from_roxygen(
             entry.name.as_str(),
             entry.template.as_deref(),
@@ -93,8 +96,8 @@ fn completions_from_comment(
     Ok(Some(completions))
 }
 
-fn roxygen_tag_entries() -> anyhow::Result<Vec<RoxygenTagEntry>> {
-    let Some(path) = roxygen_tag_path()? else {
+fn roxygen_tag_entries(state: &WorldState) -> anyhow::Result<Vec<RoxygenTagEntry>> {
+    let Some(path) = roxygen_tag_path(state)? else {
         return Ok(vec![]);
     };
 
@@ -123,7 +126,30 @@ fn roxygen_tag_entries() -> anyhow::Result<Vec<RoxygenTagEntry>> {
     Ok(items)
 }
 
-fn roxygen_tag_path() -> anyhow::Result<Option<PathBuf>> {
+fn roxygen_tag_path(state: &WorldState) -> anyhow::Result<Option<PathBuf>> {
+    if let Some(path) = roxygen_tag_path_from_library(&state.library) {
+        return Ok(Some(path));
+    }
+
+    if !state.has_attached_runtime() {
+        return Ok(None);
+    }
+
+    roxygen_tag_path_from_r()
+}
+
+fn roxygen_tag_path_from_library(library: &Library) -> Option<PathBuf> {
+    let package = library.get("roxygen2")?;
+    let path = package.path.join("roxygen2-tags.yml");
+
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn roxygen_tag_path_from_r() -> anyhow::Result<Option<PathBuf>> {
     let path = RFunction::new("base", "system.file")
         .param("package", "roxygen2")
         .add("roxygen2-tags.yml")
@@ -211,26 +237,63 @@ fn inject_roxygen_comment_after_newline(x: &str) -> String {
     x.replace("\n", "\n#' ")
 }
 
+#[cfg(test)]
+fn temp_roxygen2_library() -> (tempfile::TempDir, WorldState) {
+    let library_dir = tempfile::tempdir().unwrap();
+    let package_dir = library_dir.path().join("roxygen2");
+    std::fs::create_dir(&package_dir).unwrap();
+    std::fs::write(
+        package_dir.join("DESCRIPTION"),
+        "Package: roxygen2\nVersion: 1.0.0\n",
+    )
+    .unwrap();
+    std::fs::write(package_dir.join("NAMESPACE"), "").unwrap();
+    std::fs::write(
+        package_dir.join("roxygen2-tags.yml"),
+        r#"
+- name: description
+  template: |
+
+    ${1:A short description...}
+  description: Explain the object.
+- name: aliases
+  template: " ${1:alias}"
+  description: Add additional aliases to the topic.
+"#,
+    )
+    .unwrap();
+
+    let state = WorldState {
+        library: Library::new(vec![library_dir.path().to_path_buf()]),
+        ..WorldState::default()
+    };
+
+    (library_dir, state)
+}
+
 #[test]
 fn test_comment() {
     use tree_sitter::Point;
 
     use crate::lsp::document::Document;
     use crate::r_task;
+    use crate::lsp::state::WorldState;
 
     r_task(|| {
         // If not in a comment, return `None`
         let point = Point { row: 0, column: 1 };
         let document = Document::new("mean()", None);
         let context = DocumentContext::new(&document, point, None);
-        let completions = completions_from_comment(&context).unwrap();
+        let completions = completions_from_comment(&context, &WorldState::default()).unwrap();
         assert!(completions.is_none());
 
         // If in a comment, return empty vector
         let point = Point { row: 0, column: 1 };
         let document = Document::new("# mean", None);
         let context = DocumentContext::new(&document, point, None);
-        let completions = completions_from_comment(&context).unwrap().unwrap();
+        let completions = completions_from_comment(&context, &WorldState::default())
+            .unwrap()
+            .unwrap();
         assert!(completions.is_empty());
     });
 }
@@ -255,10 +318,11 @@ fn test_roxygen_comment() {
             return;
         }
 
+        let (_library_dir, state) = temp_roxygen2_library();
         let point = Point { row: 0, column: 4 };
         let document = Document::new("#' @", None);
         let context = DocumentContext::new(&document, point, None);
-        let completions = completions_from_comment(&context).unwrap().unwrap();
+        let completions = completions_from_comment(&context, &state).unwrap().unwrap();
 
         // Make sure we find it
         let aliases: Vec<&CompletionItem> = completions
@@ -282,6 +346,22 @@ fn test_roxygen_comment() {
             ))
         );
     });
+}
+
+#[test]
+fn test_roxygen_tag_path_from_library() {
+    let (_library_dir, state) = temp_roxygen2_library();
+    let path = roxygen_tag_path(&state).unwrap();
+    assert_eq!(
+        path,
+        Some(
+            state
+                .library
+                .library_paths[0]
+                .join("roxygen2")
+                .join("roxygen2-tags.yml")
+        )
+    );
 }
 
 #[test]
