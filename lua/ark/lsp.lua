@@ -708,6 +708,12 @@ function M.config(opts, bufnr, _config_opts)
     _ark_lsp_build_fingerprint = dev.detached_lsp_build_fingerprint(cmd[1]),
     name = opts.lsp.name,
     cmd = cmd,
+    -- LuaSnip-driven placeholder edits can leave Neovim's incremental
+    -- changetracker out of sync with Ark, which surfaces bogus syntax
+    -- diagnostics after an otherwise valid snippet expansion.
+    flags = {
+      allow_incremental_sync = false,
+    },
     cmd_env = type(startup_snapshot) == "table"
       and startup_snapshot.cmd_env
       or tmux.bridge_env(opts.tmux, startup_snapshot),
