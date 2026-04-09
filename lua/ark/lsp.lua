@@ -102,6 +102,28 @@ local function live_client(client)
   return client and client.initialized and not (client.is_stopped and client:is_stopped())
 end
 
+local function stop_lsp_client(client, force)
+  if not client then
+    return
+  end
+
+  if type(client.stop) == "function" then
+    client:stop(force)
+    return
+  end
+
+  if type(vim.lsp.stop_client) ~= "function" or type(client.id) ~= "number" then
+    return
+  end
+
+  if force == nil then
+    vim.lsp.stop_client(client.id)
+    return
+  end
+
+  vim.lsp.stop_client(client.id, force)
+end
+
 local function track_client_id(client_id)
   if type(client_id) ~= "number" then
     return
@@ -765,7 +787,7 @@ local function start_client(opts, bufnr, start_opts)
 
   for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr, name = opts.lsp.name })) do
     if live_client(client) and not same_server(client.config, desired) then
-      vim.lsp.stop_client(client.id)
+      stop_lsp_client(client)
       forget_client_id(client.id)
     end
   end
@@ -804,7 +826,7 @@ local function restart_client(opts, bufnr, start_opts)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
 
   for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr, name = opts.lsp.name })) do
-    vim.lsp.stop_client(client.id)
+    stop_lsp_client(client)
     forget_client_id(client.id)
   end
 
