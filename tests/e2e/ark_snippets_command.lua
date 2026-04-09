@@ -73,8 +73,8 @@ local ok, err = pcall(function()
   end
 
   local items = picker_spec.items or {}
-  if #items ~= 6 then
-    error("expected six Ark snippets, got " .. tostring(#items), 0)
+  if #items ~= 18 then
+    error("expected eighteen Ark snippets, got " .. tostring(#items), 0)
   end
 
   local by_label = {}
@@ -88,6 +88,12 @@ local ok, err = pcall(function()
   local fun = by_label.fun
   if fun == nil then
     error("expected `fun` snippet item in Ark picker", 0)
+  end
+
+  for _, label in ipairs({ "lib", "req", "src", "ret", "lapply", "sapply", "vapply", "switch" }) do
+    if by_label[label] == nil then
+      error("expected `" .. label .. "` snippet item in Ark picker", 0)
+    end
   end
 
   if not fun.preview.text:find("function%(", 1) then

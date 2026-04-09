@@ -2,6 +2,30 @@ local M = {}
 
 local SNIPPETS = {
   {
+    id = "lib",
+    label = "lib",
+    description = "Load a package with `library()`",
+    body = "library(${1:package})",
+  },
+  {
+    id = "req",
+    label = "req",
+    description = "Load a package with `require()`",
+    body = "require(${1:package})",
+  },
+  {
+    id = "src",
+    label = "src",
+    description = "Source an R file",
+    body = 'source("${1:file.R}")',
+  },
+  {
+    id = "ret",
+    label = "ret",
+    description = "Return a value",
+    body = "return(${1:value})",
+  },
+  {
     id = "if",
     label = "if",
     description = "Insert `if` statement",
@@ -60,6 +84,58 @@ local SNIPPETS = {
       "\t${0}",
       "}",
     }, "\n"),
+  },
+  {
+    id = "switch",
+    label = "switch",
+    description = "Dispatch with `switch()`",
+    body = table.concat({
+      "switch (${1:object},",
+      "\t${2:case} = ${3:action}",
+      ")",
+    }, "\n"),
+  },
+  {
+    id = "apply",
+    label = "apply",
+    description = "Apply a function over an array margin",
+    body = "apply(${1:array}, ${2:margin}, ${3:fun})",
+  },
+  {
+    id = "lapply",
+    label = "lapply",
+    description = "Apply a function over a list",
+    body = "lapply(${1:list}, ${2:fun})",
+  },
+  {
+    id = "sapply",
+    label = "sapply",
+    description = "Simplifying list apply",
+    body = "sapply(${1:list}, ${2:fun})",
+  },
+  {
+    id = "vapply",
+    label = "vapply",
+    description = "Type-stable list apply",
+    body = "vapply(${1:list}, ${2:fun}, FUN.VALUE = ${3:type})",
+  },
+  {
+    id = "mapply",
+    label = "mapply",
+    description = "Apply a function in parallel over arguments",
+    body = "mapply(${1:fun}, ${2:...})",
+  },
+  {
+    id = "tapply",
+    label = "tapply",
+    description = "Apply a function over indexed subsets",
+    body = "tapply(${1:vector}, ${2:index}, ${3:fun})",
+  },
+  {
+    id = "rapply",
+    label = "rapply",
+    description = "Recursively apply a function over a list",
+    body = "rapply(${1:list}, ${2:fun})",
   },
 }
 
