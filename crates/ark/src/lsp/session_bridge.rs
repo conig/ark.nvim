@@ -34,6 +34,8 @@ use uuid::Uuid;
 
 use crate::lsp::completions::dedupe_and_sort_completion_items;
 use crate::lsp::completions::find_pipe_root_name;
+use crate::lsp::completions::call_node_position_type;
+use crate::lsp::completions::CallNodePositionType;
 use crate::lsp::document_context::DocumentContext;
 use crate::lsp::traits::node::NodeExt;
 use crate::lsp::traits::point::PointExt;
@@ -358,6 +360,7 @@ struct CompletionRequest {
     prefix: Option<String>,
     accessor: Option<String>,
     close_string: bool,
+    quote_insert: bool,
     subset_kind: Option<SubsetCompletionKind>,
 }
 
@@ -734,6 +737,9 @@ impl SessionBridge {
         if let Some(request) = completion_request_from_library_string(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
+        if let Some(request) = completion_request_from_custom_call(context)? {
+            return Ok(Some(CompletionPlan::Unique(request)));
+        }
         if let Some(request) = completion_request_from_argument_string(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
@@ -827,6 +833,7 @@ impl SessionBridge {
             prefix: prefix.clone(),
             accessor: None,
             close_string: false,
+            quote_insert: false,
             subset_kind: None,
         });
 
@@ -840,6 +847,7 @@ impl SessionBridge {
                     prefix,
                     accessor: None,
                     close_string: false,
+                    quote_insert: false,
                     subset_kind: None,
                 }));
             }
@@ -1516,7 +1524,14 @@ fn completion_item(
                 format!("{} = ", member.name_raw)
             }
         },
-        CompletionFlavor::ComparisonString => escape_r_double_quoted(member.name_raw.as_str()),
+        CompletionFlavor::ComparisonString => {
+            let escaped = escape_r_double_quoted(member.name_raw.as_str());
+            if request.quote_insert {
+                format!("\"{escaped}\"")
+            } else {
+                escaped
+            }
+        },
         CompletionFlavor::Extractor |
         CompletionFlavor::Namespace |
         CompletionFlavor::Package |
@@ -1578,6 +1593,10 @@ fn completion_item_command(request: &CompletionRequest) -> Option<Command> {
 }
 
 fn completion_needs_string_delimiter(request: &CompletionRequest) -> bool {
+    if request.quote_insert {
+        return false;
+    }
+
     if matches!(request.flavor, CompletionFlavor::ComparisonString) {
         return true;
     }
@@ -1735,6 +1754,7 @@ fn completion_request_from_extractor(
         prefix,
         accessor,
         close_string: false,
+        quote_insert: false,
         subset_kind: None,
     }))
 }
@@ -1767,6 +1787,7 @@ fn completion_request_from_extractor_text(context: &DocumentContext) -> Option<C
         prefix: capture_prefix(&captures, "prefix"),
         accessor: Some(accessor.to_string()),
         close_string: false,
+        quote_insert: false,
         subset_kind: None,
     })
 }
@@ -1812,6 +1833,7 @@ fn completion_request_from_namespace(
         prefix,
         accessor: None,
         close_string: false,
+        quote_insert: false,
         subset_kind: None,
     }))
 }
@@ -1835,6 +1857,7 @@ fn completion_request_from_string_subset(
         prefix: None,
         accessor: None,
         close_string: false,
+        quote_insert: false,
         subset_kind: Some(subset_kind),
     }))
 }
@@ -1858,6 +1881,7 @@ fn completion_request_from_subset(
         prefix: symbol_prefix(context)?,
         accessor: None,
         close_string: false,
+        quote_insert: false,
         subset_kind: Some(subset_kind),
     };
 
@@ -1887,6 +1911,7 @@ fn completion_request_from_comparison_string(
             prefix: Some(value_prefix),
             accessor: None,
             close_string: false,
+            quote_insert: false,
             subset_kind: None,
         }));
     }
@@ -1898,6 +1923,7 @@ fn completion_request_from_comparison_string(
             prefix: Some(value_prefix),
             accessor: None,
             close_string: false,
+            quote_insert: false,
             subset_kind: None,
         }));
     }
@@ -1931,6 +1957,7 @@ fn completion_request_from_library_string(
         prefix,
         accessor: None,
         close_string: true,
+        quote_insert: false,
         subset_kind: None,
     }))
 }
@@ -1954,6 +1981,7 @@ fn completion_request_from_library_string_text(
             .map(|capture| capture.as_str().to_string()),
         accessor: None,
         close_string: true,
+        quote_insert: false,
         subset_kind: None,
     })
 }
@@ -1984,6 +2012,7 @@ fn completion_request_from_argument_string(
         prefix,
         accessor: None,
         close_string: false,
+        quote_insert: false,
         subset_kind: None,
     }))
 }
@@ -2025,8 +2054,109 @@ fn completion_request_from_argument_string_text(
             .map(|capture| capture.as_str().to_string()),
         accessor: None,
         close_string: false,
+        quote_insert: false,
         subset_kind: None,
     })
+}
+
+fn completion_request_from_custom_call(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<CompletionRequest>> {
+    let Some(call) = analyze_call_context(context)? else {
+        return Ok(None);
+    };
+
+    let in_string = node_find_string(&context.node).is_some();
+    let position = call_node_position_type(&context.node, context.point);
+
+    match call.callee.as_str() {
+        "Sys.getenv" | "Sys.unsetenv" | "getOption" => {
+            if !custom_string_call_target(&call, position, in_string) {
+                return Ok(None);
+            }
+
+            let prefix = if let Some(string_node) = node_find_string(&context.node) {
+                string_prefix(&string_node, context)?
+            } else {
+                symbol_prefix(context)?
+            };
+
+            if prefix.is_none() && context.trigger.is_none() {
+                return Ok(None);
+            }
+
+            let expr = match call.callee.as_str() {
+                "getOption" => option_names_completion_expr(),
+                _ => env_names_completion_expr(),
+            };
+
+            Ok(Some(CompletionRequest {
+                expr,
+                flavor: CompletionFlavor::ComparisonString,
+                prefix,
+                accessor: None,
+                close_string: in_string,
+                quote_insert: !in_string,
+                subset_kind: None,
+            }))
+        },
+        "options" | "Sys.setenv" => {
+            if !custom_argument_call_target(position) {
+                return Ok(None);
+            }
+
+            let prefix = symbol_prefix(context)?;
+            if prefix.is_none() && context.trigger.is_none() {
+                return Ok(None);
+            }
+
+            let expr = match call.callee.as_str() {
+                "options" => option_names_completion_expr(),
+                _ => env_names_completion_expr(),
+            };
+
+            Ok(Some(CompletionRequest {
+                expr,
+                flavor: CompletionFlavor::Argument,
+                prefix,
+                accessor: Some(String::from("arg")),
+                close_string: false,
+                quote_insert: false,
+                subset_kind: None,
+            }))
+        },
+        _ => Ok(None),
+    }
+}
+
+fn custom_string_call_target(
+    call: &CallContext,
+    position: CallNodePositionType,
+    in_string: bool,
+) -> bool {
+    if let Some(active_argument) = call.active_argument.as_deref() {
+        return active_argument == "x";
+    }
+
+    if call.num_unnamed_arguments > 0 {
+        return false;
+    }
+
+    if in_string {
+        return true;
+    }
+
+    matches!(
+        position,
+        CallNodePositionType::Name | CallNodePositionType::Ambiguous
+    )
+}
+
+fn custom_argument_call_target(position: CallNodePositionType) -> bool {
+    matches!(
+        position,
+        CallNodePositionType::Name | CallNodePositionType::Ambiguous
+    )
 }
 
 fn completion_request_from_string_subset_text(
@@ -2052,6 +2182,7 @@ fn completion_request_from_string_subset_text(
             prefix: None,
             accessor: None,
             close_string: false,
+            quote_insert: false,
             subset_kind: Some(SubsetCompletionKind::StringSubset2),
         });
     }
@@ -2063,6 +2194,7 @@ fn completion_request_from_string_subset_text(
         prefix: None,
         accessor: None,
         close_string: false,
+        quote_insert: false,
         subset_kind: Some(SubsetCompletionKind::StringSubset),
     })
 }
@@ -2111,6 +2243,7 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
             prefix: capture_prefix(&captures, "prefix"),
             accessor: None,
             close_string: false,
+            quote_insert: false,
             subset_kind: Some(SubsetCompletionKind::Subset2),
         });
     }
@@ -2122,6 +2255,7 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
             prefix: capture_prefix(&captures, "prefix"),
             accessor: None,
             close_string: false,
+            quote_insert: false,
             subset_kind: Some(SubsetCompletionKind::Subset),
         });
     }
@@ -2133,6 +2267,7 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
             prefix: capture_prefix(&captures, "prefix"),
             accessor: None,
             close_string: false,
+            quote_insert: false,
             subset_kind: Some(SubsetCompletionKind::Subset),
         });
     }
@@ -2144,6 +2279,7 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
             prefix: capture_prefix(&captures, "prefix"),
             accessor: None,
             close_string: false,
+            quote_insert: false,
             subset_kind: Some(SubsetCompletionKind::Subset),
         });
     }
@@ -2155,6 +2291,7 @@ fn completion_request_from_subset_text(context: &DocumentContext) -> Option<Comp
         prefix: capture_prefix(&captures, "prefix"),
         accessor: None,
         close_string: false,
+        quote_insert: false,
         subset_kind: Some(SubsetCompletionKind::Subset),
     })
 }
@@ -2185,6 +2322,7 @@ fn completion_request_from_call(
         prefix,
         accessor: Some(String::from("arg")),
         close_string: false,
+        quote_insert: false,
         subset_kind: None,
     }))
 }
@@ -2206,6 +2344,7 @@ fn completion_request_from_pipe(
         prefix: symbol_prefix(context)?,
         accessor: None,
         close_string: false,
+        quote_insert: false,
         subset_kind: None,
     }))
 }
@@ -2228,6 +2367,7 @@ fn completion_request_from_pipe_text(context: &DocumentContext) -> Option<Comple
         prefix: capture_prefix(&captures, "prefix"),
         accessor: None,
         close_string: false,
+        quote_insert: false,
         subset_kind: None,
     })
 }
@@ -2258,6 +2398,7 @@ fn completion_request_from_library_call(
         prefix,
         accessor: None,
         close_string: false,
+        quote_insert: false,
         subset_kind: None,
     }))
 }
@@ -2279,6 +2420,7 @@ fn completion_request_from_search_path(
         prefix,
         accessor: None,
         close_string: false,
+        quote_insert: false,
         subset_kind: None,
     }))
 }
@@ -2301,6 +2443,7 @@ fn completion_request_from_explicit_pipe_root(
         prefix,
         accessor: None,
         close_string: false,
+        quote_insert: false,
         subset_kind: None,
     }))
 }
@@ -2822,6 +2965,18 @@ fn comparison_values_completion_expr(expr: &str) -> String {
 fn installed_packages_completion_expr() -> String {
     String::from(
         "local({ .x <- base::.packages(all.available = TRUE); stats::setNames(vector(\"list\", length(.x)), .x) })",
+    )
+}
+
+fn option_names_completion_expr() -> String {
+    String::from(
+        "local({ .x <- names(options()); .x <- .x[!is.na(.x)]; stats::setNames(vector(\"list\", length(.x)), .x) })",
+    )
+}
+
+fn env_names_completion_expr() -> String {
+    String::from(
+        "local({ .x <- names(Sys.getenv()); .x <- .x[!is.na(.x)]; stats::setNames(vector(\"list\", length(.x)), .x) })",
     )
 }
 
@@ -3389,6 +3544,38 @@ mod tests {
     }
 
     #[test]
+    fn test_custom_call_request_quotes_bare_sys_unsetenv_completion() {
+        let (text, point) = point_from_cursor("Sys.unsetenv(PA@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_custom_call(&context)
+            .unwrap()
+            .expect("expected custom completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::ComparisonString));
+        assert_eq!(request.prefix, Some(String::from("PA")));
+        assert!(request.quote_insert);
+        assert!(!request.close_string);
+    }
+
+    #[test]
+    fn test_custom_call_request_closes_in_string_getenv_completion() {
+        let (text, point) = point_from_cursor("Sys.getenv(\"PA@\")");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_custom_call(&context)
+            .unwrap()
+            .expect("expected custom completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::ComparisonString));
+        assert_eq!(request.prefix, Some(String::from("PA")));
+        assert!(!request.quote_insert);
+        assert!(request.close_string);
+    }
+
+    #[test]
     fn test_subset_completion_items_use_priority_sort_text() {
         let item = completion_item(
             BridgeMember {
@@ -3402,6 +3589,7 @@ mod tests {
                 prefix: Some(String::from("m")),
                 accessor: None,
                 close_string: false,
+                quote_insert: false,
                 subset_kind: Some(SubsetCompletionKind::Subset),
             },
             None,
@@ -3425,6 +3613,7 @@ mod tests {
                 prefix: None,
                 accessor: None,
                 close_string: false,
+                quote_insert: false,
                 subset_kind: Some(SubsetCompletionKind::StringSubset2),
             },
             None,
@@ -3435,6 +3624,31 @@ mod tests {
             item.command.map(|command| command.command),
             Some(String::from("ark.completeStringDelimiter"))
         );
+    }
+
+    #[test]
+    fn test_custom_bare_string_completion_wraps_quotes_without_delimiter_command() {
+        let item = completion_item(
+            BridgeMember {
+                name_display: String::from("PATH"),
+                name_raw: String::from("PATH"),
+                ..Default::default()
+            },
+            &CompletionRequest {
+                expr: env_names_completion_expr(),
+                flavor: CompletionFlavor::ComparisonString,
+                prefix: Some(String::from("PA")),
+                accessor: None,
+                close_string: false,
+                quote_insert: true,
+                subset_kind: None,
+            },
+            None,
+            0,
+        );
+
+        assert_eq!(item.insert_text, Some(String::from("\"PATH\"")));
+        assert!(item.command.is_none());
     }
 
     #[test]

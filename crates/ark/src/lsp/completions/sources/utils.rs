@@ -110,7 +110,7 @@ pub(super) fn filter_out_dot_prefixes(
 }
 
 #[derive(PartialEq, Debug)]
-pub(super) enum CallNodePositionType {
+pub(crate) enum CallNodePositionType {
     Name,
     Value,
     Ambiguous,
@@ -118,7 +118,7 @@ pub(super) enum CallNodePositionType {
     Unknown,
 }
 
-pub(super) fn call_node_position_type(node: &Node, point: Point) -> CallNodePositionType {
+pub(crate) fn call_node_position_type(node: &Node, point: Point) -> CallNodePositionType {
     match node.node_type() {
         NodeType::Arguments => CallNodePositionType::Name,
         NodeType::Anonymous(kind) if kind == "(" => {

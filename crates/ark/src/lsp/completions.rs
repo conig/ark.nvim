@@ -23,3 +23,5 @@ pub(crate) use provide::provide_detached_static_completions;
 pub(crate) use resolve::resolve_completion;
 pub(crate) use sources::composite::dedupe_and_sort_completion_items;
 pub(crate) use sources::composite::find_pipe_root_name;
+pub(crate) use sources::utils::call_node_position_type;
+pub(crate) use sources::utils::CallNodePositionType;
