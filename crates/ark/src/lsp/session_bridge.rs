@@ -327,6 +327,67 @@ struct CallContext {
     callee: String,
 }
 
+#[derive(Clone, Copy)]
+enum PackageCompletionMode {
+    String,
+    BareSymbol,
+}
+
+#[derive(Clone, Copy)]
+struct PackageArgumentSpec {
+    callee: &'static str,
+    named_argument: &'static str,
+    allow_bare_symbol: bool,
+}
+
+const PACKAGE_ARGUMENT_SPECS: &[PackageArgumentSpec] = &[
+    PackageArgumentSpec {
+        callee: "library",
+        named_argument: "package",
+        allow_bare_symbol: true,
+    },
+    PackageArgumentSpec {
+        callee: "require",
+        named_argument: "package",
+        allow_bare_symbol: true,
+    },
+    PackageArgumentSpec {
+        callee: "requireNamespace",
+        named_argument: "package",
+        allow_bare_symbol: false,
+    },
+    PackageArgumentSpec {
+        callee: "loadNamespace",
+        named_argument: "package",
+        allow_bare_symbol: false,
+    },
+    PackageArgumentSpec {
+        callee: "getNamespace",
+        named_argument: "name",
+        allow_bare_symbol: false,
+    },
+    PackageArgumentSpec {
+        callee: "asNamespace",
+        named_argument: "ns",
+        allow_bare_symbol: false,
+    },
+    PackageArgumentSpec {
+        callee: "unloadNamespace",
+        named_argument: "ns",
+        allow_bare_symbol: false,
+    },
+    PackageArgumentSpec {
+        callee: "find.package",
+        named_argument: "package",
+        allow_bare_symbol: false,
+    },
+    PackageArgumentSpec {
+        callee: "packageVersion",
+        named_argument: "pkg",
+        allow_bare_symbol: false,
+    },
+];
+
 #[derive(Clone, Debug, PartialEq)]
 struct CallArgument {
     name: Option<String>,
@@ -734,7 +795,7 @@ impl SessionBridge {
         if let Some(request) = completion_request_from_comparison_string(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
-        if let Some(request) = completion_request_from_library_string(context)? {
+        if let Some(request) = completion_request_from_package_string(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_custom_call(context)? {
@@ -772,7 +833,7 @@ impl SessionBridge {
 
             return Ok(Some(CompletionPlan::Unique(request)));
         }
-        if let Some(request) = completion_request_from_library_call(context)? {
+        if let Some(request) = completion_request_from_package_call(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_explicit_pipe_root(context)? {
@@ -1949,19 +2010,19 @@ fn completion_request_from_comparison_string(
     Ok(None)
 }
 
-fn completion_request_from_library_string(
+fn completion_request_from_package_string(
     context: &DocumentContext,
 ) -> anyhow::Result<Option<CompletionRequest>> {
     let Some(string_node) = node_find_string(&context.node) else {
-        return Ok(completion_request_from_library_string_text(context));
+        return Ok(completion_request_from_package_string_text(context));
     };
 
     let Some(call) = analyze_call_context(context)? else {
-        return Ok(completion_request_from_library_string_text(context));
+        return Ok(completion_request_from_package_string_text(context));
     };
 
-    if !matches!(call.callee.as_str(), "library" | "require") || call.num_unnamed_arguments > 0 {
-        return Ok(completion_request_from_library_string_text(context));
+    if !call_matches_package_argument(&call, PackageCompletionMode::String) {
+        return Ok(completion_request_from_package_string_text(context));
     }
 
     let prefix = string_prefix(&string_node, context)?;
@@ -1980,16 +2041,42 @@ fn completion_request_from_library_string(
     }))
 }
 
-fn completion_request_from_library_string_text(
+fn completion_request_from_package_string_text(
     context: &DocumentContext,
 ) -> Option<CompletionRequest> {
-    static LIBRARY_STRING_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?x)^\s*(?:library|require)\s*\(\s*"(?P<prefix>[^"]*)$"#).unwrap()
+    static PACKAGE_STRING_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)
+            ^\s*
+            (?:(?:[A-Za-z.][A-Za-z0-9._]*)(?:::|:::))?
+            (?P<callee>
+                library |
+                require |
+                requireNamespace |
+                loadNamespace |
+                getNamespace |
+                asNamespace |
+                unloadNamespace |
+                find\.package |
+                packageVersion
+            )
+            \s*\(\s*
+            (?:(?P<argument>[A-Za-z.][A-Za-z0-9._]*)\s*=\s*)?
+            "(?P<prefix>[^"]*)$
+            "#,
+        )
+        .unwrap()
     });
 
     let line = context.document.get_line(context.point.row)?;
     let prefix = line.chars().take(context.point.column).collect::<String>();
-    let captures = LIBRARY_STRING_RE.captures(prefix.as_str())?;
+    let captures = PACKAGE_STRING_RE.captures(prefix.as_str())?;
+    let callee = captures.name("callee")?.as_str();
+    let argument = captures.name("argument").map(|capture| capture.as_str());
+
+    if !text_matches_package_argument(callee, argument, PackageCompletionMode::String) {
+        return None;
+    }
 
     Some(CompletionRequest {
         expr: installed_packages_completion_expr(),
@@ -2390,18 +2477,14 @@ fn completion_request_from_pipe_text(context: &DocumentContext) -> Option<Comple
     })
 }
 
-fn completion_request_from_library_call(
+fn completion_request_from_package_call(
     context: &DocumentContext,
 ) -> anyhow::Result<Option<CompletionRequest>> {
     let Some(call) = analyze_call_context(context)? else {
         return Ok(None);
     };
 
-    if !matches!(call.callee.as_str(), "library" | "require") {
-        return Ok(None);
-    }
-
-    if call.num_unnamed_arguments > 0 {
+    if !call_matches_package_argument(&call, PackageCompletionMode::BareSymbol) {
         return Ok(None);
     }
 
@@ -2544,6 +2627,59 @@ fn analyze_call_context(context: &DocumentContext) -> anyhow::Result<Option<Call
         num_unnamed_arguments,
         callee,
     }))
+}
+
+fn call_matches_package_argument(call: &CallContext, mode: PackageCompletionMode) -> bool {
+    let Some(spec) = package_argument_spec(call.callee.as_str(), mode) else {
+        return false;
+    };
+
+    match call.active_argument.as_deref() {
+        Some(active_argument) => active_argument == spec.named_argument,
+        None => call.num_unnamed_arguments == 0,
+    }
+}
+
+fn text_matches_package_argument(
+    callee: &str,
+    argument: Option<&str>,
+    mode: PackageCompletionMode,
+) -> bool {
+    let Some(spec) = package_argument_spec(callee, mode) else {
+        return false;
+    };
+
+    match argument {
+        Some(argument) => argument == spec.named_argument,
+        None => true,
+    }
+}
+
+fn package_argument_spec(
+    callee: &str,
+    mode: PackageCompletionMode,
+) -> Option<&'static PackageArgumentSpec> {
+    let callee = call_callee_basename(callee);
+
+    PACKAGE_ARGUMENT_SPECS.iter().find(|spec| {
+        spec.callee == callee
+            && match mode {
+                PackageCompletionMode::String => true,
+                PackageCompletionMode::BareSymbol => spec.allow_bare_symbol,
+            }
+    })
+}
+
+fn call_callee_basename(callee: &str) -> &str {
+    if let Some((_, basename)) = callee.rsplit_once(":::") {
+        return basename;
+    }
+
+    if let Some((_, basename)) = callee.rsplit_once("::") {
+        return basename;
+    }
+
+    callee
 }
 
 fn argument_prefix(context: &DocumentContext) -> anyhow::Result<Option<String>> {
@@ -3621,6 +3757,59 @@ mod tests {
         assert!(matches!(request.flavor, CompletionFlavor::Package));
         assert_eq!(request.expr, installed_packages_completion_expr());
         assert_eq!(request.prefix, Some(String::from("uti")));
+    }
+
+    #[test]
+    fn test_package_string_request_supports_require_namespace() {
+        let (text, point) = point_from_cursor("requireNamespace(\"ut@\")");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_package_string(&context)
+            .unwrap()
+            .expect("expected package-string completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Package));
+        assert_eq!(request.expr, installed_packages_completion_expr());
+        assert_eq!(request.prefix, Some(String::from("ut")));
+        assert!(request.close_string);
+    }
+
+    #[test]
+    fn test_package_string_text_fallback_supports_package_version_named_argument() {
+        let (text, point) = point_from_cursor("packageVersion(pkg = \"ut@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_package_string(&context)
+            .unwrap()
+            .expect("expected package-string completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Package));
+        assert_eq!(request.expr, installed_packages_completion_expr());
+        assert_eq!(request.prefix, Some(String::from("ut")));
+    }
+
+    #[test]
+    fn test_package_string_text_fallback_ignores_non_package_named_arguments() {
+        let (text, point) = point_from_cursor("library(character.only = \"ut@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        assert!(completion_request_from_package_string(&context)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn test_package_call_request_does_not_expand_require_namespace_bare_symbols() {
+        let (text, point) = point_from_cursor("requireNamespace(ut@)");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        assert!(completion_request_from_package_call(&context)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
