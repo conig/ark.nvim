@@ -2062,7 +2062,11 @@ fn completion_request_from_package_string_text(
             )
             \s*\(\s*
             (?:(?P<argument>[A-Za-z.][A-Za-z0-9._]*)\s*=\s*)?
-            "(?P<prefix>[^"]*)$
+            (?:
+                "(?P<prefix_double>[^"]*)
+                |
+                '(?P<prefix_single>[^']*)
+            )$
             "#,
         )
         .unwrap()
@@ -2081,9 +2085,7 @@ fn completion_request_from_package_string_text(
     Some(CompletionRequest {
         expr: installed_packages_completion_expr(),
         flavor: CompletionFlavor::Package,
-        prefix: captures
-            .name("prefix")
-            .map(|capture| capture.as_str().to_string()),
+        prefix: captured_quoted_prefix(&captures).map(String::from),
         accessor: None,
         close_string: true,
         quote_insert: false,
@@ -2138,7 +2140,12 @@ fn completion_request_from_argument_string_text(
             \s*\(
             .*?
             (?:^|,)\s*
-            (?P<formal>[A-Za-z.][A-Za-z0-9._]*)\s*=\s*"(?P<prefix>[^"]*)$
+            (?P<formal>[A-Za-z.][A-Za-z0-9._]*)\s*=\s*
+            (?:
+                "(?P<prefix_double>[^"]*)
+                |
+                '(?P<prefix_single>[^']*)
+            )$
             "#,
         )
         .unwrap()
@@ -2154,9 +2161,7 @@ fn completion_request_from_argument_string_text(
             captures.name("formal")?.as_str(),
         ),
         flavor: CompletionFlavor::ComparisonString,
-        prefix: captures
-            .name("prefix")
-            .map(|capture| capture.as_str().to_string()),
+        prefix: captured_quoted_prefix(&captures).map(String::from),
         accessor: None,
         close_string: false,
         quote_insert: false,
@@ -2861,6 +2866,13 @@ fn string_prefix(string_node: &Node, context: &DocumentContext) -> anyhow::Resul
     Ok(Some(prefix))
 }
 
+fn captured_quoted_prefix<'a>(captures: &'a regex::Captures<'a>) -> Option<&'a str> {
+    captures
+        .name("prefix_double")
+        .or_else(|| captures.name("prefix_single"))
+        .map(|capture| capture.as_str())
+}
+
 fn comparison_string_expr(line_prefix: &str) -> Option<(String, String)> {
     static COMPARISON_STRING_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
@@ -2873,7 +2885,12 @@ fn comparison_string_expr(line_prefix: &str) -> Option<(String, String)> {
                     \[\[\s*(?:"[^"]+"|'[^']+'|[A-Za-z.][A-Za-z0-9._]*)\s*\]\]
                 )*
             )
-            \s*(?:==|!=)\s*"(?P<prefix>[^"]*)$
+            \s*(?:==|!=)\s*
+            (?:
+                "(?P<prefix_double>[^"]*)
+                |
+                '(?P<prefix_single>[^']*)
+            )$
             "#,
         )
         .unwrap()
@@ -2881,7 +2898,7 @@ fn comparison_string_expr(line_prefix: &str) -> Option<(String, String)> {
 
     let captures = COMPARISON_STRING_RE.captures(line_prefix)?;
     let expr = captures.name("expr")?.as_str();
-    let value_prefix = captures.name("prefix")?.as_str();
+    let value_prefix = captured_quoted_prefix(&captures)?;
 
     Some((
         comparison_values_completion_expr(expr),
@@ -2895,7 +2912,12 @@ fn comparison_string_data_table_expr(line_prefix: &str) -> Option<(String, Strin
             r#"(?x)
             (?P<table>[A-Za-z.][A-Za-z0-9._]*)\s*
             \[
-            \s*(?P<column>[A-Za-z.][A-Za-z0-9._]*)\s*(?:==|!=)\s*"(?P<prefix>[^"]*)$
+            \s*(?P<column>[A-Za-z.][A-Za-z0-9._]*)\s*(?:==|!=)\s*
+            (?:
+                "(?P<prefix_double>[^"]*)
+                |
+                '(?P<prefix_single>[^']*)
+            )$
             "#,
         )
         .unwrap()
@@ -2904,7 +2926,7 @@ fn comparison_string_data_table_expr(line_prefix: &str) -> Option<(String, Strin
     let captures = DATA_TABLE_COMPARISON_RE.captures(line_prefix)?;
     let table = captures.name("table")?.as_str();
     let column = captures.name("column")?.as_str();
-    let value_prefix = captures.name("prefix")?.as_str();
+    let value_prefix = captured_quoted_prefix(&captures)?;
 
     let expr = format!("({})[[\"{}\"]]", table, escape_r_string(column),);
 
@@ -3776,8 +3798,39 @@ mod tests {
     }
 
     #[test]
+    fn test_package_string_request_supports_require_namespace_single_quotes() {
+        let (text, point) = point_from_cursor("requireNamespace('ut@')");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_package_string(&context)
+            .unwrap()
+            .expect("expected package-string completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Package));
+        assert_eq!(request.expr, installed_packages_completion_expr());
+        assert_eq!(request.prefix, Some(String::from("ut")));
+        assert!(request.close_string);
+    }
+
+    #[test]
     fn test_package_string_text_fallback_supports_package_version_named_argument() {
         let (text, point) = point_from_cursor("packageVersion(pkg = \"ut@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_package_string(&context)
+            .unwrap()
+            .expect("expected package-string completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Package));
+        assert_eq!(request.expr, installed_packages_completion_expr());
+        assert_eq!(request.prefix, Some(String::from("ut")));
+    }
+
+    #[test]
+    fn test_package_string_text_fallback_supports_package_version_named_argument_single_quotes() {
+        let (text, point) = point_from_cursor("packageVersion(pkg = 'ut@");
         let document = Document::new(text.as_str(), None);
         let context = DocumentContext::new(&document, point, None);
 

@@ -86,7 +86,7 @@ local function is_lsp_string_trigger(context)
   local trigger = type(context) == "table" and context.trigger or nil
   local kind = type(trigger) == "table" and trigger.kind or nil
   local character = type(trigger) == "table" and trigger.character or nil
-  if kind ~= "trigger_character" or character ~= '"' then
+  if kind ~= "trigger_character" or not (character == '"' or character == "'") then
     return false
   end
 
@@ -95,15 +95,17 @@ local function is_lsp_string_trigger(context)
     return false
   end
 
-  return prefix:match('==%s*"[^"]*$') ~= nil
-    or prefix:match('!=%s*"[^"]*$') ~= nil
-    or prefix:match('^%s*library%s*%(%s*"[^"]*$') ~= nil
-    or prefix:match('^%s*require%s*%(%s*"[^"]*$') ~= nil
-    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%[%s*"[^"]*$') ~= nil
-    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*"[^"]*$') ~= nil
-    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*"[^"]*$') ~= nil
-    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*c%s*%(%s*"[^"]*$') ~= nil
-    or prefix:match('[,(]%s*[A-Za-z.][A-Za-z0-9._]*%s*=%s*"[^"]*$') ~= nil
+  local quote_pattern = character == '"' and '"[^"]*$' or "'[^']*$"
+
+  return prefix:match("==%s*" .. quote_pattern) ~= nil
+    or prefix:match("!=%s*" .. quote_pattern) ~= nil
+    or prefix:match("^%s*library%s*%(%s*" .. quote_pattern) ~= nil
+    or prefix:match("^%s*require%s*%(%s*" .. quote_pattern) ~= nil
+    or prefix:match("[A-Za-z.][A-Za-z0-9._]*%s*%[%[%s*" .. quote_pattern) ~= nil
+    or prefix:match("[A-Za-z.][A-Za-z0-9._]*%s*%[%s*" .. quote_pattern) ~= nil
+    or prefix:match("[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*" .. quote_pattern) ~= nil
+    or prefix:match("[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*c%s*%(%s*" .. quote_pattern) ~= nil
+    or prefix:match("[,(]%s*[A-Za-z.][A-Za-z0-9._]*%s*=%s*" .. quote_pattern) ~= nil
 end
 
 local function is_lsp_subset_trigger(context)
@@ -337,21 +339,38 @@ function M.handle_insert_char_pre(bufnr, char)
     hide_visible_blink_menu()
   end
 
-  if char == "(" or char == "[" then
+  if char == "(" or char == "[" or char == "'" then
     vim.b[bufnr].ark_pending_pair_completion = char
+    vim.defer_fn(function()
+      if not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+      end
+      if vim.api.nvim_get_current_buf() ~= bufnr then
+        return
+      end
+      M.maybe_show_after_pair(bufnr, char)
+    end, 20)
   else
     vim.b[bufnr].ark_pending_pair_completion = nil
   end
 end
 
-function M.maybe_show_after_pair(bufnr)
-  local trigger_character = vim.b[bufnr].ark_pending_pair_completion
+function M.maybe_show_after_pair(bufnr, trigger_character)
+  if type(trigger_character) ~= "string" or trigger_character == "" then
+    trigger_character = vim.b[bufnr].ark_pending_pair_completion
+  end
   if type(trigger_character) ~= "string" or trigger_character == "" then
     return
   end
-  vim.b[bufnr].ark_pending_pair_completion = nil
+  if vim.b[bufnr].ark_pending_pair_completion == trigger_character then
+    vim.b[bufnr].ark_pending_pair_completion = nil
+  end
 
   if not active_ark_client(bufnr) then
+    return
+  end
+
+  if vim.api.nvim_get_mode().mode ~= "i" then
     return
   end
 
@@ -361,15 +380,8 @@ function M.maybe_show_after_pair(bufnr)
   end
 
   M.patch_blink_context()
-
-  local ok_trigger, trigger = pcall(require, "blink.cmp.completion.trigger")
-  if not ok_trigger then
-    return
-  end
-
-  trigger.show({
-    trigger_kind = "trigger_character",
-    trigger_character = trigger_character,
+  blink.show({
+    providers = { "ark_lsp" },
   })
 end
 
@@ -409,13 +421,14 @@ function M.register_lsp_commands()
     local col = cursor[2]
     local line = vim.api.nvim_get_current_line()
     local char_under_cursor = line:sub(col + 1, col + 1)
+    local delimiter = (char_under_cursor == "'" or char_under_cursor == '"') and char_under_cursor or '"'
 
-    if char_under_cursor == '"' then
+    if char_under_cursor == delimiter then
       vim.api.nvim_win_set_cursor(0, { cursor[1], col + 1 })
       return
     end
 
-    vim.api.nvim_buf_set_text(0, row, col, row, col, { '"' })
+    vim.api.nvim_buf_set_text(0, row, col, row, col, { delimiter })
     vim.api.nvim_win_set_cursor(0, { cursor[1], col + 1 })
   end
 
