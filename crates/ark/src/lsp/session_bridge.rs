@@ -1797,6 +1797,24 @@ fn completion_request_from_namespace(
 ) -> anyhow::Result<Option<CompletionRequest>> {
     let node = context.node;
 
+    if node.node_type() == NodeType::Identifier {
+        let Some(parent) = node.parent() else {
+            return Ok(None);
+        };
+
+        if parent.is_namespace_operator() && parent.child_by_field_name("lhs") == Some(node) {
+            return Ok(Some(CompletionRequest {
+                expr: installed_packages_completion_expr(),
+                flavor: CompletionFlavor::Package,
+                prefix: Some(node.node_to_string(context.document.contents.as_str())?),
+                accessor: None,
+                close_string: false,
+                quote_insert: false,
+                subset_kind: None,
+            }));
+        }
+    }
+
     let operator = match node.node_type() {
         NodeType::Anonymous(kind) if matches!(kind.as_str(), "::" | ":::") => {
             namespace_operator_from_colons(node, context.point)
@@ -3573,6 +3591,36 @@ mod tests {
         assert_eq!(request.prefix, Some(String::from("PA")));
         assert!(!request.quote_insert);
         assert!(request.close_string);
+    }
+
+    #[test]
+    fn test_namespace_lhs_request_uses_installed_package_completion_for_external_operator() {
+        let (text, point) = point_from_cursor("uti@::adist");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_namespace(&context)
+            .unwrap()
+            .expect("expected namespace completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Package));
+        assert_eq!(request.expr, installed_packages_completion_expr());
+        assert_eq!(request.prefix, Some(String::from("uti")));
+    }
+
+    #[test]
+    fn test_namespace_lhs_request_uses_installed_package_completion_for_internal_operator() {
+        let (text, point) = point_from_cursor("uti@:::as.bibentry.bibentry");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_namespace(&context)
+            .unwrap()
+            .expect("expected namespace completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Package));
+        assert_eq!(request.expr, installed_packages_completion_expr());
+        assert_eq!(request.prefix, Some(String::from("uti")));
     }
 
     #[test]

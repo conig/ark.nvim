@@ -21,6 +21,7 @@ use tree_sitter::Point;
 use crate::lsp::completions::completion_context::CompletionContext;
 use crate::lsp::completions::completion_item::completion_item_from_lazydata;
 use crate::lsp::completions::completion_item::completion_item_from_namespace;
+use crate::lsp::completions::completion_item::completion_item_from_package;
 use crate::lsp::completions::sources::utils::set_sort_text_by_words_first;
 use crate::lsp::completions::sources::CompletionSource;
 use crate::lsp::traits::node::NodeExt;
@@ -66,6 +67,11 @@ fn completions_from_namespace(
     let node = match node {
         NamespaceNodeKind::None => return Ok(None),
         NamespaceNodeKind::EmptySet => return Ok(Some(completions)),
+        NamespaceNodeKind::PackageName => {
+            completions = completions_from_installed_packages()?;
+            set_sort_text_by_words_first(&mut completions);
+            return Ok(Some(completions));
+        },
         NamespaceNodeKind::Node(node) => node,
     };
 
@@ -132,6 +138,8 @@ enum NamespaceNodeKind<'tree> {
     /// Don't allow any other completions to run here, anything we show is likely to
     /// be wrong.
     EmptySet,
+    /// We are on the package-name side of a namespace operator.
+    PackageName,
     /// We found the namespace node
     Node(tree_sitter::Node<'tree>),
 }
@@ -170,18 +178,29 @@ fn namespace_node_from_identifier(node: Node) -> NamespaceNodeKind {
     }
 
     if let Some(lhs) = parent.child_by_field_name("lhs") {
-        // If we got here from the LHS of the `::`/`:::` node, then we don't
-        // want to provide any completions, because we are sitting on the package name
-        // and general completions here are not appropriate.
-        // TODO: In theory we can do better, and supply package names here. Possibly
-        // we should make a separate "unique" source of completions that runs before
-        // this one and targets this exact scenario, i.e. `dp<tab>::across()`.
         if lhs.eq(&node) {
-            return NamespaceNodeKind::EmptySet;
+            return NamespaceNodeKind::PackageName;
         }
     }
 
     NamespaceNodeKind::Node(parent)
+}
+
+fn completions_from_installed_packages() -> anyhow::Result<Vec<CompletionItem>> {
+    let mut completions = Vec::new();
+
+    unsafe {
+        let packages = RFunction::new("base", ".packages")
+            .param("all.available", true)
+            .call()?;
+
+        for package in packages.to::<Vec<String>>()?.iter() {
+            let item = completion_item_from_package(package, false)?;
+            completions.push(item);
+        }
+    }
+
+    Ok(completions)
 }
 
 fn completions_from_namespace_lazydata(
@@ -304,12 +323,26 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_set_of_completions_when_on_package_name() {
+    fn test_package_name_completions_when_on_namespace_lhs() {
         r_task(|| {
-            let completions = get_namespace_completions_at_cursor("ba@se::ab")
+            let completions = get_namespace_completions_at_cursor("uti@::adist")
                 .unwrap()
                 .unwrap();
-            assert!(completions.is_empty());
+
+            let item = find_completion_by_label(&completions, "utils");
+            assert!(item.is_some());
+        });
+    }
+
+    #[test]
+    fn test_package_name_completions_when_on_internal_namespace_lhs() {
+        r_task(|| {
+            let completions = get_namespace_completions_at_cursor("uti@:::as.bibentry.bibentry")
+                .unwrap()
+                .unwrap();
+
+            let item = find_completion_by_label(&completions, "utils");
+            assert!(item.is_some());
         });
     }
 
