@@ -391,7 +391,7 @@ fn normalize_literate_r(contents: &str) -> String {
             continue;
         }
 
-        normalized.push_str(mask_non_r_line(line).as_str());
+        normalized.push_str(normalize_literate_r_line(line).as_str());
         normalized.push_str(newline);
     }
 
@@ -416,6 +416,67 @@ fn mask_non_r_line(line: &str) -> String {
         masked.push(if i == 0 { '#' } else { ' ' });
     }
     masked
+}
+
+fn normalize_literate_r_line(line: &str) -> String {
+    normalize_inline_r_line(line).unwrap_or_else(|| mask_non_r_line(line))
+}
+
+fn normalize_inline_r_line(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    let mut normalized = vec![b' '; bytes.len()];
+    let mut found_inline = false;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if bytes[i] != b'`' {
+            i += 1;
+            continue;
+        }
+
+        let Some(r_prefix) = bytes.get(i + 1) else {
+            i += 1;
+            continue;
+        };
+        let Some(whitespace) = bytes.get(i + 2) else {
+            i += 1;
+            continue;
+        };
+
+        if *r_prefix != b'r' || !whitespace.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+
+        found_inline = true;
+
+        let mut code_start = i + 2;
+        while code_start < bytes.len() && bytes[code_start].is_ascii_whitespace() {
+            code_start += 1;
+        }
+
+        let mut code_end = code_start;
+        while code_end < bytes.len() && bytes[code_end] != b'`' {
+            code_end += 1;
+        }
+
+        if code_start < code_end {
+            normalized[code_start..code_end].copy_from_slice(&bytes[code_start..code_end]);
+        }
+
+        if code_end < bytes.len() {
+            normalized[code_end] = b';';
+            i = code_end + 1;
+        } else {
+            break;
+        }
+    }
+
+    if !found_inline {
+        return None;
+    }
+
+    Some(String::from_utf8(normalized).expect("inline R normalization should stay UTF-8"))
 }
 
 fn parse_fence(line: &str) -> Option<Fence> {
@@ -695,6 +756,28 @@ value
     }
 
     #[test]
+    fn test_literate_r_preserves_inline_r_code() {
+        let document = Document::new_with_kind(
+            "Text `r whi`.\n",
+            None,
+            DocumentKind::LiterateR,
+        );
+
+        assert_eq!(document.contents, "        whi; \n");
+    }
+
+    #[test]
+    fn test_literate_r_preserves_open_inline_r_code() {
+        let document = Document::new_with_kind(
+            "Text `r whi\n",
+            None,
+            DocumentKind::LiterateR,
+        );
+
+        assert_eq!(document.contents, "        whi\n");
+    }
+
+    #[test]
     fn test_literate_r_incremental_update_clamps_invalid_range_columns() {
         let mut parser = Parser::new();
         parser
@@ -727,6 +810,41 @@ value
 
         assert_eq!(document.source_contents, "---\n```{r}\nfoo\nbar\n```\n");
         assert!(document.contents.contains("foo\nbar"));
+    }
+
+    #[test]
+    fn test_literate_r_incremental_update_keeps_inline_expression_visible() {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_r::LANGUAGE.into())
+            .unwrap();
+
+        let mut document = Document::new_with_parser_and_kind(
+            "Text `r wh`.\n",
+            &mut parser,
+            Some(1),
+            DocumentKind::LiterateR,
+        );
+
+        let params = lsp_types::DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier {
+                uri: lsp_types::Url::parse("file:///test.Rmd").unwrap(),
+                version: 2,
+            },
+            content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                range: Some(lsp_types::Range::new(
+                    lsp_types::Position::new(0, 10),
+                    lsp_types::Position::new(0, 10),
+                )),
+                range_length: None,
+                text: String::from("i"),
+            }],
+        };
+
+        document.on_did_change(&mut parser, &params);
+
+        assert_eq!(document.source_contents, "Text `r whi`.\n");
+        assert_eq!(document.contents, "        whi; \n");
     }
 
     #[test]

@@ -106,7 +106,8 @@ part of the default supported path.
   status-file data plus bridge bootstrap.
 - Diagnostics remain syntax-first during detached startup and only become fully
   session-aware after hydration completes.
-- R Markdown / Quarto chunk support works for completion and diagnostics.
+- R Markdown / Quarto fenced chunks work for completion and diagnostics, and
+  inline `` `r ...` `` expressions complete as R code.
 - Blink integration stays on the normal `lsp` source, with Ark-specific provider
   policy handled in plugin code rather than a generic snippets completion source.
 - Structural code templates are exposed explicitly through the Ark Snacks picker
@@ -122,6 +123,7 @@ part of the default supported path.
 - Ark help float and help-to-pane workflows
 - Managed tab commands
 - R Markdown / Quarto fenced-chunk completion and diagnostics
+- R Markdown / Quarto inline `` `r ...` `` completion
 - Safety-oriented E2E runner for tmux-backed and real-config tests
 
 ## Open Work After This Tranche
@@ -131,9 +133,6 @@ current tree as a usable v1 product:
 
 1. simplify startup/readiness orchestration into a clearer canonical state model
 2. continue reducing inherited upstream surface area in retained kernel/Jupyter code
-3. assess inline `` `r ...` `` completion in Rmd/Qmd buffers
-
-The inline-literacy item remains the narrowest obvious user-facing feature gap.
 
 ## Verification Standard
 
