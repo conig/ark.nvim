@@ -102,6 +102,26 @@ local function live_client(client)
   return client and client.initialized and not (client.is_stopped and client:is_stopped())
 end
 
+local function client_name(client)
+  return client and (client.name or (client.config and client.config.name))
+end
+
+local function client_attached(client, bufnr)
+  if not client or type(client.id) ~= "number" then
+    return false
+  end
+
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return true
+  end
+
+  if type(vim.lsp.buf_is_attached) == "function" then
+    return vim.lsp.buf_is_attached(bufnr, client.id)
+  end
+
+  return true
+end
+
 local function stop_lsp_client(client, force)
   if not client then
     return
@@ -143,54 +163,54 @@ local function forget_client_id(client_id)
   client_status_attempt_ms[client_id] = nil
 end
 
-local function client_matches(client, opts, bufnr)
-  local client_name = client and (client.name or (client.config and client.config.name))
-  if not live_client(client) or client_name ~= opts.lsp.name then
+local function client_matches(client, opts, bufnr, match_opts)
+  match_opts = match_opts or {}
+  if client_name(client) ~= opts.lsp.name then
     return false
   end
 
-  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
-    return true
+  if match_opts.require_live ~= false and not live_client(client) then
+    return false
   end
 
-  if type(vim.lsp.buf_is_attached) == "function" then
-    return vim.lsp.buf_is_attached(bufnr, client.id)
-  end
-
-  return true
+  return client_attached(client, bufnr)
 end
 
-local function known_clients(opts, bufnr)
+local function known_clients(opts, bufnr, match_opts)
   local clients = {}
 
   for client_id, _ in pairs(managed_client_ids) do
     local client = vim.lsp.get_client_by_id(client_id)
-    if client_matches(client, opts, bufnr) then
-      clients[#clients + 1] = client
-    else
+    if client_name(client) ~= opts.lsp.name then
       forget_client_id(client_id)
+    elseif client_matches(client, opts, bufnr, match_opts) then
+      clients[#clients + 1] = client
     end
   end
 
   return clients
 end
 
-local function session_clients(opts, bufnr)
+local function session_clients(opts, bufnr, match_opts)
+  match_opts = match_opts or {}
   local clients = {}
   local seen = {}
 
-  for _, client in ipairs(known_clients(opts, bufnr)) do
+  for _, client in ipairs(known_clients(opts, bufnr, match_opts)) do
     clients[#clients + 1] = client
     seen[client.id] = true
   end
 
   local filter = { name = opts.lsp.name }
+  if match_opts.require_live == false then
+    filter._uninitialized = true
+  end
   if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
     filter.bufnr = bufnr
   end
 
   for _, client in ipairs(vim.lsp.get_clients(filter)) do
-    if client_matches(client, opts, bufnr) and not seen[client.id] then
+    if client_matches(client, opts, bufnr, match_opts) and not seen[client.id] then
       clients[#clients + 1] = client
       seen[client.id] = true
       track_client_id(client.id)
@@ -204,16 +224,29 @@ local function live_clients(opts, bufnr)
   return session_clients(opts, bufnr)
 end
 
-local function wait_for_client(client_id, timeout_ms)
-  if not client_id or not timeout_ms or timeout_ms <= 0 then
-    return client_id
+local function named_clients(opts, bufnr)
+  return session_clients(opts, bufnr, {
+    require_live = false,
+  })
+end
+
+local function wait_for_live_client(client_id, timeout_ms)
+  if not client_id then
+    return nil
   end
 
-  vim.wait(timeout_ms, function()
-    return live_client(vim.lsp.get_client_by_id(client_id))
-  end, 20, false)
+  if timeout_ms and timeout_ms > 0 then
+    vim.wait(timeout_ms, function()
+      return live_client(vim.lsp.get_client_by_id(client_id))
+    end, 20, false)
+  end
 
-  return client_id
+  local client = vim.lsp.get_client_by_id(client_id)
+  if live_client(client) then
+    return client
+  end
+
+  return nil
 end
 
 local function root_dir(bufnr, markers)
@@ -807,11 +840,10 @@ local function start_client(opts, bufnr, start_opts)
     return client_id
   end
 
-  client_id = wait_for_client(client_id, opts.lsp.restart_wait_ms)
-  local client = vim.lsp.get_client_by_id(client_id)
+  local client = wait_for_live_client(client_id, opts.lsp.restart_wait_ms)
   local hydrated = false
   local bootstrap_err = nil
-  if payload_present(startup_payload) then
+  if payload_present(startup_payload) and live_client(client) then
     hydrated, bootstrap_err = bootstrap_client_session(client, opts, bufnr, startup_payload)
     if hydrated then
       cache_client_session(client, startup_payload)
@@ -890,11 +922,8 @@ function M.status(opts, bufnr, status_opts)
 
   local current_filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or nil
   local filetype_supported = filetype_enabled(opts.filetypes, current_filetype)
-  local all_named_clients = vim.lsp.get_clients({ name = opts.lsp.name })
-  local buffer_named_clients = vim.api.nvim_buf_is_valid(bufnr) and vim.lsp.get_clients({
-    bufnr = bufnr,
-    name = opts.lsp.name,
-  }) or {}
+  local all_named_clients = named_clients(opts)
+  local buffer_named_clients = vim.api.nvim_buf_is_valid(bufnr) and named_clients(opts, bufnr) or {}
   local all_clients = vim.tbl_map(function(client)
     return {
       id = client.id,
@@ -907,10 +936,20 @@ function M.status(opts, bufnr, status_opts)
   local client = live_clients(opts, bufnr)[1]
   if not live_client(client) then
     local reason = "ark_lsp client unavailable"
+    local pending_client = false
+    for _, named_client in ipairs(buffer_named_clients) do
+      if named_client.initialized ~= true and not (named_client.is_stopped and named_client:is_stopped()) then
+        pending_client = true
+        break
+      end
+    end
+
     if not filetype_supported then
       reason = "current buffer filetype is not managed by ark.nvim"
     elseif #all_named_clients > 0 and #buffer_named_clients == 0 then
       reason = "ark_lsp exists, but is not attached to the current buffer"
+    elseif pending_client then
+      reason = "ark_lsp client is starting"
     elseif #all_named_clients > 0 then
       reason = "ark_lsp exists, but no live initialized client is available"
     end

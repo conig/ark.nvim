@@ -107,6 +107,9 @@ part of the default supported path.
   plugin configuration.
 - Detached startup can begin immediately and hydrate later through trusted
   status-file data plus bridge bootstrap.
+- Sync startup must hand off cleanly when Neovim has started `ark-lsp` but the
+  client is still initializing: status should surface a pending client instead
+  of reporting a false bootstrap failure.
 - Diagnostics remain syntax-first during detached startup and only become fully
   session-aware after hydration completes.
 - R Markdown / Quarto fenced chunks work for completion and diagnostics, and
