@@ -901,7 +901,6 @@ function M.start_pane()
   end
 
   lsp.sync_sessions(options)
-  notify("managed R pane ready: " .. pane_id)
   return pane_id
 end
 
@@ -989,7 +988,6 @@ function M.restart_pane()
   end
 
   sync_sessions_soon()
-  notify("managed R tab restarted: " .. pane_id)
   return pane_id
 end
 
@@ -997,7 +995,6 @@ function M.stop_pane()
   ensure_setup()
   tmux.stop()
   sync_sessions_soon()
-  notify("managed R tabs stopped")
 end
 
 function M.start_lsp(bufnr)

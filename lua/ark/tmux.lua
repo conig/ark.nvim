@@ -20,6 +20,7 @@ local function normalize_state(raw)
   raw.anchor_pane_id = type(raw.anchor_pane_id) == "string" and raw.anchor_pane_id or nil
   raw.parking_session_name = nil
   raw.slot_width_cells = tonumber(raw.slot_width_cells) or nil
+  raw.slot_height_cells = tonumber(raw.slot_height_cells) or nil
   raw.next_tab_id = type(raw.next_tab_id) == "number" and raw.next_tab_id or 1
   raw.managed = raw.managed == true
   raw.pane_id = type(raw.pane_id) == "string" and raw.pane_id or nil
@@ -171,7 +172,32 @@ local function resolve_pane_percent(config)
     end
   end
 
-  return tostring(config.pane_percent)
+  return nil
+end
+
+local function pane_percent_for_layout(config, layout_name)
+  if layout_name == "stacked" then
+    local stacked = parse_percent(tostring(config.stacked_pane_percent or ""))
+    if stacked then
+      return stacked
+    end
+  else
+    local from_env = resolve_pane_percent(config)
+    if from_env then
+      return from_env
+    end
+  end
+
+  local pct = parse_percent(tostring(config.pane_percent or ""))
+  if pct then
+    return pct
+  end
+
+  if layout_name == "stacked" then
+    return "50"
+  end
+
+  return "33"
 end
 
 local function current_tmux_pane()
@@ -692,6 +718,20 @@ local function window_width(target)
   return width, nil
 end
 
+local function window_height(target)
+  local height, err = run_tmux({ "display-message", "-p", "-t", target, "#{window_height}" })
+  if not height then
+    return nil, "failed to resolve tmux window height: " .. tostring(err or "unknown")
+  end
+
+  height = tonumber(height)
+  if not height or height <= 0 then
+    return nil, "failed to parse tmux window height: " .. tostring(height)
+  end
+
+  return height, nil
+end
+
 local function current_pane_width(pane_id)
   local width, err = run_tmux({ "display-message", "-p", "-t", pane_id, "#{pane_width}" })
   if not width then
@@ -706,22 +746,159 @@ local function current_pane_width(pane_id)
   return width, nil
 end
 
-local function desired_slot_width(anchor_pane_id, config)
-  if state.slot_width_cells and state.slot_width_cells > 0 then
-    return tostring(state.slot_width_cells), nil
+local function current_pane_height(pane_id)
+  local height, err = run_tmux({ "display-message", "-p", "-t", pane_id, "#{pane_height}" })
+  if not height then
+    return nil, "failed to resolve tmux pane height: " .. tostring(err or "unknown")
   end
 
-  local width, err = window_width(anchor_pane_id)
+  height = tonumber(height)
+  if not height or height <= 0 then
+    return nil, "failed to parse tmux pane height: " .. tostring(height)
+  end
+
+  return height, nil
+end
+
+local function normalize_pane_layout(value)
+  if value == nil then
+    return "auto"
+  end
+  if type(value) ~= "string" or value == "" then
+    return nil
+  end
+
+  value = value:lower()
+  if value == "auto" then
+    return value
+  end
+  if value == "side_by_side" or value == "horizontal" or value == "landscape" then
+    return "side_by_side"
+  end
+  if value == "stacked" or value == "vertical" or value == "portrait" then
+    return "stacked"
+  end
+
+  return nil
+end
+
+local function pane_layout(name)
+  if name == "stacked" then
+    return {
+      name = "stacked",
+      split_flag = "-v",
+    }
+  end
+
+  return {
+    name = "side_by_side",
+    split_flag = "-h",
+  }
+end
+
+local function resolve_pane_layout(target, config)
+  local layout_name = normalize_pane_layout(config.pane_layout)
+  if not layout_name then
+    return nil, "invalid ark.nvim tmux.pane_layout: " .. tostring(config.pane_layout)
+  end
+
+  if layout_name ~= "auto" then
+    return pane_layout(layout_name), nil
+  end
+
+  local width, width_err = window_width(target)
   if not width then
+    return nil, width_err
+  end
+
+  local stacked_max_width = tonumber(config.stacked_max_width)
+  if stacked_max_width and stacked_max_width > 0 and width <= stacked_max_width then
+    return pane_layout("stacked"), nil
+  end
+
+  local height, height_err = window_height(target)
+  if not height then
+    return nil, height_err
+  end
+
+  if height > width then
+    return pane_layout("stacked"), nil
+  end
+
+  return pane_layout("side_by_side"), nil
+end
+
+local function active_pane_layout(pane_id, config)
+  local pane_width, pane_width_err = current_pane_width(pane_id)
+  if not pane_width then
+    return nil, pane_width_err
+  end
+
+  local total_width, total_width_err = window_width(pane_id)
+  if not total_width then
+    return nil, total_width_err
+  end
+
+  if pane_width < total_width then
+    return pane_layout("side_by_side"), nil
+  end
+
+  local pane_height, pane_height_err = current_pane_height(pane_id)
+  if not pane_height then
+    return nil, pane_height_err
+  end
+
+  local total_height, total_height_err = window_height(pane_id)
+  if not total_height then
+    return nil, total_height_err
+  end
+
+  if pane_height < total_height then
+    return pane_layout("stacked"), nil
+  end
+
+  return resolve_pane_layout(pane_id, config)
+end
+
+local function slot_size_cells(layout)
+  if layout.name == "stacked" then
+    return state.slot_height_cells
+  end
+
+  return state.slot_width_cells
+end
+
+local function set_slot_size_cells(layout, cells)
+  if layout.name == "stacked" then
+    state.slot_height_cells = cells
+    return
+  end
+
+  state.slot_width_cells = cells
+end
+
+local function desired_slot_size(anchor_pane_id, config, layout)
+  local stored = slot_size_cells(layout)
+  if stored and stored > 0 then
+    return tostring(stored), nil
+  end
+
+  local total, err
+  if layout.name == "stacked" then
+    total, err = window_height(anchor_pane_id)
+  else
+    total, err = window_width(anchor_pane_id)
+  end
+  if not total then
     return nil, err
   end
 
-  local pct = tonumber(resolve_pane_percent(config)) or tonumber(config.pane_percent) or 33
-  local cells = math.floor((width * pct) / 100)
+  local pct = tonumber(pane_percent_for_layout(config, layout.name)) or tonumber(config.pane_percent) or 33
+  local cells = math.floor((total * pct) / 100)
   if cells < 10 then
     cells = 10
-  elseif cells >= width then
-    cells = math.max(10, width - 1)
+  elseif cells >= total then
+    cells = math.max(10, total - 1)
   end
 
   return tostring(cells), nil
@@ -775,11 +952,16 @@ local function create_visible_tab(opts, insert_index)
     return nil, nil, anchor_err
   end
 
+  local layout, layout_err = resolve_pane_layout(anchor_pane_id, opts.tmux)
+  if not layout then
+    return nil, nil, layout_err
+  end
+
   local output, split_err = run_tmux({
     "split-window",
-    "-h",
+    layout.split_flag,
     "-p",
-    resolve_pane_percent(opts.tmux),
+    pane_percent_for_layout(opts.tmux, layout.name),
     "-d",
     "-P",
     "-F",
@@ -841,7 +1023,7 @@ local function create_hidden_tab(opts, insert_index)
   return pane_id, index, nil
 end
 
-local function park_tab(index)
+local function park_tab(index, config)
   local tab = state.tabs[index]
   if not tab or tab.visible ~= true or not tab.pane_id or not pane_exists(tab.pane_id) then
     return true, nil
@@ -851,9 +1033,20 @@ local function park_tab(index)
   if session then
     tab.session = session
   end
-  local width = current_pane_width(tab.pane_id)
-  if width then
-    state.slot_width_cells = width
+
+  local layout, layout_err = active_pane_layout(tab.pane_id, config or {})
+  if not layout then
+    return nil, layout_err
+  end
+
+  local size = nil
+  if layout.name == "stacked" then
+    size = current_pane_height(tab.pane_id)
+  else
+    size = current_pane_width(tab.pane_id)
+  end
+  if size then
+    set_slot_size_cells(layout, size)
   end
 
   local session_name, session_err = main_session_name()
@@ -902,17 +1095,22 @@ local function restore_tab(index, config)
     return nil, anchor_err
   end
 
-  local width, width_err = desired_slot_width(anchor_pane_id, config)
-  if not width then
-    return nil, width_err
+  local layout, layout_err = resolve_pane_layout(anchor_pane_id, config)
+  if not layout then
+    return nil, layout_err
+  end
+
+  local size, size_err = desired_slot_size(anchor_pane_id, config, layout)
+  if not size then
+    return nil, size_err
   end
 
   local _, join_err = run_tmux({
     "join-pane",
     "-d",
-    "-h",
+    layout.split_flag,
     "-l",
-    width,
+    size,
     "-s",
     tab.pane_id,
     "-t",
@@ -929,7 +1127,7 @@ local function restore_tab(index, config)
   return tab.pane_id, nil
 end
 
-local function swap_active_tab(index)
+local function swap_active_tab(index, config)
   local current_index = state.active_index
   local current = current_index and state.tabs[current_index] or nil
   local target = state.tabs[index]
@@ -947,9 +1145,20 @@ local function swap_active_tab(index)
   if current_session then
     current.session = current_session
   end
-  local width = current_pane_width(current.pane_id)
-  if width then
-    state.slot_width_cells = width
+
+  local layout, layout_err = active_pane_layout(current.pane_id, config or {})
+  if not layout then
+    return nil, layout_err
+  end
+
+  local size = nil
+  if layout.name == "stacked" then
+    size = current_pane_height(current.pane_id)
+  else
+    size = current_pane_width(current.pane_id)
+  end
+  if size then
+    set_slot_size_cells(layout, size)
   end
 
   local _, swap_err = run_tmux({
@@ -1167,6 +1376,7 @@ function M.status(config)
     anchor_pane_id = state.anchor_pane_id,
     parking_session_name = state.parking_session_name,
     slot_width_cells = state.slot_width_cells,
+    slot_height_cells = state.slot_height_cells,
     active_index = state.active_index,
     tab_count = #state.tabs,
     tabs = tab_summaries(config),
@@ -1186,7 +1396,7 @@ function M.tab_new(opts)
       return nil, create_err
     end
 
-    local swapped_pane_id, swap_err = swap_active_tab(index)
+    local swapped_pane_id, swap_err = swap_active_tab(index, opts.tmux)
     if not swapped_pane_id then
       return nil, swap_err
     end
@@ -1246,7 +1456,7 @@ function M.tab_select(index, opts)
   end
 
   if state.active_index and active_tab() and active_tab().visible == true then
-    local pane_id, swap_err = swap_active_tab(index)
+    local pane_id, swap_err = swap_active_tab(index, opts.tmux)
     if not pane_id then
       return nil, swap_err
     end
@@ -1338,7 +1548,7 @@ function M.tab_close(opts)
 
   local promoted_pane_id = nil
   if next_index ~= closing_index and state.tabs[next_index] and state.tabs[next_index].visible ~= true then
-    local swapped_pane_id, swap_err = swap_active_tab(next_index)
+    local swapped_pane_id, swap_err = swap_active_tab(next_index, opts.tmux)
     if not swapped_pane_id then
       return nil, swap_err
     end
@@ -1422,6 +1632,8 @@ function M.stop_all()
   state.active_index = nil
   state.anchor_pane_id = nil
   state.parking_session_name = nil
+  state.slot_width_cells = nil
+  state.slot_height_cells = nil
   state.session = nil
   state.pane_id = nil
   state.managed = false
@@ -1452,7 +1664,7 @@ function M.restart(opts)
       return nil, create_err
     end
 
-    local swapped_pane_id, swap_err = swap_active_tab(replacement_index)
+    local swapped_pane_id, swap_err = swap_active_tab(replacement_index, opts.tmux)
     if not swapped_pane_id then
       return nil, swap_err
     end

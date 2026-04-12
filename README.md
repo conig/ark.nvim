@@ -208,6 +208,12 @@ require("ark").setup({
   async_startup = false,
   configure_slime = true,
   filetypes = { "r", "rmd", "qmd", "quarto" },
+  tmux = {
+    pane_layout = "auto",
+    stacked_max_width = 100,
+    pane_percent = 33,
+    stacked_pane_percent = 50,
+  },
 })
 ```
 
@@ -232,6 +238,25 @@ and writes trusted readiness metadata under:
 
 ```text
 stdpath("state") .. "/ark-status"
+```
+
+Pane layout defaults are geometry-aware:
+
+- narrow tmux windows at or below `100` columns: stacked top/bottom at `50%`
+- taller-than-wide tmux windows: stacked top/bottom at `50%`
+- otherwise: side-by-side at `33%`
+
+You can override that explicitly:
+
+```lua
+require("ark").setup({
+  tmux = {
+    pane_layout = "side_by_side", -- or "stacked" / "auto"
+    stacked_max_width = 100,
+    pane_percent = 33,
+    stacked_pane_percent = 50,
+  },
+})
 ```
 
 ## Environment Knobs

@@ -4,6 +4,9 @@ _G.__ark_nvim_state = {}
 package.loaded["ark.tmux"] = nil
 
 local original_system = vim.fn.system
+local original_tmux = vim.env.TMUX
+
+vim.env.TMUX = "/tmp/ark-test,123,0"
 
 local socket_path = "/tmp/ark.sock"
 local main_session = "project"
@@ -85,7 +88,13 @@ vim.fn.system = function(command)
     if format == "#{window_width}" then
       return "180\n"
     end
+    if format == "#{window_height}" then
+      return "60\n"
+    end
     if format == "#{pane_width}" then
+      return "60\n"
+    end
+    if format == "#{pane_height}" then
       return "60\n"
     end
   end
@@ -181,7 +190,9 @@ local ok, err = pcall(function()
     filetypes = { "r" },
     tmux = {
       launcher = "/tmp/ark-r-launcher.sh",
+      pane_layout = "auto",
       pane_percent = 33,
+      stacked_pane_percent = 50,
       pane_width_env_keys = {},
       startup_status_dir = "/tmp/ark-status",
       session_pkg_path = "/tmp/arkbridge",
@@ -208,6 +219,16 @@ local ok, err = pcall(function()
   end
   if startup_session_queries ~= 1 then
     error("expected initial start to resolve pane session metadata once, got commands: " .. vim.inspect(commands), 0)
+  end
+  local split_command = nil
+  for _, command in ipairs(commands) do
+    if type(command) == "table" and command[2] == "split-window" then
+      split_command = command
+      break
+    end
+  end
+  if not split_command or not vim.tbl_contains(split_command, "-h") or not vim.tbl_contains(split_command, "33") then
+    error("expected default auto layout to keep landscape panes side-by-side at 33%, got " .. vim.inspect(split_command), 0)
   end
   local tab_state_after_start = tmux.tab_state()
   if tab_state_after_start.active_index ~= 1 or tab_state_after_start.tab_count ~= 1 or tab_state_after_start.text ~= "[1]" then
@@ -340,6 +361,7 @@ local ok, err = pcall(function()
 end)
 
 vim.fn.system = original_system
+vim.env.TMUX = original_tmux
 
 if not ok then
   error(err, 0)

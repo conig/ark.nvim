@@ -70,7 +70,10 @@ function M.defaults()
     },
     tmux = {
       launcher = launcher,
+      pane_layout = "auto",
+      stacked_max_width = 100,
       pane_percent = 33,
+      stacked_pane_percent = 50,
       pane_width_env_keys = {
         "TMUX_CODING_PANE_WIDTH",
         "TMUX_JOIN_WIDTH",

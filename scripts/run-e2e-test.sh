@@ -204,8 +204,7 @@ cmd+=(
   -c "set shadafile=NONE"
   -c "set rtp^=$repo_root"
   -c "lua package.path = package.path .. ';$repo_root/tests/e2e/?.lua'"
-  -c "lua local ok, err = xpcall(function() dofile([[$test_script]]) end, debug.traceback); if not ok then vim.api.nvim_err_writeln(err); vim.cmd('cquit 1') end"
-  -c "qa!"
+  -c "lua local function cleanup_ark() local ok, ark = pcall(require, 'ark'); if ok and type(ark.stop_pane) == 'function' then pcall(ark.stop_pane) end end; local function run_test() local ok, err = xpcall(function() dofile([[$test_script]]) end, debug.traceback); cleanup_ark(); if not ok then vim.api.nvim_err_writeln(err); vim.cmd('cquit 1'); return end; vim.cmd('qa!') end; if vim.v.vim_did_enter == 1 then run_test() else vim.api.nvim_create_autocmd('VimEnter', { once = true, callback = run_test }) end"
 )
 
 env \

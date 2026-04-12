@@ -536,6 +536,7 @@ impl SessionBridge {
 
                 dedupe_and_sort_completion_items(items)
             },
+            CompletionPlan::HandledEmpty => Vec::new(),
         };
 
         Ok(Some(SessionBridgeCompletion {
@@ -832,6 +833,9 @@ impl SessionBridge {
             }
 
             return Ok(Some(CompletionPlan::Unique(request)));
+        }
+        if empty_package_call_autotrigger_is_suppressed(context)? {
+            return Ok(Some(CompletionPlan::HandledEmpty));
         }
         if let Some(request) = completion_request_from_package_call(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
@@ -1720,6 +1724,7 @@ fn completion_item_data(
 enum CompletionPlan {
     Unique(CompletionRequest),
     Composite(Vec<CompletionRequest>),
+    HandledEmpty,
 }
 
 fn apply_member_completion_docs(item: &mut CompletionItem, member: &BridgeMember) {
@@ -2494,7 +2499,7 @@ fn completion_request_from_package_call(
     }
 
     let prefix = symbol_prefix(context)?;
-    if prefix.is_none() && context.trigger.is_none() {
+    if prefix.is_none() && !context.explicit_completion_request {
         return Ok(None);
     }
 
@@ -2507,6 +2512,24 @@ fn completion_request_from_package_call(
         quote_insert: false,
         subset_kind: None,
     }))
+}
+
+fn empty_package_call_autotrigger_is_suppressed(
+    context: &DocumentContext,
+) -> anyhow::Result<bool> {
+    if context.explicit_completion_request {
+        return Ok(false);
+    }
+
+    let Some(call) = analyze_call_context(context)? else {
+        return Ok(false);
+    };
+
+    if !call_matches_package_argument(&call, PackageCompletionMode::BareSymbol) {
+        return Ok(false);
+    }
+
+    Ok(symbol_prefix(context)?.is_none())
 }
 
 fn completion_request_from_search_path(
@@ -3863,6 +3886,38 @@ mod tests {
         assert!(completion_request_from_package_call(&context)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn test_empty_library_call_trigger_completion_is_suppressed() {
+        let (text, point) = point_from_cursor("library(@)");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new_with_completion(
+            &document,
+            point,
+            Some(String::from("(")),
+            false,
+        );
+
+        assert!(empty_package_call_autotrigger_is_suppressed(&context).unwrap());
+        assert!(completion_request_from_package_call(&context)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn test_package_call_request_supports_explicit_empty_library_completion() {
+        let (text, point) = point_from_cursor("library(@)");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new_with_completion(&document, point, None, true);
+
+        let request = completion_request_from_package_call(&context)
+            .unwrap()
+            .expect("expected package-call completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Package));
+        assert_eq!(request.expr, installed_packages_completion_expr());
+        assert_eq!(request.prefix, None);
     }
 
     #[test]

@@ -102,6 +102,9 @@ part of the default supported path.
 
 - One managed live R session per Neovim instance, with Ark tab switching
   implemented by parking inactive sessions in hidden tmux windows.
+- The managed pane slot defaults to stacked top/bottom at 50:50 for narrow
+  tmux windows and otherwise side-by-side, while remaining overridable through
+  plugin configuration.
 - Detached startup can begin immediately and hydrate later through trusted
   status-file data plus bridge bootstrap.
 - Diagnostics remain syntax-first during detached startup and only become fully
