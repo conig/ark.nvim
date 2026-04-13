@@ -178,7 +178,10 @@ local function update_sidebar_cursor(state)
       break
     end
   end
-  vim.api.nvim_win_set_cursor(state.sidebar_win, { line, 0 })
+  local cursor = vim.api.nvim_win_get_cursor(state.sidebar_win)
+  if cursor[1] ~= line or cursor[2] ~= 0 then
+    vim.api.nvim_win_set_cursor(state.sidebar_win, { line, 0 })
+  end
 end
 
 local function render_sidebar(state)
@@ -324,6 +327,7 @@ local function sync_selected_column(state)
     return
   end
 
+  local previous_column = tonumber(state.selected_column)
   local win = vim.api.nvim_get_current_win()
   if win == state.grid_win then
     state.selected_column = selected_column_from_grid(state) or state.selected_column
@@ -339,7 +343,9 @@ local function sync_selected_column(state)
     end
   end
 
-  render_sidebar(state)
+  if tonumber(state.selected_column) ~= previous_column then
+    render_sidebar(state)
+  end
 end
 
 local function safe_close_session(state)
@@ -674,6 +680,7 @@ function M.open(opts)
   vim.wo[grid_win].number = false
   vim.wo[grid_win].relativenumber = false
   vim.wo[grid_win].cursorline = true
+  vim.wo[grid_win].cursorlineopt = "line"
 
   vim.cmd("rightbelow 34vsplit")
   local sidebar_win = vim.api.nvim_get_current_win()
@@ -682,6 +689,7 @@ function M.open(opts)
   vim.wo[sidebar_win].number = false
   vim.wo[sidebar_win].relativenumber = false
   vim.wo[sidebar_win].cursorline = true
+  vim.wo[sidebar_win].cursorlineopt = "line"
   vim.wo[sidebar_win].winfixwidth = true
 
   vim.api.nvim_set_current_win(grid_win)

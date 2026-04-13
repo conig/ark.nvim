@@ -164,6 +164,8 @@ local ok, err = pcall(function()
   local lsp = require("ark.lsp")
   local tmux = require("ark.tmux")
 
+  vim.o.cursorlineopt = "both"
+
   ark.setup({
     auto_start_pane = false,
     auto_start_lsp = false,
@@ -343,6 +345,15 @@ local ok, err = pcall(function()
     error("expected ArkView sidebar buffer", 0)
   end
 
+  -- Regression: ArkView should not inherit a global crosshair cursorlineopt,
+  -- because it causes visible idle flicker in the table view.
+  if vim.wo[grid_win].cursorlineopt ~= "line" then
+    error("expected ArkView grid cursorlineopt=line, got " .. vim.inspect(vim.wo[grid_win].cursorlineopt), 0)
+  end
+  if vim.wo[sidebar_win].cursorlineopt ~= "line" then
+    error("expected ArkView sidebar cursorlineopt=line, got " .. vim.inspect(vim.wo[sidebar_win].cursorlineopt), 0)
+  end
+
   local grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
   if not (grid_lines[1] or ""):find("mpg", 1, true) then
     error("expected ArkView grid header in current buffer, got " .. vim.inspect(grid_lines), 0)
@@ -360,6 +371,41 @@ local ok, err = pcall(function()
   if not updated_sidebar[4]:find("cyl", 1, true) then
     error("expected grid cursor move to select cyl column, got " .. vim.inspect(updated_sidebar), 0)
   end
+
+  -- Regression: moving between rows within the same grid column should not
+  -- redraw or recenter the sidebar, which causes visible flicker in the UI.
+  local original_buf_set_lines = vim.api.nvim_buf_set_lines
+  local original_win_set_cursor = vim.api.nvim_win_set_cursor
+  local sidebar_redraws = 0
+  local sidebar_cursor_moves = 0
+  vim.api.nvim_buf_set_lines = function(buf, start, stop, strict, replacement)
+    if buf == sidebar_buf then
+      sidebar_redraws = sidebar_redraws + 1
+    end
+    return original_buf_set_lines(buf, start, stop, strict, replacement)
+  end
+  vim.api.nvim_win_set_cursor = function(win, pos)
+    if win == sidebar_win then
+      sidebar_cursor_moves = sidebar_cursor_moves + 1
+    end
+    return original_win_set_cursor(win, pos)
+  end
+
+  move_cursor(grid_win, 3, header_column(grid_lines, "cyl"))
+
+  vim.api.nvim_buf_set_lines = original_buf_set_lines
+  vim.api.nvim_win_set_cursor = original_win_set_cursor
+
+  if sidebar_redraws ~= 0 or sidebar_cursor_moves ~= 0 then
+    error(
+      "expected same-column grid movement to avoid touching the sidebar, got redraws="
+        .. tostring(sidebar_redraws)
+        .. " cursor_moves="
+        .. tostring(sidebar_cursor_moves),
+      0
+    )
+  end
+  updated_sidebar = assert_sidebar_selected(sidebar_buf, 4)
 
   move_cursor(sidebar_win, 3, 0)
   assert_sidebar_selected(sidebar_buf, 3)
