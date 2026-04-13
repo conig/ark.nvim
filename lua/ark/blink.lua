@@ -4,6 +4,11 @@ local context_patched = false
 local sources_configured = false
 local selection_patched = false
 local trigger_patched = false
+local docs_patched = false
+local show_patched = false
+local menu_patched = false
+local signature_float_patched = false
+local active_signature_help_win = nil
 
 local ark_filetypes = { "r", "rmd", "qmd", "quarto" }
 
@@ -50,6 +55,148 @@ local function hide_visible_blink_menu()
   if ok_docs and docs and type(docs.close) == "function" then
     pcall(docs.close)
   end
+end
+
+local function close_blink_docs()
+  local ok_docs, docs = pcall(require, "blink.cmp.completion.windows.documentation")
+  if ok_docs and docs and type(docs.close) == "function" then
+    pcall(docs.close)
+  end
+end
+
+local function current_signature_help_win()
+  if type(active_signature_help_win) ~= "number" or active_signature_help_win == 0 then
+    active_signature_help_win = nil
+    return nil
+  end
+
+  if not vim.api.nvim_win_is_valid(active_signature_help_win) then
+    active_signature_help_win = nil
+    return nil
+  end
+
+  local config = vim.api.nvim_win_get_config(active_signature_help_win)
+  if type(config) ~= "table" or type(config.relative) ~= "string" or config.relative == "" then
+    active_signature_help_win = nil
+    return nil
+  end
+
+  return active_signature_help_win
+end
+
+local function signature_help_visible()
+  return current_signature_help_win() ~= nil
+end
+
+local function blink_menu_win()
+  local ok_menu, menu = pcall(require, "blink.cmp.completion.windows.menu")
+  if not ok_menu or not menu or not menu.win or type(menu.win.get_win) ~= "function" then
+    return nil
+  end
+
+  local win = menu.win:get_win()
+  if type(win) ~= "number" or win == 0 or not vim.api.nvim_win_is_valid(win) then
+    return nil
+  end
+
+  return win
+end
+
+local function absolute_float_position(config)
+  if type(config) ~= "table" then
+    return nil
+  end
+
+  local row = tonumber(config.row)
+  local col = tonumber(config.col)
+  if not row or not col then
+    return nil
+  end
+
+  if config.relative == "editor" then
+    return {
+      row = row,
+      col = col,
+    }
+  end
+
+  if config.relative == "win" and type(config.win) == "number" and config.win ~= 0 then
+    local ok, parent_pos = pcall(vim.api.nvim_win_get_position, config.win)
+    if ok and type(parent_pos) == "table" and #parent_pos >= 2 then
+      return {
+        row = parent_pos[1] + row,
+        col = parent_pos[2] + col,
+      }
+    end
+  end
+
+  return nil
+end
+
+local function position_signature_float_away_from_menu(win)
+  if type(win) ~= "number" or win == 0 or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+
+  local menu_win = blink_menu_win()
+  if not menu_win or menu_win == win then
+    return
+  end
+
+  local menu_config = vim.api.nvim_win_get_config(menu_win)
+  local menu_pos = absolute_float_position(menu_config)
+  if not menu_pos then
+    return
+  end
+
+  local menu_width = vim.api.nvim_win_get_width(menu_win)
+  local menu_height = vim.api.nvim_win_get_height(menu_win)
+  local win_width = vim.api.nvim_win_get_width(win)
+  local win_height = vim.api.nvim_win_get_height(win)
+  local gap = 1
+  local max_row = math.max(vim.o.lines - vim.o.cmdheight - 1, 0)
+  local max_col = math.max(vim.o.columns - 1, 0)
+
+  local candidates = {
+    {
+      row = menu_pos.row,
+      col = menu_pos.col + menu_width + gap,
+      fits = (menu_pos.col + menu_width + gap + win_width) <= max_col,
+    },
+    {
+      row = menu_pos.row,
+      col = menu_pos.col - win_width - gap,
+      fits = (menu_pos.col - win_width - gap) >= 0,
+    },
+    {
+      row = menu_pos.row + menu_height + gap,
+      col = menu_pos.col,
+      fits = (menu_pos.row + menu_height + gap + win_height) <= max_row,
+    },
+    {
+      row = menu_pos.row - win_height - gap,
+      col = menu_pos.col,
+      fits = (menu_pos.row - win_height - gap) >= 0,
+    },
+  }
+
+  local target = nil
+  for _, candidate in ipairs(candidates) do
+    if candidate.fits then
+      target = candidate
+      break
+    end
+  end
+
+  if not target then
+    return
+  end
+
+  vim.api.nvim_win_set_config(win, {
+    relative = "editor",
+    row = math.max(0, target.row),
+    col = math.max(0, target.col),
+  })
 end
 
 local function ark_provider(base_provider, overrides)
@@ -330,6 +477,123 @@ function M.patch_blink_selection()
   end
 
   selection_patched = true
+end
+
+function M.patch_blink_show()
+  if show_patched then
+    return
+  end
+
+  local ok_blink, blink = pcall(require, "blink.cmp")
+  if not ok_blink or type(blink.show) ~= "function" then
+    return
+  end
+
+  local base_show = blink.show
+  blink.show = function(opts)
+    local bufnr = vim.api.nvim_get_current_buf()
+    if in_ark_filetype(bufnr) then
+      close_blink_docs()
+    end
+
+    return base_show(opts)
+  end
+
+  show_patched = true
+end
+
+function M.patch_blink_menu_for_signature_help()
+  if menu_patched then
+    return
+  end
+
+  local ok_menu, menu = pcall(require, "blink.cmp.completion.windows.menu")
+  if not ok_menu or type(menu.update_position) ~= "function" then
+    return
+  end
+
+  local base_update_position = menu.update_position
+  menu.update_position = function(...)
+    local result = base_update_position(...)
+    local bufnr = vim.api.nvim_get_current_buf()
+    local signature_win = current_signature_help_win()
+    if signature_win ~= nil and in_ark_filetype(bufnr) then
+      vim.schedule(function()
+        position_signature_float_away_from_menu(signature_win)
+      end)
+    end
+    return result
+  end
+
+  menu_patched = true
+end
+
+function M.patch_signature_help_float()
+  if signature_float_patched then
+    return
+  end
+
+  local util = vim.lsp and vim.lsp.util or nil
+  if type(util) ~= "table" or type(util.open_floating_preview) ~= "function" then
+    return
+  end
+
+  local base_open_floating_preview = util.open_floating_preview
+  util.open_floating_preview = function(contents, syntax, opts, ...)
+    local bufnr = vim.api.nvim_get_current_buf()
+    local is_signature_help = type(opts) == "table"
+      and opts.focus_id == "textDocument/signatureHelp"
+      and in_ark_filetype(bufnr)
+
+    local fbuf, fwin = base_open_floating_preview(contents, syntax, opts, ...)
+    if is_signature_help and type(fwin) == "number" and fwin ~= 0 then
+      active_signature_help_win = fwin
+      vim.schedule(function()
+        close_blink_docs()
+        position_signature_float_away_from_menu(fwin)
+      end)
+    end
+    return fbuf, fwin
+  end
+
+  signature_float_patched = true
+end
+
+function M.patch_blink_docs_for_signature_help()
+  if docs_patched then
+    return
+  end
+
+  local ok_docs, docs = pcall(require, "blink.cmp.completion.windows.documentation")
+  if not ok_docs or type(docs) ~= "table" then
+    return
+  end
+
+  local base_auto_show_item = type(docs.auto_show_item) == "function" and docs.auto_show_item or nil
+  if base_auto_show_item ~= nil then
+    docs.auto_show_item = function(context, item)
+      if signature_help_visible() and in_ark_filetype(vim.api.nvim_get_current_buf()) then
+        close_blink_docs()
+        return
+      end
+
+      return base_auto_show_item(context, item)
+    end
+  end
+
+  local base_show_item = type(docs.show_item) == "function" and docs.show_item or nil
+  if base_show_item ~= nil then
+    docs.show_item = function(context, item)
+      if signature_help_visible() and in_ark_filetype(vim.api.nvim_get_current_buf()) then
+        close_blink_docs()
+        return
+      end
+
+      return base_show_item(context, item)
+    end
+  end
+
+  docs_patched = true
 end
 
 function M.handle_insert_char_pre(bufnr, char)
