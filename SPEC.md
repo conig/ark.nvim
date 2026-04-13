@@ -109,6 +109,9 @@ part of the default supported path.
   plugin configuration.
 - Detached startup can begin immediately and hydrate later through trusted
   status-file data plus bridge bootstrap.
+- Command-driven startup from an R buffer should prewarm detached `ark-lsp`
+  before or alongside managed-pane startup rather than serializing "pane first,
+  LSP later".
 - Sync startup must hand off cleanly when Neovim has started `ark-lsp` but the
   client is still initializing: status should surface a pending client instead
   of reporting a false bootstrap failure.

@@ -795,10 +795,20 @@ local function start_managed_buffer(bufnr)
     end)
   end
 
+  local function prewarm_lsp()
+    if not options.auto_start_lsp then
+      return
+    end
+
+    lsp.start_async(options, bufnr)
+  end
+
   local function start_buffer()
     if not can_start_buffer() then
       return
     end
+
+    prewarm_lsp()
 
     if options.auto_start_pane then
       local _, pane_err = tmux.start(options)
@@ -808,19 +818,18 @@ local function start_managed_buffer(bufnr)
     end
 
     if options.auto_start_lsp then
-      if options.async_startup then
-        lsp.start_async(options, bufnr)
-      else
+      if options.auto_start_pane or not options.async_startup then
         start_sync_lsp_later()
       end
     end
   end
 
   if options.async_startup then
-    vim.defer_fn(start_buffer, 20)
-  else
-    start_buffer()
+    vim.schedule(start_buffer)
+    return
   end
+
+  start_buffer()
 end
 
 function M.setup(opts)
@@ -922,8 +931,21 @@ function M.pane_command()
   return tmux.pane_command(options.tmux)
 end
 
+local function prewarm_current_buffer_lsp()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if not is_ark_buffer(bufnr) then
+    return nil
+  end
+
+  -- Command-driven integrations often call `start_pane()` and `start_lsp()`
+  -- back-to-back. Prewarm the detached client here so those phases do not
+  -- serialize on the pane path.
+  return lsp.start_async(options, bufnr)
+end
+
 function M.start_pane()
   ensure_setup()
+  prewarm_current_buffer_lsp()
   local pane_id, err = tmux.start(options)
   if not pane_id then
     notify(err, vim.log.levels.ERROR)
