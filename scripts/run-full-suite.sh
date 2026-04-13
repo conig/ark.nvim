@@ -12,7 +12,7 @@ Options:
   --skip-e2e              Skip Neovim E2E tests
   --filter <substring>    Only run E2E tests whose basename contains the substring
   --init <path>           Init file for full_config_* E2Es
-                          Default: ~/.config/nvim/init.lua
+                          Default: tests/e2e/init.lua
   --open-r-buffer <name>  Scratch .R file to open for full_config_* E2Es
                           Default: smoke.R
   --e2e-timeout <secs>    Per-test timeout passed to run-e2e-test.sh
@@ -30,7 +30,7 @@ EOF
 }
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-real_init="${HOME}/.config/nvim/init.lua"
+real_init="$repo_root/tests/e2e/init.lua"
 open_r_buffer="smoke.R"
 e2e_timeout=120
 keep_artifacts=0

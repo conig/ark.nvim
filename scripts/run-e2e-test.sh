@@ -18,6 +18,8 @@ Environment exported to the test:
   ARK_TEST_RUN_ID
   ARK_TEST_TMPDIR
   ARK_TEST_TMUX_MANIFEST
+  ARK_TEST_NVIM_INIT
+  ARK_REPO_ROOT
   XDG_STATE_HOME
 EOF
 }
@@ -93,6 +95,10 @@ run_tmpdir="${ARK_TEST_TMPDIR:-/tmp/$run_id}"
 state_home="$run_tmpdir/state"
 manifest="$run_tmpdir/tmux-sessions.txt"
 log_path="$run_tmpdir/nvim.log"
+tmux_socket="$run_tmpdir/tmux.sock"
+tmux_server_session="arktest_${run_id}_anchor"
+tmux_anchor_pane=""
+tmux_anchor_session=""
 
 mkdir -p "$run_tmpdir" "$state_home"
 : >"$manifest"
@@ -101,6 +107,14 @@ if [[ "$init_mode" == "NONE" ]]; then
   init_arg="NONE"
 else
   init_arg="$init_mode"
+  if [[ ! -f "$init_arg" && -f "$repo_root/$init_arg" ]]; then
+    init_arg="$repo_root/$init_arg"
+  fi
+  if [[ ! -f "$init_arg" ]]; then
+    echo "Init script not found: $init_mode" >&2
+    exit 2
+  fi
+  init_arg="$(cd -- "$(dirname -- "$init_arg")" && pwd)/$(basename -- "$init_arg")"
 fi
 
 nvim_args=()
@@ -113,6 +127,29 @@ fi
 if [[ $# -gt 0 ]]; then
   nvim_args+=("$@")
 fi
+
+tmux_cmd() {
+  tmux -S "$tmux_socket" "$@"
+}
+
+setup_tmux_server() {
+  local output=""
+  output="$(tmux_cmd new-session -d -P -F '#{pane_id}
+#{session_name}' -s "$tmux_server_session")"
+  if [[ -z "$output" ]]; then
+    echo "failed to create dedicated tmux server session" >&2
+    exit 1
+  fi
+
+  tmux_anchor_pane="$(printf '%s\n' "$output" | sed -n '1p')"
+  tmux_anchor_session="$(printf '%s\n' "$output" | sed -n '2p')"
+  if [[ -z "$tmux_anchor_pane" || -z "$tmux_anchor_session" ]]; then
+    echo "failed to parse dedicated tmux server identifiers: $output" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$tmux_anchor_session" >>"$manifest"
+}
 
 run_tagged_pids() {
   local env_path pid env_blob
@@ -157,16 +194,18 @@ cleanup() {
   if [[ -f "$manifest" ]]; then
     while IFS= read -r session_name; do
       [[ -z "$session_name" ]] && continue
-      tmux kill-session -t "$session_name" >/dev/null 2>&1 || true
+      tmux_cmd kill-session -t "$session_name" >/dev/null 2>&1 || true
     done <"$manifest"
   fi
 
   if command -v tmux >/dev/null 2>&1; then
     while IFS= read -r session_name; do
       [[ -z "$session_name" ]] && continue
-      tmux kill-session -t "$session_name" >/dev/null 2>&1 || true
-    done < <(tmux ls -F '#{session_name}' 2>/dev/null | awk -v prefix="arktest_${run_id}_" 'index($0, prefix) == 1 { print $0 }')
+      tmux_cmd kill-session -t "$session_name" >/dev/null 2>&1 || true
+    done < <(tmux_cmd ls -F '#{session_name}' 2>/dev/null | awk -v prefix="arktest_${run_id}_" 'index($0, prefix) == 1 { print $0 }')
   fi
+
+  tmux_cmd kill-server >/dev/null 2>&1 || true
 
   if [[ -n "${runner_pgid:-}" ]]; then
     kill -- "-$runner_pgid" >/dev/null 2>&1 || true
@@ -192,6 +231,8 @@ cleanup() {
 
 trap 'cleanup $?' EXIT INT TERM
 
+setup_tmux_server
+
 cmd=(
   nvim
   --headless
@@ -211,7 +252,14 @@ env \
   ARK_TEST_RUN_ID="$run_id" \
   ARK_TEST_TMPDIR="$run_tmpdir" \
   ARK_TEST_TMUX_MANIFEST="$manifest" \
+  ARK_TEST_NVIM_INIT="$init_arg" \
   ARK_TUI_TRACE_LOG="$run_tmpdir/trace.log" \
+  ARK_REPO_ROOT="$repo_root" \
+  ARK_TMUX_SOCKET="$tmux_socket" \
+  ARK_TMUX_SESSION="$tmux_anchor_session" \
+  ARK_TMUX_ANCHOR_PANE="$tmux_anchor_pane" \
+  TMUX="" \
+  TMUX_PANE="" \
   XDG_STATE_HOME="$state_home" \
   setsid \
   timeout --foreground --kill-after="${kill_after_secs}s" "${timeout_secs}s" "${cmd[@]}" \

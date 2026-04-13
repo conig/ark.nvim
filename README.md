@@ -193,9 +193,15 @@ just verify
 ```
 
 That wrapper runs `cargo nextest`, `cargo clippy`, rebuilds `ark-lsp` once, and
-then executes the Neovim E2E suite serially through `scripts/run-e2e-test.sh`.
-It is the intended one-shot command when tmux-backed E2Es require a single
-escalated run outside the sandbox.
+then executes the Neovim E2E suite serially through `scripts/run-e2e-test.sh`
+using the checked-in Blink-backed fixture at
+`tests/e2e/init.lua`.
+
+For extra ambient-user-config coverage, override the init explicitly:
+
+```sh
+./scripts/run-full-suite.sh --init ~/.config/nvim/init.lua
+```
 
 ## Defaults
 

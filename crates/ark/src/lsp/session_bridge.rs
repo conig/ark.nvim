@@ -13,6 +13,7 @@ use std::time::SystemTime;
 use anyhow::anyhow;
 use harp::syntax::sym_quote_invalid;
 use regex::Regex;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -32,9 +33,9 @@ use tree_sitter::Node;
 use tree_sitter::Point;
 use uuid::Uuid;
 
+use crate::lsp::completions::call_node_position_type;
 use crate::lsp::completions::dedupe_and_sort_completion_items;
 use crate::lsp::completions::find_pipe_root_name;
-use crate::lsp::completions::call_node_position_type;
 use crate::lsp::completions::CallNodePositionType;
 use crate::lsp::document_context::DocumentContext;
 use crate::lsp::traits::node::NodeExt;
@@ -317,6 +318,19 @@ struct HelpTextResponse {
     text: String,
     #[serde(default)]
     references: Vec<HelpReference>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct BridgeCommandRequest<T>
+where
+    T: Serialize,
+{
+    request_id: String,
+    auth_token: String,
+    command: String,
+    session: BridgeSession,
+    #[serde(flatten)]
+    payload: T,
 }
 
 #[derive(Clone, Debug)]
@@ -730,6 +744,130 @@ impl SessionBridge {
         }))
     }
 
+    pub(crate) fn view_open(&self, expr: &str) -> anyhow::Result<Value> {
+        self.bridge_command("view_open", serde_json::json!({ "expr": expr }))
+    }
+
+    pub(crate) fn view_state(&self, session_id: &str) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "view_state",
+            serde_json::json!({ "session_id": session_id }),
+        )
+    }
+
+    pub(crate) fn view_page(
+        &self,
+        session_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "view_page",
+            serde_json::json!({
+                "session_id": session_id,
+                "offset": offset,
+                "limit": limit,
+            }),
+        )
+    }
+
+    pub(crate) fn view_sort(
+        &self,
+        session_id: &str,
+        column_index: u32,
+        direction: &str,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "view_sort",
+            serde_json::json!({
+                "session_id": session_id,
+                "column_index": column_index,
+                "direction": direction,
+            }),
+        )
+    }
+
+    pub(crate) fn view_filter(
+        &self,
+        session_id: &str,
+        column_index: u32,
+        query: &str,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "view_filter",
+            serde_json::json!({
+                "session_id": session_id,
+                "column_index": column_index,
+                "query": query,
+            }),
+        )
+    }
+
+    pub(crate) fn view_schema_search(
+        &self,
+        session_id: &str,
+        query: &str,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "view_schema_search",
+            serde_json::json!({
+                "session_id": session_id,
+                "query": query,
+            }),
+        )
+    }
+
+    pub(crate) fn view_profile(
+        &self,
+        session_id: &str,
+        column_index: u32,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "view_profile",
+            serde_json::json!({
+                "session_id": session_id,
+                "column_index": column_index,
+            }),
+        )
+    }
+
+    pub(crate) fn view_code(&self, session_id: &str) -> anyhow::Result<Value> {
+        self.bridge_command("view_code", serde_json::json!({ "session_id": session_id }))
+    }
+
+    pub(crate) fn view_export(&self, session_id: &str, format: &str) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "view_export",
+            serde_json::json!({
+                "session_id": session_id,
+                "format": format,
+            }),
+        )
+    }
+
+    pub(crate) fn view_cell(
+        &self,
+        session_id: &str,
+        row_index: u32,
+        column_index: u32,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "view_cell",
+            serde_json::json!({
+                "session_id": session_id,
+                "row_index": row_index,
+                "column_index": column_index,
+            }),
+        )
+    }
+
+    pub(crate) fn view_close(&self, session_id: &str) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "view_close",
+            serde_json::json!({ "session_id": session_id }),
+        )
+    }
+
     pub(crate) fn resolve_completion_item(
         &self,
         mut item: CompletionItem,
@@ -1089,6 +1227,39 @@ impl SessionBridge {
         Ok(payload)
     }
 
+    fn bridge_command(&self, command: &str, payload: Value) -> anyhow::Result<Value> {
+        match &self.source {
+            SessionBridgeSource::Fixed(connection) => {
+                self.bridge_command_with_connection(connection, command, payload)
+            },
+            SessionBridgeSource::StatusFile(source) => {
+                self.run_dynamic_request(source, "bridge command", |connection| {
+                    self.bridge_command_with_connection(connection, command, payload.clone())
+                })
+            },
+        }
+    }
+
+    fn bridge_command_with_connection<T>(
+        &self,
+        connection: &SessionBridgeConnection,
+        command: &str,
+        payload: T,
+    ) -> anyhow::Result<Value>
+    where
+        T: Serialize,
+    {
+        let payload: Value = self.command_with_connection(connection, command, payload)?;
+        if let Some(error) = bridge_error_from_value(&payload)? {
+            return Err(SessionBridgeResponseError {
+                code: error.code,
+                message: error.message,
+            }
+            .into());
+        }
+        Ok(payload)
+    }
+
     fn bootstrap_with_connection(
         &self,
         connection: &SessionBridgeConnection,
@@ -1173,6 +1344,39 @@ impl SessionBridge {
         }
 
         Ok(payload)
+    }
+
+    fn command_with_connection<T, R>(
+        &self,
+        connection: &SessionBridgeConnection,
+        command: &str,
+        payload: T,
+    ) -> anyhow::Result<R>
+    where
+        T: Serialize,
+        R: DeserializeOwned,
+    {
+        let mut stream = TcpStream::connect((connection.host.as_str(), connection.port))?;
+        stream.set_read_timeout(Some(self.timeout))?;
+        stream.set_write_timeout(Some(self.timeout))?;
+
+        let request = BridgeCommandRequest {
+            request_id: format!("ark-{}", Uuid::new_v4()),
+            auth_token: connection.auth_token.clone(),
+            command: String::from(command),
+            session: self.session.clone(),
+            payload,
+        };
+
+        let payload = serde_json::to_vec(&request)?;
+        stream.write_all(payload.as_slice())?;
+        stream.write_all(b"\n")?;
+        stream.shutdown(Shutdown::Write)?;
+
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+
+        serde_json::from_str(response.as_str()).map_err(|err| err.into())
     }
 
     fn run_dynamic_request<T, Request>(
@@ -2514,9 +2718,7 @@ fn completion_request_from_package_call(
     }))
 }
 
-fn empty_package_call_autotrigger_is_suppressed(
-    context: &DocumentContext,
-) -> anyhow::Result<bool> {
+fn empty_package_call_autotrigger_is_suppressed(context: &DocumentContext) -> anyhow::Result<bool> {
     if context.explicit_completion_request {
         return Ok(false);
     }
@@ -2690,8 +2892,8 @@ fn package_argument_spec(
     let callee = call_callee_basename(callee);
 
     PACKAGE_ARGUMENT_SPECS.iter().find(|spec| {
-        spec.callee == callee
-            && match mode {
+        spec.callee == callee &&
+            match mode {
                 PackageCompletionMode::String => true,
                 PackageCompletionMode::BareSymbol => spec.allow_bare_symbol,
             }
@@ -3271,6 +3473,20 @@ fn is_matrix_like(object_meta: Option<&ObjectMeta>) -> bool {
 
 fn is_internal_browser_name(name: &str) -> bool {
     name.starts_with('.') || name.contains("rscope")
+}
+
+fn bridge_error_from_value(value: &Value) -> anyhow::Result<Option<BridgeError>> {
+    let Some(error) = value.get("error") else {
+        return Ok(None);
+    };
+
+    if error.is_null() {
+        return Ok(None);
+    }
+
+    serde_json::from_value(error.clone())
+        .map(Some)
+        .map_err(|err| err.into())
 }
 
 fn deserialize_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -3892,12 +4108,8 @@ mod tests {
     fn test_empty_library_call_trigger_completion_is_suppressed() {
         let (text, point) = point_from_cursor("library(@)");
         let document = Document::new(text.as_str(), None);
-        let context = DocumentContext::new_with_completion(
-            &document,
-            point,
-            Some(String::from("(")),
-            false,
-        );
+        let context =
+            DocumentContext::new_with_completion(&document, point, Some(String::from("(")), false);
 
         assert!(empty_package_call_autotrigger_is_suppressed(&context).unwrap());
         assert!(completion_request_from_package_call(&context)

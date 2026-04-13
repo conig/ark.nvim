@@ -3,10 +3,33 @@ local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test
 local repo_root = vim.fs.normalize(vim.fn.getcwd())
 local session_name = ark_test.register_tmux_session(ark_test.tmux_session_name("runtime_extractor"))
 local trace_path = vim.fs.normalize(ark_test.run_tmpdir() .. "/runtime_extractor_trace.log")
+local state_home = vim.fs.normalize(ark_test.run_tmpdir() .. "/runtime_extractor_state")
+local buffer_path = vim.fs.normalize(ark_test.run_tmpdir() .. "/runtime_extractor.R")
 local stop_watchdog = ark_test.start_watchdog(90000, "full_config_runtime_extractor_tui")
+local init_path = vim.env.ARK_TEST_NVIM_INIT
+
+if type(init_path) ~= "string" or init_path == "" or init_path == "NONE" then
+  init_path = vim.fs.normalize(repo_root .. "/tests/e2e/init.lua")
+end
 
 local function tmux(args, allow_failure)
-  local output = vim.fn.system(vim.list_extend({ "tmux" }, args))
+  local command = { "tmux" }
+  local explicit_socket = vim.env.ARK_TMUX_SOCKET
+  if type(explicit_socket) == "string" and explicit_socket ~= "" then
+    command[#command + 1] = "-S"
+    command[#command + 1] = explicit_socket
+  else
+    local tmux_env = vim.env.TMUX
+    if type(tmux_env) == "string" and tmux_env ~= "" then
+      local socket = vim.split(tmux_env, ",", { plain = true })[1]
+      if type(socket) == "string" and socket ~= "" then
+        command[#command + 1] = "-S"
+        command[#command + 1] = socket
+      end
+    end
+  end
+
+  local output = vim.fn.system(vim.list_extend(command, args))
   if vim.v.shell_error ~= 0 and not allow_failure then
     ark_test.fail("tmux command failed: " .. output)
   end
@@ -75,12 +98,16 @@ local ok, err = xpcall(function()
   vim.fn.delete(trace_path)
 
   local nvim_cmd = table.concat({
-    "XDG_STATE_HOME=/tmp/ark-tui-runtime-extractor",
-    "ARK_TUI_TRACE_LOG=" .. trace_path,
+    "XDG_STATE_HOME=" .. vim.fn.shellescape(state_home),
+    "ARK_TUI_TRACE_LOG=" .. vim.fn.shellescape(trace_path),
+    "ARK_REPO_ROOT=" .. vim.fn.shellescape(repo_root),
+    "ARK_TMUX_SOCKET=" .. vim.fn.shellescape(vim.env.ARK_TMUX_SOCKET or ""),
+    "env -u ARK_TMUX_ANCHOR_PANE -u ARK_TMUX_SESSION",
     "nvim",
+    "-n",
     "-u",
-    "/home/marine/.config/nvim/init.lua",
-    "/tmp/ark_tui_runtime_extractor.R",
+    vim.fn.shellescape(init_path),
+    vim.fn.shellescape(buffer_path),
     "-c",
     "'set shadafile=NONE'",
     "-c",

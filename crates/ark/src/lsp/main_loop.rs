@@ -435,6 +435,9 @@ impl GlobalState {
                         LspRequest::SessionBootstrap(params) => {
                             respond(tx, || state_handlers::bootstrap_session(params, &mut self.world), LspResponse::SessionBootstrap)?;
                         },
+                        LspRequest::ViewRpc(params) => {
+                            respond(tx, || handlers::handle_view_rpc(params, &self.world), LspResponse::ViewRpc)?;
+                        },
                     };
                 },
             },

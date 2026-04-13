@@ -49,6 +49,22 @@ vim.api.nvim_create_user_command("ArkHelpPane", function()
   require("ark").help_pane(0)
 end, { desc = "Send help for the symbol under cursor to the managed ark.nvim R pane" })
 
+vim.api.nvim_create_user_command("ArkView", function(args)
+  local expr = args.args ~= "" and args.args or nil
+  require("ark").view(expr, 0)
+end, {
+  desc = "Open the Ark data explorer for an expression or the symbol under cursor",
+  nargs = "?",
+})
+
+vim.api.nvim_create_user_command("ArkViewRefresh", function()
+  require("ark").view_refresh()
+end, { desc = "Refresh the current Ark data explorer tab" })
+
+vim.api.nvim_create_user_command("ArkViewClose", function()
+  require("ark").view_close()
+end, { desc = "Close the current Ark data explorer tab" })
+
 vim.api.nvim_create_user_command("ArkSnippets", function()
   require("ark").snippets(0)
 end, { desc = "Open the Ark snippets picker for the current R-family buffer" })

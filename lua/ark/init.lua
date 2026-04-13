@@ -4,6 +4,7 @@ local dev = require("ark.dev")
 local lsp = require("ark.lsp")
 local snippets = require("ark.snippets")
 local tmux = require("ark.tmux")
+local view = require("ark.view")
 
 local M = {}
 
@@ -13,6 +14,7 @@ local startup_tokens = {}
 local pending_session_sync = 0
 local help_float_ns = vim.api.nvim_create_namespace("ArkHelpFloat")
 local help_filetype = "arkhelp"
+local is_ark_buffer
 
 local function r_string_literal(value)
   return '"' .. tostring(value or ""):gsub("\\", "\\\\"):gsub('"', '\\"') .. '"'
@@ -708,7 +710,31 @@ local function wait_for_help_runtime(bufnr)
   end, 100, false)
 end
 
-local function is_ark_buffer(bufnr)
+local function ensure_runtime_ready(bufnr, label)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  label = label or "ark.nvim runtime"
+
+  if not is_ark_buffer(bufnr) then
+    return nil, label .. " requires an R-family buffer"
+  end
+
+  lsp.start(options, bufnr)
+
+  local _, pane_err = tmux.start(options)
+  if pane_err then
+    return nil, pane_err
+  end
+
+  lsp.sync_sessions(options, bufnr)
+
+  if not wait_for_help_runtime(bufnr) then
+    return nil, label .. " bridge is not ready"
+  end
+
+  return true
+end
+
+is_ark_buffer = function(bufnr)
   return bufnr ~= nil
     and vim.api.nvim_buf_is_valid(bufnr)
     and options ~= nil
@@ -1114,6 +1140,50 @@ end
 function M.help(bufnr)
   ensure_setup()
   return show_help_page(bufnr, nil)
+end
+
+function M.view(expr, bufnr)
+  ensure_setup()
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+  if type(expr) ~= "string" or expr == "" then
+    expr = vim.fn.expand("<cword>")
+  end
+  if type(expr) ~= "string" or expr == "" then
+    local err = "no ArkView expression found"
+    notify(err, vim.log.levels.WARN)
+    return nil, err
+  end
+
+  local ok, runtime_err = ensure_runtime_ready(bufnr, "ark.nvim data explorer")
+  if not ok then
+    notify(runtime_err, vim.log.levels.WARN)
+    return nil, runtime_err
+  end
+
+  local opened, open_err = view.open({
+    expr = expr,
+    source_bufnr = bufnr,
+    options = options,
+    lsp = lsp,
+    notify = notify,
+  })
+  if not opened then
+    notify(open_err or "failed to open ArkView", vim.log.levels.WARN)
+    return nil, open_err
+  end
+
+  return opened
+end
+
+function M.view_refresh()
+  ensure_setup()
+  return view.refresh()
+end
+
+function M.view_close()
+  ensure_setup()
+  return view.close()
 end
 
 function M.refresh(bufnr)

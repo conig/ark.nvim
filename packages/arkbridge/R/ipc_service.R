@@ -5,6 +5,7 @@
 .ark_ipc_state$auth_token <- ""
 .ark_ipc_state$ipc_max_request_bytes <- as.integer(65536L)
 .ark_ipc_state$ipc_read_timeout_ms <- as.integer(250L)
+.ark_ipc_state$views <- new.env(parent = emptyenv())
 
 .ark_default_port <- function(session = list()) {
   pane <- session$tmux_pane %||% Sys.getenv("ARK_TMUX_PANE", unset = "")
@@ -176,6 +177,86 @@
       return(.emit_json(.new_error_payload("E_IPC_REQUEST", "missing topic", "ipc_request", session)))
     }
     return(.ark_help_text_payload(session, topic))
+  }
+
+  if (identical(req$command %||% "", "view_open")) {
+    expr <- req$expr %||% ""
+    if (!is.character(expr) || length(expr) != 1L || !nzchar(expr)) {
+      return(.emit_json(.new_error_payload("E_IPC_REQUEST", "missing expr", "ipc_request", session)))
+    }
+    return(.ark_view_open_payload(session, expr, req$options %||% list()))
+  }
+
+  if (identical(req$command %||% "", "view_state")) {
+    return(.ark_view_state_payload(session, req$session_id %||% ""))
+  }
+
+  if (identical(req$command %||% "", "view_page")) {
+    return(.ark_view_page_payload(
+      session,
+      req$session_id %||% "",
+      req$offset %||% 0L,
+      req$limit %||% 200L
+    ))
+  }
+
+  if (identical(req$command %||% "", "view_sort")) {
+    return(.ark_view_sort_payload(
+      session,
+      req$session_id %||% "",
+      req$column_index %||% 0L,
+      req$direction %||% ""
+    ))
+  }
+
+  if (identical(req$command %||% "", "view_filter")) {
+    return(.ark_view_filter_payload(
+      session,
+      req$session_id %||% "",
+      req$column_index %||% 0L,
+      req$query %||% ""
+    ))
+  }
+
+  if (identical(req$command %||% "", "view_schema_search")) {
+    return(.ark_view_schema_search_payload(
+      session,
+      req$session_id %||% "",
+      req$query %||% ""
+    ))
+  }
+
+  if (identical(req$command %||% "", "view_profile")) {
+    return(.ark_view_profile_payload(
+      session,
+      req$session_id %||% "",
+      req$column_index %||% 0L
+    ))
+  }
+
+  if (identical(req$command %||% "", "view_code")) {
+    return(.ark_view_code_payload(session, req$session_id %||% ""))
+  }
+
+  if (identical(req$command %||% "", "view_export")) {
+    return(.ark_view_export_payload(
+      session,
+      req$session_id %||% "",
+      req$format %||% "tsv"
+    ))
+  }
+
+  if (identical(req$command %||% "", "view_cell")) {
+    return(.ark_view_cell_payload(
+      session,
+      req$session_id %||% "",
+      req$row_index %||% 0L,
+      req$column_index %||% 0L
+    ))
+  }
+
+  if (identical(req$command %||% "", "view_close")) {
+    return(.ark_view_close_payload(session, req$session_id %||% ""))
   }
 
   expr <- req$expr %||% ""

@@ -76,6 +76,20 @@ end
 
 local function run_tmux(args)
   local command = { "tmux" }
+  local explicit_socket = vim.env.ARK_TMUX_SOCKET
+  if type(explicit_socket) == "string" and explicit_socket ~= "" then
+    command[#command + 1] = "-S"
+    command[#command + 1] = explicit_socket
+  else
+    local tmux_env = vim.env.TMUX
+    if type(tmux_env) == "string" and tmux_env ~= "" then
+      local socket = vim.split(tmux_env, ",", { plain = true })[1]
+      if type(socket) == "string" and socket ~= "" then
+        command[#command + 1] = "-S"
+        command[#command + 1] = socket
+      end
+    end
+  end
   vim.list_extend(command, args)
 
   local output = vim.fn.system(command)
@@ -201,6 +215,16 @@ local function pane_percent_for_layout(config, layout_name)
 end
 
 local function current_tmux_pane()
+  local explicit_anchor = vim.env.ARK_TMUX_ANCHOR_PANE
+  if type(explicit_anchor) == "string" and explicit_anchor ~= "" and pane_exists(explicit_anchor) then
+    return explicit_anchor, nil
+  end
+
+  local tmux_pane = vim.env.TMUX_PANE
+  if type(tmux_pane) == "string" and tmux_pane ~= "" and pane_exists(tmux_pane) then
+    return tmux_pane, nil
+  end
+
   local pane_id, err = run_tmux({ "display-message", "-p", "#{pane_id}" })
   if not pane_id then
     return nil, "failed to determine current tmux pane: " .. tostring(err or "unknown")
@@ -210,8 +234,25 @@ local function current_tmux_pane()
 end
 
 local function current_session(pane_id)
-  local target = pane_id or state.pane_id
+  local target = pane_id or state.pane_id or vim.env.ARK_TMUX_ANCHOR_PANE or vim.env.TMUX_PANE
   if type(target) ~= "string" or target == "" then
+    local explicit_session = vim.env.ARK_TMUX_SESSION
+    local explicit_socket = vim.env.ARK_TMUX_SOCKET
+    local explicit_pane = vim.env.ARK_TMUX_ANCHOR_PANE
+    if type(explicit_socket) == "string"
+      and explicit_socket ~= ""
+      and type(explicit_session) == "string"
+      and explicit_session ~= ""
+      and type(explicit_pane) == "string"
+      and explicit_pane ~= ""
+    then
+      return {
+        tmux_socket = explicit_socket,
+        tmux_session = explicit_session,
+        tmux_pane = explicit_pane,
+      }, nil
+    end
+
     return nil, "managed tmux pane is missing"
   end
 
@@ -236,6 +277,11 @@ local function current_session(pane_id)
     tmux_session = session_name,
     tmux_pane = target,
   }, nil
+end
+
+local function tmux_context_available()
+  return (type(vim.env.ARK_TMUX_SOCKET) == "string" and vim.env.ARK_TMUX_SOCKET ~= "")
+    or (type(vim.env.TMUX) == "string" and vim.env.TMUX ~= "")
 end
 
 local function session_from_parts(pane_id, socket_path, session_name)
@@ -1364,7 +1410,7 @@ function M.status(config)
   local bridge_ready = snapshot and snapshot.bridge_ready == true or false
 
   return {
-    inside_tmux = vim.env.TMUX ~= nil and vim.env.TMUX ~= "",
+    inside_tmux = tmux_context_available(),
     pane_id = state.pane_id,
     managed = state.managed,
     pane_exists = pane_exists(state.pane_id),
@@ -1384,7 +1430,7 @@ function M.status(config)
 end
 
 function M.tab_new(opts)
-  if not vim.env.TMUX or vim.env.TMUX == "" then
+  if not tmux_context_available() then
     return nil, "ark.nvim requires Neovim to run inside tmux"
   end
 
@@ -1595,7 +1641,7 @@ function M.tab_list()
 end
 
 function M.start(opts)
-  if not vim.env.TMUX or vim.env.TMUX == "" then
+  if not tmux_context_available() then
     return nil, "ark.nvim requires Neovim to run inside tmux"
   end
 
@@ -1645,7 +1691,7 @@ function M.stop()
 end
 
 function M.restart(opts)
-  if not vim.env.TMUX or vim.env.TMUX == "" then
+  if not tmux_context_available() then
     return nil, "ark.nvim requires Neovim to run inside tmux"
   end
 

@@ -84,6 +84,17 @@ pub static ARK_STATUS_REQUEST: &str = "ark/internal/status";
 pub static ARK_HELP_TEXT_REQUEST: &str = "ark/internal/helpText";
 pub static ARK_SESSION_BOOTSTRAP_REQUEST: &str = "ark/internal/bootstrapSession";
 pub static ARK_SESSION_UPDATE_NOTIFICATION: &str = "ark/updateSession";
+pub static ARK_VIEW_OPEN_REQUEST: &str = "ark/internal/viewOpen";
+pub static ARK_VIEW_STATE_REQUEST: &str = "ark/internal/viewState";
+pub static ARK_VIEW_PAGE_REQUEST: &str = "ark/internal/viewPage";
+pub static ARK_VIEW_SORT_REQUEST: &str = "ark/internal/viewSort";
+pub static ARK_VIEW_FILTER_REQUEST: &str = "ark/internal/viewFilter";
+pub static ARK_VIEW_SCHEMA_SEARCH_REQUEST: &str = "ark/internal/viewSchemaSearch";
+pub static ARK_VIEW_PROFILE_REQUEST: &str = "ark/internal/viewProfile";
+pub static ARK_VIEW_CODE_REQUEST: &str = "ark/internal/viewCode";
+pub static ARK_VIEW_EXPORT_REQUEST: &str = "ark/internal/viewExport";
+pub static ARK_VIEW_CELL_REQUEST: &str = "ark/internal/viewCell";
+pub static ARK_VIEW_CLOSE_REQUEST: &str = "ark/internal/viewClose";
 
 #[derive(Debug, Eq, PartialEq, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,6 +143,106 @@ pub(crate) struct SessionUpdateParams {
     pub repl_ready: bool,
     #[serde(default)]
     pub repl_seq: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ViewOpenParams {
+    #[serde(default)]
+    pub expr: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ViewSessionParams {
+    #[serde(default)]
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ViewPageParams {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub offset: u32,
+    #[serde(default)]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ViewSortParams {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub column_index: u32,
+    #[serde(default)]
+    pub direction: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ViewFilterParams {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub column_index: u32,
+    #[serde(default)]
+    pub query: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ViewSchemaSearchParams {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub query: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ViewProfileParams {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub column_index: u32,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ViewExportParams {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub format: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ViewCellParams {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub row_index: u32,
+    #[serde(default)]
+    pub column_index: u32,
+}
+
+#[derive(Debug)]
+pub(crate) enum ViewRpcRequest {
+    Open(ViewOpenParams),
+    State(ViewSessionParams),
+    Page(ViewPageParams),
+    Sort(ViewSortParams),
+    Filter(ViewFilterParams),
+    SchemaSearch(ViewSchemaSearchParams),
+    Profile(ViewProfileParams),
+    Code(ViewSessionParams),
+    Export(ViewExportParams),
+    Cell(ViewCellParams),
+    Close(ViewSessionParams),
 }
 
 fn log_detached_bridge_auth_fallback(feature: &str, err: &anyhow::Error) {
@@ -279,6 +390,54 @@ pub(crate) fn handle_help_text(
     }
 
     runtime_required(state)
+}
+
+pub(crate) fn handle_view_rpc(params: ViewRpcRequest, state: &WorldState) -> LspResult<Value> {
+    if state.has_attached_runtime() {
+        return Err(LspError::Anyhow(anyhow!(
+            "Ark view requests are only supported in detached runtime mode"
+        )));
+    }
+
+    let Some(session_bridge) = state.session_bridge.as_ref() else {
+        return Err(LspError::Anyhow(anyhow!("session bridge missing")));
+    };
+
+    let response = match params {
+        ViewRpcRequest::Open(params) => session_bridge.view_open(params.expr.as_str()),
+        ViewRpcRequest::State(params) => session_bridge.view_state(params.session_id.as_str()),
+        ViewRpcRequest::Page(params) => {
+            session_bridge.view_page(params.session_id.as_str(), params.offset, params.limit)
+        },
+        ViewRpcRequest::Sort(params) => session_bridge.view_sort(
+            params.session_id.as_str(),
+            params.column_index,
+            params.direction.as_str(),
+        ),
+        ViewRpcRequest::Filter(params) => session_bridge.view_filter(
+            params.session_id.as_str(),
+            params.column_index,
+            params.query.as_str(),
+        ),
+        ViewRpcRequest::SchemaSearch(params) => {
+            session_bridge.view_schema_search(params.session_id.as_str(), params.query.as_str())
+        },
+        ViewRpcRequest::Profile(params) => {
+            session_bridge.view_profile(params.session_id.as_str(), params.column_index)
+        },
+        ViewRpcRequest::Code(params) => session_bridge.view_code(params.session_id.as_str()),
+        ViewRpcRequest::Export(params) => {
+            session_bridge.view_export(params.session_id.as_str(), params.format.as_str())
+        },
+        ViewRpcRequest::Cell(params) => session_bridge.view_cell(
+            params.session_id.as_str(),
+            params.row_index,
+            params.column_index,
+        ),
+        ViewRpcRequest::Close(params) => session_bridge.view_close(params.session_id.as_str()),
+    };
+
+    response.map_err(LspError::Anyhow)
 }
 
 #[tracing::instrument(level = "info", skip_all)]

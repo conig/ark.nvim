@@ -54,10 +54,11 @@ if kill -0 "$child_pid" >/dev/null 2>&1; then
   exit 1
 fi
 
+tmux_socket="$run_tmpdir/tmux.sock"
 if command -v tmux >/dev/null 2>&1; then
-  if tmux ls -F '#{session_name}' 2>/dev/null | awk -v prefix="arktest_${run_id}_" 'index($0, prefix) == 1 { found = 1 } END { exit found ? 0 : 1 }'; then
+  if tmux -S "$tmux_socket" ls -F '#{session_name}' 2>/dev/null | awk -v prefix="arktest_${run_id}_" 'index($0, prefix) == 1 { found = 1 } END { exit found ? 0 : 1 }'; then
     echo "runner left arktest tmux sessions behind for $run_id" >&2
-    tmux ls >&2 || true
+    tmux -S "$tmux_socket" ls >&2 || true
     exit 1
   fi
 fi

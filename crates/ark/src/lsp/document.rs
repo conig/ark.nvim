@@ -757,22 +757,14 @@ value
 
     #[test]
     fn test_literate_r_preserves_inline_r_code() {
-        let document = Document::new_with_kind(
-            "Text `r whi`.\n",
-            None,
-            DocumentKind::LiterateR,
-        );
+        let document = Document::new_with_kind("Text `r whi`.\n", None, DocumentKind::LiterateR);
 
         assert_eq!(document.contents, "        whi; \n");
     }
 
     #[test]
     fn test_literate_r_preserves_open_inline_r_code() {
-        let document = Document::new_with_kind(
-            "Text `r whi\n",
-            None,
-            DocumentKind::LiterateR,
-        );
+        let document = Document::new_with_kind("Text `r whi\n", None, DocumentKind::LiterateR);
 
         assert_eq!(document.contents, "        whi\n");
     }

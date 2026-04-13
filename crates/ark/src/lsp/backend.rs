@@ -39,6 +39,16 @@ use crate::lsp::handlers::HelpTextParams;
 use crate::lsp::handlers::SessionBootstrapResponse;
 use crate::lsp::handlers::SessionUpdateParams;
 use crate::lsp::handlers::StatusParams;
+use crate::lsp::handlers::ViewCellParams;
+use crate::lsp::handlers::ViewExportParams;
+use crate::lsp::handlers::ViewFilterParams;
+use crate::lsp::handlers::ViewOpenParams;
+use crate::lsp::handlers::ViewPageParams;
+use crate::lsp::handlers::ViewProfileParams;
+use crate::lsp::handlers::ViewRpcRequest;
+use crate::lsp::handlers::ViewSchemaSearchParams;
+use crate::lsp::handlers::ViewSessionParams;
+use crate::lsp::handlers::ViewSortParams;
 use crate::lsp::handlers::VirtualDocumentParams;
 use crate::lsp::handlers::VirtualDocumentResponse;
 use crate::lsp::handlers::ARK_HELP_TEXT_REQUEST;
@@ -46,6 +56,17 @@ use crate::lsp::handlers::ARK_SESSION_BOOTSTRAP_REQUEST;
 use crate::lsp::handlers::ARK_SESSION_UPDATE_NOTIFICATION;
 use crate::lsp::handlers::ARK_STATUS_REQUEST;
 use crate::lsp::handlers::ARK_VDOC_REQUEST;
+use crate::lsp::handlers::ARK_VIEW_CELL_REQUEST;
+use crate::lsp::handlers::ARK_VIEW_CLOSE_REQUEST;
+use crate::lsp::handlers::ARK_VIEW_CODE_REQUEST;
+use crate::lsp::handlers::ARK_VIEW_EXPORT_REQUEST;
+use crate::lsp::handlers::ARK_VIEW_FILTER_REQUEST;
+use crate::lsp::handlers::ARK_VIEW_OPEN_REQUEST;
+use crate::lsp::handlers::ARK_VIEW_PAGE_REQUEST;
+use crate::lsp::handlers::ARK_VIEW_PROFILE_REQUEST;
+use crate::lsp::handlers::ARK_VIEW_SCHEMA_SEARCH_REQUEST;
+use crate::lsp::handlers::ARK_VIEW_SORT_REQUEST;
+use crate::lsp::handlers::ARK_VIEW_STATE_REQUEST;
 use crate::lsp::help_topic;
 use crate::lsp::help_topic::HelpTopicParams;
 use crate::lsp::help_topic::HelpTopicResponse;
@@ -178,6 +199,7 @@ pub(crate) enum LspRequest {
     HelpText(HelpTextParams),
     InputBoundaries(InputBoundariesParams),
     SessionBootstrap(SessionUpdateParams),
+    ViewRpc(ViewRpcRequest),
 }
 
 #[derive(Debug)]
@@ -205,6 +227,7 @@ pub(crate) enum LspResponse {
     HelpText(Option<HelpPage>),
     InputBoundaries(InputBoundariesResponse),
     SessionBootstrap(SessionBootstrapResponse),
+    ViewRpc(Value),
 }
 
 pub(crate) type LspResult<T> = std::result::Result<T, LspError>;
@@ -573,6 +596,108 @@ impl Backend {
         )
     }
 
+    async fn view_open(&self, params: ViewOpenParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::Open(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn view_state(&self, params: ViewSessionParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::State(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn view_page(&self, params: ViewPageParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::Page(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn view_sort(&self, params: ViewSortParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::Sort(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn view_filter(&self, params: ViewFilterParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::Filter(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn view_schema_search(
+        &self,
+        params: ViewSchemaSearchParams,
+    ) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::SchemaSearch(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn view_profile(&self, params: ViewProfileParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::Profile(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn view_code(&self, params: ViewSessionParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::Code(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn view_export(&self, params: ViewExportParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::Export(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn view_cell(&self, params: ViewCellParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::Cell(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn view_close(&self, params: ViewSessionParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::Close(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
     async fn notification(&self, params: Option<Value>) {
         log::info!("Received legacy ark/notification payload: {:?}", params);
     }
@@ -663,6 +788,17 @@ pub(crate) fn start_lsp(
             .custom_method(ARK_STATUS_REQUEST, Backend::status)
             .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
             .custom_method(ARK_SESSION_BOOTSTRAP_REQUEST, Backend::bootstrap_session)
+            .custom_method(ARK_VIEW_OPEN_REQUEST, Backend::view_open)
+            .custom_method(ARK_VIEW_STATE_REQUEST, Backend::view_state)
+            .custom_method(ARK_VIEW_PAGE_REQUEST, Backend::view_page)
+            .custom_method(ARK_VIEW_SORT_REQUEST, Backend::view_sort)
+            .custom_method(ARK_VIEW_FILTER_REQUEST, Backend::view_filter)
+            .custom_method(ARK_VIEW_SCHEMA_SEARCH_REQUEST, Backend::view_schema_search)
+            .custom_method(ARK_VIEW_PROFILE_REQUEST, Backend::view_profile)
+            .custom_method(ARK_VIEW_CODE_REQUEST, Backend::view_code)
+            .custom_method(ARK_VIEW_EXPORT_REQUEST, Backend::view_export)
+            .custom_method(ARK_VIEW_CELL_REQUEST, Backend::view_cell)
+            .custom_method(ARK_VIEW_CLOSE_REQUEST, Backend::view_close)
             // In principle this should probably be a Jupyter request
             .custom_method(
                 input_boundaries::ARK_INPUT_BOUNDARIES_REQUEST,
@@ -732,6 +868,17 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         .custom_method(ARK_STATUS_REQUEST, Backend::status)
         .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
         .custom_method(ARK_SESSION_BOOTSTRAP_REQUEST, Backend::bootstrap_session)
+        .custom_method(ARK_VIEW_OPEN_REQUEST, Backend::view_open)
+        .custom_method(ARK_VIEW_STATE_REQUEST, Backend::view_state)
+        .custom_method(ARK_VIEW_PAGE_REQUEST, Backend::view_page)
+        .custom_method(ARK_VIEW_SORT_REQUEST, Backend::view_sort)
+        .custom_method(ARK_VIEW_FILTER_REQUEST, Backend::view_filter)
+        .custom_method(ARK_VIEW_SCHEMA_SEARCH_REQUEST, Backend::view_schema_search)
+        .custom_method(ARK_VIEW_PROFILE_REQUEST, Backend::view_profile)
+        .custom_method(ARK_VIEW_CODE_REQUEST, Backend::view_code)
+        .custom_method(ARK_VIEW_EXPORT_REQUEST, Backend::view_export)
+        .custom_method(ARK_VIEW_CELL_REQUEST, Backend::view_cell)
+        .custom_method(ARK_VIEW_CLOSE_REQUEST, Backend::view_close)
         .custom_method(
             input_boundaries::ARK_INPUT_BOUNDARIES_REQUEST,
             Backend::input_boundaries,

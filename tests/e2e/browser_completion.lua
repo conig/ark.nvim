@@ -10,7 +10,23 @@ local function wait_for(label, timeout_ms, predicate)
 end
 
 local function tmux(args)
-  local output = vim.fn.system(vim.list_extend({ "tmux" }, args))
+  local command = { "tmux" }
+  local explicit_socket = vim.env.ARK_TMUX_SOCKET
+  if type(explicit_socket) == "string" and explicit_socket ~= "" then
+    command[#command + 1] = "-S"
+    command[#command + 1] = explicit_socket
+  else
+    local tmux_env = vim.env.TMUX
+    if type(tmux_env) == "string" and tmux_env ~= "" then
+      local socket = vim.split(tmux_env, ",", { plain = true })[1]
+      if type(socket) == "string" and socket ~= "" then
+        command[#command + 1] = "-S"
+        command[#command + 1] = socket
+      end
+    end
+  end
+
+  local output = vim.fn.system(vim.list_extend(command, args))
   if vim.v.shell_error ~= 0 then
     fail("tmux command failed: " .. output)
   end

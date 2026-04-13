@@ -49,6 +49,7 @@ Responsibilities:
 - start detached `ark-lsp`
 - relay session metadata through `ark/updateSession`
 - expose commands such as `ArkPaneStart`, `ArkTab*`, `ArkHelp`, and `ArkStatus`
+- expose a dedicated `ArkView` tabpage data explorer for live tabular objects
 - expose `:checkhealth ark` for install/runtime diagnostics
 
 ### Detached LSP layer
@@ -94,6 +95,7 @@ Responsibilities:
 - install or reuse `arkbridge`
 - publish trusted startup/readiness metadata under `ark-status`
 - answer bridge requests for bootstrap, help text, and runtime inspection
+- answer bridge requests for live data-explorer sessions and table paging
 
 The active runtime contract is Ark-native. Legacy `rscope` compatibility is not
 part of the default supported path.
@@ -127,10 +129,11 @@ part of the default supported path.
 - Live-session completion, hover, and signature help
 - Browser-frame completion
 - Ark help float and help-to-pane workflows
+- ArkView live data explorer for tabular R objects
 - Managed tab commands
 - R Markdown / Quarto fenced-chunk completion and diagnostics
 - R Markdown / Quarto inline `` `r ...` `` completion
-- Safety-oriented E2E runner for tmux-backed and real-config tests
+- Safety-oriented E2E runner for tmux-backed and Blink-backed tests
 
 ## Open Work After This Tranche
 
@@ -147,8 +150,9 @@ layer:
 
 - Rust/LSP code: `cargo check`, unit tests, and relevant Rust integration tests
 - plugin/session orchestration: focused headless Neovim tests
-- live workflow: serial tmux-backed E2Es and a real-config smoke path via
+- live workflow: serial tmux-backed E2Es and a repo-owned Blink-backed smoke path via
   [scripts/run-e2e-test.sh](/home/marine/repos/ark.nvim/scripts/run-e2e-test.sh)
+- ambient user-config smoke remains optional via `--init ~/.config/nvim/init.lua`
 
 High-value smoke coverage for the current product boundary includes:
 
@@ -157,7 +161,15 @@ High-value smoke coverage for the current product boundary includes:
 - browser completion
 - library completion
 - Rmd/Qmd chunk completion and diagnostics
-- real-config startup completion
+- Blink-backed startup completion
+
+Completion coverage should stay explicitly layered:
+
+- direct `textDocument/completion` tests are valid for LSP and bridge semantics
+- they are not sufficient by themselves to prove interactive completion UX
+- when a completion bug presents as "works on explicit request but not while typing",
+  add both a request-level regression and a real-config regression that types into
+  the buffer and proves Blink-visible behavior
 
 ## Release-Heuristic Summary
 

@@ -8,6 +8,17 @@ local SESSION_BOOTSTRAP_METHOD = "ark/internal/bootstrapSession"
 local HELP_TOPIC_METHOD = "ark/textDocument/helpTopic"
 local HELP_TEXT_METHOD = "ark/internal/helpText"
 local STATUS_REQUEST_METHOD = "ark/internal/status"
+local VIEW_OPEN_METHOD = "ark/internal/viewOpen"
+local VIEW_STATE_METHOD = "ark/internal/viewState"
+local VIEW_PAGE_METHOD = "ark/internal/viewPage"
+local VIEW_SORT_METHOD = "ark/internal/viewSort"
+local VIEW_FILTER_METHOD = "ark/internal/viewFilter"
+local VIEW_SCHEMA_SEARCH_METHOD = "ark/internal/viewSchemaSearch"
+local VIEW_PROFILE_METHOD = "ark/internal/viewProfile"
+local VIEW_CODE_METHOD = "ark/internal/viewCode"
+local VIEW_EXPORT_METHOD = "ark/internal/viewExport"
+local VIEW_CELL_METHOD = "ark/internal/viewCell"
+local VIEW_CLOSE_METHOD = "ark/internal/viewClose"
 
 local session_watchers = {}
 local session_watch_cleanup = {}
@@ -1165,6 +1176,93 @@ function M.help_text(opts, bufnr, topic)
   end
 
   return result, nil
+end
+
+local function view_request(opts, bufnr, method, params, timeout_ms)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local client = live_clients(opts, bufnr)[1]
+  if not live_client(client) then
+    return nil, "ark_lsp client unavailable"
+  end
+
+  return request_result(client, method, params or {}, timeout_ms or 5000, bufnr)
+end
+
+function M.view_open(opts, bufnr, expr)
+  return view_request(opts, bufnr, VIEW_OPEN_METHOD, {
+    expr = expr,
+  }, 5000)
+end
+
+function M.view_state(opts, bufnr, session_id)
+  return view_request(opts, bufnr, VIEW_STATE_METHOD, {
+    sessionId = session_id,
+  }, 3000)
+end
+
+function M.view_page(opts, bufnr, session_id, offset, limit)
+  return view_request(opts, bufnr, VIEW_PAGE_METHOD, {
+    sessionId = session_id,
+    offset = offset or 0,
+    limit = limit or 200,
+  }, 5000)
+end
+
+function M.view_sort(opts, bufnr, session_id, column_index, direction)
+  return view_request(opts, bufnr, VIEW_SORT_METHOD, {
+    sessionId = session_id,
+    columnIndex = column_index,
+    direction = direction,
+  }, 5000)
+end
+
+function M.view_filter(opts, bufnr, session_id, column_index, query)
+  return view_request(opts, bufnr, VIEW_FILTER_METHOD, {
+    sessionId = session_id,
+    columnIndex = column_index,
+    query = query,
+  }, 5000)
+end
+
+function M.view_schema_search(opts, bufnr, session_id, query)
+  return view_request(opts, bufnr, VIEW_SCHEMA_SEARCH_METHOD, {
+    sessionId = session_id,
+    query = query,
+  }, 3000)
+end
+
+function M.view_profile(opts, bufnr, session_id, column_index)
+  return view_request(opts, bufnr, VIEW_PROFILE_METHOD, {
+    sessionId = session_id,
+    columnIndex = column_index,
+  }, 5000)
+end
+
+function M.view_code(opts, bufnr, session_id)
+  return view_request(opts, bufnr, VIEW_CODE_METHOD, {
+    sessionId = session_id,
+  }, 3000)
+end
+
+function M.view_export(opts, bufnr, session_id, format)
+  return view_request(opts, bufnr, VIEW_EXPORT_METHOD, {
+    sessionId = session_id,
+    format = format or "tsv",
+  }, 5000)
+end
+
+function M.view_cell(opts, bufnr, session_id, row_index, column_index)
+  return view_request(opts, bufnr, VIEW_CELL_METHOD, {
+    sessionId = session_id,
+    rowIndex = row_index,
+    columnIndex = column_index,
+  }, 3000)
+end
+
+function M.view_close(opts, bufnr, session_id)
+  return view_request(opts, bufnr, VIEW_CLOSE_METHOD, {
+    sessionId = session_id,
+  }, 3000)
 end
 
 return M
