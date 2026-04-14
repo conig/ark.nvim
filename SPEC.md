@@ -115,8 +115,10 @@ part of the default supported path.
   input".
 - Unnamed scratch startup should only reuse the current working directory as
   the LSP workspace root when that directory resolves to a real project root;
-  otherwise Ark should fall back to a dedicated scratch workspace so starting
-  from `~` does not accidentally widen startup scope.
+  otherwise Ark should fall back to a dedicated scratch workspace. The same
+  fallback should apply to direct home-directory files like `~/.R`, so
+  starting from `~` does not accidentally widen startup scope to the whole
+  home directory.
 - Command-driven startup from an R buffer should prewarm detached `ark-lsp`
   before or alongside managed-pane startup rather than serializing "pane first,
   LSP later".

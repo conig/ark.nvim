@@ -305,6 +305,20 @@ local function unnamed_workspace_root()
   return scratch_root
 end
 
+local function home_directory()
+  local env_home = vim.env.HOME
+  if type(env_home) == "string" and env_home ~= "" then
+    return vim.fs.normalize(env_home)
+  end
+
+  local homedir = uv and type(uv.os_homedir) == "function" and uv.os_homedir() or nil
+  if type(homedir) == "string" and homedir ~= "" then
+    return vim.fs.normalize(homedir)
+  end
+
+  return nil
+end
+
 local function root_dir(bufnr, markers)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local cwd = vim.loop.cwd()
@@ -313,7 +327,23 @@ local function root_dir(bufnr, markers)
   end
 
   local root = project_root_for_path(path, markers)
-  return root or vim.fs.dirname(path) or project_root_for_path(cwd, markers) or unnamed_workspace_root()
+  if root then
+    return root
+  end
+
+  local path_dir = vim.fs.dirname(path)
+  if type(path_dir) == "string" and path_dir ~= "" then
+    local normalized_dir = vim.fs.normalize(path_dir)
+    if normalized_dir == home_directory() then
+      -- A direct `~/file.R` is usually an ad hoc scratch file, not a signal to
+      -- index the whole home directory as one detached workspace.
+      return unnamed_workspace_root()
+    end
+
+    return normalized_dir
+  end
+
+  return project_root_for_path(cwd, markers) or unnamed_workspace_root()
 end
 
 local function same_server(lhs, rhs)
