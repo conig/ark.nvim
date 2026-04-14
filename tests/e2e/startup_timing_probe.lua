@@ -1,3 +1,5 @@
+local ark_test = require("ark_test")
+
 local function ensure_bridge_runtime_current()
   local bridge = require("ark.bridge")
   local config = require("ark.config").defaults().tmux
@@ -124,8 +126,12 @@ await_mark("lsp_hydrated", 10000, function()
     and tonumber(lsp_status.libraryPathCount or 0) > 0
 end)
 
+ark_test.wait_for_main_buffer_unlocked(10000, bufnr)
+mark("main_buffer_unlocked")
+
+local startup = ark_test.startup_status(bufnr) or {}
 vim.print({
   marks = marks,
-  startup_elapsed_ms = elapsed_ms(),
+  startup_elapsed_ms = tonumber(startup.main_buffer_unlock_elapsed_ms) or elapsed_ms(),
   status = require("ark").status({ include_lsp = true }),
 })

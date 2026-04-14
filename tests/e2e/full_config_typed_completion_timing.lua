@@ -184,13 +184,17 @@ local hydrated = await_mark("lsp_hydrated", 30000, function()
     and tonumber(lsp_status.libraryPathCount or 0) > 0
 end)
 
+ark_test.wait_for_main_buffer_unlocked(30000, 0)
+mark("main_buffer_unlocked")
+
+local startup = ark_test.startup_status(0) or {}
 local library_completion = probe_completion("libr", "library")
 local dollar_completion = probe_completion("mtcars$", "mpg")
 
 vim.print({
   marks = marks,
   hydrated = hydrated,
-  startup_elapsed_ms = elapsed_ms(),
+  startup_elapsed_ms = tonumber(startup.main_buffer_unlock_elapsed_ms) or elapsed_ms(),
   library_completion = library_completion,
   mtcars_dollar_completion = dollar_completion,
   status = current_status(),

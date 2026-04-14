@@ -39,6 +39,8 @@ ark_test.wait_for("ark lsp client", 15000, function()
   return client ~= nil and client.initialized == true and not client:is_stopped()
 end)
 
+ark_test.wait_for_main_buffer_unlocked(15000, 0)
+
 local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
 
 local keyword_items = completion_at(client, 1, 3)

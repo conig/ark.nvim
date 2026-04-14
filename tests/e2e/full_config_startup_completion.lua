@@ -187,7 +187,11 @@ ark_test.wait_for("ark lsp hydrated", 30000, function()
 end)
 mark("lsp_hydrated")
 
-local startup_elapsed_ms = (vim.loop.hrtime() / 1e6) - startup_begin_ms
+ark_test.wait_for_main_buffer_unlocked(30000, 0)
+mark("main_buffer_unlocked")
+
+local startup = ark_test.startup_status(0) or {}
+local startup_elapsed_ms = tonumber(startup.main_buffer_unlock_elapsed_ms) or ((vim.loop.hrtime() / 1e6) - startup_begin_ms)
 if startup_elapsed_ms > 2000 then
   ark_test.fail(vim.inspect({
     error = string.format("async startup exceeded 2000 ms: %.1f ms", startup_elapsed_ms),

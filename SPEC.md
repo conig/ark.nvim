@@ -109,6 +109,10 @@ part of the default supported path.
   plugin configuration.
 - Detached startup can begin immediately and hydrate later through trusted
   status-file data plus bridge bootstrap.
+- Startup diagnostics should retain the existing pane and LSP readiness
+  milestones and also record the first post-startup `SafeState` for the main
+  buffer so Ark can distinguish "runtime ready" from "buffer unlocked for user
+  input".
 - Unnamed scratch startup should only reuse the current working directory as
   the LSP workspace root when that directory resolves to a real project root;
   otherwise Ark should fall back to a dedicated scratch workspace so starting

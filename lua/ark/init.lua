@@ -6,16 +6,276 @@ local lsp = require("ark.lsp")
 local snippets = require("ark.snippets")
 local tmux = require("ark.tmux")
 local view = require("ark.view")
+local uv = vim.uv or vim.loop
 
 local M = {}
 
 local did_setup = false
 local options = nil
 local startup_tokens = {}
+local startup_traces = {}
 local pending_session_sync = 0
 local help_float_ns = vim.api.nvim_create_namespace("ArkHelpFloat")
 local help_filetype = "arkhelp"
 local is_ark_buffer
+
+local function monotonic_ms()
+  local clock = (uv and uv.hrtime) and uv.hrtime or vim.loop.hrtime
+  return math.floor(clock() / 1e6)
+end
+
+local function wallclock_ms()
+  if uv and type(uv.gettimeofday) == "function" then
+    local sec, usec = uv.gettimeofday()
+    if type(sec) == "number" and type(usec) == "number" then
+      return (sec * 1000) + math.floor(usec / 1000)
+    end
+  end
+
+  return math.floor(os.time() * 1000)
+end
+
+local function iso_timestamp(ms)
+  if type(ms) ~= "number" then
+    return nil
+  end
+
+  local sec = math.floor(ms / 1000)
+  local millis = ms - (sec * 1000)
+  return os.date("%Y-%m-%dT%H:%M:%S", sec) .. string.format(".%03d", millis)
+end
+
+local function format_ms(value)
+  if type(value) ~= "number" then
+    return nil
+  end
+
+  return string.format("+%dms", math.max(0, math.floor(value)))
+end
+
+local function tracked_startup_file(bufnr)
+  local path = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) or ""
+  return path ~= "" and path or nil
+end
+
+local function startup_log_path()
+  if not options or type(options.tmux) ~= "table" then
+    return nil
+  end
+
+  local status = tmux.startup_status_authoritative(options.tmux)
+  if type(status) ~= "table" then
+    return nil
+  end
+
+  return type(status.log_path) == "string" and status.log_path or nil
+end
+
+local function append_startup_log(event, fields)
+  local path = startup_log_path()
+  if type(path) ~= "string" or path == "" then
+    return nil
+  end
+
+  local elapsed_ms = nil
+  for _, field in ipairs(fields or {}) do
+    if type(field) == "table" and field.key == "startup_elapsed_ms" and type(field.value) == "number" then
+      elapsed_ms = field.value
+      break
+    end
+  end
+
+  local ts = iso_timestamp(wallclock_ms())
+  local elapsed = format_ms(elapsed_ms)
+  local line = elapsed and string.format("[%s %s] [nvim-startup] %s", ts, elapsed, event)
+    or string.format("[%s] [nvim-startup] %s", ts, event)
+  for _, field in ipairs(fields or {}) do
+    if type(field) == "table" and type(field.key) == "string" and field.key ~= "" and field.value ~= nil then
+      local rendered = field.value
+      if type(rendered) == "number" and field.key:sub(-3) == "_ms" then
+        rendered = format_ms(rendered)
+      end
+      line = line .. string.format(" %s=%s", field.key, tostring(rendered))
+    end
+  end
+
+  local dir = vim.fs.dirname(path)
+  if type(dir) == "string" and dir ~= "" then
+    vim.fn.mkdir(dir, "p")
+  end
+  vim.fn.writefile({ line }, path, "a")
+  return path
+end
+
+local function cleanup_startup_trace(bufnr)
+  startup_traces[bufnr] = nil
+end
+
+local function ensure_startup_trace_cleanup(bufnr)
+  if startup_traces[bufnr] and startup_traces[bufnr].cleanup_registered == true then
+    return
+  end
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    cleanup_startup_trace(bufnr)
+    return
+  end
+
+  if not startup_traces[bufnr] then
+    return
+  end
+
+  startup_traces[bufnr].cleanup_registered = true
+  vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+    buffer = bufnr,
+    once = true,
+    callback = function()
+      cleanup_startup_trace(bufnr)
+    end,
+  })
+end
+
+local function begin_startup_trace(bufnr, token)
+  local started_at_ms = wallclock_ms()
+  startup_traces[bufnr] = {
+    bufnr = bufnr,
+    cleanup_registered = false,
+    file = tracked_startup_file(bufnr),
+    filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or nil,
+    log_path = startup_log_path(),
+    started_at_iso = iso_timestamp(started_at_ms),
+    started_at_ms = started_at_ms,
+    started_mono_ms = monotonic_ms(),
+    token = token,
+  }
+  ensure_startup_trace_cleanup(bufnr)
+  return startup_traces[bufnr]
+end
+
+local function lsp_status_ready_for_safe_state(bufnr)
+  local status = lsp.status(options, bufnr, {
+    cache_ttl_ms = 50,
+    throttle_ms = 25,
+    timeout_ms = 50,
+  })
+  if type(status) ~= "table" or status.available ~= true then
+    return false, status
+  end
+
+  if options.auto_start_pane ~= true then
+    return true, status
+  end
+
+  local detached_status = type(status.detachedSessionStatus) == "table" and status.detachedSessionStatus or nil
+  if type(detached_status) ~= "table" then
+    return false, status
+  end
+
+  return detached_status.lastSessionUpdateStatus == "ready"
+    and type(detached_status.lastBootstrapSuccessMs) == "number",
+    status
+end
+
+local function startup_ready_for_safe_state(bufnr)
+  if not options or type(bufnr) ~= "number" or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false, nil, nil
+  end
+  if not vim.tbl_contains(options.filetypes or {}, vim.bo[bufnr].filetype) then
+    return false, nil, nil
+  end
+
+  local tmux_status = nil
+  if options.auto_start_pane == true then
+    tmux_status = tmux.status(options.tmux)
+    if type(tmux_status) ~= "table" or tmux_status.repl_ready ~= true then
+      return false, tmux_status, nil
+    end
+  end
+
+  if options.auto_start_lsp ~= true then
+    return true, tmux_status, nil
+  end
+
+  local lsp_ready, lsp_status = lsp_status_ready_for_safe_state(bufnr)
+  return lsp_ready, tmux_status, lsp_status
+end
+
+local function mark_startup_safe_state(bufnr, source)
+  local trace = startup_traces[bufnr]
+  if type(trace) ~= "table" or trace.main_buffer_unlocked == true then
+    return
+  end
+  if startup_tokens[bufnr] ~= trace.token then
+    cleanup_startup_trace(bufnr)
+    return
+  end
+
+  local ready, _, lsp_status = startup_ready_for_safe_state(bufnr)
+  if not ready then
+    return
+  end
+
+  local unlocked_at_ms = wallclock_ms()
+  trace.file = trace.file or tracked_startup_file(bufnr)
+  trace.filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or trace.filetype
+  trace.log_path = startup_log_path() or trace.log_path
+  trace.main_buffer_unlocked = true
+  trace.main_buffer_unlock_at_iso = iso_timestamp(unlocked_at_ms)
+  trace.main_buffer_unlock_at_ms = unlocked_at_ms
+  trace.main_buffer_unlock_elapsed_ms = math.max(0, monotonic_ms() - trace.started_mono_ms)
+  trace.main_buffer_unlock_source = source or "SafeState"
+
+  local detached_status = type(lsp_status) == "table" and lsp_status.detachedSessionStatus or nil
+  if type(detached_status) == "table" and type(detached_status.lastBootstrapSuccessMs) == "number" then
+    trace.post_lsp_bootstrap_unlock_ms = math.max(0, unlocked_at_ms - detached_status.lastBootstrapSuccessMs)
+  end
+
+  trace.log_path = append_startup_log("main_buffer_unlocked", {
+    { key = "bufnr", value = bufnr },
+    { key = "filetype", value = trace.filetype },
+    { key = "file", value = trace.file },
+    { key = "startup_elapsed_ms", value = trace.main_buffer_unlock_elapsed_ms },
+    { key = "post_lsp_bootstrap_unlock_ms", value = trace.post_lsp_bootstrap_unlock_ms },
+    { key = "source", value = trace.main_buffer_unlock_source },
+  }) or trace.log_path
+end
+
+local function startup_status(bufnr)
+  if type(bufnr) ~= "number" then
+    bufnr = vim.api.nvim_get_current_buf()
+  end
+
+  if #vim.api.nvim_list_uis() == 0 then
+    mark_startup_safe_state(bufnr, "HeadlessStatusPoll")
+  end
+
+  local trace = startup_traces[bufnr]
+  if type(trace) ~= "table" then
+    return {
+      tracked = false,
+      bufnr = bufnr,
+      file = tracked_startup_file(bufnr),
+      filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or nil,
+      log_path = startup_log_path(),
+      main_buffer_unlocked = false,
+    }
+  end
+
+  return {
+    tracked = true,
+    bufnr = trace.bufnr,
+    file = trace.file,
+    filetype = trace.filetype,
+    log_path = trace.log_path or startup_log_path(),
+    main_buffer_unlocked = trace.main_buffer_unlocked == true,
+    main_buffer_unlock_at_iso = trace.main_buffer_unlock_at_iso,
+    main_buffer_unlock_at_ms = trace.main_buffer_unlock_at_ms,
+    main_buffer_unlock_elapsed_ms = trace.main_buffer_unlock_elapsed_ms,
+    main_buffer_unlock_source = trace.main_buffer_unlock_source,
+    post_lsp_bootstrap_unlock_ms = trace.post_lsp_bootstrap_unlock_ms,
+    started_at_iso = trace.started_at_iso,
+    started_at_ms = trace.started_at_ms,
+  }
+end
 
 local function r_string_literal(value)
   return '"' .. tostring(value or ""):gsub("\\", "\\\\"):gsub('"', '\\"') .. '"'
@@ -846,6 +1106,7 @@ local function start_managed_buffer(bufnr)
 
   local token = (startup_tokens[bufnr] or 0) + 1
   startup_tokens[bufnr] = token
+  begin_startup_trace(bufnr, token)
 
   local function can_start_buffer()
     return startup_tokens[bufnr] == token
@@ -984,6 +1245,14 @@ function M.setup(opts)
       end)
     end,
     desc = "Recover Blink completion after autopairs text changes in R buffers",
+  })
+
+  vim.api.nvim_create_autocmd("SafeState", {
+    group = group,
+    callback = function()
+      mark_startup_safe_state(vim.api.nvim_get_current_buf())
+    end,
+    desc = "Record the first post-startup SafeState for the current Ark buffer",
   })
 
   vim.api.nvim_create_autocmd("VimLeavePre", {
@@ -1382,10 +1651,23 @@ function M.status(opts)
   ensure_setup()
   opts = opts or {}
   local status = tmux.status(options.tmux)
+  status.startup = startup_status(vim.api.nvim_get_current_buf())
   status.lsp_cmd = options.lsp.cmd
   status.launcher = options.tmux.launcher
   if opts.include_lsp == true then
     status.lsp_status = lsp.status(options)
+    local detached_status = type(status.lsp_status) == "table" and status.lsp_status.detachedSessionStatus or nil
+    if type(detached_status) == "table"
+      and type(detached_status.lastBootstrapSuccessMs) == "number"
+      and status.startup.main_buffer_unlocked == true
+      and status.startup.post_lsp_bootstrap_unlock_ms == nil
+      and type(status.startup.main_buffer_unlock_at_ms) == "number"
+    then
+      status.startup.post_lsp_bootstrap_unlock_ms = math.max(
+        0,
+        status.startup.main_buffer_unlock_at_ms - detached_status.lastBootstrapSuccessMs
+      )
+    end
   end
   return status
 end

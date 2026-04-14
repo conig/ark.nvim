@@ -34,4 +34,6 @@ ark_test.wait_for("ark lsp startup from existing R buffer", 15000, function()
   return client ~= nil and client.initialized == true and not client:is_stopped()
 end)
 
+ark_test.wait_for_main_buffer_unlocked(15000, bufnr)
+
 vim.print(require("ark").status({ include_lsp = true }))

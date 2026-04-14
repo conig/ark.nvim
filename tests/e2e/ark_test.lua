@@ -76,6 +76,28 @@ function M.wait_for(label, timeout_ms, predicate)
   end
 end
 
+function M.startup_status(bufnr)
+  local ok, ark = pcall(require, "ark")
+  if not ok then
+    return nil
+  end
+
+  local status = ark.status({ include_lsp = true })
+  return type(status) == "table" and status.startup or nil
+end
+
+function M.main_buffer_unlocked(bufnr)
+  local startup = M.startup_status(bufnr)
+  return type(startup) == "table" and startup.main_buffer_unlocked == true
+end
+
+function M.wait_for_main_buffer_unlocked(timeout_ms, bufnr)
+  M.wait_for("main buffer unlocked", timeout_ms, function()
+    return M.main_buffer_unlocked(bufnr)
+  end)
+  return M.startup_status(bufnr)
+end
+
 function M.tmux(args)
   local command = { "tmux" }
   local explicit_socket = vim.env.ARK_TMUX_SOCKET
