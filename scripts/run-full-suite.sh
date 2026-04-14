@@ -138,6 +138,7 @@ run_e2e_test() {
   local needs_real_init=0
   local needs_open_r_buffer=0
   local requires_blink=0
+  local needs_home_cwd=0
   local -a cmd
 
   test_name=$(basename -- "$test_path")
@@ -159,12 +160,20 @@ run_e2e_test() {
     needs_open_r_buffer=1
   fi
 
+  if [[ "$test_name" == home_directory_buffer_uses_scratch_workspace.lua ]]; then
+    needs_home_cwd=1
+  fi
+
   if [[ "$needs_real_init" -eq 1 ]]; then
     cmd+=("--init" "$real_init")
   fi
 
   if [[ "$needs_open_r_buffer" -eq 1 ]]; then
     cmd+=("--open-r-buffer" "$open_r_buffer")
+  fi
+
+  if [[ "$needs_home_cwd" -eq 1 ]]; then
+    cmd+=("--cwd" "$HOME")
   fi
 
   cmd+=("$test_path")

@@ -201,7 +201,10 @@ local ok, err = pcall(function()
   lsp.start_async(opts_a, buf_a2)
   lsp.start_async(opts_b, buf_b1)
 
-  if #watcher_starts ~= 2 then
+  local watchers_ready = vim.wait(1000, function()
+    return #watcher_starts == 2
+  end, 20, false)
+  if not watchers_ready then
     error("expected one watcher per status file, got " .. vim.inspect(watcher_starts), 0)
   end
 

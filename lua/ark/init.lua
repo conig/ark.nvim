@@ -64,6 +64,10 @@ local function startup_log_path()
     return nil
   end
 
+  if type(tmux.startup_status_authoritative) ~= "function" then
+    return nil
+  end
+
   local status = tmux.startup_status_authoritative(options.tmux)
   if type(status) ~= "table" then
     return nil

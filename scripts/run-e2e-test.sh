@@ -10,6 +10,7 @@ Options:
   --init <path|NONE>        Neovim init to use. Default: NONE
   --timeout <seconds>       Hard timeout for the whole test. Default: 120
   --kill-after <seconds>    Extra grace after timeout before SIGKILL. Default: 10
+  --cwd <path>              Working directory to launch Neovim from
   --open-r-buffer <name>    Create and open a scratch .R file under the run tmpdir
   --keep-artifacts          Keep the run tmpdir on success
   --help                    Show this message
@@ -30,6 +31,8 @@ timeout_secs=120
 kill_after_secs=10
 open_r_buffer=""
 keep_artifacts=0
+test_data_home="${ARK_TEST_DATA_HOME:-/tmp/arktest-data}"
+run_cwd=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -43,6 +46,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --kill-after)
       kill_after_secs="${2:?missing value for --kill-after}"
+      shift 2
+      ;;
+    --cwd)
+      run_cwd="${2:?missing value for --cwd}"
       shift 2
       ;;
     --open-r-buffer)
@@ -89,6 +96,10 @@ if [[ ! -f "$test_script" ]]; then
   fi
 fi
 
+if [[ "$test_script" != /* ]]; then
+  test_script="$(cd -- "$(dirname -- "$test_script")" && pwd)/$(basename -- "$test_script")"
+fi
+
 run_id="${ARK_TEST_RUN_ID:-arktest-$(date +%s)-$$}"
 run_id="${run_id//[^[:alnum:]_-]/_}"
 run_tmpdir="${ARK_TEST_TMPDIR:-/tmp/$run_id}"
@@ -128,8 +139,30 @@ if [[ $# -gt 0 ]]; then
   nvim_args+=("$@")
 fi
 
+if [[ -n "$run_cwd" && ! -d "$run_cwd" && -d "$repo_root/$run_cwd" ]]; then
+  run_cwd="$repo_root/$run_cwd"
+fi
+
+if [[ -n "$run_cwd" && ! -d "$run_cwd" ]]; then
+  echo "Working directory not found: $run_cwd" >&2
+  exit 2
+fi
+
 tmux_cmd() {
   tmux -S "$tmux_socket" "$@"
+}
+
+ensure_test_blink_plugin() {
+  local test_blink_root="${test_data_home}/nvim/lazy/blink.cmp"
+  local default_blink_root="${HOME}/.local/share/nvim/lazy/blink.cmp"
+  local source_blink_root="${ARK_TEST_BLINK_ROOT:-$default_blink_root}"
+
+  if [[ -e "$test_blink_root" || ! -d "$source_blink_root" ]]; then
+    return 0
+  fi
+
+  mkdir -p -- "$(dirname -- "$test_blink_root")"
+  ln -s -- "$source_blink_root" "$test_blink_root"
 }
 
 setup_tmux_server() {
@@ -232,6 +265,11 @@ cleanup() {
 trap 'cleanup $?' EXIT INT TERM
 
 setup_tmux_server
+ensure_test_blink_plugin
+
+if [[ -n "$run_cwd" ]]; then
+  cd -- "$run_cwd"
+fi
 
 cmd=(
   nvim
@@ -260,7 +298,7 @@ env \
   ARK_TMUX_ANCHOR_PANE="$tmux_anchor_pane" \
   TMUX="" \
   TMUX_PANE="" \
-  XDG_DATA_HOME="${ARK_TEST_DATA_HOME:-/tmp/arktest-data}" \
+  XDG_DATA_HOME="$test_data_home" \
   XDG_STATE_HOME="$state_home" \
   setsid \
   timeout --foreground --kill-after="${kill_after_secs}s" "${timeout_secs}s" "${cmd[@]}" \

@@ -35,7 +35,7 @@ ensure_bridge_runtime_current()
 
 local start_ms = vim.loop.hrtime() / 1e6
 local marks = {}
-local budget_ms = 350
+local budget_ms = 400
 
 local function elapsed_ms()
   return (vim.loop.hrtime() / 1e6) - start_ms

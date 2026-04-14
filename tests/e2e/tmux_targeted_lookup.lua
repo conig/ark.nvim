@@ -11,22 +11,32 @@ package.loaded["ark.tmux"] = nil
 local original_system = vim.fn.system
 local commands = {}
 
-vim.fn.system = function(command)
-  commands[#commands + 1] = vim.deepcopy(command)
+local function normalize_tmux_command(command)
+  local normalized = vim.deepcopy(command)
+  if normalized[1] == "tmux" and normalized[2] == "-S" and type(normalized[3]) == "string" then
+    table.remove(normalized, 2)
+    table.remove(normalized, 2)
+  end
+  return normalized
+end
 
-  if type(command) ~= "table" then
-    error("expected tmux invocation to use argv form, got " .. type(command), 0)
+vim.fn.system = function(command)
+  local normalized = normalize_tmux_command(command)
+  commands[#commands + 1] = normalized
+
+  if type(normalized) ~= "table" then
+    error("expected tmux invocation to use argv form, got " .. type(normalized), 0)
   end
 
-  if vim.deep_equal(command, { "tmux", "display-message", "-p", "-t", "%42", "#{pane_id}" }) then
+  if vim.deep_equal(normalized, { "tmux", "display-message", "-p", "-t", "%42", "#{pane_id}" }) then
     return "%42\n"
   end
 
-  if vim.deep_equal(command, { "tmux", "display-message", "-p", "-t", "%42", "#{socket_path}\n#{session_name}" }) then
+  if vim.deep_equal(normalized, { "tmux", "display-message", "-p", "-t", "%42", "#{socket_path}\n#{session_name}" }) then
     return "/tmp/ark.sock\nproject-session\n"
   end
 
-  error("unexpected tmux command: " .. vim.inspect(command), 0)
+  error("unexpected tmux command: " .. vim.inspect(normalized), 0)
 end
 
 local ok, err = pcall(function()

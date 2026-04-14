@@ -45,24 +45,34 @@ local function new_window_id()
   return "@" .. tostring(next_window)
 end
 
+local function normalize_tmux_command(command)
+  local normalized = vim.deepcopy(command)
+  if normalized[1] == "tmux" and normalized[2] == "-S" and type(normalized[3]) == "string" then
+    table.remove(normalized, 2)
+    table.remove(normalized, 2)
+  end
+  return normalized
+end
+
 vim.fn.system = function(command)
   if type(command) ~= "table" then
     error("expected tmux invocation to use argv form, got " .. type(command), 0)
   end
 
-  commands[#commands + 1] = vim.deepcopy(command)
+  local normalized = normalize_tmux_command(command)
+  commands[#commands + 1] = normalized
 
-  if vim.deep_equal(command, { "tmux", "display-message", "-p", "#{pane_id}" }) then
+  if vim.deep_equal(normalized, { "tmux", "display-message", "-p", "#{pane_id}" }) then
     return current_pane .. "\n"
   end
 
-  if command[1] ~= "tmux" then
-    error("unexpected command: " .. vim.inspect(command), 0)
+  if normalized[1] ~= "tmux" then
+    error("unexpected command: " .. vim.inspect(normalized), 0)
   end
 
-  if command[2] == "display-message" and command[3] == "-p" and command[4] == "-t" then
-    local target = command[5]
-    local format = command[6]
+  if normalized[2] == "display-message" and normalized[3] == "-p" and normalized[4] == "-t" then
+    local target = normalized[5]
+    local format = normalized[6]
     if format == "#{pane_id}" then
       if panes[target] and panes[target].exists then
         return target .. "\n"
@@ -99,25 +109,25 @@ vim.fn.system = function(command)
     end
   end
 
-  if command[2] == "split-window" then
+  if normalized[2] == "split-window" then
     local pane_id = new_pane(main_session)
     return pane_id .. "\n" .. socket_path .. "\n" .. main_session .. "\n"
   end
 
-  if command[2] == "new-window" then
+  if normalized[2] == "new-window" then
     local pane_id = new_pane(main_session)
     local window_id = new_window_id()
     return pane_id .. "\n" .. window_id .. "\n" .. socket_path .. "\n" .. main_session .. "\n"
   end
 
-  if command[2] == "break-pane" then
+  if normalized[2] == "break-pane" then
     local source
     local target
-    for index = 1, #command do
-      if command[index] == "-s" then
-        source = command[index + 1]
-      elseif command[index] == "-t" then
-        target = trim_colon(command[index + 1])
+    for index = 1, #normalized do
+      if normalized[index] == "-s" then
+        source = normalized[index + 1]
+      elseif normalized[index] == "-t" then
+        target = trim_colon(normalized[index + 1])
       end
     end
     if not (panes[source] and panes[source].exists and sessions[target]) then
@@ -128,11 +138,11 @@ vim.fn.system = function(command)
     return window_id .. "\n"
   end
 
-  if command[2] == "join-pane" then
+  if normalized[2] == "join-pane" then
     local source
-    for index = 1, #command do
-      if command[index] == "-s" then
-        source = command[index + 1]
+    for index = 1, #normalized do
+      if normalized[index] == "-s" then
+        source = normalized[index + 1]
       end
     end
     if not (panes[source] and panes[source].exists) then
@@ -142,14 +152,14 @@ vim.fn.system = function(command)
     return ""
   end
 
-  if command[2] == "swap-pane" then
+  if normalized[2] == "swap-pane" then
     local source
     local target
-    for index = 1, #command do
-      if command[index] == "-s" then
-        source = command[index + 1]
-      elseif command[index] == "-t" then
-        target = command[index + 1]
+    for index = 1, #normalized do
+      if normalized[index] == "-s" then
+        source = normalized[index + 1]
+      elseif normalized[index] == "-t" then
+        target = normalized[index + 1]
       end
     end
     if not (panes[source] and panes[source].exists and panes[target] and panes[target].exists) then
@@ -161,16 +171,16 @@ vim.fn.system = function(command)
     return ""
   end
 
-  if command[2] == "kill-pane" then
-    local pane_id = command[4]
+  if normalized[2] == "kill-pane" then
+    local pane_id = normalized[4]
     if panes[pane_id] then
       panes[pane_id].exists = false
     end
     return ""
   end
 
-  if command[2] == "kill-session" then
-    local session_name = command[4]
+  if normalized[2] == "kill-session" then
+    local session_name = normalized[4]
     sessions[session_name] = nil
     for _, pane in pairs(panes) do
       if pane.session == session_name and pane.keepalive == true then
@@ -180,7 +190,7 @@ vim.fn.system = function(command)
     return ""
   end
 
-  error("unexpected tmux command: " .. vim.inspect(command), 0)
+  error("unexpected tmux command: " .. vim.inspect(normalized), 0)
 end
 
 local ok, err = pcall(function()
