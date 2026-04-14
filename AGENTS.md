@@ -14,6 +14,31 @@ The target product is:
 
 `ark.nvim` is not a Positron integration, not a Jupyter kernel, and not a notebook runtime.
 
+## Repository Structure
+
+The codebase is organized as a Rust workspace containing multiple crates.
+For `ark.nvim`, the most relevant ones are:
+
+- `ark`: the main upstream crate and the source of most reusable language-analysis code
+- `harp`: Rust wrappers for R objects and interfaces
+- `libr`: bindings to R loaded dynamically
+- `amalthea`: upstream Jupyter / Positron kernel framework retained as reference during refactor
+- `oak_index`: per-file semantic index for R
+- `echo`: toy kernel used for framework testing
+- `stdext`: shared standard-library extensions used by the workspace
+
+### External Dependencies (R Parser)
+
+The `oak_index` and `ark` crates depend on the R parser from `posit-dev/air`,
+pinned by git revision in the workspace `Cargo.toml`. The relevant crates are
+re-exported under `aether_` prefixes:
+
+- `aether_syntax` (`air_r_syntax`): typed CST nodes and syntax kinds
+- `aether_parser` (`air_r_parser`): the parser entrypoint that produces an `RRoot` CST
+
+When looking up AST node variants, syntax kinds, or typed CST behavior, consult
+the `posit-dev/air` repository.
+
 ## Canonical User Workflow
 
 The intended editor workflow is:

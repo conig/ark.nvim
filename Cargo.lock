@@ -343,7 +343,7 @@ checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
 name = "ark"
-version = "0.1.249"
+version = "0.1.250"
 dependencies = [
  "actix-web",
  "aether_lsp_utils",
@@ -2239,6 +2239,16 @@ checksum = "0fac9e2da13b5eb447a6ce3d392f23a29d8694bff781bf03a16cd9ac8697593b"
 dependencies = [
  "hermit-abi 0.2.6",
  "libc",
+]
+
+[[package]]
+name = "oak_index"
+version = "0.1.0"
+dependencies = [
+ "air_r_parser",
+ "air_r_syntax",
+ "biome_rowan",
+ "rustc-hash",
 ]
 
 [[package]]
