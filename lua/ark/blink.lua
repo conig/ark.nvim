@@ -133,20 +133,53 @@ local function absolute_float_position(config)
   return nil
 end
 
+local function window_bounds(win)
+  if type(win) ~= "number" or win == 0 or not vim.api.nvim_win_is_valid(win) then
+    return nil
+  end
+
+  local config = vim.api.nvim_win_get_config(win)
+  local pos = absolute_float_position(config)
+  if not pos then
+    return nil
+  end
+
+  local width = vim.api.nvim_win_get_width(win)
+  local height = vim.api.nvim_win_get_height(win)
+
+  return {
+    top = pos.row,
+    left = pos.col,
+    bottom = pos.row + height,
+    right = pos.col + width,
+  }
+end
+
+local function windows_overlap(lhs, rhs)
+  if lhs == nil or rhs == nil then
+    return false
+  end
+
+  return lhs.left < rhs.right
+    and rhs.left < lhs.right
+    and lhs.top < rhs.bottom
+    and rhs.top < lhs.bottom
+end
+
 local function position_signature_float_away_from_menu(win)
   if type(win) ~= "number" or win == 0 or not vim.api.nvim_win_is_valid(win) then
-    return
+    return false
   end
 
   local menu_win = blink_menu_win()
   if not menu_win or menu_win == win then
-    return
+    return false
   end
 
   local menu_config = vim.api.nvim_win_get_config(menu_win)
   local menu_pos = absolute_float_position(menu_config)
   if not menu_pos then
-    return
+    return false
   end
 
   local menu_width = vim.api.nvim_win_get_width(menu_win)
@@ -189,7 +222,7 @@ local function position_signature_float_away_from_menu(win)
   end
 
   if not target then
-    return
+    return false
   end
 
   vim.api.nvim_win_set_config(win, {
@@ -197,6 +230,37 @@ local function position_signature_float_away_from_menu(win)
     row = math.max(0, target.row),
     col = math.max(0, target.col),
   })
+
+  return true
+end
+
+local function resolve_signature_help_menu_collision(win)
+  if type(win) ~= "number" or win == 0 or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+
+  local menu_win = blink_menu_win()
+  if not menu_win or menu_win == win then
+    return
+  end
+
+  local signature_bounds = window_bounds(win)
+  local menu_bounds = window_bounds(menu_win)
+  if not windows_overlap(signature_bounds, menu_bounds) then
+    return
+  end
+
+  if position_signature_float_away_from_menu(win) then
+    signature_bounds = window_bounds(win)
+    menu_win = blink_menu_win()
+    menu_bounds = window_bounds(menu_win)
+    if not windows_overlap(signature_bounds, menu_bounds) then
+      return
+    end
+  end
+
+  -- If there isn't room for both floats, preserve the signature help.
+  hide_visible_blink_menu()
 end
 
 local function ark_provider(base_provider, overrides)
@@ -519,7 +583,7 @@ function M.patch_blink_menu_for_signature_help()
     local signature_win = current_signature_help_win()
     if signature_win ~= nil and in_ark_filetype(bufnr) then
       vim.schedule(function()
-        position_signature_float_away_from_menu(signature_win)
+        resolve_signature_help_menu_collision(signature_win)
       end)
     end
     return result
@@ -550,7 +614,7 @@ function M.patch_signature_help_float()
       active_signature_help_win = fwin
       vim.schedule(function()
         close_blink_docs()
-        position_signature_float_away_from_menu(fwin)
+        resolve_signature_help_menu_collision(fwin)
       end)
     end
     return fbuf, fwin
