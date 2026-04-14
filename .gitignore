@@ -10,3 +10,7 @@ packages/arkbridge/src/*.o
 packages/arkbridge/src/*.so
 packages/arkbridge/src/symbols.rds
 /.nvimlog
+/testing/readme-minimal/cache
+/testing/readme-minimal/data
+/testing/readme-minimal/lazy-lock.json
+/testing/readme-minimal/state

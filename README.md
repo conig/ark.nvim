@@ -99,6 +99,9 @@ You need:
 - `tmux`, and Neovim must itself be running inside tmux
 - `R >= 4.2`
 - the R package `jsonlite`
+- the Tree-sitter parsers needed by `nvim-slimetree` for send-current mappings
+  such as normal-mode `<CR>` and `<leader><CR>`; at minimum, `.R` buffers need
+  the `r` parser
 - a Rust toolchain capable of building the workspace (`rust-version = 1.94`)
 
 The repo defaults to the `stable` Rust channel. If your installed `stable`
@@ -116,12 +119,88 @@ install.packages("jsonlite")
 
 ## Installation
 
-The simplest `lazy.nvim` setup is to let the plugin build `ark-lsp` inside its own checkout, then let `ark.nvim` find `target/debug/ark-lsp` automatically.
+The minimal recommended `lazy.nvim` setup keeps:
+
+- `blink.cmp` as the completion UI using its normal `lsp` source
+- `nvim-autopairs` for delimiter pairing, with `map_cr = false`
+- `nvim-slimetree` plus `vim-slime` as the send path from buffer to REPL
+- `ark.nvim` as the pane/LSP/session layer
+
+The simplest version is to let the plugin build `ark-lsp` inside its own checkout, then let `ark.nvim` find `target/debug/ark-lsp` automatically.
 
 If you already run another R LSP such as `r_language_server`, disable it for `r`, `rmd`, `qmd`, and `quarto` first. `ark.nvim` is meant to be the only R LSP client for those buffers.
 
+This recommended setup also includes the basic send-code mappings through
+`nvim-slimetree`:
+
+- Normal `<CR>` sends the current R form
+- Normal `<leader><CR>` sends the current R form and keeps the cursor in place
+- Normal `<C-c><C-c>` sends the current line
+- Visual `<CR>` sends the selected region
+
+The first two are Tree-sitter-based chunk/form sends, so they need the relevant
+parser(s) installed. `<C-c><C-c>` is the simpler current-line send.
+
+This recommended config uses `nvim-slimetree` as the send layer and `vim-slime`
+as the transport into the managed tmux pane.
+
+If you are not already starting Tree-sitter for these buffers elsewhere in your
+config, add the minimal startup glue before the plugin spec:
+
+```lua
+local shared_site = vim.fs.normalize(vim.fn.expand("~/.local/share/nvim/site"))
+if vim.fn.isdirectory(shared_site) == 1 then
+  vim.opt.runtimepath:prepend(shared_site)
+end
+
+vim.treesitter.language.register("markdown", "rmd")
+vim.treesitter.language.register("markdown", "qmd")
+vim.treesitter.language.register("markdown", "quarto")
+
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = { "r", "rmd", "qmd", "quarto" },
+  callback = function(args)
+    local lang = vim.treesitter.language.get_lang(vim.bo[args.buf].filetype)
+      or vim.bo[args.buf].filetype
+    pcall(vim.treesitter.start, args.buf, lang)
+  end,
+})
+```
+
+The `runtimepath` prepend is mainly important when you run an isolated config or
+override `XDG_DATA_HOME`; it makes sure Neovim can still see parsers installed
+under `~/.local/share/nvim/site/parser/`.
+
 ```lua
 return {
+  {
+    "Saghen/blink.cmp",
+    ft = { "r", "rmd", "qmd", "quarto" },
+    config = function()
+      require("blink.cmp").setup({
+        fuzzy = {
+          implementation = "lua",
+        },
+        completion = {
+          documentation = {
+            auto_show = true,
+          },
+        },
+        sources = {
+          default = { "lsp", "path", "buffer" },
+        },
+      })
+    end,
+  },
+  {
+    "windwp/nvim-autopairs",
+    ft = { "r", "rmd", "qmd", "quarto" },
+    config = function()
+      require("nvim-autopairs").setup({
+        map_cr = false,
+      })
+    end,
+  },
   {
     "jpalardy/vim-slime",
     ft = { "r", "rmd", "qmd", "quarto" },
@@ -137,6 +216,10 @@ return {
     dependencies = { "jpalardy/vim-slime" },
     config = function()
       require("nvim-slimetree").setup({
+        transport = {
+          backend = "slime",
+          async = true,
+        },
         gootabs = {
           enabled = false,
         },
@@ -164,6 +247,7 @@ return {
     "conig/ark.nvim",
     ft = { "r", "rmd", "qmd", "quarto" },
     dependencies = {
+      "Saghen/blink.cmp",
       "jpalardy/vim-slime",
       "conig/nvim-slimetree",
     },
@@ -256,6 +340,21 @@ For extra ambient-user-config coverage, override the init explicitly:
 ```sh
 ./scripts/run-full-suite.sh --init ~/.config/nvim/init.lua
 ```
+
+To exercise the README-recommended minimal config directly, use:
+
+```sh
+./scripts/start-readme-test-nvim.sh
+```
+
+For a headless smoke run of that same config, use:
+
+```sh
+./scripts/smoke-readme-test-config.sh
+```
+
+That harness lives under `testing/readme-minimal/` and uses the same Blink +
+`nvim-slimetree` + `vim-slime` + `ark.nvim` stack documented above.
 
 ## Defaults
 

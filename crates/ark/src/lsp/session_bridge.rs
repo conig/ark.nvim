@@ -1069,6 +1069,10 @@ impl SessionBridge {
         call_node: &Node,
         pipe_root_expr: Option<&str>,
     ) -> anyhow::Result<Option<String>> {
+        if !call_argument_contains_point(call_node, context.point) {
+            return Ok(None);
+        }
+
         let Some(callee) = call_node.child_by_field_name("function") else {
             return Ok(None);
         };
@@ -2740,7 +2744,7 @@ fn completion_request_from_search_path(
     let prefix = symbol_prefix(context)?;
     if prefix.is_none() {
         match context.trigger.as_deref() {
-            None | Some(" ") => return Ok(None),
+            None | Some(" ") | Some(",") => return Ok(None),
             _ => {},
         }
     }
@@ -2977,6 +2981,26 @@ fn call_arguments(contents: &str, call_node: &Node) -> anyhow::Result<Vec<CallAr
     }
 
     Ok(values)
+}
+
+fn call_argument_contains_point(call_node: &Node, point: Point) -> bool {
+    let Some(arguments) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+
+    let mut cursor = arguments.walk();
+    for argument in arguments.children_by_field_name("argument", &mut cursor) {
+        let Some(value) = argument.child_by_field_name("value") else {
+            continue;
+        };
+
+        let range = value.range();
+        if point.is_after_or_equal(range.start_point) && point.is_before_or_equal(range.end_point) {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
