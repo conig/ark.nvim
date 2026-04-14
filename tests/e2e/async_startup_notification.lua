@@ -8,11 +8,14 @@ local current_status = {
   status = "pending",
   repl_ready = false,
 }
+local bridge_env_calls = 0
+local startup_snapshot_calls = 0
 
 vim.fn.writefile({ vim.json.encode(current_status) }, status_path)
 
 package.loaded["ark.tmux"] = {
   bridge_env = function()
+    bridge_env_calls = bridge_env_calls + 1
     return {
       ARK_SESSION_KIND = "ark",
       ARK_SESSION_STATUS_FILE = status_path,
@@ -29,7 +32,32 @@ package.loaded["ark.tmux"] = {
       tmux_pane = "%1",
     }
   end,
+  startup_snapshot = function()
+    startup_snapshot_calls = startup_snapshot_calls + 1
+    return {
+      bridge_ready = false,
+      session = {
+        tmux_socket = "/tmp/ark-test.sock",
+        tmux_session = "ark-test",
+        tmux_pane = "%1",
+      },
+      startup_status = vim.deepcopy(current_status),
+      authoritative_status = vim.deepcopy(current_status),
+      status_path = status_path,
+      cmd_env = {
+        ARK_SESSION_KIND = "ark",
+        ARK_SESSION_STATUS_FILE = status_path,
+        ARK_SESSION_TMUX_SOCKET = "/tmp/ark-test.sock",
+        ARK_SESSION_TMUX_SESSION = "ark-test",
+        ARK_SESSION_TMUX_PANE = "%1",
+        ARK_SESSION_TIMEOUT_MS = "1000",
+      },
+    }
+  end,
   startup_status = function()
+    return vim.deepcopy(current_status)
+  end,
+  startup_status_authoritative = function()
     return vim.deepcopy(current_status)
   end,
   startup_status_path = function()
@@ -124,9 +152,17 @@ local ok, err = pcall(function()
     error("expected exactly one initial LSP start, saw " .. #started, 0)
   end
 
+  if bridge_env_calls ~= 0 then
+    error("expected async startup to avoid synchronous tmux.bridge_env(), got " .. tostring(bridge_env_calls), 0)
+  end
+
+  if startup_snapshot_calls ~= 0 then
+    error("expected async startup to avoid synchronous tmux.startup_snapshot(), got " .. tostring(startup_snapshot_calls), 0)
+  end
+
   local initial_env = started[1].cmd_env or {}
-  if initial_env.ARK_SESSION_STATUS_FILE ~= status_path then
-    error("expected detached LSP to receive session discovery env, got " .. vim.inspect(initial_env), 0)
+  if next(initial_env) ~= nil then
+    error("expected async startup to launch a static detached LSP before session sync, got " .. vim.inspect(initial_env), 0)
   end
 
   local notified_pending = vim.wait(1000, function()
