@@ -1,4 +1,5 @@
 local blink = require("ark.blink")
+local bridge = require("ark.bridge")
 local config = require("ark.config")
 local dev = require("ark.dev")
 local lsp = require("ark.lsp")
@@ -727,6 +728,14 @@ local function ensure_runtime_ready(bufnr, label)
 
   lsp.start(options, bufnr)
 
+  local bridge_ok, bridge_err = ensure_bridge_runtime({
+    user_initiated = true,
+    wait_on_pending = true,
+  })
+  if not bridge_ok then
+    return nil, bridge_err
+  end
+
   local _, pane_err = tmux.start(options)
   if pane_err then
     return nil, pane_err
@@ -760,6 +769,58 @@ local function ensure_setup()
   if not did_setup then
     M.setup({})
   end
+end
+
+local function ensure_bridge_runtime(bridge_opts)
+  bridge_opts = bridge_opts or {}
+  if not options or type(options.tmux) ~= "table" then
+    return true
+  end
+
+  local completed = nil
+  local ok, err = bridge.ensure_current_runtime(options.tmux, {
+    on_build_complete = function(result)
+      completed = result
+      if type(bridge_opts.on_build_complete) == "function" then
+        bridge_opts.on_build_complete(result)
+      end
+    end,
+    user_initiated = bridge_opts.user_initiated == true,
+  })
+  if ok then
+    return true
+  end
+
+  local message = type(err) == "table" and err.message or err
+  if bridge_opts.wait_on_pending == true and type(err) == "table" and err.kind == "build_pending" then
+    local timeout_ms = tonumber(bridge_opts.timeout_ms or 20000) or 20000
+    local waited = vim.wait(timeout_ms, function()
+      return type(completed) == "table"
+    end, 50, false)
+    local failure_message = (type(completed) == "table" and completed.error) or message
+    if not waited or completed.ok ~= true then
+      if bridge_opts.notify ~= false and type(failure_message) == "string" and failure_message ~= "" then
+        notify(failure_message, vim.log.levels.ERROR)
+      end
+      return nil, failure_message
+    end
+
+    local retry_ok, retry_err = ensure_bridge_runtime(vim.tbl_extend("force", bridge_opts, {
+      wait_on_pending = false,
+      on_build_complete = nil,
+      notify = false,
+    }))
+    if not retry_ok and bridge_opts.notify ~= false and type(retry_err) == "string" and retry_err ~= "" then
+      notify(retry_err, vim.log.levels.ERROR)
+    end
+    return retry_ok, retry_err
+  end
+
+  if bridge_opts.notify ~= false and type(message) == "string" and message ~= "" then
+    notify(message, bridge_opts.pending_level or vim.log.levels.INFO)
+  end
+
+  return nil, message
 end
 
 local function sync_sessions_soon()
@@ -810,6 +871,22 @@ local function start_managed_buffer(bufnr)
     lsp.start_async(options, bufnr)
   end
 
+  local function start_pane_and_sync()
+    if not can_start_buffer() then
+      return
+    end
+
+    local _, pane_err = tmux.start(options)
+    if pane_err then
+      notify(pane_err, vim.log.levels.WARN)
+      return
+    end
+
+    if options.auto_start_lsp and (options.auto_start_pane or not options.async_startup) then
+      start_sync_lsp_later()
+    end
+  end
+
   local function start_buffer()
     if not can_start_buffer() then
       return
@@ -818,16 +895,25 @@ local function start_managed_buffer(bufnr)
     prewarm_lsp()
 
     if options.auto_start_pane then
-      local _, pane_err = tmux.start(options)
-      if pane_err then
-        notify(pane_err, vim.log.levels.WARN)
+      local bridge_ok = ensure_bridge_runtime({
+        on_build_complete = function(result)
+          if type(result) ~= "table" or result.ok ~= true then
+            return
+          end
+
+          vim.schedule(function()
+            start_pane_and_sync()
+          end)
+        end,
+      })
+      if bridge_ok then
+        start_pane_and_sync()
       end
+      return
     end
 
-    if options.auto_start_lsp then
-      if options.auto_start_pane or not options.async_startup then
-        start_sync_lsp_later()
-      end
+    if options.auto_start_lsp and not options.async_startup then
+      start_sync_lsp_later()
     end
   end
 
@@ -925,6 +1011,13 @@ function M.setup(opts)
     end
   end, { desc = "Rebuild the detached ark-lsp binary used by ark.nvim" })
 
+  vim.api.nvim_create_user_command("ArkBuildBridge", function()
+    local ok, err = bridge.build_session_runtime(options.tmux, {})
+    if not ok then
+      notify(err, vim.log.levels.ERROR)
+    end
+  end, { desc = "Rebuild the pane-side arkbridge runtime used by ark.nvim" })
+
   return options
 end
 
@@ -953,6 +1046,13 @@ end
 function M.start_pane()
   ensure_setup()
   prewarm_current_buffer_lsp()
+  local bridge_ok, bridge_err = ensure_bridge_runtime({
+    user_initiated = true,
+    wait_on_pending = true,
+  })
+  if not bridge_ok then
+    return nil, bridge_err
+  end
   local pane_id, err = tmux.start(options)
   if not pane_id then
     notify(err, vim.log.levels.ERROR)
@@ -965,6 +1065,13 @@ end
 
 function M.new_tab()
   ensure_setup()
+  local bridge_ok, bridge_err = ensure_bridge_runtime({
+    user_initiated = true,
+    wait_on_pending = true,
+  })
+  if not bridge_ok then
+    return nil, bridge_err
+  end
   local pane_id, err = tmux.tab_new(options)
   if not pane_id then
     notify(err, vim.log.levels.ERROR)
@@ -1040,6 +1147,13 @@ end
 
 function M.restart_pane()
   ensure_setup()
+  local bridge_ok, bridge_err = ensure_bridge_runtime({
+    user_initiated = true,
+    wait_on_pending = true,
+  })
+  if not bridge_ok then
+    return nil, bridge_err
+  end
   local pane_id, err = tmux.restart(options)
   if not pane_id then
     notify(err, vim.log.levels.ERROR)
@@ -1090,6 +1204,15 @@ local function show_help_page(bufnr, topic)
     end
   end
 
+  local bridge_ok, bridge_err = ensure_bridge_runtime({
+    user_initiated = true,
+    wait_on_pending = true,
+  })
+  if not bridge_ok then
+    notify(bridge_err, vim.log.levels.ERROR)
+    return nil, bridge_err
+  end
+
   local _, pane_err = tmux.start(options)
   if pane_err then
     notify(pane_err, vim.log.levels.ERROR)
@@ -1137,6 +1260,15 @@ function M.help_pane(bufnr)
   if not topic then
     notify(topic_err or "no help topic found", vim.log.levels.WARN)
     return nil, topic_err
+  end
+
+  local bridge_ok, bridge_err = ensure_bridge_runtime({
+    user_initiated = true,
+    wait_on_pending = true,
+  })
+  if not bridge_ok then
+    notify(bridge_err, vim.log.levels.ERROR)
+    return nil, bridge_err
   end
 
   local pane_id, pane_err = tmux.start(options)
@@ -1219,9 +1351,12 @@ function M.refresh(bufnr)
   ensure_setup()
 
   if options.auto_start_pane then
-    local _, pane_err = tmux.start(options)
-    if pane_err then
-      notify(pane_err, vim.log.levels.WARN)
+    local bridge_ok = ensure_bridge_runtime({})
+    if bridge_ok then
+      local _, pane_err = tmux.start(options)
+      if pane_err then
+        notify(pane_err, vim.log.levels.WARN)
+      end
     end
   end
 
@@ -1236,6 +1371,11 @@ end
 function M.build_lsp()
   ensure_setup()
   return dev.build_detached_lsp()
+end
+
+function M.build_bridge()
+  ensure_setup()
+  return bridge.build_session_runtime(options.tmux, {})
 end
 
 function M.status(opts)

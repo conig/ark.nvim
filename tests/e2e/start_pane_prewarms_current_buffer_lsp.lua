@@ -17,6 +17,14 @@ package.loaded["ark.blink"] = {
 }
 package.loaded["ark.snippets"] = {}
 package.loaded["ark.view"] = {}
+package.loaded["ark.bridge"] = {
+  ensure_current_runtime = function()
+    return true
+  end,
+  build_session_runtime = function()
+    return true
+  end,
+}
 
 local lsp_calls = {}
 local sync_calls = 0

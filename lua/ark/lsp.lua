@@ -20,9 +20,9 @@ local VIEW_EXPORT_METHOD = "ark/internal/viewExport"
 local VIEW_CELL_METHOD = "ark/internal/viewCell"
 local VIEW_CLOSE_METHOD = "ark/internal/viewClose"
 
-local session_watchers = {}
-local session_watch_cleanup = {}
-local session_watch_polls = {}
+local session_watches = {}
+local buffer_watch_cleanup = {}
+local buffer_watch_keys = {}
 local client_session_payloads = {}
 local client_status_payloads = {}
 local client_status_attempt_ms = {}
@@ -248,6 +248,22 @@ local function named_clients(opts, bufnr)
   })
 end
 
+local function clients_for_buffers(opts, bufnrs, match_opts)
+  local clients = {}
+  local seen = {}
+
+  for _, bufnr in ipairs(bufnrs or {}) do
+    for _, client in ipairs(session_clients(opts, bufnr, match_opts)) do
+      if not seen[client.id] then
+        clients[#clients + 1] = client
+        seen[client.id] = true
+      end
+    end
+  end
+
+  return clients
+end
+
 local function wait_for_live_client(client_id, timeout_ms)
   if not client_id then
     return nil
@@ -297,13 +313,6 @@ local function close_handle(handle)
   pcall(handle.close, handle)
 end
 
-local function stop_session_watch(bufnr)
-  close_handle(session_watchers[bufnr])
-  session_watchers[bufnr] = nil
-  session_watch_cleanup[bufnr] = nil
-  session_watch_polls[bufnr] = nil
-end
-
 local function session_buffers(opts)
   local buffers = {}
 
@@ -316,17 +325,92 @@ local function session_buffers(opts)
   return buffers
 end
 
-local function ensure_session_watch_cleanup(bufnr)
-  if session_watch_cleanup[bufnr] or not vim.api.nvim_buf_is_valid(bufnr) then
+local function watch_has_buffers(watch)
+  if type(watch) ~= "table" then
+    return false
+  end
+
+  for bufnr, _ in pairs(watch.bufnrs or {}) do
+    if vim.api.nvim_buf_is_valid(bufnr) and buffer_watch_keys[bufnr] == watch.key then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function stop_session_watch(key)
+  local watch = session_watches[key]
+  if type(watch) ~= "table" then
     return
   end
 
-  session_watch_cleanup[bufnr] = true
+  close_handle(watch.watcher)
+  watch.watcher = nil
+  watch.poll_token = nil
+
+  for bufnr, _ in pairs(watch.bufnrs or {}) do
+    if buffer_watch_keys[bufnr] == key then
+      buffer_watch_keys[bufnr] = nil
+    end
+  end
+
+  session_watches[key] = nil
+end
+
+local function detach_buffer_watch(bufnr)
+  local key = buffer_watch_keys[bufnr]
+  buffer_watch_keys[bufnr] = nil
+  buffer_watch_cleanup[bufnr] = nil
+
+  if type(key) ~= "string" or key == "" then
+    return
+  end
+
+  local watch = session_watches[key]
+  if type(watch) ~= "table" then
+    return
+  end
+
+  watch.bufnrs[bufnr] = nil
+  if not watch_has_buffers(watch) then
+    stop_session_watch(key)
+  end
+end
+
+local function attach_buffer_watch(status_path, bufnr)
+  local current_key = buffer_watch_keys[bufnr]
+  if current_key and current_key ~= status_path then
+    detach_buffer_watch(bufnr)
+  end
+
+  local watch = session_watches[status_path]
+  if type(watch) ~= "table" then
+    watch = {
+      key = status_path,
+      bufnrs = {},
+      watcher = nil,
+      poll_token = nil,
+    }
+    session_watches[status_path] = watch
+  end
+
+  watch.bufnrs[bufnr] = true
+  buffer_watch_keys[bufnr] = status_path
+  return watch
+end
+
+local function ensure_session_watch_cleanup(bufnr)
+  if buffer_watch_cleanup[bufnr] or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+
+  buffer_watch_cleanup[bufnr] = true
   vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
     buffer = bufnr,
     once = true,
     callback = function()
-      stop_session_watch(bufnr)
+      detach_buffer_watch(bufnr)
     end,
   })
 end
@@ -537,8 +621,54 @@ local function notify_sessions(opts, bufnr, payload)
   end
 end
 
+local function notify_watch_sessions(opts, watch, payload)
+  if type(watch) ~= "table" then
+    return
+  end
+
+  local bufnrs = {}
+  for bufnr, _ in pairs(watch.bufnrs or {}) do
+    if vim.api.nvim_buf_is_valid(bufnr) and buffer_watch_keys[bufnr] == watch.key then
+      bufnrs[#bufnrs + 1] = bufnr
+    end
+  end
+
+  local clients = clients_for_buffers(opts, bufnrs)
+  local normalized = payload or session_payload(opts, { fast = true })
+  for _, client in ipairs(clients) do
+    notify_client_session(client, normalized)
+  end
+end
+
 local function session_payload_delivered(opts, bufnr, payload)
   local clients = session_clients(opts, bufnr)
+  if #clients == 0 then
+    return false
+  end
+
+  local normalized = payload or {}
+  for _, client in ipairs(clients) do
+    if not vim.deep_equal(client_session_payloads[client.id] or {}, normalized) then
+      return false
+    end
+  end
+
+  return true
+end
+
+local function watch_payload_delivered(opts, watch, payload)
+  if type(watch) ~= "table" then
+    return false
+  end
+
+  local bufnrs = {}
+  for bufnr, _ in pairs(watch.bufnrs or {}) do
+    if vim.api.nvim_buf_is_valid(bufnr) and buffer_watch_keys[bufnr] == watch.key then
+      bufnrs[#bufnrs + 1] = bufnr
+    end
+  end
+
+  local clients = clients_for_buffers(opts, bufnrs)
   if #clients == 0 then
     return false
   end
@@ -673,69 +803,93 @@ session_poll_finished = function(opts, bufnr, payload)
   return payload.status == "ready" and session_payload_delivered(opts, bufnr, payload)
 end
 
+local function watch_poll_finished(opts, watch, payload)
+  return payload.status == "ready" and watch_payload_delivered(opts, watch, payload)
+end
+
 local function ensure_session_watch(opts, bufnr, payload, watch_opts)
   bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   watch_opts = watch_opts or {}
   if not vim.api.nvim_buf_is_valid(bufnr) then
-    stop_session_watch(bufnr)
-    return
+    detach_buffer_watch(bufnr)
+    return nil
   end
   if not filetype_enabled(opts.filetypes, vim.bo[bufnr].filetype) then
-    stop_session_watch(bufnr)
-    return
+    detach_buffer_watch(bufnr)
+    return nil
   end
 
   local current_payload = payload or session_payload(opts, { fast = true })
+  local status_path = current_payload.statusFile
+  if type(status_path) ~= "string" or status_path == "" then
+    detach_buffer_watch(bufnr)
+    return nil
+  end
+
+  local watch = attach_buffer_watch(status_path, bufnr)
+  ensure_session_watch_cleanup(bufnr)
+
   if watch_opts.notify_immediately ~= false then
-    notify_sessions(opts, nil, current_payload)
+    notify_watch_sessions(opts, watch, current_payload)
   end
 
   if session_watch_finished(opts, bufnr, current_payload) then
-    stop_session_watch(bufnr)
-    return
+    stop_session_watch(watch.key)
+    return watch
   end
 
-  local status_path = current_payload.statusFile
-  if type(status_path) ~= "string" or status_path == "" then
-    stop_session_watch(bufnr)
-    return
-  end
-
-  if not session_watchers[bufnr] then
+  if not watch.watcher then
+    local watch_key = watch.key
     local watcher = watch_status_file(status_path, function()
+      local current_watch = session_watches[watch_key]
+      if type(current_watch) ~= "table" then
+        return
+      end
+
       local current = session_payload(opts, { fast = true })
-      notify_sessions(opts, nil, current)
-      if session_watch_finished(opts, bufnr, current) then
-        stop_session_watch(bufnr)
+      if current.statusFile ~= watch_key then
+        stop_session_watch(watch_key)
+        return
+      end
+
+      notify_watch_sessions(opts, current_watch, current)
+      if session_watch_finished(opts, nil, current) then
+        stop_session_watch(watch_key)
+      elseif watch_poll_finished(opts, current_watch, current) then
+        current_watch.poll_token = nil
       end
     end)
     if watcher then
-      session_watchers[bufnr] = watcher
+      watch.watcher = watcher
     end
   end
 
-  if session_watch_polls[bufnr] ~= nil then
-    ensure_session_watch_cleanup(bufnr)
-    return
+  if watch.poll_token ~= nil then
+    return watch
   end
 
-  local token = (session_watch_polls[bufnr] or 0) + 1
-  session_watch_polls[bufnr] = token
+  local token = (tonumber(watch.poll_token) or 0) + 1
+  watch.poll_token = token
 
   local function poll()
-    if session_watch_polls[bufnr] ~= token then
+    local current_watch = session_watches[status_path]
+    if type(current_watch) ~= "table" or current_watch.poll_token ~= token then
       return
     end
 
     local current = session_payload(opts, { fast = true })
-    notify_sessions(opts, nil, current)
-    if session_watch_finished(opts, bufnr, current) then
-      stop_session_watch(bufnr)
+    if current.statusFile ~= status_path then
+      stop_session_watch(status_path)
       return
     end
-    if session_poll_finished(opts, bufnr, current) then
-      session_watch_polls[bufnr] = nil
-      ensure_session_watch_cleanup(bufnr)
+
+    notify_watch_sessions(opts, current_watch, current)
+    if session_watch_finished(opts, nil, current) then
+      stop_session_watch(status_path)
+      return
+    end
+    if watch_poll_finished(opts, current_watch, current) then
+      current_watch.poll_token = nil
       return
     end
 
@@ -743,7 +897,7 @@ local function ensure_session_watch(opts, bufnr, payload, watch_opts)
   end
 
   vim.defer_fn(poll, 250)
-  ensure_session_watch_cleanup(bufnr)
+  return watch
 end
 
 function M.config(opts, bufnr, _config_opts)
@@ -918,11 +1072,17 @@ function M.sync_sessions(opts, bufnr, sync_opts)
     return
   end
 
+  local touched_watches = {}
   for _, buffer in ipairs(session_buffers(opts)) do
-    ensure_session_watch(opts, buffer, payload)
+    local watch = ensure_session_watch(opts, buffer, payload)
+    if type(watch) == "table" then
+      touched_watches[watch.key] = watch
+    end
   end
 
-  notify_sessions(opts, nil, payload)
+  for _, watch in pairs(touched_watches) do
+    notify_watch_sessions(opts, watch, payload)
+  end
 end
 
 function M.refresh(opts, bufnr)

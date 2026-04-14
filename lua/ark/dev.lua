@@ -10,7 +10,13 @@ end
 local ROOT = repo_root()
 local BUILD_CMD = { "cargo", "build", "-p", "ark", "--bin", "ark-lsp" }
 local SPINNER_FRAMES = { "[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]" }
+local SOURCE_SCAN_CACHE_TTL_MS = 1000
 local checked = {}
+local source_scan_cache = {
+  checked_ms = 0,
+  newest_mtime = nil,
+  newest_path = nil,
+}
 local build_state = {
   listeners = {},
   notify_id = nil,
@@ -75,6 +81,11 @@ local function rust_source_paths()
 end
 
 local function newest_source_mtime()
+  local now = math.floor((((uv and uv.hrtime) and uv.hrtime()) or vim.loop.hrtime()) / 1e6)
+  if now - (tonumber(source_scan_cache.checked_ms) or 0) < SOURCE_SCAN_CACHE_TTL_MS then
+    return source_scan_cache.newest_mtime, source_scan_cache.newest_path
+  end
+
   local newest_mtime = 0
   local newest_path = nil
 
@@ -86,6 +97,9 @@ local function newest_source_mtime()
     end
   end
 
+  source_scan_cache.checked_ms = now
+  source_scan_cache.newest_mtime = newest_mtime
+  source_scan_cache.newest_path = newest_path
   return newest_mtime, newest_path
 end
 
@@ -248,6 +262,7 @@ local function finish_build(result)
 
   if result.ok then
     checked = {}
+    source_scan_cache.checked_ms = 0
     local ms = elapsed_ms()
     local suffix = ms and string.format(" in %d ms", ms) or ""
     if not background or user_initiated then

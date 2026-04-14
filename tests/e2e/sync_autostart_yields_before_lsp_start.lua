@@ -3,6 +3,15 @@ vim.opt.rtp:prepend(vim.fn.getcwd())
 local bufnr = vim.api.nvim_get_current_buf()
 vim.bo[bufnr].filetype = "r"
 
+package.loaded["ark.bridge"] = {
+  ensure_current_runtime = function()
+    return true
+  end,
+  build_session_runtime = function()
+    return true
+  end,
+}
+
 local ark = require("ark")
 local lsp = require("ark.lsp")
 local tmux = require("ark.tmux")

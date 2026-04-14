@@ -53,6 +53,8 @@ function M.defaults()
     vim.env.ARK_NVIM_LAUNCHER,
     root .. "/scripts/ark-r-launcher.sh"
   )) or (root .. "/scripts/ark-r-launcher.sh")
+  local session_lib_path = expand_candidate(vim.env.ARK_NVIM_SESSION_LIB)
+    or (vim.fn.stdpath("data") .. "/ark/r-lib")
 
   local session_kind = vim.env.ARK_NVIM_SESSION_KIND or "ark"
 
@@ -82,7 +84,7 @@ function M.defaults()
       session_kind = session_kind,
       startup_status_dir = vim.env.ARK_STATUS_DIR or ((vim.fn.stdpath("state") or "/tmp") .. "/ark-status"),
       session_pkg_path = root .. "/packages/arkbridge",
-      session_lib_path = vim.env.ARK_NVIM_SESSION_LIB,
+      session_lib_path = session_lib_path,
       bridge_wait_ms = 5000,
       session_timeout_ms = 1000,
     },

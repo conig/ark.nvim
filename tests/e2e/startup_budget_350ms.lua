@@ -1,3 +1,36 @@
+local function ensure_bridge_runtime_current()
+  local bridge = require("ark.bridge")
+  local config = require("ark.config").defaults().tmux
+  local completed = nil
+  local ok, err = bridge.ensure_current_runtime(config, {
+    on_build_complete = function(result)
+      completed = result
+    end,
+    user_initiated = true,
+  })
+  if ok then
+    return
+  end
+
+  if type(err) ~= "table" or err.kind ~= "build_pending" then
+    error("failed to prepare pane-side arkbridge runtime: " .. vim.inspect(err), 0)
+  end
+
+  local ready = vim.wait(30000, function()
+    return type(completed) == "table"
+  end, 50, false)
+  if not ready or completed.ok ~= true then
+    error("timed out waiting for pane-side arkbridge runtime install: " .. vim.inspect(completed or err), 0)
+  end
+
+  local retry_ok, retry_err = bridge.ensure_current_runtime(config, {})
+  if not retry_ok then
+    error("pane-side arkbridge runtime was not current after install: " .. vim.inspect(retry_err), 0)
+  end
+end
+
+ensure_bridge_runtime_current()
+
 local start_ms = vim.loop.hrtime() / 1e6
 local marks = {}
 local budget_ms = 350

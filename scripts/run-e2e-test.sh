@@ -260,6 +260,7 @@ env \
   ARK_TMUX_ANCHOR_PANE="$tmux_anchor_pane" \
   TMUX="" \
   TMUX_PANE="" \
+  XDG_DATA_HOME="${ARK_TEST_DATA_HOME:-/tmp/arktest-data}" \
   XDG_STATE_HOME="$state_home" \
   setsid \
   timeout --foreground --kill-after="${kill_after_secs}s" "${timeout_secs}s" "${cmd[@]}" \

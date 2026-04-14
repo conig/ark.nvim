@@ -48,6 +48,7 @@ function M.check()
   local lsp_bin = defaults.lsp.cmd[1]
   local status_dir = defaults.tmux.startup_status_dir
   local bridge_pkg = defaults.tmux.session_pkg_path
+  local bridge_lib = defaults.tmux.session_lib_path
   local r_bin = vim.env.ARK_NVIM_R_BIN or "R"
 
   report.start("ark.nvim")
@@ -110,6 +111,12 @@ function M.check()
     "Bridge package source is present: " .. bridge_pkg,
     "Bridge package source is missing: " .. bridge_pkg
   )
+
+  if dir_exists(bridge_lib) and dir_exists(bridge_lib .. "/arkbridge") then
+    report.ok("Pane-side `arkbridge` runtime is installed: " .. bridge_lib)
+  else
+    report.info("Pane-side `arkbridge` runtime will be installed into: " .. bridge_lib)
+  end
 
   if dir_exists(status_dir) then
     local files = vim.fn.glob(status_dir .. "/*.json", false, true)
