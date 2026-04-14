@@ -283,14 +283,37 @@ local function wait_for_live_client(client_id, timeout_ms)
   return nil
 end
 
-local function root_dir(bufnr, markers)
-  local path = vim.api.nvim_buf_get_name(bufnr)
-  if path == "" then
-    return vim.loop.cwd()
+local function project_root_for_path(path, markers)
+  if type(path) ~= "string" or path == "" then
+    return nil
   end
 
-  local root = vim.fs.root(path, markers or {})
-  return root or vim.fs.dirname(path) or vim.loop.cwd()
+  return vim.fs.root(path, markers or {})
+end
+
+local function unnamed_workspace_root()
+  local state_root = vim.fn.stdpath("state")
+  if type(state_root) ~= "string" or state_root == "" then
+    state_root = (uv and uv.os_tmpdir and uv.os_tmpdir()) or "/tmp"
+  end
+
+  local scratch_root = vim.fs.normalize(state_root .. "/ark-unnamed-workspace")
+  if vim.fn.isdirectory(scratch_root) ~= 1 then
+    pcall(vim.fn.mkdir, scratch_root, "p")
+  end
+
+  return scratch_root
+end
+
+local function root_dir(bufnr, markers)
+  local path = vim.api.nvim_buf_get_name(bufnr)
+  local cwd = vim.loop.cwd()
+  if path == "" then
+    return project_root_for_path(cwd, markers) or unnamed_workspace_root()
+  end
+
+  local root = project_root_for_path(path, markers)
+  return root or vim.fs.dirname(path) or project_root_for_path(cwd, markers) or unnamed_workspace_root()
 end
 
 local function same_server(lhs, rhs)

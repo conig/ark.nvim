@@ -109,6 +109,10 @@ part of the default supported path.
   plugin configuration.
 - Detached startup can begin immediately and hydrate later through trusted
   status-file data plus bridge bootstrap.
+- Unnamed scratch startup should only reuse the current working directory as
+  the LSP workspace root when that directory resolves to a real project root;
+  otherwise Ark should fall back to a dedicated scratch workspace so starting
+  from `~` does not accidentally widen startup scope.
 - Command-driven startup from an R buffer should prewarm detached `ark-lsp`
   before or alongside managed-pane startup rather than serializing "pane first,
   LSP later".
