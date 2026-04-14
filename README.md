@@ -20,8 +20,11 @@ This repo started as upstream Ark, so it still contains kernel, Positron, and ot
 
 - Neovim R development
 - one managed tmux R pane per Neovim instance
-- standard LSP features such as diagnostics, hover, definitions, references, symbols, and code actions
-- live-session completions, hover, and signatures when the managed R session is available
+- standard LSP features such as diagnostics, completion, hover, signature help,
+  definitions, references, implementations, symbols, folding ranges, selection
+  ranges, and limited code actions
+- live-session completion, hover, signature help, help text, and data-explorer
+  workflows when the managed R session is available
 
 `ark.nvim` is not for:
 
@@ -43,6 +46,50 @@ The intended workflow is:
 5. When the managed R session is ready, `ark-lsp` augments static analysis with live-session intelligence through the bridge runtime.
 
 The important boundary is that the REPL does not live inside the LSP process. `ark.nvim` manages the tmux session, the launcher bootstraps the bridge runtime, and the LSP consumes that session metadata when it starts in detached mode.
+
+## Ark LSP Feature Matrix
+
+The table below reflects the current `ark-lsp` surface in this repository,
+including Ark-specific custom methods used by the Neovim plugin.
+
+| Surface | Status | Notes |
+| --- | --- | --- |
+| Diagnostics | Supported | Syntax diagnostics are available immediately; semantic diagnostics hydrate after detached session state is ready. |
+| Completion | Supported | Static and live-session completion; includes package/library, subset/comparison string, browser-frame, and Rmd/Qmd support. |
+| Completion item resolve | Supported | Completion docs/detail resolution is implemented. |
+| Hover | Supported | Static hover works detached; runtime-aware hover is added when the managed session is available. |
+| Signature help | Supported | Static plus runtime-aware signature help. |
+| Definition | Supported | Workspace-aware static definition lookup. |
+| Implementation | Supported | Advertised and handled by the LSP server. |
+| References | Supported | Workspace-aware static reference lookup. |
+| Document symbols | Supported | Per-document symbol outline is implemented. |
+| Workspace symbols | Supported | Workspace-wide symbol search is implemented. |
+| Folding ranges | Supported | Standard folding range support is advertised. |
+| Selection ranges | Supported | Standard selection range support is advertised. |
+| Code actions | Limited | Exposed only when the client supports code-action literals; current support is intentionally narrow. |
+| On-type formatting | Limited | Newline-triggered indentation support only. |
+| Workspace folders | Supported | Workspace folder support and change notifications are advertised. |
+| File create/delete/rename notifications | Supported | Watches `*.R` file operations for workspace updates. |
+| R Markdown / Quarto fenced chunks | Supported | Completion and diagnostics work in fenced R chunks. |
+| R Markdown / Quarto inline `` `r ...` `` | Supported | Inline R completion is implemented. |
+| `ark/textDocument/helpTopic` | Supported | Ark-native help-topic request used by the plugin help UI. |
+| `ark/textDocument/statementRange` | Supported | Ark-native statement-range request. |
+| `ark/inputBoundaries` | Supported | Ark-native input-boundaries request. |
+| `ark/internal/bootstrapSession` | Supported, internal | Plugin-only detached-session bootstrap path. |
+| `ark/updateSession` | Supported, internal | Plugin notification used to refresh detached session metadata. |
+| `ark/internal/status` | Supported, internal | Plugin status/debug request. |
+| `ark/internal/helpText` | Supported, internal | Plugin request for full help-page text. |
+| `ark/internal/virtualDocument` | Supported, internal | Plugin/internal virtual-document request. |
+| `ark/internal/view*` data explorer RPCs | Supported, internal | Back the `ArkView` live data explorer workflow. |
+| Rename | Not supported | No rename provider is advertised. |
+| Type definition | Not supported | `typeDefinitionProvider` is currently `None`. |
+| Declaration | Not supported | No declaration provider is advertised. |
+| Document formatting / range formatting | Not supported | Only on-type formatting is implemented. |
+| Semantic tokens | Not supported | No semantic tokens provider is advertised. |
+| Inlay hints | Not supported | No inlay hint provider is advertised. |
+| Call hierarchy | Not supported | No call hierarchy provider is advertised. |
+| Code lens | Not supported | No code lens provider is advertised. |
+| Public execute commands | Not supported | The server advertises an empty execute-command list. |
 
 ## Prerequisites
 
@@ -171,16 +218,23 @@ The plugin defines:
 - `:ArkLspStart`
 - `:ArkHelp`
 - `:ArkHelpPane`
+- `:ArkView`
+- `:ArkViewRefresh`
+- `:ArkViewClose`
+- `:ArkSnippets`
 - `:ArkRefresh`
 - `:ArkStatus`
 - `:ArkPaneCommand`
 - `:ArkBuildLsp`
+- `:ArkBuildBridge`
 
 Useful ones in practice:
 
 - `:ArkStatus` prints the current pane, launcher, and bridge state
 - `:ArkRefresh` restarts the current buffer's LSP client using current session metadata
 - `:ArkHelp` opens a read-only floating help page for the symbol under cursor
+- `:ArkView` opens the live data explorer for an expression or the symbol under cursor
+- `:ArkSnippets` opens the explicit Ark snippets picker
 - `:ArkPaneCommand` prints the exact launcher command used for the managed pane
 - `:checkhealth ark` reports install/runtime prerequisites without starting a session
 
@@ -274,6 +328,7 @@ The main overrides are:
 - `ARK_NVIM_LSP_BIN`
 - `ARK_NVIM_LAUNCHER`
 - `ARK_NVIM_SESSION_LIB` (optional override for a dedicated bridge library)
+- `ARK_NVIM_SESSION_KIND`
 - `ARK_NVIM_SESSION_PKG_PATH`
 - `ARK_STATUS_DIR`
 
