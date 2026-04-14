@@ -710,8 +710,15 @@ local function wait_for_help_runtime(bufnr)
   end, 100, false)
 end
 
+local function resolve_bufnr(bufnr)
+  if bufnr == nil or bufnr == 0 then
+    return vim.api.nvim_get_current_buf()
+  end
+  return bufnr
+end
+
 local function ensure_runtime_ready(bufnr, label)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr)
   label = label or "ark.nvim runtime"
 
   if not is_ark_buffer(bufnr) then
@@ -1051,20 +1058,20 @@ end
 
 function M.start_lsp(bufnr)
   ensure_setup()
-  return lsp.start(options, bufnr)
+  return lsp.start(options, resolve_bufnr(bufnr))
 end
 
 function M.snippets(bufnr)
   ensure_setup()
   return snippets.open({
-    bufnr = bufnr or vim.api.nvim_get_current_buf(),
+    bufnr = resolve_bufnr(bufnr),
     filetypes = options.filetypes,
     notify = notify,
   })
 end
 
 local function show_help_page(bufnr, topic)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr)
 
   if not is_ark_buffer(bufnr) then
     local err = "ark.nvim help requires an R-family buffer"
@@ -1116,7 +1123,7 @@ end
 
 function M.help_pane(bufnr)
   ensure_setup()
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr)
 
   if not is_ark_buffer(bufnr) then
     local err = "ark.nvim help requires an R-family buffer"
@@ -1166,7 +1173,7 @@ end
 
 function M.view(expr, bufnr)
   ensure_setup()
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr)
 
   if type(expr) ~= "string" or expr == "" then
     expr = vim.fn.expand("<cword>")
@@ -1218,12 +1225,12 @@ function M.refresh(bufnr)
     end
   end
 
-  return lsp.refresh(options, bufnr)
+  return lsp.refresh(options, resolve_bufnr(bufnr))
 end
 
 function M.lsp_config(bufnr)
   ensure_setup()
-  return lsp.config(options, bufnr)
+  return lsp.config(options, resolve_bufnr(bufnr))
 end
 
 function M.build_lsp()

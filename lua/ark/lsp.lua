@@ -41,6 +41,13 @@ local function filetype_enabled(filetypes, filetype)
   return vim.tbl_contains(filetypes or {}, filetype)
 end
 
+local function resolve_bufnr(bufnr)
+  if bufnr == 0 then
+    return vim.api.nvim_get_current_buf()
+  end
+  return bufnr
+end
+
 local function topic_char_at(text, index)
   if type(text) ~= "string" or index < 0 or index >= #text then
     return nil
@@ -667,7 +674,7 @@ session_poll_finished = function(opts, bufnr, payload)
 end
 
 local function ensure_session_watch(opts, bufnr, payload, watch_opts)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   watch_opts = watch_opts or {}
   if not vim.api.nvim_buf_is_valid(bufnr) then
     stop_session_watch(bufnr)
@@ -740,7 +747,7 @@ local function ensure_session_watch(opts, bufnr, payload, watch_opts)
 end
 
 function M.config(opts, bufnr, _config_opts)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   local cmd, cmd_err = dev.ensure_current_detached_lsp_cmd(opts.lsp.cmd, _config_opts)
   if not cmd then
     return nil, cmd_err
@@ -766,7 +773,7 @@ function M.config(opts, bufnr, _config_opts)
 end
 
 local function start_client(opts, bufnr, start_opts)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   if not filetype_enabled(opts.filetypes, vim.bo[bufnr].filetype) then
     return nil
   end
@@ -872,7 +879,7 @@ local function start_client(opts, bufnr, start_opts)
 end
 
 local function restart_client(opts, bufnr, start_opts)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
 
   for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr, name = opts.lsp.name })) do
     stop_lsp_client(client)
@@ -883,23 +890,24 @@ local function restart_client(opts, bufnr, start_opts)
 end
 
 function M.start(opts, bufnr, start_opts)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   return start_client(opts, bufnr, start_opts)
 end
 
 function M.restart(opts, bufnr, start_opts)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   return restart_client(opts, bufnr, start_opts)
 end
 
 function M.start_async(opts, bufnr)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   return start_client(opts, bufnr, {
     wait_for_client = false,
   })
 end
 
 function M.sync_sessions(opts, bufnr, sync_opts)
+  bufnr = resolve_bufnr(bufnr)
   local payload_opts = vim.tbl_extend("keep", sync_opts or {}, {
     fast = true,
   })
@@ -918,7 +926,7 @@ function M.sync_sessions(opts, bufnr, sync_opts)
 end
 
 function M.refresh(opts, bufnr)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
 
   for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr, name = opts.lsp.name })) do
     forget_client_id(client.id)
@@ -928,7 +936,7 @@ function M.refresh(opts, bufnr)
 end
 
 function M.status(opts, bufnr, status_opts)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   status_opts = status_opts or {}
 
   local current_filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or nil
@@ -1179,7 +1187,7 @@ function M.help_text(opts, bufnr, topic)
 end
 
 local function view_request(opts, bufnr, method, params, timeout_ms)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   local client = live_clients(opts, bufnr)[1]
   if not live_client(client) then
     return nil, "ark_lsp client unavailable"

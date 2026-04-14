@@ -4,6 +4,10 @@ local notifications = {}
 local started_lsp = 0
 local started_pane = 0
 local synced_sessions = 0
+local start_bufnrs = {}
+local status_bufnrs = {}
+local sync_bufnrs = {}
+local view_open_bufnrs = {}
 local sort_calls = {}
 local filter_calls = {}
 local profile_calls = {}
@@ -175,10 +179,12 @@ local ok, err = pcall(function()
 
   lsp.start = function(_opts, bufnr)
     started_lsp = started_lsp + 1
+    start_bufnrs[#start_bufnrs + 1] = bufnr
     return bufnr
   end
 
-  lsp.status = function()
+  lsp.status = function(_opts, bufnr)
+    status_bufnrs[#status_bufnrs + 1] = bufnr
     return {
       available = true,
       sessionBridgeConfigured = true,
@@ -188,11 +194,13 @@ local ok, err = pcall(function()
     }
   end
 
-  lsp.sync_sessions = function()
+  lsp.sync_sessions = function(_opts, bufnr)
     synced_sessions = synced_sessions + 1
+    sync_bufnrs[#sync_bufnrs + 1] = bufnr
   end
 
-  lsp.view_open = function()
+  lsp.view_open = function(_opts, bufnr)
+    view_open_bufnrs[#view_open_bufnrs + 1] = bufnr
     return snapshot(), nil
   end
 
@@ -316,6 +324,18 @@ local ok, err = pcall(function()
 
   if synced_sessions ~= 1 then
     error("expected ArkView to sync sessions once, got " .. tostring(synced_sessions), 0)
+  end
+  if start_bufnrs[1] ~= source_buf then
+    error("expected ArkView to start lsp for the source buffer, got " .. vim.inspect(start_bufnrs), 0)
+  end
+  if sync_bufnrs[1] ~= source_buf then
+    error("expected ArkView to sync sessions for the source buffer, got " .. vim.inspect(sync_bufnrs), 0)
+  end
+  if status_bufnrs[1] ~= source_buf then
+    error("expected ArkView runtime status checks to target the source buffer, got " .. vim.inspect(status_bufnrs), 0)
+  end
+  if view_open_bufnrs[1] ~= source_buf then
+    error("expected ArkView requests to use the source buffer, got " .. vim.inspect(view_open_bufnrs), 0)
   end
 
   local current_tab = vim.api.nvim_get_current_tabpage()
