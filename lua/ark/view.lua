@@ -457,6 +457,16 @@ local function open_schema_picker(state)
   end
 
   local ok, snacks = pcall(require, "snacks")
+  if ok and type(snacks) == "table" and type(snacks.picker) == "table" and type(snacks.picker.select) == "function" then
+    snacks.picker.select(items, {
+      prompt = "ArkView Columns",
+      format_item = function(item)
+        return string.format("%s (%s)", item.name or "", item.class or item.type or "")
+      end,
+    }, choose)
+    return
+  end
+
   if ok and type(snacks) == "table" and type(snacks.picker) == "table" and type(snacks.picker.pick) == "function" then
     snacks.picker.pick({
       title = "ArkView Columns",
@@ -466,6 +476,7 @@ local function open_schema_picker(state)
           item = item,
         }
       end, items),
+      format = "text",
       confirm = function(picker, choice)
         picker:close()
         choose(choice and choice.item or nil)

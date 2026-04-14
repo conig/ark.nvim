@@ -15,10 +15,25 @@ local cell_calls = {}
 local export_calls = 0
 local code_calls = 0
 local close_calls = 0
+local picker_spec = nil
 
 local original_notify = vim.notify
 local original_input = vim.ui.input
 local original_select = vim.ui.select
+
+package.loaded["snacks"] = {
+  picker = {
+    pick = function(spec)
+      picker_spec = spec
+      if spec.format == nil then
+        error("item has no file", 0)
+      end
+      spec.confirm({
+        close = function() end,
+      }, (spec.items or {})[2])
+    end,
+  },
+}
 
 vim.notify = function(message, level, opts)
   notifications[#notifications + 1] = {
@@ -431,6 +446,12 @@ local ok, err = pcall(function()
   assert_sidebar_selected(sidebar_buf, 3)
 
   press("S")
+  if picker_spec == nil then
+    error("expected ArkView to open a Snacks picker for column search", 0)
+  end
+  if picker_spec.title ~= "ArkView Columns" then
+    error("unexpected ArkView column picker title: " .. vim.inspect(picker_spec.title), 0)
+  end
   assert_sidebar_selected(sidebar_buf, 4)
   if vim.api.nvim_get_current_win() ~= grid_win then
     error("expected schema picker selection to focus the grid", 0)

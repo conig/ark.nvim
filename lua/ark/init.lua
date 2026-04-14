@@ -18,6 +18,7 @@ local pending_session_sync = 0
 local help_float_ns = vim.api.nvim_create_namespace("ArkHelpFloat")
 local help_filetype = "arkhelp"
 local is_ark_buffer
+local ensure_bridge_runtime
 
 local function monotonic_ms()
   local clock = (uv and uv.hrtime) and uv.hrtime or vim.loop.hrtime
@@ -1031,7 +1032,7 @@ local function ensure_setup()
   end
 end
 
-local function ensure_bridge_runtime(bridge_opts)
+ensure_bridge_runtime = function(bridge_opts)
   bridge_opts = bridge_opts or {}
   if not options or type(options.tmux) ~= "table" then
     return true
