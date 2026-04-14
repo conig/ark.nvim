@@ -931,6 +931,13 @@ function M.config(opts, bufnr, _config_opts)
   end
 
   local startup_snapshot = _config_opts and _config_opts.startup_snapshot or nil
+  local defer_session_bootstrap = _config_opts and _config_opts.defer_session_bootstrap == true or false
+  local cmd_env = nil
+  if not defer_session_bootstrap then
+    cmd_env = type(startup_snapshot) == "table"
+      and startup_snapshot.cmd_env
+      or tmux.bridge_env(opts.tmux, startup_snapshot)
+  end
 
   return {
     _ark_lsp_build_fingerprint = dev.detached_lsp_build_fingerprint(cmd[1]),
@@ -942,9 +949,7 @@ function M.config(opts, bufnr, _config_opts)
     flags = {
       allow_incremental_sync = false,
     },
-    cmd_env = type(startup_snapshot) == "table"
-      and startup_snapshot.cmd_env
-      or tmux.bridge_env(opts.tmux, startup_snapshot),
+    cmd_env = cmd_env,
     root_dir = root_dir(bufnr, opts.lsp.root_markers),
   }, nil
 end
@@ -960,12 +965,13 @@ local function start_client(opts, bufnr, start_opts)
     fast = true,
     validate_bridge = true,
   }) or nil
-  local startup_payload = session_payload(opts, {
+  local startup_payload = wait_for_client_sync and session_payload(opts, {
     fast = true,
     snapshot = startup_snapshot,
-  })
+  }) or {}
 
   local desired, config_err = M.config(opts, bufnr, vim.tbl_extend("force", start_opts or {}, {
+    defer_session_bootstrap = not wait_for_client_sync,
     startup_snapshot = startup_snapshot,
     on_build_complete = function(result)
       if type(result) ~= "table" or result.ok ~= true then
@@ -1030,7 +1036,16 @@ local function start_client(opts, bufnr, start_opts)
   track_client_id(client_id)
 
   if not wait_for_client_sync then
-    ensure_session_watch(opts, bufnr)
+    vim.defer_fn(function()
+      if not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+      end
+      if not filetype_enabled(opts.filetypes, vim.bo[bufnr].filetype) then
+        return
+      end
+
+      ensure_session_watch(opts, bufnr)
+    end, 0)
     schedule_session_syncs(opts, bufnr, client_id)
     return client_id
   end
