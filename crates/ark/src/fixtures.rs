@@ -6,9 +6,6 @@
 //
 
 //! Test utilities for ark's internal unit tests.
-//!
-//! For integration test utilities (DummyArkFrontend, DapClient, etc.),
-//! use the `ark_test` crate instead.
 
 mod utils;
 

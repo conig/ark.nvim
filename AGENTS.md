@@ -101,12 +101,12 @@ cargo +nightly fmt --all
 
 This requires the nightly toolchain because `.rustfmt.toml` uses nightly-only options.
 
-### Legacy kernel and DAP test infrastructure
+### Legacy kernel and DAP code
 
-Upstream kernel and debugger tests still live in `crates/ark/tests/` and use
-utilities from `crates/ark_test/`. They remain useful when upstream changes
-touch retained kernel-oriented code, even though they are not the target
-product surface for `ark.nvim`.
+Most upstream kernel/DAP integration tests and the old `ark_test` harness have
+been removed because they do not verify the supported Neovim product surface.
+When touching retained kernel-oriented code, prefer focused unit tests only if
+that code is still on an active extraction path.
 
 This repository currently starts from upstream Ark. That means the tree still contains:
 

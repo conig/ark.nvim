@@ -353,7 +353,6 @@ dependencies = [
  "amalthea",
  "anyhow",
  "ark-lsp-support",
- "ark_test",
  "assert_matches",
  "async-trait",
  "base64 0.21.0",
@@ -492,28 +491,6 @@ dependencies = [
  "tower-lsp",
  "tracing",
  "tree-sitter",
-]
-
-[[package]]
-name = "ark_test"
-version = "0.1.0"
-dependencies = [
- "amalthea",
- "anyhow",
- "ark",
- "crossbeam",
- "dap",
- "harp",
- "log",
- "regex",
- "serde",
- "serde_json",
- "stdext",
- "tempfile",
- "tower-lsp",
- "tree-sitter",
- "url",
- "uuid",
 ]
 
 [[package]]

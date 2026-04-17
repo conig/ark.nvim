@@ -193,7 +193,6 @@ function M.assert_fresh_detached_lsp_binary(binary_path)
     "--files",
     "crates/ark-lsp/src",
     "crates/ark/src",
-    "crates/ark_test/src",
   })
   if vim.v.shell_error ~= 0 then
     M.fail("failed to enumerate Rust sources for binary freshness check")
@@ -201,7 +200,6 @@ function M.assert_fresh_detached_lsp_binary(binary_path)
 
   source_paths[#source_paths + 1] = "crates/ark-lsp/Cargo.toml"
   source_paths[#source_paths + 1] = "crates/ark/Cargo.toml"
-  source_paths[#source_paths + 1] = "crates/ark_test/Cargo.toml"
   source_paths[#source_paths + 1] = "Cargo.lock"
 
   local newer = {}

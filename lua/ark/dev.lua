@@ -67,7 +67,6 @@ local function rust_source_paths()
       "--files",
       ROOT .. "/crates/ark-lsp/src",
       ROOT .. "/crates/ark/src",
-      ROOT .. "/crates/ark_test/src",
     })
     if vim.v.shell_error ~= 0 then
       paths = {}
@@ -76,7 +75,6 @@ local function rust_source_paths()
 
   paths[#paths + 1] = ROOT .. "/crates/ark-lsp/Cargo.toml"
   paths[#paths + 1] = ROOT .. "/crates/ark/Cargo.toml"
-  paths[#paths + 1] = ROOT .. "/crates/ark_test/Cargo.toml"
   paths[#paths + 1] = ROOT .. "/Cargo.lock"
 
   return paths
