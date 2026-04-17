@@ -31,6 +31,13 @@ local sync_calls = 0
 local tmux_started_after_lsp = false
 
 package.loaded["ark.lsp"] = {
+  prewarm = function(_, bufnr)
+    lsp_calls[#lsp_calls + 1] = {
+      method = "prewarm",
+      bufnr = bufnr,
+    }
+    return 1
+  end,
   start_async = function(_, bufnr)
     lsp_calls[#lsp_calls + 1] = {
       method = "start_async",
@@ -82,11 +89,11 @@ local ok, err = pcall(function()
   -- R buffer before the managed pane path returns, so user configs that call
   -- `start_pane()` and then `start_lsp()` do not serialize those phases.
   if not tmux_started_after_lsp then
-    error("expected start_pane() to prewarm lsp.start_async() before tmux.start()", 0)
+    error("expected start_pane() to prewarm the detached lsp before tmux.start()", 0)
   end
 
-  if #lsp_calls ~= 1 or lsp_calls[1].bufnr ~= bufnr or lsp_calls[1].method ~= "start_async" then
-    error("expected start_pane() to start LSP for the current buffer, got " .. vim.inspect(lsp_calls), 0)
+  if #lsp_calls ~= 1 or lsp_calls[1].bufnr ~= bufnr or lsp_calls[1].method ~= "prewarm" then
+    error("expected start_pane() to prewarm the current buffer LSP, got " .. vim.inspect(lsp_calls), 0)
   end
 
   if sync_calls ~= 1 then

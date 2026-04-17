@@ -100,6 +100,8 @@ Responsibilities:
 - launch interactive `R` in the managed pane
 - install or reuse `arkbridge`
 - publish trusted startup/readiness metadata under `ark-status`
+- keep the control-plane status file small and store cached bootstrap payloads in
+  a separate trusted artifact
 - answer bridge requests for bootstrap, help text, and runtime inspection
 - answer bridge requests for live data-explorer sessions and table paging
 
@@ -115,10 +117,14 @@ part of the default supported path.
   plugin configuration.
 - Detached startup can begin immediately and hydrate later through trusted
   status-file data plus bridge bootstrap.
+- Existing detached binaries and pane-side bridge runtimes should not force
+  source-tree freshness scans on the immediate startup path; those checks may
+  run shortly afterward in the background instead.
 - Startup diagnostics should retain the existing pane and LSP readiness
-  milestones and also record the first post-startup `SafeState` for the main
-  buffer so Ark can distinguish "runtime ready" from "buffer unlocked for user
-  input".
+  milestones, but the user-facing "main buffer unlocked" mark should be
+  recorded directly from successful detached session bootstrap when that signal
+  is available. `SafeState` remains a fallback for paths that do not get an
+  explicit bootstrap-complete event.
 - Unnamed scratch startup should only reuse the current working directory as
   the LSP workspace root when that directory resolves to a real project root;
   otherwise Ark should fall back to a dedicated scratch workspace. The same
@@ -127,7 +133,8 @@ part of the default supported path.
   home directory.
 - Command-driven startup from an R buffer should prewarm detached `ark-lsp`
   before or alongside managed-pane startup rather than serializing "pane first,
-  LSP later".
+  LSP later". That prewarm path should avoid background session notification
+  ladders until the real managed-session bootstrap path takes over.
 - Sync startup must hand off cleanly when Neovim has started `ark-lsp` but the
   client is still initializing: status should surface a pending client instead
   of reporting a false bootstrap failure.

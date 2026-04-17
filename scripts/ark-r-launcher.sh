@@ -112,15 +112,7 @@ local({
     paste(.out, collapse = "")
   }
 
-  .log_file_path <- function() {
-    if (!nzchar(.status_root)) {
-      return(tempfile("ark-launcher-log-", fileext = ".log"))
-    }
-
-    .log_dir <- file.path(.status_root, "logs")
-    dir.create(.log_dir, recursive = TRUE, showWarnings = FALSE)
-    suppressWarnings(Sys.chmod(.log_dir, mode = "700", use_umask = FALSE))
-
+  .status_parts <- function() {
     .parts <- character()
     if (nzchar(.socket)) {
       .parts <- c(.parts, .encode_component(.socket))
@@ -131,6 +123,27 @@ local({
     if (nzchar(.pane)) {
       .parts <- c(.parts, .encode_component(.pane))
     }
+    .parts
+  }
+
+  .artifact_dir <- function(name) {
+    if (!nzchar(.status_root)) {
+      return("")
+    }
+
+    .dir <- file.path(.status_root, name)
+    dir.create(.dir, recursive = TRUE, showWarnings = FALSE)
+    suppressWarnings(Sys.chmod(.dir, mode = "700", use_umask = FALSE))
+    .dir
+  }
+
+  .log_file_path <- function() {
+    if (!nzchar(.status_root)) {
+      return(tempfile("ark-launcher-log-", fileext = ".log"))
+    }
+
+    .log_dir <- .artifact_dir("logs")
+    .parts <- .status_parts()
 
     if (!length(.parts)) {
       return(tempfile("ark-launcher-log-", tmpdir = .log_dir, fileext = ".log"))
@@ -144,6 +157,7 @@ local({
   .launcher_started_at <- Sys.time()
   .repl_seq <- 0L
   .bootstrap_cache <- NULL
+  .bootstrap_path <- ""
 
   .timestamp_iso <- function(time = Sys.time()) {
     format(time, "%Y-%m-%dT%H:%M:%OS3%z")
@@ -187,13 +201,63 @@ local({
       return("")
     }
 
-    .name <- paste(
-      .encode_component(.socket),
-      .encode_component(.session),
-      .encode_component(.pane),
-      sep = "__"
-    )
+    .name <- paste(.status_parts(), collapse = "__")
     file.path(.status_root, paste0(.name, ".json"))
+  }
+
+  .bootstrap_file_path <- function() {
+    .bootstrap_dir <- .artifact_dir("bootstrap")
+    if (!nzchar(.bootstrap_dir)) {
+      return("")
+    }
+
+    .parts <- .status_parts()
+    if (!length(.parts)) {
+      return(tempfile("ark-bootstrap-", tmpdir = .bootstrap_dir, fileext = ".json"))
+    }
+
+    file.path(.bootstrap_dir, paste0(paste(.parts, collapse = "__"), ".json"))
+  }
+
+  .write_json_file <- function(path, payload, prefix) {
+    .dir <- dirname(path)
+    dir.create(.dir, recursive = TRUE, showWarnings = FALSE)
+    suppressWarnings(Sys.chmod(.dir, mode = "700", use_umask = FALSE))
+
+    .json <- jsonlite::toJSON(
+      payload,
+      auto_unbox = TRUE,
+      null = "null",
+      pretty = FALSE
+    )
+
+    .tmp <- tempfile(prefix, tmpdir = .dir, fileext = ".json")
+    writeLines(.json, .tmp, useBytes = TRUE)
+    suppressWarnings(Sys.chmod(.tmp, mode = "600", use_umask = FALSE))
+    if (!isTRUE(file.rename(.tmp, path))) {
+      writeLines(.json, path, useBytes = TRUE)
+      unlink(.tmp)
+    }
+    suppressWarnings(Sys.chmod(path, mode = "600", use_umask = FALSE))
+    invisible(path)
+  }
+
+  .write_bootstrap_cache <- function(cache) {
+    if (!is.list(cache)) {
+      return(invisible(""))
+    }
+
+    .path <- .bootstrap_file_path()
+    if (!nzchar(.path)) {
+      return(invisible(""))
+    }
+
+    .payload <- utils::modifyList(cache, list(
+      repl_seq = .repl_seq
+    ))
+    .write_json_file(.path, .payload, "ark-bootstrap-")
+    .bootstrap_path <<- normalizePath(.path, winslash = "/", mustWork = FALSE)
+    invisible(.bootstrap_path)
   }
 
   .write_status <- function(status, fields = list()) {
@@ -201,10 +265,6 @@ local({
     if (!nzchar(.path)) {
       return(invisible(NULL))
     }
-
-    .dir <- dirname(.path)
-    dir.create(.dir, recursive = TRUE, showWarnings = FALSE)
-    suppressWarnings(Sys.chmod(.dir, mode = "700", use_umask = FALSE))
 
     .payload <- utils::modifyList(
       list(
@@ -214,30 +274,13 @@ local({
         pid = as.integer(Sys.getpid()),
         log_path = normalizePath(.quiet_log, winslash = "/", mustWork = FALSE),
         elapsed_ms = .elapsed_ms(),
+        bootstrap_path = if (nzchar(.bootstrap_path)) .bootstrap_path else NULL,
         repl_ready = FALSE,
         repl_ts = NULL
       ),
       fields
     )
-    if (is.list(.bootstrap_cache)) {
-      .payload\$bootstrap <- .bootstrap_cache
-    }
-
-    .json <- jsonlite::toJSON(
-      .payload,
-      auto_unbox = TRUE,
-      null = "null",
-      pretty = FALSE
-    )
-
-    .tmp <- tempfile("ark-status-", tmpdir = .dir, fileext = ".json")
-    writeLines(.json, .tmp, useBytes = TRUE)
-    suppressWarnings(Sys.chmod(.tmp, mode = "600", use_umask = FALSE))
-    if (!isTRUE(file.rename(.tmp, .path))) {
-      writeLines(.json, .path, useBytes = TRUE)
-      unlink(.tmp)
-    }
-    suppressWarnings(Sys.chmod(.path, mode = "600", use_umask = FALSE))
+    .write_json_file(.path, .payload, "ark-status-")
 
     .log_line(
       "[status] status=", .payload\$status,
@@ -422,6 +465,7 @@ local({
           NULL
         }
       )
+      .write_bootstrap_cache(.bootstrap_cache)
       .write_bridge_ready_status(.svc\$port, .auth_token)
       .user_first <- if (exists(".First", envir = .GlobalEnv, inherits = FALSE)) {
         get(".First", envir = .GlobalEnv, inherits = FALSE)
@@ -443,6 +487,7 @@ local({
                 .bootstrap_cache
               }
             )
+            .write_bootstrap_cache(.bootstrap_cache)
             .write_repl_ready_status(.svc\$port, .auth_token)
             invisible(NULL)
           }

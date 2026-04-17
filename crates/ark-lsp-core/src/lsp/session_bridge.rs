@@ -263,6 +263,8 @@ struct SessionStatusPayload {
     repl_seq: Option<u64>,
     #[serde(default)]
     bootstrap: Option<StatusBootstrapPayload>,
+    #[serde(default)]
+    bootstrap_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -1649,6 +1651,47 @@ fn connection_from_status(
     })
 }
 
+fn resolve_related_artifact_path(status_file: &Path, artifact_path: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(artifact_path);
+    if path.is_absolute() {
+        return Some(path);
+    }
+
+    status_file.parent().map(|parent| parent.join(path))
+}
+
+fn read_cached_bootstrap_payload(
+    status_file: &Path,
+    artifact_path: &str,
+) -> anyhow::Result<StatusBootstrapPayload> {
+    let path = resolve_related_artifact_path(status_file, artifact_path)
+        .ok_or_else(|| anyhow!("startup bootstrap file path is invalid"))?;
+    trusted_artifact_file_fingerprint(path.as_path(), "startup bootstrap file")?;
+    let payload = std::fs::read_to_string(path.as_path())?;
+    Ok(serde_json::from_str(payload.as_str())?)
+}
+
+fn bootstrap_payload_from_status(
+    status_file: &Path,
+    status: &SessionStatusPayload,
+) -> Option<StatusBootstrapPayload> {
+    if let Some(bootstrap) = status.bootstrap.clone() {
+        return Some(bootstrap);
+    }
+
+    let bootstrap_path = status.bootstrap_path.as_deref()?;
+    match read_cached_bootstrap_payload(status_file, bootstrap_path) {
+        Ok(bootstrap) => Some(bootstrap),
+        Err(err) => {
+            log::trace!(
+                "Ignoring cached startup bootstrap from '{}' because bootstrap artifact load failed: {err:?}",
+                status_file.display()
+            );
+            None
+        },
+    }
+}
+
 fn bootstrap_from_status(
     status_file: &Path,
     status: &SessionStatusPayload,
@@ -1657,7 +1700,7 @@ fn bootstrap_from_status(
         return None;
     }
 
-    let bootstrap = status.bootstrap.as_ref()?;
+    let bootstrap = bootstrap_payload_from_status(status_file, status)?;
     if bootstrap.search_path_symbols.is_empty() || bootstrap.library_paths.is_empty() {
         return None;
     }
@@ -1670,18 +1713,26 @@ fn bootstrap_from_status(
         return None;
     }
 
+    let StatusBootstrapPayload {
+        search_path_symbols,
+        library_paths,
+        total_ms,
+        search_path_symbols_ms,
+        library_paths_ms,
+        ..
+    } = bootstrap;
+
     Some(SessionBootstrap {
-        search_path_symbols: bootstrap.search_path_symbols.clone(),
+        search_path_symbols,
         installed_packages: Vec::new(),
-        library_paths: bootstrap
-            .library_paths
-            .iter()
+        library_paths: library_paths
+            .into_iter()
             .map(PathBuf::from)
             .collect::<Vec<_>>(),
         timings: SessionBootstrapTimings {
-            total_ms: bootstrap.total_ms.unwrap_or(0),
-            search_path_symbols_ms: bootstrap.search_path_symbols_ms.unwrap_or(0),
-            library_paths_ms: bootstrap.library_paths_ms.unwrap_or(0),
+            total_ms: total_ms.unwrap_or(0),
+            search_path_symbols_ms: search_path_symbols_ms.unwrap_or(0),
+            library_paths_ms: library_paths_ms.unwrap_or(0),
         },
     })
 }
@@ -1737,12 +1788,16 @@ fn read_session_status(
 }
 
 fn trusted_status_file_fingerprint(path: &Path) -> anyhow::Result<StatusFileFingerprint> {
+    trusted_artifact_file_fingerprint(path, "startup status file")
+}
+
+fn trusted_artifact_file_fingerprint(
+    path: &Path,
+    label: &str,
+) -> anyhow::Result<StatusFileFingerprint> {
     if !path.exists() {
         return Err(SessionBridgeUnavailableError {
-            message: format!(
-                "startup status file '{}' does not exist yet",
-                path.display()
-            ),
+            message: format!("{label} '{}' does not exist yet", path.display()),
         }
         .into());
     }
@@ -1750,7 +1805,7 @@ fn trusted_status_file_fingerprint(path: &Path) -> anyhow::Result<StatusFileFing
     let metadata = std::fs::metadata(path)?;
     if !status_file_trusted_metadata(&metadata)? {
         return Err(SessionBridgeUnavailableError {
-            message: format!("startup status file '{}' is not trusted", path.display()),
+            message: format!("{label} '{}' is not trusted", path.display()),
         }
         .into());
     }
@@ -4528,6 +4583,58 @@ mod tests {
         )]);
         assert_eq!(bootstrap.timings.total_ms, 9);
         assert_eq!(bootstrap.timings.search_path_symbols_ms, 4);
+        assert_eq!(bootstrap.timings.library_paths_ms, 1);
+    }
+
+    #[test]
+    fn test_bootstrap_dynamic_uses_cached_bootstrap_artifact_when_present() {
+        let tempdir = tempfile::tempdir().expect("expected tempdir");
+        let status_path = tempdir.path().join("session.json");
+        let bootstrap_path = tempdir.path().join("session-bootstrap.json");
+
+        std::fs::write(
+            &bootstrap_path,
+            r#"{
+                "repl_seq":0,
+                "search_path_symbols":["library","mtcars"],
+                "library_paths":["/tmp/ark-test-library"],
+                "total_ms":7,
+                "search_path_symbols_ms":3,
+                "library_paths_ms":1
+            }"#,
+        )
+        .expect("expected bootstrap artifact");
+
+        std::fs::write(
+            &status_path,
+            r#"{
+                "status":"ready",
+                "port":41001,
+                "auth_token":"token-one",
+                "repl_ready":true,
+                "repl_seq":0,
+                "bootstrap_path":"session-bootstrap.json"
+            }"#,
+        )
+        .expect("expected status file");
+
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            status_file: Some(status_path),
+            timeout_ms: 50,
+            ..Default::default()
+        })
+        .expect("expected bridge");
+
+        let bootstrap = bridge.bootstrap().expect("expected cached bootstrap");
+        assert_eq!(bootstrap.search_path_symbols, vec![
+            String::from("library"),
+            String::from("mtcars")
+        ]);
+        assert_eq!(bootstrap.library_paths, vec![PathBuf::from(
+            "/tmp/ark-test-library"
+        )]);
+        assert_eq!(bootstrap.timings.total_ms, 7);
+        assert_eq!(bootstrap.timings.search_path_symbols_ms, 3);
         assert_eq!(bootstrap.timings.library_paths_ms, 1);
     }
 

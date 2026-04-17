@@ -6,6 +6,7 @@ package.loaded["ark.dev"] = nil
 
 local status_calls = 0
 local bridge_env_calls = 0
+local validate_bridge_calls = 0
 local bootstrap_requests = {}
 local notifications = {}
 local clients = {}
@@ -40,6 +41,9 @@ package.loaded["ark.tmux"] = {
     error("sync startup should use startup snapshot env, not tmux.bridge_env()", 0)
   end,
   startup_snapshot = function(_, opts)
+    if opts and opts.validate_bridge == true then
+      validate_bridge_calls = validate_bridge_calls + 1
+    end
     return {
       session = {
         tmux_socket = "/tmp/ark.sock",
@@ -167,6 +171,9 @@ local ok, err = pcall(function()
   end
   if bridge_env_calls ~= 0 then
     error("expected sync startup to avoid tmux.bridge_env(), got " .. tostring(bridge_env_calls), 0)
+  end
+  if validate_bridge_calls ~= 0 then
+    error("expected sync startup to trust the status file instead of pre-validating the bridge, got " .. tostring(validate_bridge_calls), 0)
   end
   if #bootstrap_requests ~= 1 then
     error("expected one bootstrap request, got " .. vim.inspect(bootstrap_requests), 0)

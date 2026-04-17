@@ -10,8 +10,10 @@ end
 local ROOT = repo_root()
 local BUILD_CMD = { "cargo", "build", "-p", "ark-lsp" }
 local SPINNER_FRAMES = { "[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]" }
+local FRESHNESS_PROBE_DEFER_MS = 250
 local SOURCE_SCAN_CACHE_TTL_MS = 1000
 local checked = {}
+local freshness_checks = {}
 local source_scan_cache = {
   checked_ms = 0,
   newest_mtime = nil,
@@ -38,6 +40,11 @@ local function normalize_path(path)
   end
 
   return vim.fs.normalize(vim.fn.fnamemodify(vim.fn.expand(path), ":p"))
+end
+
+local function monotonic_ms()
+  local now = ((uv and uv.hrtime) and uv.hrtime()) or vim.loop.hrtime()
+  return math.floor(now / 1e6)
 end
 
 local function stat_mtime(path)
@@ -81,7 +88,7 @@ local function rust_source_paths()
 end
 
 local function newest_source_mtime()
-  local now = math.floor((((uv and uv.hrtime) and uv.hrtime()) or vim.loop.hrtime()) / 1e6)
+  local now = monotonic_ms()
   if now - (tonumber(source_scan_cache.checked_ms) or 0) < SOURCE_SCAN_CACHE_TTL_MS then
     return source_scan_cache.newest_mtime, source_scan_cache.newest_path
   end
@@ -123,6 +130,24 @@ local function notify(message, level, opts)
   local id = vim.notify(message, level or vim.log.levels.INFO, notify_opts)
   if id ~= nil then
     build_state.notify_id = id
+  end
+end
+
+local function take_freshness_listeners(state)
+  local listeners = state.listeners or {}
+  state.listeners = {}
+  return listeners
+end
+
+local function run_freshness_listeners(listeners, result)
+  for _, listener in ipairs(listeners or {}) do
+    pcall(listener, result)
+  end
+end
+
+local function remember_freshness_listener(state, listener)
+  if type(listener) == "function" then
+    state.listeners[#state.listeners + 1] = listener
   end
 end
 
@@ -262,6 +287,7 @@ local function finish_build(result)
 
   if result.ok then
     checked = {}
+    freshness_checks = {}
     source_scan_cache.checked_ms = 0
     local ms = elapsed_ms()
     local suffix = ms and string.format(" in %d ms", ms) or ""
@@ -392,6 +418,111 @@ local function start_build(opts)
   return true, nil
 end
 
+local function maybe_schedule_freshness_probe(binary, opts)
+  local binary_mtime = stat_mtime(binary) or 0
+  if binary_mtime == 0 then
+    return
+  end
+
+  local state = freshness_checks[binary]
+  if type(state) ~= "table" then
+    state = {
+      binary_mtime = nil,
+      checked_ms = 0,
+      listeners = {},
+      scheduled = false,
+    }
+    freshness_checks[binary] = state
+  end
+
+  remember_freshness_listener(state, opts and opts.on_build_complete)
+
+  if build_state.running then
+    local listeners = take_freshness_listeners(state)
+    local ok = start_build({
+      on_complete = function(result)
+        run_freshness_listeners(listeners, result)
+      end,
+      background = true,
+      show_output = opts and opts.show_build_output == true,
+      user_initiated = opts and opts.user_initiated == true,
+    })
+    if not ok then
+      run_freshness_listeners(listeners, {
+        ok = false,
+        error = "background detached ark-lsp rebuild is unavailable",
+      })
+    end
+    return
+  end
+
+  local now = monotonic_ms()
+  if state.binary_mtime == binary_mtime and state.scheduled == true then
+    return
+  end
+  if state.binary_mtime == binary_mtime and (now - (tonumber(state.checked_ms) or 0)) < SOURCE_SCAN_CACHE_TTL_MS then
+    return
+  end
+
+  state.binary_mtime = binary_mtime
+  state.scheduled = true
+  vim.defer_fn(function()
+    local current_state = freshness_checks[binary]
+    if type(current_state) ~= "table" or current_state.binary_mtime ~= binary_mtime then
+      return
+    end
+
+    current_state.scheduled = false
+    current_state.checked_ms = monotonic_ms()
+
+    local newest_mtime, newest_path = newest_source_mtime()
+    local current_binary_mtime = stat_mtime(binary) or 0
+    if current_binary_mtime == 0 or current_binary_mtime ~= binary_mtime then
+      run_freshness_listeners(take_freshness_listeners(current_state), {
+        ok = current_binary_mtime ~= 0,
+        binary_path = binary,
+      })
+      return
+    end
+
+    if type(newest_mtime) ~= "number" or newest_mtime <= current_binary_mtime then
+      run_freshness_listeners(take_freshness_listeners(current_state), {
+        ok = true,
+        background_check = true,
+        binary_path = binary,
+        stale = false,
+      })
+      return
+    end
+
+    local listeners = take_freshness_listeners(current_state)
+    local ok, build_err = start_build({
+      on_complete = function(result)
+        run_freshness_listeners(listeners, result)
+      end,
+      background = true,
+      show_output = opts and opts.show_build_output == true,
+      user_initiated = opts and opts.user_initiated == true,
+    })
+    if ok then
+      return
+    end
+
+    notify(
+      string.format(
+        "background detached ark-lsp rebuild could not start; using current binary (%s)",
+        tostring(build_err)
+      ),
+      vim.log.levels.WARN
+    )
+    run_freshness_listeners(listeners, {
+      ok = false,
+      error = build_err,
+      newest_path = newest_path,
+    })
+  end, FRESHNESS_PROBE_DEFER_MS)
+end
+
 function M.ensure_current_detached_lsp_cmd(cmd, opts)
   opts = opts or {}
 
@@ -404,42 +535,26 @@ function M.ensure_current_detached_lsp_cmd(cmd, opts)
     return cmd, nil
   end
 
-  local newest_mtime, newest_path = newest_source_mtime()
   local binary_mtime = stat_mtime(binary) or 0
   local cache_key = table.concat({
     binary,
     tostring(binary_mtime),
-    tostring(newest_mtime),
   }, "::")
 
   if checked[cache_key] then
+    maybe_schedule_freshness_probe(binary, opts)
     return current_binary_cmd(cmd, binary), nil
   end
 
-  local stale = type(newest_mtime) == "number" and newest_mtime > binary_mtime
-  if binary_mtime == 0 or stale then
+  if binary_mtime == 0 then
+    local _, newest_path = newest_source_mtime()
     local ok, build_err = start_build({
       on_complete = opts.on_build_complete,
-      background = binary_mtime ~= 0,
+      background = false,
       show_output = opts.show_build_output == true,
       user_initiated = opts.user_initiated == true,
     })
     if not ok then
-      if binary_mtime ~= 0 then
-        checked[cache_key] = true
-        vim.schedule(function()
-          vim.notify(
-            string.format(
-              "background detached ark-lsp rebuild could not start; using current binary (%s)",
-              tostring(build_err)
-            ),
-            vim.log.levels.WARN,
-            { title = "ark.nvim" }
-          )
-        end)
-        return current_binary_cmd(cmd, binary), nil
-      end
-
       return nil, string.format(
         "detached ark-lsp binary is stale relative to %s and rebuild failed to start: %s",
         newest_path or "Rust sources",
@@ -453,11 +568,10 @@ function M.ensure_current_detached_lsp_cmd(cmd, opts)
         message = "Rebuilding detached ark-lsp...",
       }
     end
-
-    return current_binary_cmd(cmd, binary), nil
   end
 
   checked[cache_key] = true
+  maybe_schedule_freshness_probe(binary, opts)
 
   return current_binary_cmd(cmd, binary), nil
 end

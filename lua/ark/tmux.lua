@@ -443,6 +443,7 @@ local function read_startup_status(session, config)
   payload.repl_ts = tonumber(payload.repl_ts)
   payload.repl_seq = tonumber(payload.repl_seq)
   payload.auth_token = type(payload.auth_token) == "string" and payload.auth_token or ""
+  payload.bootstrap_path = type(payload.bootstrap_path) == "string" and payload.bootstrap_path or nil
   payload.repl_ready = payload.repl_ready == true or payload.repl_ready == 1
   payload.log_path = type(payload.log_path) == "string" and payload.log_path or nil
   payload._status_path = path
@@ -1336,7 +1337,7 @@ end
 
 function M.bridge_env(config, snapshot)
   local current = type(snapshot) == "table" and snapshot or M.startup_snapshot(config, {
-    validate_bridge = true,
+    validate_bridge = false,
   })
   return current and current.cmd_env or nil
 end

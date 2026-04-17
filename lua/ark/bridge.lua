@@ -9,8 +9,10 @@ end
 
 local ROOT = repo_root()
 local INSTALL_SCRIPT = ROOT .. "/scripts/ark-install-bridge.R"
+local FRESHNESS_PROBE_DEFER_MS = 250
 local SOURCE_SCAN_CACHE_TTL_MS = 1000
 local checked = {}
+local freshness_checks = {}
 local source_scan_cache = {
   checked_ms = 0,
   newest_mtime = nil,
@@ -213,6 +215,7 @@ local function finish_install(result)
 
   if result.ok then
     checked = {}
+    freshness_checks = {}
     source_scan_cache.checked_ms = 0
     if not background or user_initiated then
       local suffix = elapsed_ms and string.format(" in %d ms", elapsed_ms) or ""
@@ -348,6 +351,79 @@ local function start_install(config, opts)
   return true, nil
 end
 
+local function maybe_schedule_freshness_probe(config, opts, installed_source_mtime)
+  local lib_path = runtime_lib_path(config)
+  if not lib_path then
+    return
+  end
+
+  local state = freshness_checks[lib_path]
+  if type(state) ~= "table" then
+    state = {
+      checked_ms = 0,
+      installed_source_mtime = nil,
+      scheduled = false,
+    }
+    freshness_checks[lib_path] = state
+  end
+
+  if install_state.running then
+    start_install(config, {
+      background = true,
+      user_initiated = opts and opts.user_initiated == true,
+    })
+    return
+  end
+
+  local now = monotonic_ms()
+  if state.installed_source_mtime == installed_source_mtime and state.scheduled == true then
+    return
+  end
+  if state.installed_source_mtime == installed_source_mtime and (now - (tonumber(state.checked_ms) or 0)) < SOURCE_SCAN_CACHE_TTL_MS then
+    return
+  end
+
+  state.installed_source_mtime = installed_source_mtime
+  state.scheduled = true
+  vim.defer_fn(function()
+    local current_state = freshness_checks[lib_path]
+    if type(current_state) ~= "table" or current_state.installed_source_mtime ~= installed_source_mtime then
+      return
+    end
+
+    current_state.scheduled = false
+    current_state.checked_ms = monotonic_ms()
+
+    local newest_mtime, newest_path = newest_source_state()
+    local current_installed_source_mtime = current_install_source_mtime(lib_path) or 0
+    local installed_exists = dir_exists(installed_package_dir(lib_path))
+    local stale = not installed_exists
+      or current_installed_source_mtime == 0
+      or (type(newest_mtime) == "number" and newest_mtime > current_installed_source_mtime)
+
+    if not stale then
+      return
+    end
+
+    local ok, install_err = start_install(config, {
+      source_mtime = newest_mtime,
+      background = true,
+      user_initiated = opts and opts.user_initiated == true,
+    })
+    if ok then
+      return
+    end
+
+    notify(
+      string.format(
+        "background arkbridge install could not start; using current runtime (%s)",
+        tostring(install_err or newest_path or "unknown error")
+      ),
+      vim.log.levels.WARN
+    )
+  end, FRESHNESS_PROBE_DEFER_MS)
+end
+
 function M.runtime_lib_path(config)
   return runtime_lib_path(config)
 end
@@ -360,29 +436,25 @@ function M.ensure_current_runtime(config, opts)
     return nil, "arkbridge runtime library path is not configured"
   end
 
-  local newest_mtime, newest_path = newest_source_state()
   local installed_path = installed_package_dir(lib_path)
   local installed_exists = dir_exists(installed_path)
   local installed_source_mtime = current_install_source_mtime(lib_path) or 0
-  local stale = opts.force == true
-    or not installed_exists
-    or installed_source_mtime == 0
-    or (type(newest_mtime) == "number" and newest_mtime > installed_source_mtime)
   local cache_key = table.concat({
     lib_path,
     tostring(installed_source_mtime),
-    tostring(newest_mtime or 0),
   }, "::")
 
-  if not stale and checked[cache_key] then
-    return true, nil
-  end
-
-  if not stale then
+  if installed_exists and opts.force ~= true then
+    if checked[cache_key] then
+      maybe_schedule_freshness_probe(config, opts, installed_source_mtime)
+      return true, nil
+    end
     checked[cache_key] = true
+    maybe_schedule_freshness_probe(config, opts, installed_source_mtime)
     return true, nil
   end
 
+  local newest_mtime, newest_path = newest_source_state()
   local ok, install_err = start_install(config, {
     source_mtime = newest_mtime,
     on_complete = (not installed_exists or opts.force == true) and opts.on_build_complete or nil,

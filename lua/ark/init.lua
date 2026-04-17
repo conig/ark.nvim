@@ -139,6 +139,41 @@ local function ensure_startup_trace_cleanup(bufnr)
   })
 end
 
+local function record_startup_unlock(bufnr, source, unlock_opts)
+  local trace = startup_traces[bufnr]
+  if type(trace) ~= "table" or trace.main_buffer_unlocked == true then
+    return
+  end
+  if startup_tokens[bufnr] ~= trace.token then
+    cleanup_startup_trace(bufnr)
+    return
+  end
+
+  unlock_opts = unlock_opts or {}
+
+  local unlocked_at_ms = wallclock_ms()
+  trace.file = trace.file or tracked_startup_file(bufnr)
+  trace.filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or trace.filetype
+  trace.log_path = startup_log_path() or trace.log_path
+  trace.main_buffer_unlocked = true
+  trace.main_buffer_unlock_at_iso = iso_timestamp(unlocked_at_ms)
+  trace.main_buffer_unlock_at_ms = unlocked_at_ms
+  trace.main_buffer_unlock_elapsed_ms = math.max(0, monotonic_ms() - trace.started_mono_ms)
+  trace.main_buffer_unlock_source = source or "SafeState"
+  if type(unlock_opts.post_lsp_bootstrap_unlock_ms) == "number" then
+    trace.post_lsp_bootstrap_unlock_ms = math.max(0, unlock_opts.post_lsp_bootstrap_unlock_ms)
+  end
+
+  trace.log_path = append_startup_log("main_buffer_unlocked", {
+    { key = "bufnr", value = bufnr },
+    { key = "filetype", value = trace.filetype },
+    { key = "file", value = trace.file },
+    { key = "startup_elapsed_ms", value = trace.main_buffer_unlock_elapsed_ms },
+    { key = "post_lsp_bootstrap_unlock_ms", value = trace.post_lsp_bootstrap_unlock_ms },
+    { key = "source", value = trace.main_buffer_unlock_source },
+  }) or trace.log_path
+end
+
 local function begin_startup_trace(bufnr, token)
   local started_at_ms = wallclock_ms()
   startup_traces[bufnr] = {
@@ -205,43 +240,19 @@ local function startup_ready_for_safe_state(bufnr)
 end
 
 local function mark_startup_safe_state(bufnr, source)
-  local trace = startup_traces[bufnr]
-  if type(trace) ~= "table" or trace.main_buffer_unlocked == true then
-    return
-  end
-  if startup_tokens[bufnr] ~= trace.token then
-    cleanup_startup_trace(bufnr)
-    return
-  end
-
   local ready, _, lsp_status = startup_ready_for_safe_state(bufnr)
   if not ready then
     return
   end
 
-  local unlocked_at_ms = wallclock_ms()
-  trace.file = trace.file or tracked_startup_file(bufnr)
-  trace.filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or trace.filetype
-  trace.log_path = startup_log_path() or trace.log_path
-  trace.main_buffer_unlocked = true
-  trace.main_buffer_unlock_at_iso = iso_timestamp(unlocked_at_ms)
-  trace.main_buffer_unlock_at_ms = unlocked_at_ms
-  trace.main_buffer_unlock_elapsed_ms = math.max(0, monotonic_ms() - trace.started_mono_ms)
-  trace.main_buffer_unlock_source = source or "SafeState"
-
+  local post_lsp_bootstrap_unlock_ms = nil
   local detached_status = type(lsp_status) == "table" and lsp_status.detachedSessionStatus or nil
   if type(detached_status) == "table" and type(detached_status.lastBootstrapSuccessMs) == "number" then
-    trace.post_lsp_bootstrap_unlock_ms = math.max(0, unlocked_at_ms - detached_status.lastBootstrapSuccessMs)
+    post_lsp_bootstrap_unlock_ms = math.max(0, wallclock_ms() - detached_status.lastBootstrapSuccessMs)
   end
-
-  trace.log_path = append_startup_log("main_buffer_unlocked", {
-    { key = "bufnr", value = bufnr },
-    { key = "filetype", value = trace.filetype },
-    { key = "file", value = trace.file },
-    { key = "startup_elapsed_ms", value = trace.main_buffer_unlock_elapsed_ms },
-    { key = "post_lsp_bootstrap_unlock_ms", value = trace.post_lsp_bootstrap_unlock_ms },
-    { key = "source", value = trace.main_buffer_unlock_source },
-  }) or trace.log_path
+  record_startup_unlock(bufnr, source, {
+    post_lsp_bootstrap_unlock_ms = post_lsp_bootstrap_unlock_ms,
+  })
 end
 
 local function startup_status(bufnr)
@@ -1134,6 +1145,11 @@ local function start_managed_buffer(bufnr)
       return
     end
 
+    if options.auto_start_pane and not options.async_startup and type(lsp.prewarm) == "function" then
+      lsp.prewarm(options, bufnr)
+      return
+    end
+
     lsp.start_async(options, bufnr)
   end
 
@@ -1193,6 +1209,13 @@ end
 
 function M.setup(opts)
   options = merged_opts(options, opts)
+  if type(lsp.set_startup_ready_callback) == "function" then
+    lsp.set_startup_ready_callback(function(bufnr, payload)
+      record_startup_unlock(bufnr, type(payload) == "table" and payload.source or "LspBootstrap", {
+        post_lsp_bootstrap_unlock_ms = 0,
+      })
+    end)
+  end
   blink.configure_blink_sources()
   blink.register_lsp_commands()
   blink.patch_blink_context()
@@ -1314,6 +1337,10 @@ local function prewarm_current_buffer_lsp()
   -- Command-driven integrations often call `start_pane()` and `start_lsp()`
   -- back-to-back. Prewarm the detached client here so those phases do not
   -- serialize on the pane path.
+  if type(lsp.prewarm) == "function" then
+    return lsp.prewarm(options, bufnr)
+  end
+
   return lsp.start_async(options, bufnr)
 end
 
