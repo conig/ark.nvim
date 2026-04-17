@@ -17,7 +17,6 @@ pub mod diagnostics;
 pub mod diagnostics_syntax;
 pub mod document;
 pub mod document_context;
-pub mod events;
 pub mod folding_range;
 pub mod handlers;
 pub mod help;
@@ -38,8 +37,10 @@ pub mod state;
 pub mod state_handlers;
 pub mod statement_range;
 pub mod symbols;
-pub mod traits;
 pub mod util;
+pub use ark_lsp_support::events;
+pub use ark_lsp_support::notifications;
+pub use ark_lsp_support::traits;
 
 // These send LSP messages in a non-async and non-blocking way.
 // The LOG level is not timestamped so we're not using it.

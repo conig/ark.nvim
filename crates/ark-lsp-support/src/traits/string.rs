@@ -6,15 +6,12 @@
 //
 
 fn _fuzzy_matches(lhs: &str, rhs: &str) -> bool {
-    // get iterator over rhs string
     let mut it = rhs.chars();
     let mut rch = match it.next() {
         Some(rhs) => rhs,
         None => return true,
     };
 
-    // now iterate over lhs characters, looking for matches in rhs
-    // if we exhaust all of the characters in rhs, then we found a match
     for lch in lhs.chars() {
         if lch.eq_ignore_ascii_case(&rch) {
             rch = match it.next() {
@@ -24,7 +21,6 @@ fn _fuzzy_matches(lhs: &str, rhs: &str) -> bool {
         }
     }
 
-    // if we get here, the match failed (some rhs characters didn't match)
     false
 }
 

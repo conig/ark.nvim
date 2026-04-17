@@ -352,6 +352,7 @@ dependencies = [
  "air_r_syntax",
  "amalthea",
  "anyhow",
+ "ark-lsp-support",
  "ark_test",
  "assert_matches",
  "async-trait",
@@ -424,6 +425,7 @@ dependencies = [
  "amalthea",
  "anyhow",
  "ark",
+ "ark-lsp-support",
  "assert_matches",
  "async-trait",
  "base64 0.21.0",
@@ -478,6 +480,18 @@ dependencies = [
  "winsafe",
  "xdg",
  "yaml-rust",
+]
+
+[[package]]
+name = "ark-lsp-support"
+version = "0.1.250"
+dependencies = [
+ "anyhow",
+ "once_cell",
+ "stdext",
+ "tower-lsp",
+ "tracing",
+ "tree-sitter",
 ]
 
 [[package]]

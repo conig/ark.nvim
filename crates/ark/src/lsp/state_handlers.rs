@@ -60,6 +60,7 @@ use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::main_loop::DidCloseVirtualDocumentParams;
 use crate::lsp::main_loop::DidOpenVirtualDocumentParams;
 use crate::lsp::main_loop::LspState;
+pub(crate) use crate::lsp::notifications::ConsoleInputs;
 use crate::lsp::session_bridge::is_bridge_unavailable;
 use crate::lsp::session_bridge::is_ipc_auth_error;
 use crate::lsp::session_bridge::SessionBootstrap;
@@ -289,21 +290,6 @@ fn session_bridge_from_update(
 }
 
 // Handlers that mutate the world state
-
-/// Information sent from the kernel to the LSP after each top-level evaluation.
-#[derive(Debug)]
-pub struct ConsoleInputs {
-    /// List of console scopes, from innermost (global or debug) to outermost
-    /// scope. Currently the scopes are vectors of symbol names. TODO: In the
-    /// future, we should send structural information like search path, and let
-    /// the LSP query us for the contents so that the LSP can cache the
-    /// information.
-    pub console_scopes: Vec<Vec<String>>,
-
-    /// Packages currently installed in the library path. TODO: Should send
-    /// library paths instead and inspect and cache package information in the LSP.
-    pub installed_packages: Vec<String>,
-}
 
 // Handlers taking exclusive references to global state
 

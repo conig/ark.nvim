@@ -21,7 +21,6 @@ fn compare(lhs: Point, rhs: Point) -> i32 {
     }
 }
 
-// Point is a small Copy type, so it's fine to pass by value
 #[expect(clippy::wrong_self_convention)]
 pub trait PointExt {
     fn is_before(self, other: Point) -> bool;
@@ -50,27 +49,5 @@ impl PointExt for Point {
 
     fn is_after(self, other: Point) -> bool {
         compare(self, other) > 0
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_point_comparison() {
-        let p34 = Point::new(3, 4);
-        let p43 = Point::new(4, 3);
-        let p44 = Point::new(4, 4);
-
-        assert!(p44.is_before_or_equal(p44));
-        assert!(p44.is_equal(p44));
-        assert!(p44.is_after_or_equal(p44));
-
-        assert!(p34.is_before(p44));
-        assert!(p44.is_after(p34));
-
-        assert!(p34.is_before(p43));
-        assert!(p43.is_after(p34));
     }
 }

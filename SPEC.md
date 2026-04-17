@@ -156,7 +156,8 @@ current tree as a usable v1 product:
 
 1. simplify startup/readiness orchestration into a clearer canonical state model
 2. continue moving detached-LSP implementation code out of `crates/ark` so the
-   package boundary matches the runtime boundary
+   package boundary matches the runtime boundary, now that shared helper code
+   lives in `crates/ark-lsp-support`
 3. continue reducing inherited upstream surface area in retained kernel/Jupyter code
 
 ## Verification Standard

@@ -13,6 +13,7 @@ members = [
     "crates/amalthea",
     "crates/ark",
     "crates/ark-lsp",
+    "crates/ark-lsp-support",
     "crates/echo",
     "crates/harp",
     "crates/libr",
@@ -39,6 +40,7 @@ aether_syntax = { git = "https://github.com/posit-dev/air", package = "air_r_syn
 amalthea = { path = "crates/amalthea" }
 anyhow = "1.0.100"
 ark = { path = "crates/ark" }
+ark-lsp-support = { path = "crates/ark-lsp-support" }
 ark_test = { path = "crates/ark_test" }
 assert_matches = "1.5.0"
 async-trait = "0.1.66"

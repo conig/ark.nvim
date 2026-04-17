@@ -42,10 +42,12 @@ use crate::lsp::document::Document;
 use crate::lsp::handlers;
 use crate::lsp::indexer;
 use crate::lsp::inputs::library::Library;
+pub(crate) use crate::lsp::notifications::DidCloseVirtualDocumentParams;
+pub(crate) use crate::lsp::notifications::DidOpenVirtualDocumentParams;
+pub(crate) use crate::lsp::notifications::KernelNotification;
 use crate::lsp::state::RuntimeMode;
 use crate::lsp::state::WorldState;
 use crate::lsp::state_handlers;
-use crate::lsp::state_handlers::ConsoleInputs;
 use crate::url::ExtUrl;
 
 pub(crate) type TokioUnboundedSender<T> = tokio::sync::mpsc::UnboundedSender<T>;
@@ -92,32 +94,8 @@ pub(crate) enum Event {
 }
 
 #[derive(Debug)]
-#[expect(clippy::enum_variant_names)]
-pub(crate) enum KernelNotification {
-    DidChangeConsoleInputs(ConsoleInputs),
-    DidOpenVirtualDocument(DidOpenVirtualDocumentParams),
-    DidCloseVirtualDocument(DidCloseVirtualDocumentParams),
-}
-
-#[derive(Debug)]
 pub(crate) enum InternalEvent {
     DetachedSessionHydrationCompleted(state_handlers::DetachedSessionHydrationOutput),
-}
-
-/// A thin wrapper struct with a custom `Debug` method more appropriate for trace logs
-pub(crate) struct TraceKernelNotification<'a> {
-    inner: &'a KernelNotification,
-}
-
-#[derive(Debug)]
-pub(crate) struct DidOpenVirtualDocumentParams {
-    pub(crate) uri: String,
-    pub(crate) contents: String,
-}
-
-#[derive(Debug)]
-pub(crate) struct DidCloseVirtualDocumentParams {
-    pub(crate) uri: String,
 }
 
 #[derive(Debug)]
@@ -754,29 +732,6 @@ pub(crate) fn publish_diagnostics(uri: Url, diagnostics: Vec<Diagnostic>, versio
         diagnostics,
         version,
     ));
-}
-
-impl KernelNotification {
-    pub(crate) fn trace(&self) -> TraceKernelNotification<'_> {
-        TraceKernelNotification { inner: self }
-    }
-}
-
-impl std::fmt::Debug for TraceKernelNotification<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.inner {
-            KernelNotification::DidChangeConsoleInputs(_) => f.write_str("DidChangeConsoleInputs"),
-            KernelNotification::DidOpenVirtualDocument(params) => f
-                .debug_struct("DidOpenVirtualDocument")
-                .field("uri", &params.uri)
-                .field("contents", &"<snip>")
-                .finish(),
-            KernelNotification::DidCloseVirtualDocument(params) => f
-                .debug_struct("DidCloseVirtualDocument")
-                .field("uri", &params.uri)
-                .finish(),
-        }
-    }
 }
 
 #[derive(Debug)]

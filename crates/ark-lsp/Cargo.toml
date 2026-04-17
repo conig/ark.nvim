@@ -20,6 +20,7 @@ aether_syntax.workspace = true
 amalthea.workspace = true
 anyhow.workspace = true
 ark.workspace = true
+ark-lsp-support.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 biome_line_index.workspace = true

@@ -693,7 +693,11 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         tokio_unbounded_channel::<ConsoleNotification>();
 
     let init = move |client: Client| {
-        let state = GlobalState::new_with_runtime_mode(client, console_notification_tx.clone(), runtime_mode);
+        let state = GlobalState::new_with_runtime_mode(
+            client,
+            console_notification_tx.clone(),
+            runtime_mode,
+        );
         let events_tx = state.events_tx();
         let main_loop = state.start();
 

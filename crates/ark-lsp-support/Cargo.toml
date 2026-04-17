@@ -1,0 +1,20 @@
+[package]
+name = "ark-lsp-support"
+version = "0.1.250"
+description = "Shared helper types for ark.nvim LSP implementations."
+
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+once_cell.workspace = true
+stdext.workspace = true
+tracing.workspace = true
+tower-lsp.workspace = true
+tree-sitter.workspace = true
