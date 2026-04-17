@@ -19,6 +19,12 @@ Build or check the standalone LSP:
 cargo check -p ark-lsp
 ```
 
+Build the legacy upstream kernel binary only when you explicitly need it:
+
+```sh
+cargo build -p ark --features legacy-kernel-bin --bin ark
+```
+
 Run the full confidence suite:
 
 ```sh
@@ -44,6 +50,7 @@ Print the pane launcher command from Neovim:
 ## Notes
 
 - The repo still contains upstream Ark crates that are not part of the intended v1 Neovim product.
+- The legacy `ark` kernel binary is no longer part of the default workspace build.
 - `ark-lsp` currently defaults to `--runtime-mode detached`.
 - The Neovim plugin uses the repo-local `scripts/ark-r-launcher.sh` launcher.
 - The managed pane bootstraps the vendored `packages/arkbridge` runtime into the first writable library path by default, or `ARK_NVIM_SESSION_LIB` when set.

@@ -29,6 +29,8 @@ The intended workflow is:
 
 This repository still contains upstream kernel, Jupyter, Positron, and DAP
 code as retained extraction material. That is not the primary product surface.
+The legacy `ark` kernel binary is now treated as an opt-in extraction artifact
+rather than part of the default build or release path.
 
 ## Current Runtime Shape
 

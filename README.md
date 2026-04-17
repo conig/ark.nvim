@@ -14,6 +14,9 @@ This repo started as upstream Ark, so it still contains kernel, Positron, and ot
 - runtime-aware features cross the tmux boundary through the managed session bridge
 - REPL execution stays with `nvim-slimetree` and `vim-slime`
 
+The legacy `ark` kernel binary is retained only as an opt-in extraction artifact.
+Default builds and the supported runtime path target `ark-lsp`.
+
 ## Scope
 
 `ark.nvim` is for:
