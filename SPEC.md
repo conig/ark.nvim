@@ -57,6 +57,7 @@ Responsibilities:
 Primary surfaces:
 
 - [crates/ark-lsp/src/main.rs](/home/marine/repos/ark.nvim/crates/ark-lsp/src/main.rs)
+- [crates/ark-lsp-core/src/lsp/](/home/marine/repos/ark.nvim/crates/ark-lsp-core/src/lsp/)
 - [crates/ark/src/lsp/backend.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/backend.rs)
 - [crates/ark/src/lsp/state_handlers.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/state_handlers.rs)
 - [crates/ark/src/lsp/session_bridge.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/session_bridge.rs)
@@ -65,6 +66,8 @@ Responsibilities:
 
 - behave as a normal stdio LSP for Neovim
 - own the detached `ark-lsp` workspace package and executable entrypoint
+- keep the shared LSP implementation in one source-of-truth tree, with only the
+  attached/detached adapter files remaining local to `ark` and `ark-lsp`
 - provide diagnostics, hover, completion, signature help, symbols, and related
   static analysis features
 - hydrate detached runtime state from trusted session metadata and bridge
@@ -155,9 +158,10 @@ These are still legitimate follow-ups, but they are not required to treat the
 current tree as a usable v1 product:
 
 1. simplify startup/readiness orchestration into a clearer canonical state model
-2. continue moving detached-LSP implementation code out of `crates/ark` so the
-   package boundary matches the runtime boundary, now that shared helper code
-   lives in `crates/ark-lsp-support`
+2. turn `crates/ark-lsp-core` from a shared source tree into a true standalone
+   library crate by extracting the remaining host hooks (`console`, `r_task`,
+   `analysis`, `fixtures`, and `url`) and then shrinking the local adapters in
+   `crates/ark` and `crates/ark-lsp`
 3. continue reducing inherited upstream surface area in retained kernel/Jupyter code
 
 ## Verification Standard

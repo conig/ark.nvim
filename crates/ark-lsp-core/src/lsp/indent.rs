@@ -512,23 +512,9 @@ mod tests {
         assert_eq!(new_line_indent(&large_tab_cfg, 12), String::from("\t    "));
     }
 
-    fn read_text_asset(path: &str) -> String {
-        let mut asset = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        asset.push("src");
-        asset.push(path);
-        std::fs::read_to_string(asset).unwrap()
-    }
-
-    fn write_asset(path: &str, text: &str) {
-        let mut asset = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        asset.push("src");
-        asset.push(path);
-        std::fs::write(asset, text).unwrap();
-    }
-
     #[test]
     fn test_indent_snapshot() {
-        let orig = read_text_asset("lsp/snapshots/indent.R");
+        let orig = include_str!("snapshots/indent.R").to_string();
 
         let mut doc = test_doc(&orig);
 
@@ -539,8 +525,6 @@ mod tests {
                 apply_text_edits(edit, &mut doc);
             }
         }
-
-        write_asset("lsp/snapshots/indent.R", &doc.contents);
 
         if orig != doc.contents {
             panic!("Indentation snapshots have changed.\nPlease see git diff.");
