@@ -251,7 +251,7 @@ return {
       "jpalardy/vim-slime",
       "conig/nvim-slimetree",
     },
-    build = "cargo build -p ark --bin ark-lsp",
+    build = "cargo build -p ark-lsp",
     config = function()
       require("ark").setup({
         auto_start_pane = true,
@@ -330,7 +330,8 @@ For a single branch-confidence run, use:
 just verify
 ```
 
-That wrapper runs `cargo nextest`, `cargo clippy`, rebuilds `ark-lsp` once, and
+That wrapper runs `cargo nextest`, `cargo clippy`, rebuilds `ark-lsp` from the
+dedicated `ark-lsp` package once, and
 then executes the Neovim E2E suite serially through `scripts/run-e2e-test.sh`
 using the checked-in Blink-backed fixture at
 `tests/e2e/init.lua`.

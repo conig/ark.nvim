@@ -8,7 +8,7 @@ local function repo_root()
 end
 
 local ROOT = repo_root()
-local BUILD_CMD = { "cargo", "build", "-p", "ark", "--bin", "ark-lsp" }
+local BUILD_CMD = { "cargo", "build", "-p", "ark-lsp" }
 local SPINNER_FRAMES = { "[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]" }
 local SOURCE_SCAN_CACHE_TTL_MS = 1000
 local checked = {}
@@ -65,6 +65,7 @@ local function rust_source_paths()
     paths = vim.fn.systemlist({
       "rg",
       "--files",
+      ROOT .. "/crates/ark-lsp/src",
       ROOT .. "/crates/ark/src",
       ROOT .. "/crates/ark_test/src",
     })
@@ -73,6 +74,7 @@ local function rust_source_paths()
     end
   end
 
+  paths[#paths + 1] = ROOT .. "/crates/ark-lsp/Cargo.toml"
   paths[#paths + 1] = ROOT .. "/crates/ark/Cargo.toml"
   paths[#paths + 1] = ROOT .. "/crates/ark_test/Cargo.toml"
   paths[#paths + 1] = ROOT .. "/Cargo.lock"

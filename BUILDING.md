@@ -16,7 +16,7 @@ After that, ordinary `cargo` commands are fine.
 Build or check the standalone LSP:
 
 ```sh
-cargo check -p ark --bin ark-lsp
+cargo check -p ark-lsp
 ```
 
 Run the full confidence suite:

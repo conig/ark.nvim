@@ -24,7 +24,7 @@ Options:
 This wrapper is the canonical full-confidence verification path. It runs:
   1. cargo nextest
   2. cargo clippy
-  3. cargo build -p ark --bin ark-lsp
+  3. cargo build -p ark-lsp
   4. serial Neovim E2Es via scripts/run-e2e-test.sh
 EOF
 }
@@ -202,7 +202,7 @@ if [[ "$skip_e2e" -eq 0 ]]; then
     exit 2
   fi
 
-  if ! run_step "cargo build ark-lsp" cargo build -p ark --bin ark-lsp; then
+  if ! run_step "cargo build ark-lsp" cargo build -p ark-lsp; then
     build_ok=0
   fi
 

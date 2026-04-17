@@ -56,7 +56,7 @@ Responsibilities:
 
 Primary surfaces:
 
-- [crates/ark/src/bin/ark-lsp.rs](/home/marine/repos/ark.nvim/crates/ark/src/bin/ark-lsp.rs)
+- [crates/ark-lsp/src/main.rs](/home/marine/repos/ark.nvim/crates/ark-lsp/src/main.rs)
 - [crates/ark/src/lsp/backend.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/backend.rs)
 - [crates/ark/src/lsp/state_handlers.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/state_handlers.rs)
 - [crates/ark/src/lsp/session_bridge.rs](/home/marine/repos/ark.nvim/crates/ark/src/lsp/session_bridge.rs)
@@ -64,6 +64,7 @@ Primary surfaces:
 Responsibilities:
 
 - behave as a normal stdio LSP for Neovim
+- own the detached `ark-lsp` workspace package and executable entrypoint
 - provide diagnostics, hover, completion, signature help, symbols, and related
   static analysis features
 - hydrate detached runtime state from trusted session metadata and bridge
@@ -154,7 +155,9 @@ These are still legitimate follow-ups, but they are not required to treat the
 current tree as a usable v1 product:
 
 1. simplify startup/readiness orchestration into a clearer canonical state model
-2. continue reducing inherited upstream surface area in retained kernel/Jupyter code
+2. continue moving detached-LSP implementation code out of `crates/ark` so the
+   package boundary matches the runtime boundary
+3. continue reducing inherited upstream surface area in retained kernel/Jupyter code
 
 ## Verification Standard
 

@@ -102,7 +102,7 @@ function M.check()
   elseif executable(lsp_bin) then
     report.ok("Detached `ark-lsp` binary is discoverable on PATH: " .. lsp_bin)
   else
-    report.warn("Detached `ark-lsp` binary is not discoverable. Build with `cargo build -p ark --bin ark-lsp` or set `ARK_NVIM_LSP_BIN`.")
+    report.warn("Detached `ark-lsp` binary is not discoverable. Build with `cargo build -p ark-lsp` or set `ARK_NVIM_LSP_BIN`.")
   end
 
   ok_or_error(

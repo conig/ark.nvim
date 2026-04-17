@@ -413,6 +413,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ark-lsp"
+version = "0.1.250"
+dependencies = [
+ "anyhow",
+ "ark",
+ "tokio",
+]
+
+[[package]]
 name = "ark_test"
 version = "0.1.0"
 dependencies = [

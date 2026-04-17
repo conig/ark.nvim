@@ -12,7 +12,7 @@ After changing Rust code that affects detached LSP behavior, rebuild the actual 
 Use:
 
 ```sh
-cargo build -p ark --bin ark-lsp
+cargo build -p ark-lsp
 ```
 
 The Neovim plugin should also make this easier in repo-dev mode:

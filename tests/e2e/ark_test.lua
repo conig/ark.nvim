@@ -188,11 +188,18 @@ function M.assert_fresh_detached_lsp_binary(binary_path)
     M.fail("failed to stat detached ark-lsp binary: " .. normalized_binary)
   end
 
-  local source_paths = vim.fn.systemlist({ "rg", "--files", "crates/ark/src", "crates/ark_test/src" })
+  local source_paths = vim.fn.systemlist({
+    "rg",
+    "--files",
+    "crates/ark-lsp/src",
+    "crates/ark/src",
+    "crates/ark_test/src",
+  })
   if vim.v.shell_error ~= 0 then
     M.fail("failed to enumerate Rust sources for binary freshness check")
   end
 
+  source_paths[#source_paths + 1] = "crates/ark-lsp/Cargo.toml"
   source_paths[#source_paths + 1] = "crates/ark/Cargo.toml"
   source_paths[#source_paths + 1] = "crates/ark_test/Cargo.toml"
   source_paths[#source_paths + 1] = "Cargo.lock"
@@ -212,7 +219,7 @@ function M.assert_fresh_detached_lsp_binary(binary_path)
     M.fail(
       "detached ark-lsp binary is older than source files: "
         .. table.concat(newer, ", ")
-        .. ". Rebuild with: cargo build -p ark --bin ark-lsp"
+        .. ". Rebuild with: cargo build -p ark-lsp"
     )
   end
 end
