@@ -140,6 +140,10 @@ part of the default supported path.
   of reporting a false bootstrap failure.
 - Diagnostics remain syntax-first during detached startup and only become fully
   session-aware after hydration completes.
+- Missing-package diagnostics for `pkg::foo`, `library(pkg)`, and `require(pkg)`
+  should rely on the current installed-package snapshot or lazy library-path
+  metadata, without forcing an eager installed-package enumeration on the
+  startup path.
 - R Markdown / Quarto fenced chunks work for completion and diagnostics, and
   inline `` `r ...` `` expressions complete as R code.
 - Blink integration stays on the normal `lsp` source, with Ark-specific provider

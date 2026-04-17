@@ -710,15 +710,8 @@ fn recurse_namespace(
     // lazy library resolution in detached mode where bootstrap intentionally
     // avoids enumerating every installed package for startup speed.
     let package = lhs.node_as_str(&context.doc.contents)?;
-    let package_exists = context.installed_packages.contains(package) ||
-        (!context.library.library_paths.is_empty() && context.library.get(package).is_some());
-
-    if !package_exists {
-        let range = lhs.range();
-        let range = context.doc.lsp_range_from_tree_sitter_range(range)?;
-        let message = format!("Package '{}' is not installed.", package);
-        let diagnostic = Diagnostic::new_simple(range, message);
-        diagnostics.push(diagnostic);
+    if !package_is_installed(package, context) {
+        push_missing_package_diagnostic(lhs, package, context, diagnostics)?;
     }
 
     // Check for a symbol in this namespace.
@@ -868,7 +861,7 @@ fn recurse_call(
     match fun {
         "library" | "require" => {
             // Track symbols exported by `library()` or `require()` calls
-            if let Err(err) = handle_package_attach_call(node, context) {
+            if let Err(err) = handle_package_attach_call(node, context, diagnostics) {
                 lsp::log_warn!("Can't handle attach call: {err:?}");
             }
         },
@@ -886,7 +879,30 @@ fn recurse_call(
     ().ok()
 }
 
-fn handle_package_attach_call(node: Node, context: &mut DiagnosticContext) -> anyhow::Result<()> {
+fn package_is_installed(package: &str, context: &DiagnosticContext) -> bool {
+    context.installed_packages.contains(package) ||
+        (!context.library.library_paths.is_empty() && context.library.get(package).is_some())
+}
+
+fn push_missing_package_diagnostic(
+    package_node: Node,
+    package_name: &str,
+    context: &DiagnosticContext,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> anyhow::Result<()> {
+    let range = package_node.range();
+    let range = context.doc.lsp_range_from_tree_sitter_range(range)?;
+    let message = format!("Package '{}' is not installed.", package_name);
+    let diagnostic = Diagnostic::new_simple(range, message);
+    diagnostics.push(diagnostic);
+    Ok(())
+}
+
+fn handle_package_attach_call(
+    node: Node,
+    context: &mut DiagnosticContext,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> anyhow::Result<()> {
     // Find the first argument (package name). Positionally for now, no attempt
     // at argument matching whatsoever.
     let Some(package_node) = node.arguments_values().flatten().next() else {
@@ -907,7 +923,20 @@ fn handle_package_attach_call(node: Node, context: &mut DiagnosticContext) -> an
     let package_name = package_node.get_identifier_or_string_text(&context.doc.contents)?;
     let attach_pos = node.end_position();
 
-    let package = insert_package_exports(package_name, attach_pos, context)?;
+    let package = match context.library.get(package_name) {
+        Some(package) => package,
+        None if context.installed_packages.contains(package_name) => return Ok(()),
+        None => {
+            push_missing_package_diagnostic(package_node, package_name, context, diagnostics)?;
+            return Ok(());
+        },
+    };
+
+    context
+        .library_symbols
+        .entry(attach_pos)
+        .or_default()
+        .extend(package.exported_symbols.iter().cloned());
 
     // Also attach packages from `Depends` field
     for package_name in package.description.depends.iter() {
@@ -1371,6 +1400,54 @@ mtcars$mp";
                     .any(|message| message.contains("Package 'base' is not installed.")),
                 "unexpected diagnostics: {messages:?}"
             );
+            assert!(
+                !messages
+                    .iter()
+                    .any(|message| message.contains("Package 'corx' is not installed.")),
+                "unexpected diagnostics: {messages:?}"
+            );
+        })
+    }
+
+    #[test]
+    fn test_missing_package_diagnostic_for_library_and_require_calls() {
+        r_task(|| {
+            // Mirror the editor-visible case: a bare package name inside
+            // `library()` / `require()` should surface a missing-package
+            // diagnostic instead of failing silently.
+            let state = WorldState {
+                console_scopes: vec![vec![String::from("library"), String::from("require")]],
+                ..Default::default()
+            };
+
+            let document = Document::new("library(bollocks)\nrequire(bollocks)\n", None);
+            let diagnostics = generate_diagnostics(document, state);
+            let messages: Vec<_> = diagnostics.iter().map(|d| d.message.clone()).collect();
+
+            assert_eq!(messages.len(), 2, "unexpected diagnostics: {messages:?}");
+            assert!(messages
+                .iter()
+                .all(|message| message == "Package 'bollocks' is not installed."));
+        })
+    }
+
+    #[test]
+    fn test_library_call_diagnostics_use_library_metadata_for_package_existence() {
+        r_task(|| {
+            // Reproduces detached mode after lean bootstrap: package names were
+            // not eagerly enumerated, but library paths were provided.
+            let (corx_library, _) = create_temp_library_package("corx", "export(corx)\n");
+
+            let state = WorldState {
+                console_scopes: vec![vec![String::from("library"), String::from("require")]],
+                library: Library::new(vec![corx_library.path().to_path_buf()]),
+                ..Default::default()
+            };
+
+            let document = Document::new("library(corx)\nrequire(corx)\n", None);
+            let diagnostics = generate_diagnostics(document, state);
+            let messages: Vec<_> = diagnostics.iter().map(|d| d.message.clone()).collect();
+
             assert!(
                 !messages
                     .iter()
