@@ -1,5 +1,5 @@
-use ark::lsp::backend;
-use ark::lsp::state::RuntimeMode;
+use ark_lsp::lsp::backend;
+use ark_lsp::lsp::state::RuntimeMode;
 
 fn print_usage() {
     println!(

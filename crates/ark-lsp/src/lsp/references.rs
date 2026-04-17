@@ -1,0 +1,230 @@
+//
+// references.rs
+//
+// Copyright (C) 2022-2026 Posit Software, PBC. All rights reserved.
+//
+//
+
+use std::path::Path;
+
+use anyhow::anyhow;
+use stdext::result::ResultExt;
+use stdext::unwrap::IntoResult;
+use stdext::*;
+use tower_lsp::lsp_types::Location;
+use tower_lsp::lsp_types::Position;
+use tower_lsp::lsp_types::Range;
+use tower_lsp::lsp_types::ReferenceParams;
+use tower_lsp::lsp_types::Url;
+use tree_sitter::Node;
+use tree_sitter::Point;
+use walkdir::WalkDir;
+
+use crate::lsp;
+use crate::lsp::document::Document;
+use crate::lsp::indexer::filter_entry;
+use crate::lsp::state::with_document;
+use crate::lsp::state::WorldState;
+use crate::lsp::traits::cursor::TreeCursorExt;
+use crate::lsp::traits::node::NodeExt;
+use crate::lsp::traits::url::UrlExt;
+use crate::treesitter::ExtractOperatorType;
+use crate::treesitter::NodeType;
+use crate::treesitter::NodeTypeExt;
+
+#[derive(Debug, PartialEq)]
+enum ReferenceKind {
+    Symbol, // a regular R symbol
+    Dollar, // a dollar name, following '$'
+    At,     // a slot name, following '@'
+}
+
+// Assuming `x` is an `identifier`, is it the RHS of a `$` or `@`?
+fn node_reference_kind(x: &Node) -> ReferenceKind {
+    let Some(parent) = x.parent() else {
+        // No `parent`, must be a regular symbol
+        return ReferenceKind::Symbol;
+    };
+
+    let parent_type = parent.node_type();
+
+    if !matches!(parent_type, NodeType::ExtractOperator(_)) {
+        // Parent not `$` or `@`
+        return ReferenceKind::Symbol;
+    }
+
+    // Need to check that we actually came from the RHS
+    let Some(rhs) = parent.child_by_field_name("rhs") else {
+        return ReferenceKind::Symbol;
+    };
+    if &rhs != x {
+        return ReferenceKind::Symbol;
+    };
+
+    match parent_type {
+        NodeType::ExtractOperator(ExtractOperatorType::Dollar) => ReferenceKind::Dollar,
+        NodeType::ExtractOperator(ExtractOperatorType::At) => ReferenceKind::At,
+        _ => std::unreachable!(),
+    }
+}
+
+struct Context {
+    kind: ReferenceKind,
+    symbol: String,
+}
+
+fn add_reference(
+    node: &Node,
+    document: &Document,
+    path: &Path,
+    locations: &mut Vec<Location>,
+) -> anyhow::Result<()> {
+    let start = document.lsp_position_from_tree_sitter_point(node.start_position())?;
+    let end = document.lsp_position_from_tree_sitter_point(node.end_position())?;
+
+    let location = Location::new(
+        Url::from_file_path(path).expect("valid path"),
+        Range::new(start, end),
+    );
+    locations.push(location);
+    Ok(())
+}
+
+fn found_match(node: &Node, contents: &str, context: &Context) -> bool {
+    if !node.is_identifier() {
+        return false;
+    }
+
+    let symbol = node.node_to_string(contents).unwrap();
+    if symbol != context.symbol {
+        return false;
+    }
+
+    context.kind == node_reference_kind(node)
+}
+
+fn build_context(uri: &Url, position: Position, state: &WorldState) -> anyhow::Result<Context> {
+    // Unwrap the URL.
+    let path = uri.file_path()?;
+
+    // Figure out the identifier we're looking for.
+    let context = with_document(path.as_path(), state, |document| {
+        let ast = &document.ast;
+        let contents = document.contents.as_str();
+        let point = document.tree_sitter_point_from_lsp_position(position)?;
+
+        let mut node = ast
+            .root_node()
+            .descendant_for_point_range(point, point)
+            .into_result()?;
+
+        // Check and see if we got an identifier. If we didn't, we might need to use
+        // some heuristics to look around. Unfortunately, it seems like if you double-click
+        // to select an identifier, and then use Right Click -> Find All References, the
+        // position received by the LSP maps to the _end_ of the selected range, which
+        // is technically not part of the associated identifier's range. In addition, we
+        // can't just subtract 1 from the position column since that would then fail to
+        // resolve the correct identifier when the cursor is located at the start of the
+        // identifier.
+        if !node.is_identifier() && point.column > 0 {
+            let point = Point::new(point.row, point.column - 1);
+            node = ast
+                .root_node()
+                .descendant_for_point_range(point, point)
+                .into_result()?;
+        }
+
+        // double check that we found an identifier
+        if !node.is_identifier() {
+            return Err(anyhow!(
+                "couldn't find an identifier associated with point {point:?}",
+            ));
+        }
+
+        let kind = node_reference_kind(&node);
+
+        // return identifier text contents
+        let symbol = node.node_to_string(contents)?;
+
+        Ok(Context { kind, symbol })
+    });
+
+    context
+}
+
+fn find_references_in_folder(
+    context: &Context,
+    path: &Path,
+    locations: &mut Vec<Location>,
+    state: &WorldState,
+) {
+    let walker = WalkDir::new(path);
+    for entry in walker.into_iter().filter_entry(filter_entry) {
+        let entry = unwrap!(entry, Err(_) => { continue; });
+        let path = entry.path();
+        let ext = unwrap!(path.extension(), None => { continue; });
+        if ext != "r" && ext != "R" {
+            continue;
+        }
+
+        lsp::log_info!("found R file {}", path.display());
+        let result = with_document(path, state, |document| {
+            find_references_in_document(context, path, document, locations)
+        });
+
+        match result {
+            Ok(result) => result,
+            Err(_error) => {
+                lsp::log_warn!("error retrieving document for path {}", path.display());
+                continue;
+            },
+        }
+    }
+}
+
+fn find_references_in_document(
+    context: &Context,
+    path: &Path,
+    document: &Document,
+    locations: &mut Vec<Location>,
+) -> anyhow::Result<()> {
+    let ast = &document.ast;
+    let contents = document.contents.as_str();
+
+    let mut cursor = ast.walk();
+    cursor.recurse(|node| {
+        if found_match(&node, contents, context) {
+            add_reference(&node, document, path, locations).log_err();
+        }
+
+        true
+    });
+    Ok(())
+}
+
+pub(crate) fn find_references(
+    params: ReferenceParams,
+    state: &WorldState,
+) -> anyhow::Result<Vec<Location>> {
+    // Create our locations vector.
+    let mut locations: Vec<Location> = Vec::new();
+
+    // Extract relevant parameters.
+    let uri = params.text_document_position.text_document.uri;
+    let position = params.text_document_position.position;
+
+    // Figure out what we're looking for.
+    let context = unwrap!(build_context(&uri, position, state), Err(err) => {
+        return Err(anyhow!("Failed to find build context at position {position:?}: {err:?}"));
+    });
+
+    // Now, start searching through workspace folders for references to that identifier.
+    for folder in state.workspace.folders.iter() {
+        if let Ok(path) = folder.to_file_path() {
+            lsp::log_info!("searching references in folder {}", path.display());
+            find_references_in_folder(&context, &path, &mut locations, state);
+        }
+    }
+
+    Ok(locations)
+}
