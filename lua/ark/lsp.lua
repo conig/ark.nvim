@@ -28,6 +28,7 @@ local client_status_payloads = {}
 local client_status_attempt_ms = {}
 local managed_client_ids = {}
 local pending_startup_bootstraps = {}
+local bootstrap_client_session
 local session_watch_finished
 local session_poll_finished
 local startup_ready_callback = nil
@@ -864,7 +865,7 @@ local function bootstrap_timeout_ms(opts)
   return math.max(timeout_ms, 1000)
 end
 
-local function bootstrap_client_session(client, opts, bufnr, payload)
+bootstrap_client_session = function(client, opts, bufnr, payload)
   if not live_client(client) then
     return false, "ark_lsp client unavailable"
   end
