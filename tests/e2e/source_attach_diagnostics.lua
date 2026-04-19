@@ -67,6 +67,13 @@ ark_test.wait_for("managed R repl ready", 20000, function()
   return require("ark").status().repl_ready == true
 end)
 
+ark_test.wait_for("detached session bootstrap", 10000, function()
+  local status = require("ark").status({ include_lsp = true })
+  local lsp_status = status and status.lsp_status or {}
+  local detached_status = lsp_status and lsp_status.detachedSessionStatus or {}
+  return detached_status.lastBootstrapSuccessMs ~= nil
+end)
+
 ark_test.wait_for("tar_map diagnostic after hydration", 10000, function()
   return contains(diagnostic_messages(), diagnostic_message)
 end)

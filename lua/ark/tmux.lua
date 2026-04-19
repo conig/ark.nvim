@@ -425,14 +425,21 @@ local function read_startup_status(session, config)
     return vim.deepcopy(cached.payload)
   end
 
+  local cached_payload = type(cached) == "table" and cached.payload or nil
   local lines = vim.fn.readfile(path)
   if type(lines) ~= "table" or #lines == 0 then
+    if type(cached_payload) == "table" then
+      return vim.deepcopy(cached_payload)
+    end
     startup_status_cache[path] = nil
     return nil
   end
 
   local ok, payload = pcall(vim.json.decode, table.concat(lines, "\n"))
   if not ok or type(payload) ~= "table" then
+    if type(cached_payload) == "table" then
+      return vim.deepcopy(cached_payload)
+    end
     startup_status_cache[path] = nil
     return nil
   end

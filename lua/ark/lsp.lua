@@ -559,12 +559,12 @@ local function payload_present(payload)
   return type(payload) == "table" and next(payload) ~= nil
 end
 
-local function payload_needs_startup_bootstrap(payload)
-  if not payload_present(payload) then
+local function keep_startup_bootstrap_pending(payload, hydrated)
+  if hydrated == true or not payload_present(payload) then
     return false
   end
 
-  return payload.status ~= "ready" or payload.replReady ~= true
+  return payload.status ~= "error" and (payload.status ~= "ready" or payload.replReady ~= true)
 end
 
 local function startup_bootstrap_pending(bufnr)
@@ -832,12 +832,29 @@ local function schedule_session_syncs(opts, bufnr, client_id)
 
   local function attempt(index)
     local client = vim.lsp.get_client_by_id(client_id)
-    if not live_client(client) then
+    if not client or (client.is_stopped and client:is_stopped()) then
       return
     end
 
     local payload = session_payload(opts, { fast = true })
-    notify_client_session(client, payload)
+    if live_client(client) then
+      notify_client_session(client, payload)
+
+      if startup_bootstrap_pending(bufnr) and payload.status == "ready" and payload.replReady == true then
+        local hydrated, bootstrap_err = bootstrap_client_session(client, opts, bufnr, payload)
+        if bootstrap_err then
+          vim.notify("ark.nvim session bootstrap failed: " .. bootstrap_err, vim.log.levels.WARN, {
+            title = "ark.nvim",
+          })
+        elseif hydrated then
+          cache_client_session(client, payload)
+          set_startup_bootstrap_pending(bufnr, false)
+          notify_startup_ready(bufnr, {
+            source = "LspBootstrap",
+          })
+        end
+      end
+    end
 
     if session_watch_finished(opts, bufnr, payload) or session_poll_finished(opts, bufnr, payload) then
       return
@@ -1057,9 +1074,13 @@ function M.config(opts, bufnr, _config_opts)
   local defer_session_bootstrap = _config_opts and _config_opts.defer_session_bootstrap == true or false
   local cmd_env = nil
   if not defer_session_bootstrap then
-    cmd_env = type(startup_snapshot) == "table"
-      and startup_snapshot.cmd_env
-      or tmux.bridge_env(opts.tmux, startup_snapshot)
+    local config_snapshot = type(startup_snapshot) == "table"
+      and startup_snapshot
+      or session_snapshot(opts, {
+        fast = true,
+        validate_bridge = true,
+      })
+    cmd_env = type(config_snapshot) == "table" and config_snapshot.cmd_env or nil
   end
 
   return {
@@ -1150,7 +1171,7 @@ local function start_client(opts, bufnr, start_opts)
       ensure_session_watch(opts, bufnr, startup_payload, {
         notify_immediately = hydrated ~= true,
       })
-      set_startup_bootstrap_pending(bufnr, hydrated ~= true and payload_needs_startup_bootstrap(startup_payload))
+      set_startup_bootstrap_pending(bufnr, keep_startup_bootstrap_pending(startup_payload, hydrated))
       return client.id
     end
   end
@@ -1202,7 +1223,10 @@ local function start_client(opts, bufnr, start_opts)
   ensure_session_watch(opts, bufnr, startup_payload, {
     notify_immediately = hydrated ~= true,
   })
-  set_startup_bootstrap_pending(bufnr, hydrated ~= true and payload_needs_startup_bootstrap(startup_payload))
+  set_startup_bootstrap_pending(bufnr, keep_startup_bootstrap_pending(startup_payload, hydrated))
+  if hydrated ~= true and not live_client(client) then
+    schedule_session_syncs(opts, bufnr, client_id)
+  end
   return client_id
 end
 
