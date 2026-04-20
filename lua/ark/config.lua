@@ -56,6 +56,7 @@ function M.defaults()
   local session_lib_path = expand_candidate(vim.env.ARK_NVIM_SESSION_LIB)
     or (vim.fn.stdpath("data") .. "/ark/r-lib")
 
+  local session_backend = vim.env.ARK_NVIM_SESSION_BACKEND or "tmux"
   local session_kind = vim.env.ARK_NVIM_SESSION_KIND or "ark"
 
   return {
@@ -69,6 +70,10 @@ function M.defaults()
       cmd = { lsp_bin, "--runtime-mode", "detached" },
       root_markers = { ".git", ".Rproj", "DESCRIPTION", "renv.lock" },
       restart_wait_ms = 2000,
+    },
+    session = {
+      backend = session_backend,
+      kind = session_kind,
     },
     tmux = {
       launcher = launcher,

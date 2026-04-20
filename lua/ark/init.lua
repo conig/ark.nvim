@@ -3,8 +3,8 @@ local bridge = require("ark.bridge")
 local config = require("ark.config")
 local dev = require("ark.dev")
 local lsp = require("ark.lsp")
+local session_backend = require("ark.session")
 local snippets = require("ark.snippets")
-local tmux = require("ark.tmux")
 local view = require("ark.view")
 local uv = vim.uv or vim.loop
 
@@ -60,15 +60,12 @@ local function tracked_startup_file(bufnr)
 end
 
 local function startup_log_path()
-  if not options or type(options.tmux) ~= "table" then
+  local runtime_config = session_backend.runtime_config(options)
+  if type(runtime_config) ~= "table" then
     return nil
   end
 
-  if type(tmux.startup_status_authoritative) ~= "function" then
-    return nil
-  end
-
-  local status = tmux.startup_status_authoritative(options.tmux)
+  local status = session_backend.startup_status_authoritative(options)
   if type(status) ~= "table" then
     return nil
   end
@@ -225,7 +222,7 @@ local function startup_ready_for_safe_state(bufnr)
 
   local tmux_status = nil
   if options.auto_start_pane == true then
-    tmux_status = tmux.status(options.tmux)
+    tmux_status = session_backend.status(options)
     if type(tmux_status) ~= "table" or tmux_status.repl_ready ~= true then
       return false, tmux_status, nil
     end
@@ -971,10 +968,11 @@ local function open_readonly_float(text, opts)
 end
 
 local function wait_for_help_runtime(bufnr)
-  local timeout_ms = tonumber(options.tmux.bridge_wait_ms or 5000) or 5000
+  local runtime_config = session_backend.runtime_config(options) or {}
+  local timeout_ms = tonumber(runtime_config.bridge_wait_ms or 5000) or 5000
 
   return vim.wait(timeout_ms, function()
-    local tmux_status = tmux.status(options.tmux)
+    local tmux_status = session_backend.status(options)
     local lsp_status = lsp.status(options, bufnr)
     local bridge_ready = type(tmux_status) == "table" and tmux_status.bridge_ready == true
     local detached_status = type(lsp_status) == "table" and lsp_status.detachedSessionStatus or nil
@@ -1012,7 +1010,7 @@ local function ensure_runtime_ready(bufnr, label)
     return nil, bridge_err
   end
 
-  local _, pane_err = tmux.start(options)
+  local _, pane_err = session_backend.start(options)
   if pane_err then
     return nil, pane_err
   end
@@ -1049,12 +1047,13 @@ end
 
 ensure_bridge_runtime = function(bridge_opts)
   bridge_opts = bridge_opts or {}
-  if not options or type(options.tmux) ~= "table" then
+  local runtime_config = session_backend.runtime_config(options)
+  if type(runtime_config) ~= "table" then
     return true
   end
 
   local completed = nil
-  local ok, err = bridge.ensure_current_runtime(options.tmux, {
+  local ok, err = bridge.ensure_current_runtime(runtime_config, {
     on_build_complete = function(result)
       completed = result
       if type(bridge_opts.on_build_complete) == "function" then
@@ -1158,7 +1157,7 @@ local function start_managed_buffer(bufnr)
       return
     end
 
-    local _, pane_err = tmux.start(options)
+    local _, pane_err = session_backend.start(options)
     if pane_err then
       notify(pane_err, vim.log.levels.WARN)
       return
@@ -1286,7 +1285,7 @@ function M.setup(opts)
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = group,
     callback = function()
-      tmux.stop()
+      session_backend.stop(options)
     end,
     desc = "Stop ark.nvim managed tmux pane on exit",
   })
@@ -1309,7 +1308,13 @@ function M.setup(opts)
   end, { desc = "Rebuild the detached ark-lsp binary used by ark.nvim" })
 
   vim.api.nvim_create_user_command("ArkBuildBridge", function()
-    local ok, err = bridge.build_session_runtime(options.tmux, {})
+    local runtime_config, config_err = session_backend.runtime_config(options)
+    if type(runtime_config) ~= "table" then
+      notify(config_err, vim.log.levels.ERROR)
+      return
+    end
+
+    local ok, err = bridge.build_session_runtime(runtime_config, {})
     if not ok then
       notify(err, vim.log.levels.ERROR)
     end
@@ -1325,7 +1330,7 @@ end
 
 function M.pane_command()
   ensure_setup()
-  return tmux.pane_command(options.tmux)
+  return session_backend.pane_command(options)
 end
 
 local function prewarm_current_buffer_lsp()
@@ -1354,7 +1359,7 @@ function M.start_pane()
   if not bridge_ok then
     return nil, bridge_err
   end
-  local pane_id, err = tmux.start(options)
+  local pane_id, err = session_backend.start(options)
   if not pane_id then
     notify(err, vim.log.levels.ERROR)
     return nil, err
@@ -1373,7 +1378,7 @@ function M.new_tab()
   if not bridge_ok then
     return nil, bridge_err
   end
-  local pane_id, err = tmux.tab_new(options)
+  local pane_id, err = session_backend.tab_new(options)
   if not pane_id then
     notify(err, vim.log.levels.ERROR)
     return nil, err
@@ -1385,7 +1390,7 @@ end
 
 function M.next_tab()
   ensure_setup()
-  local pane_id, err = tmux.tab_next(options)
+  local pane_id, err = session_backend.tab_next(options)
   if not pane_id then
     notify(err, vim.log.levels.ERROR)
     return nil, err
@@ -1397,7 +1402,7 @@ end
 
 function M.prev_tab()
   ensure_setup()
-  local pane_id, err = tmux.tab_prev(options)
+  local pane_id, err = session_backend.tab_prev(options)
   if not pane_id then
     notify(err, vim.log.levels.ERROR)
     return nil, err
@@ -1409,7 +1414,7 @@ end
 
 function M.go_tab(index)
   ensure_setup()
-  local pane_id, err = tmux.tab_go(index, options)
+  local pane_id, err = session_backend.tab_go(index, options)
   if not pane_id then
     notify(err, vim.log.levels.ERROR)
     return nil, err
@@ -1421,7 +1426,7 @@ end
 
 function M.close_tab()
   ensure_setup()
-  local pane_id, err = tmux.tab_close(options)
+  local pane_id, err = session_backend.tab_close(options)
   if err then
     notify(err, vim.log.levels.ERROR)
     return nil, err
@@ -1433,17 +1438,17 @@ end
 
 function M.list_tabs()
   ensure_setup()
-  return tmux.tab_list()
+  return session_backend.tab_list(options)
 end
 
 function M.tab_state()
   ensure_setup()
-  return tmux.tab_state()
+  return session_backend.tab_state(options)
 end
 
 function M.tab_badge()
   ensure_setup()
-  return tmux.tab_badge()
+  return session_backend.tab_badge(options)
 end
 
 function M.restart_pane()
@@ -1455,7 +1460,7 @@ function M.restart_pane()
   if not bridge_ok then
     return nil, bridge_err
   end
-  local pane_id, err = tmux.restart(options)
+  local pane_id, err = session_backend.restart(options)
   if not pane_id then
     notify(err, vim.log.levels.ERROR)
     return nil, err
@@ -1467,7 +1472,7 @@ end
 
 function M.stop_pane()
   ensure_setup()
-  tmux.stop()
+  session_backend.stop(options)
   sync_sessions_soon()
 end
 
@@ -1514,7 +1519,7 @@ local function show_help_page(bufnr, topic)
     return nil, bridge_err
   end
 
-  local _, pane_err = tmux.start(options)
+  local _, pane_err = session_backend.start(options)
   if pane_err then
     notify(pane_err, vim.log.levels.ERROR)
     return nil, pane_err
@@ -1572,7 +1577,7 @@ function M.help_pane(bufnr)
     return nil, bridge_err
   end
 
-  local pane_id, pane_err = tmux.start(options)
+  local pane_id, pane_err = session_backend.start(options)
   if not pane_id then
     notify(pane_err, vim.log.levels.ERROR)
     return nil, pane_err
@@ -1580,8 +1585,9 @@ function M.help_pane(bufnr)
 
   lsp.sync_sessions(options)
 
-  local repl_ready = vim.wait(tonumber(options.tmux.bridge_wait_ms or 5000) or 5000, function()
-    local status = tmux.status(options.tmux)
+  local runtime_config = session_backend.runtime_config(options) or {}
+  local repl_ready = vim.wait(tonumber(runtime_config.bridge_wait_ms or 5000) or 5000, function()
+    local status = session_backend.status(options)
     return type(status) == "table" and status.repl_ready == true
   end, 100, false)
   if not repl_ready then
@@ -1590,7 +1596,7 @@ function M.help_pane(bufnr)
     return nil, err
   end
 
-  local ok, send_err = tmux.send_text(help_expression(topic))
+  local ok, send_err = session_backend.send_text(options, help_expression(topic))
   if not ok then
     notify(send_err, vim.log.levels.ERROR)
     return nil, send_err
@@ -1654,7 +1660,7 @@ function M.refresh(bufnr)
   if options.auto_start_pane then
     local bridge_ok = ensure_bridge_runtime({})
     if bridge_ok then
-      local _, pane_err = tmux.start(options)
+      local _, pane_err = session_backend.start(options)
       if pane_err then
         notify(pane_err, vim.log.levels.WARN)
       end
@@ -1676,16 +1682,23 @@ end
 
 function M.build_bridge()
   ensure_setup()
-  return bridge.build_session_runtime(options.tmux, {})
+  local runtime_config, config_err = session_backend.runtime_config(options)
+  if type(runtime_config) ~= "table" then
+    return nil, config_err
+  end
+
+  return bridge.build_session_runtime(runtime_config, {})
 end
 
 function M.status(opts)
   ensure_setup()
   opts = opts or {}
-  local status = tmux.status(options.tmux)
+  local status = session_backend.status(options)
   status.startup = startup_status(vim.api.nvim_get_current_buf())
   status.lsp_cmd = options.lsp.cmd
-  status.launcher = options.tmux.launcher
+  local runtime_config = session_backend.runtime_config(options) or {}
+  status.backend = session_backend.backend_name(options)
+  status.launcher = runtime_config.launcher
   if opts.include_lsp == true then
     status.lsp_status = lsp.status(options)
     local detached_status = type(status.lsp_status) == "table" and status.lsp_status.detachedSessionStatus or nil

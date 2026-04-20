@@ -1,6 +1,6 @@
 local M = {}
 local dev = require("ark.dev")
-local tmux = require("ark.tmux")
+local session_backend = require("ark.session")
 local uv = vim.uv or vim.loop
 
 local SESSION_UPDATE_METHOD = "ark/updateSession"
@@ -605,61 +605,52 @@ local function session_snapshot(opts, snapshot_opts)
     return snapshot_opts.snapshot
   end
 
-  if type(tmux.startup_snapshot) == "function" then
-    local snapshot = tmux.startup_snapshot(opts.tmux, {
-      include_prompt_ready = snapshot_opts.fast ~= true,
-      validate_bridge = snapshot_opts.validate_bridge == true,
-      bridge_timeout_ms = snapshot_opts.bridge_timeout_ms,
-    })
-    if type(snapshot) == "table" then
-      return snapshot
-    end
+  local snapshot = session_backend.startup_snapshot(opts, {
+    include_prompt_ready = snapshot_opts.fast ~= true,
+    validate_bridge = snapshot_opts.validate_bridge == true,
+    bridge_timeout_ms = snapshot_opts.bridge_timeout_ms,
+  })
+  if type(snapshot) == "table" then
+    return snapshot
   end
 
-  local tmux_status = nil
-  if snapshot_opts.fast ~= true and tmux.status then
-    tmux_status = tmux.status(opts.tmux)
+  local backend_status = nil
+  if snapshot_opts.fast ~= true then
+    backend_status = session_backend.status(opts)
   end
-  local session = type(tmux_status) == "table" and tmux_status.session or nil
-  if type(session) ~= "table" and type(tmux.session) == "function" then
-    session = tmux.session()
+  local session = type(backend_status) == "table" and backend_status.session or nil
+  if type(session) ~= "table" then
+    session = session_backend.session(opts)
   end
   if type(session) ~= "table" then
     return nil
   end
 
-  local status_path = type(tmux_status) == "table" and tmux_status.startup_status_path or nil
-  if (type(status_path) ~= "string" or status_path == "")
-    and type(tmux.startup_status_path) == "function"
-  then
-    status_path = tmux.startup_status_path(opts.tmux)
+  local status_path = type(backend_status) == "table" and backend_status.startup_status_path or nil
+  if type(status_path) ~= "string" or status_path == "" then
+    status_path = session_backend.startup_status_path(opts)
   end
   if type(status_path) ~= "string" or status_path == "" then
     return nil
   end
 
-  local startup_status = type(tmux_status) == "table" and tmux_status.startup_status or nil
-  if snapshot_opts.fast ~= true
-    and type(startup_status) ~= "table"
-    and type(tmux.startup_status) == "function"
-  then
-    startup_status = tmux.startup_status(opts.tmux)
+  local startup_status = type(backend_status) == "table" and backend_status.startup_status or nil
+  if snapshot_opts.fast ~= true and type(startup_status) ~= "table" then
+    startup_status = session_backend.startup_status(opts)
   end
 
-  local authoritative_status = nil
-  if type(tmux.startup_status_authoritative) == "function" then
-    authoritative_status = tmux.startup_status_authoritative(opts.tmux)
-  elseif type(tmux.startup_status) == "function" then
-    authoritative_status = tmux.startup_status(opts.tmux)
+  local authoritative_status = session_backend.startup_status_authoritative(opts)
+  if type(authoritative_status) ~= "table" then
+    authoritative_status = startup_status
   end
 
   return {
-    bridge_ready = type(tmux_status) == "table" and tmux_status.bridge_ready == true or false,
+    bridge_ready = type(backend_status) == "table" and backend_status.bridge_ready == true or false,
     session = session,
     startup_status = startup_status,
     authoritative_status = authoritative_status,
     status_path = status_path,
-    cmd_env = tmux.bridge_env and tmux.bridge_env(opts.tmux) or nil,
+    cmd_env = session_backend.bridge_env(opts) or nil,
   }
 end
 
@@ -670,6 +661,9 @@ local function session_payload(opts, payload_opts)
   end
 
   local session = snapshot.session
+  local runtime_config = session_backend.runtime_config(opts) or {}
+  local session_id = session_backend.session_id(opts, session)
+  local session_opts = type(opts.session) == "table" and opts.session or {}
   local startup_status = snapshot.startup_status
   local authoritative_status = snapshot.authoritative_status
   local status = snapshot.bridge_ready == true and "ready"
@@ -682,12 +676,14 @@ local function session_payload(opts, payload_opts)
   end
 
   return {
-    kind = opts.tmux.session_kind,
+    kind = session_opts.kind or (opts.tmux and opts.tmux.session_kind) or "ark",
+    backend = session_backend.backend_name(opts),
+    sessionId = session_id,
     statusFile = snapshot.status_path,
     tmuxSocket = session.tmux_socket,
     tmuxSession = session.tmux_session,
     tmuxPane = session.tmux_pane,
-    timeoutMs = tonumber(opts.tmux.session_timeout_ms or 1000) or 1000,
+    timeoutMs = tonumber(runtime_config.session_timeout_ms or 1000) or 1000,
     status = status,
     replReady = repl_ready == true,
     replSeq = (type(authoritative_status) == "table" and authoritative_status.repl_seq)
@@ -876,7 +872,8 @@ local function schedule_session_syncs(opts, bufnr, client_id)
 end
 
 local function bootstrap_timeout_ms(opts)
-  local timeout_ms = tonumber(opts.tmux and opts.tmux.bridge_wait_ms or nil)
+  local runtime_config = session_backend.runtime_config(opts) or {}
+  local timeout_ms = tonumber(runtime_config.bridge_wait_ms or nil)
     or tonumber(opts.lsp and opts.lsp.restart_wait_ms or nil)
     or 5000
   return math.max(timeout_ms, 1000)
