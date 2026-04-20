@@ -69,8 +69,13 @@ encode_status_component() {
 }
 
 STATUS_FILE=""
-if [ -n "$STATUS_DIR" ] && [ -n "$TMUX_SOCKET" ] && [ -n "$TMUX_SESSION" ] && [ -n "$TMUX_PANE" ]; then
-  STATUS_FILE="$STATUS_DIR/$(encode_status_component "$TMUX_SOCKET")__$(encode_status_component "$TMUX_SESSION")__$(encode_status_component "$TMUX_PANE").json"
+SESSION_ID=""
+if [ -n "$TMUX_SOCKET" ] && [ -n "$TMUX_SESSION" ] && [ -n "$TMUX_PANE" ]; then
+  SESSION_ID="$(encode_status_component "$TMUX_SOCKET")__$(encode_status_component "$TMUX_SESSION")__$(encode_status_component "$TMUX_PANE")"
+fi
+
+if [ -n "$STATUS_DIR" ] && [ -n "$SESSION_ID" ]; then
+  STATUS_FILE="$STATUS_DIR/$SESSION_ID.json"
 fi
 
 PROFILE_FILE=$(mktemp)
@@ -544,6 +549,8 @@ ARK_IPC_MAX_REQUEST_BYTES="$IPC_MAX_REQUEST_BYTES" \
 ARK_IPC_READ_TIMEOUT_MS="$IPC_READ_TIMEOUT_MS" \
 ARK_ORIG_R_PROFILE_USER="${R_PROFILE_USER:-}" \
 ARK_R_LIB="$BOOTSTRAP_LIB" \
+ARK_SESSION_BACKEND="tmux" \
+ARK_SESSION_ID="$SESSION_ID" \
 ARK_TMUX_SOCKET="$TMUX_SOCKET" \
 ARK_TMUX_SESSION="$TMUX_SESSION" \
 ARK_TMUX_PANE="$TMUX_PANE" \

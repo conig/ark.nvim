@@ -281,6 +281,8 @@ fn session_bridge_from_update(
         port: 0,
         auth_token: String::new(),
         status_file: Some(status_file),
+        backend: params.backend.clone(),
+        session_id: params.session_id.clone(),
         tmux_socket: params.tmux_socket.clone(),
         tmux_session: params.tmux_session.clone(),
         tmux_pane: params.tmux_pane.clone(),
@@ -607,6 +609,8 @@ pub(crate) fn did_update_session(
     }
 
     tracing::info!(
+        backend = params.backend,
+        session_id = params.session_id,
         status = params.status,
         repl_ready = params.repl_ready,
         tmux_socket = params.tmux_socket,
@@ -907,6 +911,8 @@ mod tests {
             SessionUpdateParams {
                 kind: Some(String::from("ark")),
                 status_file: Some(status.path().to_path_buf()),
+                backend: String::from("tmux"),
+                session_id: String::from("ark-test-session"),
                 tmux_socket: String::from("/tmp/ark-test.sock"),
                 tmux_session: String::from("ark-test"),
                 tmux_pane: String::from("%1"),
@@ -953,6 +959,8 @@ mod tests {
             SessionUpdateParams {
                 kind: Some(String::from("ark")),
                 status_file: Some(status.path().to_path_buf()),
+                backend: String::from("tmux"),
+                session_id: String::from("ark-test-session"),
                 tmux_socket: String::from("/tmp/ark-test.sock"),
                 tmux_session: String::from("ark-test"),
                 tmux_pane: String::from("%1"),
@@ -1003,6 +1011,8 @@ mod tests {
                     port: 0,
                     auth_token: String::new(),
                     status_file: Some(status.path().to_path_buf()),
+                    backend: String::from("tmux"),
+                    session_id: String::from("ark-test-session"),
                     tmux_socket: String::from("/tmp/ark-test.sock"),
                     tmux_session: String::from("ark-test"),
                     tmux_pane: String::from("%1"),

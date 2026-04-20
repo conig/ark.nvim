@@ -155,7 +155,7 @@ static char *rscope_call_request_handler(const char *request) {
 
   if (rscope_request_callback == NULL) {
     return rscope_strdup_or_default(
-      "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_HANDLER\",\"message\":\"missing callback\",\"stage\":\"ipc_handler\"},\"session\":{\"tmux_socket\":\"\",\"tmux_session\":\"\",\"tmux_pane\":\"\"}}",
+      "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_HANDLER\",\"message\":\"missing callback\",\"stage\":\"ipc_handler\"},\"session\":{\"backend\":\"\",\"session_id\":\"\",\"tmux_socket\":\"\",\"tmux_session\":\"\",\"tmux_pane\":\"\"}}",
       "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_HANDLER\",\"message\":\"missing callback\",\"stage\":\"ipc_handler\"}}"
     );
   }
@@ -167,7 +167,7 @@ static char *rscope_call_request_handler(const char *request) {
   if (!error && TYPEOF(resp) == STRSXP && XLENGTH(resp) >= 1 && STRING_ELT(resp, 0) != NA_STRING) {
     value = CHAR(STRING_ELT(resp, 0));
   } else {
-    value = "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_HANDLER\",\"message\":\"handler failed\",\"stage\":\"ipc_handler\"},\"session\":{\"tmux_socket\":\"\",\"tmux_session\":\"\",\"tmux_pane\":\"\"}}";
+    value = "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_HANDLER\",\"message\":\"handler failed\",\"stage\":\"ipc_handler\"},\"session\":{\"backend\":\"\",\"session_id\":\"\",\"tmux_socket\":\"\",\"tmux_session\":\"\",\"tmux_pane\":\"\"}}";
   }
 
   out = rscope_strdup_or_default(value, "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_HANDLER\",\"message\":\"out of memory\",\"stage\":\"ipc_handler\"}}");
@@ -193,17 +193,17 @@ static void rscope_process_client(int client_fd) {
   if (request == NULL) {
     if (rscope_last_read_error == EMSGSIZE) {
       response = rscope_strdup_or_default(
-        "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_TOO_LARGE\",\"message\":\"request exceeded max size\",\"stage\":\"ipc_read\"},\"session\":{\"tmux_socket\":\"\",\"tmux_session\":\"\",\"tmux_pane\":\"\"}}",
+        "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_TOO_LARGE\",\"message\":\"request exceeded max size\",\"stage\":\"ipc_read\"},\"session\":{\"backend\":\"\",\"session_id\":\"\",\"tmux_socket\":\"\",\"tmux_session\":\"\",\"tmux_pane\":\"\"}}",
         "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_TOO_LARGE\",\"message\":\"request exceeded max size\",\"stage\":\"ipc_read\"}}"
       );
     } else if (rscope_last_read_error == EAGAIN || rscope_last_read_error == EWOULDBLOCK || rscope_last_read_error == ETIMEDOUT) {
       response = rscope_strdup_or_default(
-        "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_TIMEOUT\",\"message\":\"timed out reading request\",\"stage\":\"ipc_read\"},\"session\":{\"tmux_socket\":\"\",\"tmux_session\":\"\",\"tmux_pane\":\"\"}}",
+        "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_TIMEOUT\",\"message\":\"timed out reading request\",\"stage\":\"ipc_read\"},\"session\":{\"backend\":\"\",\"session_id\":\"\",\"tmux_socket\":\"\",\"tmux_session\":\"\",\"tmux_pane\":\"\"}}",
         "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_TIMEOUT\",\"message\":\"timed out reading request\",\"stage\":\"ipc_read\"}}"
       );
     } else {
       response = rscope_strdup_or_default(
-        "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_READ\",\"message\":\"failed to read request\",\"stage\":\"ipc_read\"},\"session\":{\"tmux_socket\":\"\",\"tmux_session\":\"\",\"tmux_pane\":\"\"}}",
+        "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_READ\",\"message\":\"failed to read request\",\"stage\":\"ipc_read\"},\"session\":{\"backend\":\"\",\"session_id\":\"\",\"tmux_socket\":\"\",\"tmux_session\":\"\",\"tmux_pane\":\"\"}}",
         "{\"schema_version\":\"v1\",\"error\":{\"code\":\"E_IPC_READ\",\"message\":\"failed to read request\",\"stage\":\"ipc_read\"}}"
       );
     }

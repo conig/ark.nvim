@@ -36,6 +36,9 @@ package.loaded["ark.tmux"] = {
     status_calls = status_calls + 1
     error("sync startup should not call tmux.status()", 0)
   end,
+  session_id = function()
+    return "tmux-session-42"
+  end,
   bridge_env = function()
     bridge_env_calls = bridge_env_calls + 1
     error("sync startup should use startup snapshot env, not tmux.bridge_env()", 0)
@@ -186,6 +189,8 @@ local ok, err = pcall(function()
   if request.payload.tmuxSocket ~= "/tmp/ark.sock"
     or request.payload.tmuxSession ~= "project"
     or request.payload.tmuxPane ~= "%42"
+    or request.payload.backend ~= "tmux"
+    or request.payload.sessionId ~= "tmux-session-42"
     or request.payload.statusFile ~= status_path
     or request.payload.status ~= "ready"
     or request.payload.replReady ~= true

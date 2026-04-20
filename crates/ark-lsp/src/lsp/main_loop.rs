@@ -1124,6 +1124,8 @@ mod tests {
                     port: 0,
                     auth_token: String::new(),
                     status_file: Some(status.path().to_path_buf()),
+                    backend: String::from("tmux"),
+                    session_id: String::from("ark-test-session"),
                     tmux_socket: String::from("/tmp/ark-test.sock"),
                     tmux_session: String::from("ark-test"),
                     tmux_pane: String::from("%1"),

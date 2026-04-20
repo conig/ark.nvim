@@ -62,6 +62,8 @@ pub(crate) struct SessionBridgeDebugInfo {
     status_file: Option<PathBuf>,
     host: Option<String>,
     port: Option<u16>,
+    backend: String,
+    session_id: String,
     tmux_socket: String,
     tmux_session: String,
     tmux_pane: String,
@@ -120,6 +122,8 @@ pub(crate) struct SessionBridgeConfig {
     pub port: u16,
     pub auth_token: String,
     pub status_file: Option<PathBuf>,
+    pub backend: String,
+    pub session_id: String,
     pub tmux_socket: String,
     pub tmux_session: String,
     pub tmux_pane: String,
@@ -171,6 +175,8 @@ struct InspectOptions {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct BridgeSession {
+    backend: String,
+    session_id: String,
     tmux_socket: String,
     tmux_session: String,
     tmux_pane: String,
@@ -479,6 +485,8 @@ impl SessionBridge {
             status_file,
             host,
             port,
+            backend: self.session.backend.clone(),
+            session_id: self.session.session_id.clone(),
             tmux_socket: self.session.tmux_socket.clone(),
             tmux_session: self.session.tmux_session.clone(),
             tmux_pane: self.session.tmux_pane.clone(),
@@ -488,6 +496,8 @@ impl SessionBridge {
 
     pub(crate) fn new(config: SessionBridgeConfig) -> anyhow::Result<Self> {
         let session = BridgeSession {
+            backend: config.backend,
+            session_id: config.session_id,
             tmux_socket: config.tmux_socket,
             tmux_session: config.tmux_session,
             tmux_pane: config.tmux_pane,
@@ -3982,6 +3992,8 @@ mod tests {
             port: 1,
             auth_token: String::new(),
             status_file: None,
+            backend: String::new(),
+            session_id: String::new(),
             tmux_socket: String::new(),
             tmux_session: String::new(),
             tmux_pane: String::new(),

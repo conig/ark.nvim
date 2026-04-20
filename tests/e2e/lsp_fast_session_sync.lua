@@ -22,6 +22,9 @@ package.loaded["ark.tmux"] = {
       tmux_pane = "%42",
     }
   end,
+  session_id = function()
+    return "tmux-session-42"
+  end,
   startup_status = function()
     startup_status_calls = startup_status_calls + 1
     return {
@@ -124,7 +127,9 @@ local ok, err = pcall(function()
   end
 
   local payload = update.payload
-  if payload.tmuxSocket ~= "/tmp/ark.sock"
+  if payload.backend ~= "tmux"
+    or payload.sessionId ~= "tmux-session-42"
+    or payload.tmuxSocket ~= "/tmp/ark.sock"
     or payload.tmuxSession ~= "project"
     or payload.tmuxPane ~= "%42"
     or payload.statusFile ~= "/tmp/ark-status/mock.json"

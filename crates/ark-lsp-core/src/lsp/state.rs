@@ -237,6 +237,8 @@ fn session_bridge_from_env() -> anyhow::Result<Option<SessionBridge>> {
         ));
     }
     let auth_token = env::var("ARK_SESSION_AUTH_TOKEN").unwrap_or_default();
+    let backend = env::var("ARK_SESSION_BACKEND").unwrap_or_default();
+    let session_id = env::var("ARK_SESSION_ID").unwrap_or_default();
     let tmux_socket = env::var("ARK_SESSION_TMUX_SOCKET").unwrap_or_default();
     let tmux_session = env::var("ARK_SESSION_TMUX_SESSION").unwrap_or_default();
     let tmux_pane = env::var("ARK_SESSION_TMUX_PANE").unwrap_or_default();
@@ -250,6 +252,8 @@ fn session_bridge_from_env() -> anyhow::Result<Option<SessionBridge>> {
         port,
         auth_token,
         status_file,
+        backend,
+        session_id,
         tmux_socket,
         tmux_session,
         tmux_pane,

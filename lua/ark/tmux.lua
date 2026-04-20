@@ -371,6 +371,27 @@ local function status_file_path(session, config)
   return vim.fs.normalize(status_root(config) .. "/" .. filename)
 end
 
+local function session_id(session)
+  if type(session) ~= "table" then
+    return nil
+  end
+  if type(session.tmux_socket) ~= "string" or session.tmux_socket == "" then
+    return nil
+  end
+  if type(session.tmux_session) ~= "string" or session.tmux_session == "" then
+    return nil
+  end
+  if type(session.tmux_pane) ~= "string" or session.tmux_pane == "" then
+    return nil
+  end
+
+  return table.concat({
+    encode_status_component(session.tmux_socket),
+    encode_status_component(session.tmux_session),
+    encode_status_component(session.tmux_pane),
+  }, "__")
+end
+
 local function mode_has(mode, mask)
   if type(mode) ~= "number" or not bitops or type(bitops.band) ~= "function" then
     return false
@@ -661,8 +682,12 @@ local function bridge_env_payload(config, session, status_path)
     return nil
   end
 
+  local current_session_id = session_id(session)
+
   return {
     ARK_SESSION_KIND = config.session_kind,
+    ARK_SESSION_BACKEND = "tmux",
+    ARK_SESSION_ID = current_session_id or "",
     ARK_SESSION_STATUS_FILE = status_path,
     ARK_SESSION_TMUX_SOCKET = session.tmux_socket,
     ARK_SESSION_TMUX_SESSION = session.tmux_session,
@@ -1276,6 +1301,10 @@ function M.session()
   return session and vim.deepcopy(session) or nil
 end
 
+function M.session_id(session)
+  return session_id(session)
+end
+
 function M.startup_snapshot(config, snapshot_opts)
   config = config or {}
   snapshot_opts = snapshot_opts or {}
@@ -1410,6 +1439,7 @@ end
 function M.status(config)
   prune_dead_tabs()
   local session = M.session()
+  local current_session_id = session_id(session)
   local snapshot = session and M.startup_snapshot(config or {}, {
     include_prompt_ready = true,
     validate_bridge = true,
@@ -1423,6 +1453,8 @@ function M.status(config)
     managed = state.managed,
     pane_exists = pane_exists(state.pane_id),
     session = session,
+    backend = "tmux",
+    session_id = current_session_id,
     startup_status = startup_status,
     startup_status_path = snapshot and snapshot.startup_status_path or nil,
     bridge_ready = bridge_ready,

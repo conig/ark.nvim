@@ -130,6 +130,10 @@ pub(crate) struct SessionUpdateParams {
     #[serde(default)]
     pub status_file: Option<PathBuf>,
     #[serde(default)]
+    pub backend: String,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
     pub tmux_socket: String,
     #[serde(default)]
     pub tmux_session: String,
@@ -717,6 +721,8 @@ mod tests {
             port,
             auth_token: String::from("stale-token"),
             status_file: None,
+            backend: String::from("tmux"),
+            session_id: String::from("ark-test-session"),
             tmux_socket: String::from("/tmp/ark-test.sock"),
             tmux_session: String::from("ark-test"),
             tmux_pane: String::from("%1"),
@@ -753,6 +759,8 @@ mod tests {
             port,
             auth_token: String::from("test-token"),
             status_file: None,
+            backend: String::from("tmux"),
+            session_id: String::from("ark-test-session"),
             tmux_socket: String::from("/tmp/ark-test.sock"),
             tmux_session: String::from("ark-test"),
             tmux_pane: String::from("%1"),
@@ -787,6 +795,8 @@ mod tests {
             port: 0,
             auth_token: String::new(),
             status_file: Some(status_file),
+            backend: String::from("tmux"),
+            session_id: String::from("ark-test-session"),
             tmux_socket: String::from("/tmp/ark-test.sock"),
             tmux_session: String::from("ark-test"),
             tmux_pane: String::from("%1"),
