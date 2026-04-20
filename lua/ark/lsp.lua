@@ -34,6 +34,12 @@ local session_poll_finished
 local startup_ready_callback = nil
 local STATUS_CACHE_TTL_MS = 250
 local STATUS_THROTTLE_MS = 100
+local STARTUP_READY_SOURCES = {
+  immediate = "LspBootstrapImmediate",
+  poll = "LspBootstrapPoll",
+  retry = "LspBootstrapRetry",
+  watch = "LspBootstrapWatch",
+}
 
 local function monotonic_ms()
   local clock = (uv and uv.hrtime) and uv.hrtime or vim.loop.hrtime
@@ -564,7 +570,7 @@ local function keep_startup_bootstrap_pending(payload, hydrated)
     return false
   end
 
-  return payload.status ~= "error" and (payload.status ~= "ready" or payload.replReady ~= true)
+  return payload.status ~= "error"
 end
 
 local function startup_bootstrap_pending(bufnr)
@@ -776,7 +782,7 @@ local function watch_payload_delivered(opts, watch, payload)
   return true
 end
 
-local function bootstrap_pending_startups(opts, watch, payload)
+local function bootstrap_pending_startups(opts, watch, payload, source)
   if type(watch) ~= "table" or type(payload) ~= "table" then
     return
   end
@@ -812,7 +818,7 @@ local function bootstrap_pending_startups(opts, watch, payload)
     cache_client_session(client, payload)
     set_startup_bootstrap_pending(bufnr, false)
     notify_startup_ready(bufnr, {
-      source = "LspBootstrap",
+      source = source or STARTUP_READY_SOURCES.watch,
     })
 
     ::continue::
@@ -846,7 +852,7 @@ local function schedule_session_syncs(opts, bufnr, client_id)
           cache_client_session(client, payload)
           set_startup_bootstrap_pending(bufnr, false)
           notify_startup_ready(bufnr, {
-            source = "LspBootstrap",
+            source = STARTUP_READY_SOURCES.retry,
           })
         end
       end
@@ -1007,7 +1013,7 @@ local function ensure_session_watch(opts, bufnr, payload, watch_opts)
       end
 
       notify_watch_sessions(opts, current_watch, current)
-      bootstrap_pending_startups(opts, current_watch, current)
+      bootstrap_pending_startups(opts, current_watch, current, STARTUP_READY_SOURCES.watch)
       if session_watch_finished(opts, nil, current) then
         stop_session_watch(watch_key)
       elseif watch_poll_finished(opts, current_watch, current) then
@@ -1043,7 +1049,7 @@ local function ensure_session_watch(opts, bufnr, payload, watch_opts)
     end
 
     notify_watch_sessions(opts, current_watch, current)
-    bootstrap_pending_startups(opts, current_watch, current)
+    bootstrap_pending_startups(opts, current_watch, current, STARTUP_READY_SOURCES.poll)
     if session_watch_finished(opts, nil, current) then
       stop_session_watch(status_path)
       return
@@ -1156,7 +1162,7 @@ local function start_client(opts, bufnr, start_opts)
         if hydrated then
           cache_client_session(client, startup_payload)
           notify_startup_ready(bufnr, {
-            source = "LspBootstrap",
+            source = STARTUP_READY_SOURCES.immediate,
           })
         end
       end
@@ -1208,7 +1214,7 @@ local function start_client(opts, bufnr, start_opts)
     if hydrated then
       cache_client_session(client, startup_payload)
       notify_startup_ready(bufnr, {
-        source = "LspBootstrap",
+        source = STARTUP_READY_SOURCES.immediate,
       })
     end
   end

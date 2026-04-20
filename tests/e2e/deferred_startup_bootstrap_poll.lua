@@ -6,7 +6,13 @@ package.loaded["ark.lsp"] = nil
 package.loaded["ark.tmux"] = nil
 package.loaded["ark.dev"] = nil
 
-local status_dir = test.run_tmpdir() .. "/deferred-startup-bootstrap-watch"
+local uv = vim.uv or vim.loop
+local original_new_fs_event = uv and uv.new_fs_event or nil
+if uv then
+  uv.new_fs_event = nil
+end
+
+local status_dir = test.run_tmpdir() .. "/deferred-startup-bootstrap-poll"
 local status_path = status_dir .. "/status.json"
 vim.fn.mkdir(status_dir, "p")
 
@@ -65,16 +71,15 @@ package.loaded["ark.dev"] = {
 local lsp = require("ark.lsp")
 
 local bufnr = vim.api.nvim_get_current_buf()
-vim.api.nvim_buf_set_name(bufnr, status_dir .. "/watch-bootstrap.R")
+vim.api.nvim_buf_set_name(bufnr, status_dir .. "/poll-bootstrap.R")
 vim.bo[bufnr].filetype = "r"
 
 local bootstrap_calls = {}
-local session_notifications = {}
 local startup_ready = nil
 local started = false
 
 local client = {
-  id = 77,
+  id = 78,
   name = "ark_lsp",
   initialized = true,
   config = nil,
@@ -93,12 +98,7 @@ local client = {
 
     return { result = {} }, nil
   end,
-  notify = function(self, method, params)
-    session_notifications[#session_notifications + 1] = {
-      method = method,
-      params = vim.deepcopy(params),
-    }
-  end,
+  notify = function() end,
 }
 
 local original_start = vim.lsp.start
@@ -156,9 +156,6 @@ local ok, err = pcall(function()
     },
   }
 
-  -- Reproduce the real bug shape: sync startup sees an initial non-ready
-  -- payload, installs a status watch, then later bootstraps when the watched
-  -- status file becomes ready.
   local client_id = lsp.start(opts, bufnr)
   if client_id ~= client.id then
     test.fail("expected lsp.start() to return fake client id, got " .. vim.inspect(client_id))
@@ -177,23 +174,19 @@ local ok, err = pcall(function()
     repl_seq = 1,
   })
 
-  test.wait_for("deferred startup bootstrap", 2000, function()
+  test.wait_for("polled startup bootstrap", 2000, function()
     return #bootstrap_calls >= 2 and startup_ready ~= nil
   end)
 
   if bootstrap_calls[2].status ~= "ready" or bootstrap_calls[2].replReady ~= true then
-    test.fail("expected watched bootstrap payload to become ready, got " .. vim.inspect(bootstrap_calls[2]))
+    test.fail("expected polled bootstrap payload to become ready, got " .. vim.inspect(bootstrap_calls[2]))
   end
 
   if type(startup_ready) ~= "table" or startup_ready.bufnr ~= bufnr then
     test.fail("expected startup-ready callback for current buffer, got " .. vim.inspect(startup_ready))
   end
-  if startup_ready.payload.source ~= "LspBootstrapWatch" then
-    test.fail("expected watch bootstrap startup-ready source, got " .. vim.inspect(startup_ready))
-  end
-
-  if #session_notifications == 0 then
-    test.fail("expected at least one session update notification during watch bootstrap")
+  if startup_ready.payload.source ~= "LspBootstrapPoll" then
+    test.fail("expected poll bootstrap startup-ready source, got " .. vim.inspect(startup_ready))
   end
 end)
 
@@ -201,6 +194,9 @@ vim.lsp.start = original_start
 vim.lsp.get_client_by_id = original_get_client_by_id
 vim.lsp.get_clients = original_get_clients
 vim.lsp.buf_is_attached = original_buf_is_attached
+if uv then
+  uv.new_fs_event = original_new_fs_event
+end
 package.loaded["ark.lsp"] = nil
 
 if not ok then

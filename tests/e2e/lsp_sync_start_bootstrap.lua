@@ -10,6 +10,7 @@ local validate_bridge_calls = 0
 local bootstrap_requests = {}
 local notifications = {}
 local clients = {}
+local startup_ready = nil
 
 local status_path = vim.fn.tempname() .. ".json"
 vim.fn.writefile({
@@ -149,6 +150,13 @@ local ok, err = pcall(function()
   vim.bo[bufnr].filetype = "r"
 
   local lsp = require("ark.lsp")
+  lsp.set_startup_ready_callback(function(callback_bufnr, payload)
+    startup_ready = {
+      bufnr = callback_bufnr,
+      payload = vim.deepcopy(payload),
+    }
+  end)
+
   local opts = {
     filetypes = { "r" },
     lsp = {
@@ -204,6 +212,13 @@ local ok, err = pcall(function()
   end, 20, false)
   if settled then
     error("expected sync startup to avoid initial session notifications, got " .. vim.inspect(notifications), 0)
+  end
+
+  if type(startup_ready) ~= "table" or startup_ready.bufnr ~= bufnr then
+    error("expected startup-ready callback for current buffer, got " .. vim.inspect(startup_ready), 0)
+  end
+  if startup_ready.payload.source ~= "LspBootstrapImmediate" then
+    error("expected immediate bootstrap startup-ready source, got " .. vim.inspect(startup_ready), 0)
   end
 end)
 

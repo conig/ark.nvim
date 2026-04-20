@@ -7,6 +7,7 @@ package.loaded["ark.dev"] = nil
 local client_notifications = {}
 local ui_notifications = {}
 local clients = {}
+local startup_ready = nil
 
 local status_path = vim.fn.tempname() .. ".json"
 vim.fn.writefile({
@@ -160,6 +161,13 @@ local ok, err = pcall(function()
   vim.bo[bufnr].filetype = "r"
 
   local lsp = require("ark.lsp")
+  lsp.set_startup_ready_callback(function(callback_bufnr, payload)
+    startup_ready = {
+      bufnr = callback_bufnr,
+      payload = vim.deepcopy(payload),
+    }
+  end)
+
   local opts = {
     filetypes = { "r" },
     lsp = {
@@ -200,10 +208,17 @@ local ok, err = pcall(function()
   end
 
   local synced = vim.wait(1000, function()
-    return #client_notifications > 0
+    return #client_notifications > 0 and startup_ready ~= nil
   end, 20, false)
   if not synced then
     error("timed out waiting for session sync after delayed client init", 0)
+  end
+
+  if type(startup_ready) ~= "table" or startup_ready.bufnr ~= bufnr then
+    error("expected startup-ready callback for delayed client init, got " .. vim.inspect(startup_ready), 0)
+  end
+  if startup_ready.payload.source ~= "LspBootstrapRetry" then
+    error("expected retry startup-ready source for delayed client init, got " .. vim.inspect(startup_ready), 0)
   end
 
   local final = lsp.status(opts, bufnr, {

@@ -58,7 +58,7 @@ package.loaded["ark.lsp"] = {
     start_calls = start_calls + 1
     if type(startup_ready_callback) == "function" then
       startup_ready_callback(bufnr, {
-        source = "LspBootstrap",
+        source = "LspBootstrapImmediate",
       })
     end
     return 1
@@ -99,8 +99,8 @@ local ok, err = pcall(function()
   end
 
   local startup = ark.status().startup or {}
-  if startup.main_buffer_unlock_source ~= "LspBootstrap" then
-    error("expected startup unlock source LspBootstrap, got " .. vim.inspect(startup), 0)
+  if startup.main_buffer_unlock_source ~= "LspBootstrapImmediate" then
+    error("expected startup unlock source LspBootstrapImmediate, got " .. vim.inspect(startup), 0)
   end
   if tonumber(startup.post_lsp_bootstrap_unlock_ms) ~= 0 then
     error("expected event-driven unlock to eliminate bootstrap tail, got " .. vim.inspect(startup), 0)
