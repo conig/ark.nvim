@@ -14,6 +14,7 @@ local did_setup = false
 local options = nil
 local startup_tokens = {}
 local startup_traces = {}
+local pending_blink_recovery = {}
 local pending_session_sync = 0
 local help_float_ns = vim.api.nvim_create_namespace("ArkHelpFloat")
 local help_filetype = "arkhelp"
@@ -147,6 +148,30 @@ local function startup_unlocked(bufnr)
   end
 
   return trace.main_buffer_unlocked == true
+end
+
+local function schedule_blink_recovery(bufnr)
+  if pending_blink_recovery[bufnr] == true then
+    return
+  end
+
+  pending_blink_recovery[bufnr] = true
+  vim.schedule(function()
+    if pending_blink_recovery[bufnr] ~= true then
+      return
+    end
+    pending_blink_recovery[bufnr] = nil
+
+    if not is_ark_buffer(bufnr) then
+      return
+    end
+    if not startup_unlocked(bufnr) then
+      return
+    end
+
+    blink.maybe_hide_after_extractor(bufnr)
+    blink.maybe_show_after_pair(bufnr)
+  end)
 end
 
 local function record_startup_unlock(bufnr, source, unlock_opts)
@@ -1281,8 +1306,7 @@ function M.setup(opts)
       if not startup_unlocked(args.buf) then
         return
       end
-      blink.maybe_hide_after_extractor(args.buf)
-      blink.maybe_show_after_pair(args.buf)
+      schedule_blink_recovery(args.buf)
     end,
     desc = "Re-show Blink completion after autopairs inserts closing delimiters",
   })
@@ -1291,15 +1315,13 @@ function M.setup(opts)
     group = group,
     pattern = "*",
     callback = function(args)
-      vim.schedule(function()
-        if is_ark_buffer(args.buf) then
-          if not startup_unlocked(args.buf) then
-            return
-          end
-          blink.maybe_hide_after_extractor(args.buf)
-          blink.maybe_show_after_pair(args.buf)
-        end
-      end)
+      if not is_ark_buffer(args.buf) then
+        return
+      end
+      if not startup_unlocked(args.buf) then
+        return
+      end
+      schedule_blink_recovery(args.buf)
     end,
     desc = "Recover Blink completion after autopairs text changes in R buffers",
   })
