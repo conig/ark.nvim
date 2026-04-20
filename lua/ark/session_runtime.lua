@@ -102,7 +102,13 @@ function M.status_file_trusted(path)
 end
 
 function M.read_status_file(path)
+  local cached = type(path) == "string" and startup_status_cache[path] or nil
+  local cached_payload = type(cached) == "table" and cached.payload or nil
+
   if not path or vim.fn.filereadable(path) ~= 1 then
+    if type(cached_payload) == "table" then
+      return vim.deepcopy(cached_payload)
+    end
     startup_status_cache[path or ""] = nil
     return nil
   end
@@ -112,7 +118,6 @@ function M.read_status_file(path)
   end
 
   local stat = uv and uv.fs_stat and uv.fs_stat(path) or nil
-  local cached = startup_status_cache[path]
   if type(cached) == "table"
     and type(stat) == "table"
     and cached.size == stat.size
@@ -122,7 +127,6 @@ function M.read_status_file(path)
     return vim.deepcopy(cached.payload)
   end
 
-  local cached_payload = type(cached) == "table" and cached.payload or nil
   local lines = vim.fn.readfile(path)
   if type(lines) ~= "table" or #lines == 0 then
     if type(cached_payload) == "table" then
