@@ -1,14 +1,14 @@
 vim.api.nvim_create_user_command("ArkPaneStart", function()
   require("ark").start_pane()
-end, { desc = "Start or reuse the visible managed ark.nvim R tab" })
+end, { desc = "Start or reuse the managed ark.nvim R session" })
 
 vim.api.nvim_create_user_command("ArkPaneRestart", function()
   require("ark").restart_pane()
-end, { desc = "Restart the active managed ark.nvim R tab" })
+end, { desc = "Restart the active managed ark.nvim R session" })
 
 vim.api.nvim_create_user_command("ArkPaneStop", function()
   require("ark").stop_pane()
-end, { desc = "Stop all managed ark.nvim R tabs" })
+end, { desc = "Stop the managed ark.nvim R session(s)" })
 
 vim.api.nvim_create_user_command("ArkTabNew", function()
   require("ark").new_tab()
@@ -47,7 +47,7 @@ end, { desc = "Show full help for the symbol under cursor in a read-only floatin
 
 vim.api.nvim_create_user_command("ArkHelpPane", function()
   require("ark").help_pane(0)
-end, { desc = "Send help for the symbol under cursor to the managed ark.nvim R pane" })
+end, { desc = "Send help for the symbol under cursor to the managed ark.nvim R session" })
 
 vim.api.nvim_create_user_command("ArkView", function(args)
   local expr = args.args ~= "" and args.args or nil
@@ -79,4 +79,4 @@ end, { desc = "Print ark.nvim status" })
 
 vim.api.nvim_create_user_command("ArkPaneCommand", function()
   vim.print(require("ark").pane_command())
-end, { desc = "Print the shell command used for the managed ark.nvim pane" })
+end, { desc = "Print the shell command used for the managed ark.nvim session" })

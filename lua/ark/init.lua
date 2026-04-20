@@ -1287,7 +1287,7 @@ function M.setup(opts)
     callback = function()
       session_backend.stop(options)
     end,
-    desc = "Stop ark.nvim managed tmux pane on exit",
+    desc = "Stop the managed ark.nvim session on exit",
   })
 
   did_setup = true

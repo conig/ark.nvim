@@ -45,11 +45,12 @@ function M.check()
   local report = health_reporter()
   local defaults = config.defaults()
   local backend = defaults.session.backend
-  local launcher = defaults.tmux.launcher
+  local runtime = defaults[backend] or {}
+  local launcher = runtime.launcher
   local lsp_bin = defaults.lsp.cmd[1]
-  local status_dir = defaults.tmux.startup_status_dir
-  local bridge_pkg = defaults.tmux.session_pkg_path
-  local bridge_lib = defaults.tmux.session_lib_path
+  local status_dir = runtime.startup_status_dir
+  local bridge_pkg = runtime.session_pkg_path
+  local bridge_lib = runtime.session_lib_path
   local r_bin = vim.env.ARK_NVIM_R_BIN or "R"
 
   report.start("ark.nvim")
@@ -68,6 +69,12 @@ function M.check()
       report.ok("Neovim is running inside tmux")
     else
       report.warn("Neovim is not running inside tmux; the configured tmux backend will not attach")
+    end
+  elseif backend == "terminal" then
+    if vim.fn.exists("*termopen") == 1 then
+      report.ok("Neovim terminal support is available")
+    else
+      report.error("The configured terminal backend requires Neovim terminal support")
     end
   else
     report.error("Configured session backend is not supported by this ark.nvim build: " .. backend)

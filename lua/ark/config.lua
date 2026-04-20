@@ -93,6 +93,18 @@ function M.defaults()
       bridge_wait_ms = 5000,
       session_timeout_ms = 1000,
     },
+    terminal = {
+      launcher = launcher,
+      split_direction = vim.env.ARK_NVIM_TERMINAL_SPLIT_DIRECTION or "horizontal",
+      split_position = vim.env.ARK_NVIM_TERMINAL_SPLIT_POSITION or "botright",
+      split_size = tonumber(vim.env.ARK_NVIM_TERMINAL_SPLIT_SIZE or "15") or 15,
+      session_kind = session_kind,
+      startup_status_dir = vim.env.ARK_STATUS_DIR or ((vim.fn.stdpath("state") or "/tmp") .. "/ark-status"),
+      session_pkg_path = root .. "/packages/arkbridge",
+      session_lib_path = session_lib_path,
+      bridge_wait_ms = 5000,
+      session_timeout_ms = 1000,
+    },
   }
 end
 

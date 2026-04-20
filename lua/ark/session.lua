@@ -1,6 +1,11 @@
 local M = {}
 
 local backend_specs = {
+  terminal = {
+    module = "ark.terminal",
+    config_key = "terminal",
+    tab_operations = false,
+  },
   tmux = {
     module = "ark.tmux",
     config_key = "tmux",
