@@ -52,7 +52,8 @@ The intended editor workflow is:
 This separation is deliberate:
 
 - `nvim-slimetree` remains the chunk and statement send layer.
-- tmux remains the terminal/session UI.
+- tmux remains the primary terminal/session UI.
+- backend abstraction belongs at the session contract boundary, not at the UX surface.
 - `ark.nvim` owns language intelligence, session discovery, and Neovim integration.
 
 ## Hard Scope Boundary
@@ -193,6 +194,7 @@ The bar is not "delete upstream Ark quickly." The bar is "produce a clean Neovim
 - Do not let Jupyter compatibility drive architecture.
 - Prefer a canonical Neovim LSP setup over custom completion plumbing when standard LSP suffices.
 - Prefer a single managed-pane model over multi-session abstractions unless a task explicitly requires more.
+- Abstract at the session contract boundary, but keep tmux first-class. Do not flatten tmux-specific capabilities into least-common-denominator UX abstractions just to make alternate backends fit.
 - Keep runtime/session bridging explicit; do not hide it behind ad hoc tmux scraping.
 - If a feature needs the live R session, design the request/response path as a supported bridge API.
 - Commit to git as you go and keep the worktree clean.

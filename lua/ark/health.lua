@@ -44,6 +44,7 @@ end
 function M.check()
   local report = health_reporter()
   local defaults = config.defaults()
+  local backend = defaults.session.backend
   local launcher = defaults.tmux.launcher
   local lsp_bin = defaults.lsp.cmd[1]
   local status_dir = defaults.tmux.startup_status_dir
@@ -53,17 +54,23 @@ function M.check()
 
   report.start("ark.nvim")
 
-  ok_or_error(
-    report,
-    executable("tmux"),
-    "`tmux` is available",
-    "`tmux` is required for managed pane mode"
-  )
+  report.ok("Configured session backend: " .. backend)
 
-  if type(vim.env.TMUX) == "string" and vim.env.TMUX ~= "" then
-    report.ok("Neovim is running inside tmux")
+  if backend == "tmux" then
+    ok_or_error(
+      report,
+      executable("tmux"),
+      "`tmux` is available",
+      "`tmux` is required for the configured session backend"
+    )
+
+    if type(vim.env.TMUX) == "string" and vim.env.TMUX ~= "" then
+      report.ok("Neovim is running inside tmux")
+    else
+      report.warn("Neovim is not running inside tmux; the configured tmux backend will not attach")
+    end
   else
-    report.warn("Neovim is not running inside tmux; managed pane mode will not attach")
+    report.error("Configured session backend is not supported by this ark.nvim build: " .. backend)
   end
 
   if executable(r_bin) then

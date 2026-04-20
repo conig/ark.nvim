@@ -19,13 +19,20 @@ The spec should track the current tree. It is not a historical roadmap.
 2. a detached stdio LSP server, `ark-lsp`
 3. a pane-side R bridge runtime, `arkbridge`
 
-The intended workflow is:
+The managed-session contract between those layers is backend-neutral, but tmux
+is still the canonical and best-supported session backend.
+
+The default intended workflow is:
 
 1. Open an `r`, `rmd`, `qmd`, or `quarto` buffer inside tmux.
 2. `ark.nvim` starts or reuses one managed tmux pane running interactive `R`.
 3. `vim-slime` and `nvim-slimetree` remain the code-send path.
 4. Neovim talks to `ark-lsp` over stdio for static language features.
 5. `ark-lsp` uses `arkbridge` to augment those features with live-session data.
+
+Additional session backends may be added behind the same contract, but they are
+additive. They must not force tmux behavior down to a least-common-denominator
+UX.
 
 This repository still contains upstream kernel, Jupyter, Positron, and DAP
 code as retained extraction material. That is not the primary product surface.
@@ -40,13 +47,15 @@ Primary surfaces:
 
 - [lua/ark/init.lua](/home/marine/repos/ark.nvim/lua/ark/init.lua)
 - [lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua)
+- [lua/ark/session.lua](/home/marine/repos/ark.nvim/lua/ark/session.lua)
 - [lua/ark/tmux.lua](/home/marine/repos/ark.nvim/lua/ark/tmux.lua)
 - [plugin/ark.lua](/home/marine/repos/ark.nvim/plugin/ark.lua)
 - [lua/ark/health.lua](/home/marine/repos/ark.nvim/lua/ark/health.lua)
 
 Responsibilities:
 
-- manage one visible Ark tmux pane plus parked Ark tabs
+- select the configured session backend while keeping tmux as the canonical path
+- manage one visible Ark tmux pane plus parked Ark tabs on the tmux backend
 - configure `vim-slime` targeting
 - start detached `ark-lsp`
 - relay session metadata through `ark/updateSession`
@@ -110,6 +119,8 @@ part of the default supported path.
 
 ## Current Behavior That Should Be Preserved
 
+- tmux remains the canonical managed backend and must not become second-class in
+  pursuit of backend agnosticism.
 - One managed live R session per Neovim instance, with Ark tab switching
   implemented by parking inactive sessions in hidden tmux windows.
 - The managed pane slot defaults to stacked top/bottom at 50:50 for narrow
