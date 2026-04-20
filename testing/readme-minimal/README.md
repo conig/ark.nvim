@@ -34,6 +34,22 @@ Primary entrypoints:
 
 - `scripts/start-readme-test-nvim.sh`
 - `scripts/smoke-readme-test-config.sh`
+- `docker/readme-minimal/Dockerfile`
+- `scripts/docker-readme-test.sh`
+
+Docker usage from the repo root:
+
+```sh
+docker build -f docker/readme-minimal/Dockerfile -t ark-readme-test .
+docker run --rm -it ark-readme-test
+docker run --rm ark-readme-test smoke
+```
+
+The image packages this same config, prebuilds `ark-lsp`, installs the minimal
+plugin set under `~/.local/share/nvim/lazy`, includes the Debian
+`r-cran-tidyverse` bundle, and bakes in the Tree-sitter `r` and `markdown`
+parsers that the isolated config expects. It currently pins Neovim `v0.12.1`,
+matching the repo's supported baseline.
 
 Generated runtime data stays under this directory:
 

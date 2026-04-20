@@ -186,6 +186,10 @@ layer:
 - plugin/session orchestration: focused headless Neovim tests
 - live workflow: serial tmux-backed E2Es and a repo-owned Blink-backed smoke path via
   [scripts/run-e2e-test.sh](/home/marine/repos/ark.nvim/scripts/run-e2e-test.sh)
+- clean-room user smoke: the Docker harness under
+  [docker/readme-minimal/](/home/marine/repos/ark.nvim/docker/readme-minimal)
+  must wrap the same [testing/readme-minimal/](/home/marine/repos/ark.nvim/testing/readme-minimal)
+  config rather than maintaining a second minimal setup
 - ambient user-config smoke remains optional via `--init ~/.config/nvim/init.lua`
 
 High-value smoke coverage for the current product boundary includes:

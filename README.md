@@ -98,7 +98,7 @@ including Ark-specific custom methods used by the Neovim plugin.
 
 You need:
 
-- Neovim with built-in LSP support
+- Neovim `0.12.1` or newer with built-in LSP support
 - `tmux`, and Neovim must itself be running inside tmux
 - `R >= 4.2`
 - the R package `jsonlite`
@@ -106,6 +106,9 @@ You need:
   such as normal-mode `<CR>` and `<leader><CR>`; at minimum, `.R` buffers need
   the `r` parser
 - a Rust toolchain capable of building the workspace (`rust-version = 1.94`)
+
+The checked-in Docker README harness pins the same current stable Neovim release
+(`v0.12.1`) so the documented container path matches the supported editor floor.
 
 The repo defaults to the `stable` Rust channel. If your installed `stable`
 toolchain is older than `1.94`, update it first:
@@ -359,6 +362,32 @@ For a headless smoke run of that same config, use:
 
 That harness lives under `testing/readme-minimal/` and uses the same Blink +
 `nvim-slimetree` + `vim-slime` + `ark.nvim` stack documented above.
+
+For a disposable Docker version of that same harness, build and run:
+
+```sh
+docker build -f docker/readme-minimal/Dockerfile -t ark-readme-test .
+docker run --rm -it ark-readme-test
+```
+
+That image prebuilds `ark-lsp`, installs the README-minimal plugins, installs
+the Debian `r-cran-tidyverse` bundle (which includes `jsonlite`), and bakes in
+the Tree-sitter `r` and `markdown` parsers needed by the isolated config. It
+currently pins Neovim `v0.12.1`, matching the repo's supported baseline.
+
+For a noninteractive smoke run in the container:
+
+```sh
+docker run --rm ark-readme-test smoke
+```
+
+If you want a small wrapper around those Docker commands, use:
+
+```sh
+./scripts/docker-readme-test.sh build
+./scripts/docker-readme-test.sh run
+./scripts/docker-readme-test.sh smoke
+```
 
 ## Defaults
 

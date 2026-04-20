@@ -1,0 +1,8 @@
+.git
+.github
+.nvimlog
+target
+tmp_examples
+testing/readme-minimal/cache
+testing/readme-minimal/data
+testing/readme-minimal/state

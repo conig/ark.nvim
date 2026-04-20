@@ -9,6 +9,55 @@ local function wait_for(label, timeout_ms, predicate)
   end
 end
 
+local function request(client, method, params, timeout_ms)
+  local response, err = client.request_sync(client, method, params, timeout_ms or 10000, 0)
+  if err then
+    fail(method .. " error: " .. err)
+  end
+  if not response then
+    fail("no response for " .. method)
+  end
+  if response.error then
+    fail(method .. " error: " .. vim.inspect(response.error))
+  end
+  if response.err then
+    fail(method .. " error: " .. vim.inspect(response.err))
+  end
+  return response.result
+end
+
+local function completion_items(result)
+  if type(result) ~= "table" then
+    return {}
+  end
+  if vim.islist(result) then
+    return result
+  end
+  return result.items or {}
+end
+
+local function find_item(items, label)
+  for _, item in ipairs(items) do
+    if item.label == label then
+      return item
+    end
+  end
+end
+
+local function completion_at(client, line, column, trigger_character)
+  local params = {
+    textDocument = vim.lsp.util.make_text_document_params(0),
+    position = { line = line - 1, character = column },
+  }
+  if trigger_character then
+    params.context = {
+      triggerKind = 2,
+      triggerCharacter = trigger_character,
+    }
+  end
+  return completion_items(request(client, "textDocument/completion", params, 10000))
+end
+
 local bufnr = vim.api.nvim_get_current_buf()
 if vim.bo[bufnr].filetype == "" then
   vim.cmd("setfiletype r")
@@ -84,6 +133,15 @@ wait_for("lsp ready", 30000, function()
     and status.lsp_status.available == true
 end)
 
+wait_for("lsp hydration", 30000, function()
+  local status = ark.status({ include_lsp = true })
+  local lsp_status = type(status) == "table" and status.lsp_status or nil
+  return type(lsp_status) == "table"
+    and lsp_status.available == true
+    and tonumber(lsp_status.consoleScopeCount or 0) > 0
+    and tonumber(lsp_status.libraryPathCount or 0) > 0
+end)
+
 local status = ark.status({ include_lsp = true })
 local session = status and status.session or nil
 if type(session) ~= "table" then
@@ -94,6 +152,34 @@ local socket = session.tmux_socket
 local pane = session.tmux_pane
 if type(socket) ~= "string" or socket == "" or type(pane) ~= "string" or pane == "" then
   fail("missing tmux pane target for README test config")
+end
+
+local client = vim.lsp.get_clients({ bufnr = bufnr, name = "ark_lsp" })[1]
+if not client or client.initialized ~= true or (client.is_stopped and client:is_stopped()) then
+  fail("missing live ark_lsp client for README test config")
+end
+
+vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+  'library("uti',
+  "mtcars$",
+})
+
+local library_items = nil
+wait_for("library completion", 10000, function()
+  library_items = completion_at(client, 1, 12)
+  return find_item(library_items, "utils") ~= nil
+end)
+if not find_item(library_items, "utils") then
+  fail('README test config library() completion missing "utils": ' .. vim.inspect(library_items))
+end
+
+local mtcars_items = nil
+wait_for("mtcars$ completion", 10000, function()
+  mtcars_items = completion_at(client, 2, 7, "$")
+  return find_item(mtcars_items, "mpg") ~= nil
+end)
+if not find_item(mtcars_items, "mpg") then
+  fail('README test config mtcars$ completion missing "mpg": ' .. vim.inspect(mtcars_items))
 end
 
 local token = "ARK_README_SEND_SMOKE"
@@ -120,5 +206,10 @@ wait_for("line send to managed pane", 10000, function()
   return vim.v.shell_error == 0 and type(capture) == "string" and capture:find(token, 1, true) ~= nil
 end)
 
-vim.print(ark.status({ include_lsp = true }))
+vim.print({
+  status = ark.status({ include_lsp = true }),
+  library_completion = "utils",
+  mtcars_completion = "mpg",
+  send_line = token,
+})
 vim.cmd("qa!")
