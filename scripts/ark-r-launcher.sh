@@ -8,6 +8,7 @@ R_ARGS="${ARK_NVIM_R_ARGS:---quiet --no-save}"
 STATUS_DIR="${ARK_STATUS_DIR:-$HOME/.local/state/nvim/ark-status}"
 IPC_MAX_REQUEST_BYTES="${ARK_IPC_MAX_REQUEST_BYTES:-65536}"
 IPC_READ_TIMEOUT_MS="${ARK_IPC_READ_TIMEOUT_MS:-250}"
+SESSION_BACKEND="${ARK_SESSION_BACKEND:-tmux}"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DEFAULT_PKG_PATH=$(CDPATH= cd -- "$SCRIPT_DIR/../packages/arkbridge" && pwd)
@@ -69,8 +70,8 @@ encode_status_component() {
 }
 
 STATUS_FILE=""
-SESSION_ID=""
-if [ -n "$TMUX_SOCKET" ] && [ -n "$TMUX_SESSION" ] && [ -n "$TMUX_PANE" ]; then
+SESSION_ID="${ARK_SESSION_ID:-}"
+if [ -z "$SESSION_ID" ] && [ -n "$TMUX_SOCKET" ] && [ -n "$TMUX_SESSION" ] && [ -n "$TMUX_PANE" ]; then
   SESSION_ID="$(encode_status_component "$TMUX_SOCKET")__$(encode_status_component "$TMUX_SESSION")__$(encode_status_component "$TMUX_PANE")"
 fi
 
@@ -82,6 +83,8 @@ PROFILE_FILE=$(mktemp)
 PKG_PATH_R=$(escape_r_string "$PKG_PATH")
 BOOTSTRAP_LIB_R=$(escape_r_string "$BOOTSTRAP_LIB")
 STATUS_DIR_R=$(escape_r_string "$STATUS_DIR")
+SESSION_BACKEND_R=$(escape_r_string "$SESSION_BACKEND")
+SESSION_ID_R=$(escape_r_string "$SESSION_ID")
 TMUX_SOCKET_R=$(escape_r_string "$TMUX_SOCKET")
 TMUX_SESSION_R=$(escape_r_string "$TMUX_SESSION")
 IPC_MAX_REQUEST_BYTES_R=$(escape_r_string "$IPC_MAX_REQUEST_BYTES")
@@ -89,6 +92,8 @@ IPC_READ_TIMEOUT_MS_R=$(escape_r_string "$IPC_READ_TIMEOUT_MS")
 
 cat > "$PROFILE_FILE" <<EOR
 local({
+  .backend <- Sys.getenv("ARK_SESSION_BACKEND", unset = "$SESSION_BACKEND_R")
+  .session_id <- Sys.getenv("ARK_SESSION_ID", unset = "$SESSION_ID_R")
   .pane <- Sys.getenv("TMUX_PANE", unset = "")
   .socket <- "$TMUX_SOCKET_R"
   .session <- "$TMUX_SESSION_R"
@@ -118,6 +123,10 @@ local({
   }
 
   .status_parts <- function() {
+    if (nzchar(.session_id)) {
+      return(c(.session_id))
+    }
+
     .parts <- character()
     if (nzchar(.socket)) {
       .parts <- c(.parts, .encode_component(.socket))
@@ -202,11 +211,16 @@ local({
   }
 
   .status_file_path <- function() {
-    if (!nzchar(.status_root) || !nzchar(.socket) || !nzchar(.session) || !nzchar(.pane)) {
+    if (!nzchar(.status_root)) {
       return("")
     }
 
-    .name <- paste(.status_parts(), collapse = "__")
+    .parts <- .status_parts()
+    if (!length(.parts)) {
+      return("")
+    }
+
+    .name <- paste(.parts, collapse = "__")
     file.path(.status_root, paste0(.name, ".json"))
   }
 
@@ -452,6 +466,8 @@ local({
         port = .port,
         options = list(
           session = list(
+            backend = .backend,
+            session_id = .session_id,
             tmux_socket = "$TMUX_SOCKET_R",
             tmux_session = "$TMUX_SESSION_R",
             tmux_pane = .pane
@@ -549,7 +565,7 @@ ARK_IPC_MAX_REQUEST_BYTES="$IPC_MAX_REQUEST_BYTES" \
 ARK_IPC_READ_TIMEOUT_MS="$IPC_READ_TIMEOUT_MS" \
 ARK_ORIG_R_PROFILE_USER="${R_PROFILE_USER:-}" \
 ARK_R_LIB="$BOOTSTRAP_LIB" \
-ARK_SESSION_BACKEND="tmux" \
+ARK_SESSION_BACKEND="$SESSION_BACKEND" \
 ARK_SESSION_ID="$SESSION_ID" \
 ARK_TMUX_SOCKET="$TMUX_SOCKET" \
 ARK_TMUX_SESSION="$TMUX_SESSION" \
