@@ -87,6 +87,14 @@ if not ok then
   error("ark must be available for startup timing probe", 0)
 end
 
+local prewarm_disabled = vim.env.ARK_TEST_DISABLE_PREWARM == "1"
+if prewarm_disabled then
+  local lsp = require("ark.lsp")
+  lsp.prewarm = function()
+    return nil
+  end
+end
+
 ark.setup({
   auto_start_pane = true,
   auto_start_lsp = true,
@@ -132,6 +140,7 @@ mark("main_buffer_unlocked")
 local startup = ark_test.startup_status(bufnr) or {}
 vim.print({
   marks = marks,
+  prewarm_disabled = prewarm_disabled,
   startup_elapsed_ms = tonumber(startup.main_buffer_unlock_elapsed_ms) or elapsed_ms(),
   status = require("ark").status({ include_lsp = true }),
 })
