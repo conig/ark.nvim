@@ -283,6 +283,10 @@ local function startup_ready_for_safe_state(bufnr)
 end
 
 local function mark_startup_safe_state(bufnr, source)
+  if startup_unlocked(bufnr) then
+    return
+  end
+
   local ready, _, lsp_status = startup_ready_for_safe_state(bufnr)
   if not ready then
     return
