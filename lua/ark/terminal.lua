@@ -375,7 +375,7 @@ end
 function M.pane_command(config)
   local session_id = state.session_id or "ark-terminal-session"
   return "export " .. table.concat(pane_command_exports(config, session_id), " ")
-    .. "; clear && exec "
+    .. "; exec "
     .. shellescape(config.launcher)
 end
 

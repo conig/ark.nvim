@@ -136,6 +136,19 @@ local function ensure_startup_trace_cleanup(bufnr)
   })
 end
 
+local function startup_unlocked(bufnr)
+  local trace = startup_traces[bufnr]
+  if type(trace) ~= "table" then
+    return true
+  end
+  if startup_tokens[bufnr] ~= trace.token then
+    cleanup_startup_trace(bufnr)
+    return true
+  end
+
+  return trace.main_buffer_unlocked == true
+end
+
 local function record_startup_unlock(bufnr, source, unlock_opts)
   local trace = startup_traces[bufnr]
   if type(trace) ~= "table" or trace.main_buffer_unlocked == true then
@@ -220,20 +233,28 @@ local function startup_ready_for_safe_state(bufnr)
     return false, nil, nil
   end
 
-  local tmux_status = nil
+  local backend_snapshot = nil
   if options.auto_start_pane == true then
-    tmux_status = session_backend.status(options)
-    if type(tmux_status) ~= "table" or tmux_status.repl_ready ~= true then
-      return false, tmux_status, nil
+    backend_snapshot = session_backend.startup_snapshot(options, {
+      include_prompt_ready = false,
+      validate_bridge = false,
+    })
+    local startup_status = type(backend_snapshot) == "table" and backend_snapshot.startup_status or nil
+    if type(backend_snapshot) ~= "table"
+      or backend_snapshot.bridge_ready ~= true
+      or type(startup_status) ~= "table"
+      or startup_status.repl_ready ~= true
+    then
+      return false, backend_snapshot, nil
     end
   end
 
   if options.auto_start_lsp ~= true then
-    return true, tmux_status, nil
+    return true, backend_snapshot, nil
   end
 
   local lsp_ready, lsp_status = lsp_status_ready_for_safe_state(bufnr)
-  return lsp_ready, tmux_status, lsp_status
+  return lsp_ready, backend_snapshot, lsp_status
 end
 
 local function mark_startup_safe_state(bufnr, source)
@@ -1242,6 +1263,9 @@ function M.setup(opts)
       if not is_ark_buffer(args.buf) then
         return
       end
+      if not startup_unlocked(args.buf) then
+        return
+      end
       blink.handle_insert_char_pre(args.buf)
     end,
     desc = "Track opening-pair insertions for Ark completion recovery",
@@ -1252,6 +1276,9 @@ function M.setup(opts)
     pattern = "*",
     callback = function(args)
       if not is_ark_buffer(args.buf) then
+        return
+      end
+      if not startup_unlocked(args.buf) then
         return
       end
       blink.maybe_hide_after_extractor(args.buf)
@@ -1266,6 +1293,9 @@ function M.setup(opts)
     callback = function(args)
       vim.schedule(function()
         if is_ark_buffer(args.buf) then
+          if not startup_unlocked(args.buf) then
+            return
+          end
           blink.maybe_hide_after_extractor(args.buf)
           blink.maybe_show_after_pair(args.buf)
         end

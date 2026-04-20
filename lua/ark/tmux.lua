@@ -1016,7 +1016,7 @@ function M.pane_command(config)
   end
 
   return "export " .. table.concat(exports, " ")
-    .. "; clear && exec "
+    .. "; exec "
     .. vim.fn.shellescape(config.launcher)
 end
 
