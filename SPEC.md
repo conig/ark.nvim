@@ -34,6 +34,11 @@ Additional session backends may be added behind the same contract, but they are
 additive. They must not force tmux behavior down to a least-common-denominator
 UX.
 
+Today that includes a built-in Neovim terminal backend for users who want a
+managed live R session without tmux. It intentionally starts narrower than the
+tmux path: one session, no tmux tab parking semantics, and send-path
+configuration routed through `vim-slime` / `nvim-slimetree`.
+
 This repository still contains upstream kernel, Jupyter, Positron, and DAP
 code as retained extraction material. That is not the primary product surface.
 The legacy `ark` kernel binary is now treated as an opt-in extraction artifact
@@ -48,7 +53,9 @@ Primary surfaces:
 - [lua/ark/init.lua](/home/marine/repos/ark.nvim/lua/ark/init.lua)
 - [lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua)
 - [lua/ark/session.lua](/home/marine/repos/ark.nvim/lua/ark/session.lua)
+- [lua/ark/session_runtime.lua](/home/marine/repos/ark.nvim/lua/ark/session_runtime.lua)
 - [lua/ark/tmux.lua](/home/marine/repos/ark.nvim/lua/ark/tmux.lua)
+- [lua/ark/terminal.lua](/home/marine/repos/ark.nvim/lua/ark/terminal.lua)
 - [plugin/ark.lua](/home/marine/repos/ark.nvim/plugin/ark.lua)
 - [lua/ark/health.lua](/home/marine/repos/ark.nvim/lua/ark/health.lua)
 
@@ -56,7 +63,8 @@ Responsibilities:
 
 - select the configured session backend while keeping tmux as the canonical path
 - manage one visible Ark tmux pane plus parked Ark tabs on the tmux backend
-- configure `vim-slime` targeting
+- manage one visible Ark terminal split on the terminal backend
+- configure `vim-slime` / `nvim-slimetree` targeting at the backend seam
 - start detached `ark-lsp`
 - relay session metadata through `ark/updateSession`
 - expose commands such as `ArkPaneStart`, `ArkTab*`, `ArkHelp`, and `ArkStatus`

@@ -4,14 +4,14 @@ ark.nvim
 `ark.nvim` is a Neovim-first R tooling stack built around three pieces:
 
 - `ark-lsp`, a native Rust language server for R
-- a Neovim plugin that starts or reuses one managed tmux pane running interactive `R`
+- a Neovim plugin that starts or reuses one managed interactive `R` session, with tmux as the primary backend and a narrower built-in terminal backend
 - `nvim-slimetree` plus `vim-slime` for code sending into that REPL
 
 This repo started as upstream Ark, so it still contains kernel, Positron, and other migration-era code. That is not the product surface anymore. The active scope is a local, Neovim-only workflow where:
 
 - Neovim talks to `ark-lsp` over stdio
-- the live R session stays in tmux
-- runtime-aware features cross the tmux boundary through the managed session bridge
+- the live R session stays in the configured managed backend
+- runtime-aware features cross that session boundary through the managed session bridge
 - REPL execution stays with `nvim-slimetree` and `vim-slime`
 
 The legacy `ark` kernel binary is retained only as an opt-in extraction artifact.
@@ -23,6 +23,7 @@ Default builds and the supported runtime path target `ark-lsp`.
 
 - Neovim R development
 - one managed tmux R pane per Neovim instance
+- one managed Neovim terminal R split per Neovim instance
 - standard LSP features such as diagnostics, completion, hover, signature help,
   definitions, references, implementations, symbols, folding ranges, selection
   ranges, and limited code actions
@@ -48,7 +49,7 @@ The intended workflow is:
 4. `ark-lsp` provides static language features through Neovim's built-in LSP client.
 5. When the managed R session is ready, `ark-lsp` augments static analysis with live-session intelligence through the bridge runtime.
 
-The important boundary is that the REPL does not live inside the LSP process. `ark.nvim` manages the tmux session, the launcher bootstraps the bridge runtime, and the LSP consumes that session metadata when it starts in detached mode.
+The important boundary is that the REPL does not live inside the LSP process. `ark.nvim` manages the session backend, the launcher bootstraps the bridge runtime, and the LSP consumes that session metadata when it starts in detached mode. tmux remains the primary UX, and the built-in terminal backend is additive rather than a new least-common-denominator abstraction.
 
 ## Ark LSP Feature Matrix
 

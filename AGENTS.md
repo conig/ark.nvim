@@ -9,8 +9,8 @@ This file defines the working scope for `ark.nvim` and gives contributors a stab
 The target product is:
 
 - a native Rust LSP server for R, built from Ark's existing language-analysis code where practical
-- a Neovim plugin that starts or attaches to one managed tmux pane running interactive `R`
-- a session bridge so the LSP can query the live R session inside that pane for completions, hover, signatures, help, and other runtime-aware features
+- a Neovim plugin that starts or attaches to one managed interactive `R` session, with tmux as the primary backend and a narrower built-in Neovim terminal backend
+- a session bridge so the LSP can query the live R session inside that managed backend for completions, hover, signatures, help, and other runtime-aware features
 
 `ark.nvim` is not a Positron integration, not a Jupyter kernel, and not a notebook runtime.
 
@@ -44,7 +44,7 @@ the `posit-dev/air` repository.
 The intended editor workflow is:
 
 1. Open an `r`, `rmd`, `qmd`, or `quarto` buffer in Neovim.
-2. `ark.nvim` ensures one managed tmux pane exists and is running `R`.
+2. `ark.nvim` ensures one managed interactive `R` session exists and is running.
 3. Code execution is still handled by `vim-slime` plus `nvim-slimetree`.
 4. Language features are handled by `ark.nvim` through Neovim's LSP client.
 5. When a managed R session is available, `ark.nvim` augments static analysis with live-session intelligence.
@@ -53,6 +53,7 @@ This separation is deliberate:
 
 - `nvim-slimetree` remains the chunk and statement send layer.
 - tmux remains the primary terminal/session UI.
+- the built-in Neovim terminal backend is additive and intentionally narrower than tmux.
 - backend abstraction belongs at the session contract boundary, not at the UX surface.
 - `ark.nvim` owns language intelligence, session discovery, and Neovim integration.
 
@@ -62,6 +63,7 @@ This separation is deliberate:
 
 - Neovim plugin setup and session management
 - managed tmux pane lifecycle for a single interactive R session
+- additive Neovim terminal lifecycle for a single interactive R session, without tmux tab semantics
 - standard LSP transport for Neovim, using a stdio server
 - Ark-powered R language features inside Neovim:
     - completions
@@ -74,6 +76,7 @@ This separation is deliberate:
     - code actions already supported by Ark's LSP core
 - graceful fallback from runtime-aware features to static-only behavior when no live R session is attached
 - local, same-machine operation for tmux-managed R
+- local, same-machine operation for the built-in terminal backend
 
 ### Explicitly out of scope for v1
 
@@ -128,7 +131,7 @@ Do not expand new work in the Jupyter / Positron direction.
 
 ## Architectural Direction
 
-The key architectural constraint is that the real interactive R session lives in tmux, not inside the LSP process.
+The key architectural constraint is that the real interactive R session lives outside the LSP process.
 
 Today the detached Neovim path uses the local `rscope` IPC runtime as that bridge when it is available, with `ark.nvim` responsible for passing trusted session metadata into `ark-lsp`.
 
@@ -138,10 +141,10 @@ That means `ark.nvim` v1 needs three layers:
     - standard stdio LSP server for Neovim
     - owns static analysis, document state, indexing, diagnostics, and LSP protocol handling
 2. session bridge:
-    - talks to the live R session in the managed tmux pane over a local IPC channel
+    - talks to the live R session in the managed backend over a local IPC channel
     - serves runtime-aware queries needed by completion, hover, signatures, help, and session-derived diagnostics/context
 3. Neovim plugin:
-    - starts or reuses the managed pane
+    - starts or reuses the managed backend
     - discovers and attaches session identity
     - launches the LSP server
     - wires Neovim settings, commands, health checks, and filetype behavior
