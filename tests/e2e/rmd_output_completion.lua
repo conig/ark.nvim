@@ -50,6 +50,20 @@ local function find_item(items, label)
   return nil
 end
 
+local function assert_exact_labels(items, expected, label)
+  local labels = item_labels(items)
+
+  if #labels ~= #expected then
+    fail(label .. ": unexpected frontmatter output completion set: " .. vim.inspect(labels))
+  end
+
+  for index, value in ipairs(expected) do
+    if labels[index] ~= value then
+      fail(label .. ": frontmatter output completion polluted or reordered: " .. vim.inspect(labels))
+    end
+  end
+end
+
 require("ark").setup({
   auto_start_pane = true,
   auto_start_lsp = true,
@@ -60,7 +74,7 @@ local test_file = "/tmp/ark_rmd_output_completion.Rmd"
 
 vim.fn.writefile({
   "---",
-  "output: rmarkdown::h",
+  "output: ",
   'title: "Ark R Markdown output completion"',
   "---",
   "",
@@ -81,21 +95,7 @@ wait_for("ark lsp client", 15000, function()
   return client ~= nil and client.initialized == true and not client:is_stopped()
 end)
 
-vim.api.nvim_buf_set_text(0, 1, 20, 1, 20, { "t" })
-vim.wait(500, function()
-  return false
-end, 500, false)
-
-local line = vim.api.nvim_buf_get_lines(0, 1, 2, false)[1]
-local completion_column = #line
 local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
-local result = request(client, "textDocument/completion", {
-  textDocument = vim.lsp.util.make_text_document_params(0),
-  position = { line = 1, character = completion_column },
-}, 10000)
-
-local items = completion_items(result)
-local labels = item_labels(items)
 local expected = {
   "rmarkdown::html_document",
   "rmarkdown::pdf_document",
@@ -105,27 +105,57 @@ local expected = {
   "rmarkdown::slidy_presentation",
 }
 
-if #labels ~= #expected then
-  fail("unexpected frontmatter output completion set: " .. vim.inspect(labels))
+local function request_output_completion(line_text)
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    "---",
+    line_text,
+    'title: "Ark R Markdown output completion"',
+    "---",
+    "",
+    "Body",
+  })
+  vim.wait(300, function()
+    return false
+  end, 50, false)
+
+  local result = request(client, "textDocument/completion", {
+    textDocument = vim.lsp.util.make_text_document_params(0),
+    position = { line = 1, character = #line_text },
+  }, 10000)
+
+  return completion_items(result)
 end
 
-for i, label in ipairs(expected) do
-  if labels[i] ~= label then
-    fail("frontmatter output completion polluted or reordered: " .. vim.inspect(labels))
-  end
-end
+local empty_items = request_output_completion("output: ")
+assert_exact_labels(empty_items, expected, "empty prefix")
 
-local html = find_item(items, "rmarkdown::html_document")
+local partial_items = request_output_completion("output: rmarkdown::ht")
+assert_exact_labels(partial_items, expected, "partial prefix")
+
+local html = find_item(partial_items, "rmarkdown::html_document")
 if not html then
-  fail("output completion missing html_document: " .. vim.inspect(labels))
+  fail("output completion missing html_document: " .. vim.inspect(item_labels(partial_items)))
 end
 
 local text_edit = html.textEdit or html.text_edit
-if not text_edit or text_edit.newText ~= "rmarkdown::html_document" then
+if not text_edit or text_edit.newText ~= "rmarkdown::html_document " then
   fail("output completion returned unexpected text edit: " .. vim.inspect(text_edit))
 end
 
+local exact_items = request_output_completion("output: rmarkdown::html_document")
+if #exact_items ~= 0 then
+  fail("exact builtin output should suppress further completions: " .. vim.inspect(item_labels(exact_items)))
+end
+
+local spaced_items = request_output_completion("output: rmarkdown::html_document ")
+if #spaced_items ~= 0 then
+  fail("exact builtin output with trailing space should suppress further completions: " .. vim.inspect(item_labels(spaced_items)))
+end
+
 vim.print({
-  completions = labels,
+  empty_prefix = item_labels(empty_items),
+  partial_prefix = item_labels(partial_items),
   html_text_edit = text_edit,
+  exact_builtin_items = #exact_items,
+  exact_builtin_spaced_items = #spaced_items,
 })

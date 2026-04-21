@@ -60,6 +60,12 @@ struct BuiltinOutput {
 
 pub(super) struct FrontmatterSource;
 
+struct OutputValueEditRange {
+    start: Point,
+    end: Point,
+    value: String,
+}
+
 impl CompletionSource for FrontmatterSource {
     fn name(&self) -> &'static str {
         "frontmatter"
@@ -89,13 +95,22 @@ fn completions_from_frontmatter_output(
         return Ok(None);
     }
 
-    let Some((start, end)) = output_value_edit_range(context)? else {
+    let Some(edit_range) = output_value_edit_range(context)? else {
         return Ok(None);
     };
 
+    if builtin_output_from_value(&edit_range.value).is_some() {
+        return Ok(Some(vec![]));
+    }
+
     let mut completions = Vec::with_capacity(BUILTIN_OUTPUTS.len());
     for builtin in BUILTIN_OUTPUTS {
-        completions.push(completion_item_from_builtin_output(builtin, context, start, end)?);
+        completions.push(completion_item_from_builtin_output(
+            builtin,
+            context,
+            edit_range.start,
+            edit_range.end,
+        )?);
     }
 
     Ok(Some(completions))
@@ -120,7 +135,7 @@ fn frontmatter_row_range(document: &Document) -> Option<Range<usize>> {
 
 fn output_value_edit_range(
     context: &DocumentContext,
-) -> anyhow::Result<Option<(Point, Point)>> {
+) -> anyhow::Result<Option<OutputValueEditRange>> {
     let Some(line) = context.document.get_line(context.point.row) else {
         return Ok(None);
     };
@@ -155,10 +170,16 @@ fn output_value_edit_range(
         return Ok(None);
     }
 
-    Ok(Some((
-        Point::new(context.point.row, value_start),
-        Point::new(context.point.row, value_end),
-    )))
+    Ok(Some(OutputValueEditRange {
+        start: Point::new(context.point.row, value_start),
+        end: Point::new(context.point.row, value_end),
+        value: line[value_start..value_end].to_string(),
+    }))
+}
+
+fn builtin_output_from_value(value: &str) -> Option<&'static BuiltinOutput> {
+    let trimmed = value.trim_end_matches(|ch: char| ch.is_ascii_whitespace());
+    BUILTIN_OUTPUTS.iter().find(|builtin| trimmed == format!("rmarkdown::{}", builtin.output))
 }
 
 fn completion_item_from_builtin_output(
@@ -181,7 +202,7 @@ fn completion_item_from_builtin_output(
             context.document.lsp_position_from_tree_sitter_point(start)?,
             context.document.lsp_position_from_tree_sitter_point(end)?,
         ),
-        new_text: package_ref,
+        new_text: format!("{package_ref} "),
     }));
 
     Ok(item)
@@ -227,7 +248,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(html.detail.as_deref(), Some("HTML Document"));
-        assert_text_edit(html, "rmarkdown::html_document");
+        assert_text_edit(html, "rmarkdown::html_document ");
     }
 
     #[test]
@@ -242,7 +263,7 @@ mod tests {
             .find(|item| item.label == "rmarkdown::html_document")
             .unwrap();
 
-        assert_text_edit(html, "rmarkdown::html_document");
+        assert_text_edit(html, "rmarkdown::html_document ");
 
         match html.text_edit.as_ref().unwrap() {
             CompletionTextEdit::Edit(edit) => {
@@ -267,5 +288,21 @@ mod tests {
         assert!(
             frontmatter_output_completions("---\noutput: html_document\n---\n\n@body\n").is_none()
         );
+    }
+
+    #[test]
+    fn test_frontmatter_output_completion_claims_exact_builtin_without_items() {
+        let completions =
+            frontmatter_output_completions("---\noutput: rmarkdown::html_document@\n---\n");
+
+        assert!(matches!(completions, Some(ref items) if items.is_empty()));
+    }
+
+    #[test]
+    fn test_frontmatter_output_completion_claims_exact_builtin_with_trailing_space_without_items() {
+        let completions =
+            frontmatter_output_completions("---\noutput: rmarkdown::html_document @\n---\n");
+
+        assert!(matches!(completions, Some(ref items) if items.is_empty()));
     }
 }
