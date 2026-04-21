@@ -658,6 +658,16 @@ local function add_range_highlight(buf, start_line, end_line, lines, group, prio
   })
 end
 
+local function add_line_highlight_range(buf, start_line, end_line, group, priority)
+  if not start_line or not end_line or start_line > end_line then
+    return
+  end
+
+  for line_index = start_line, end_line do
+    add_line_highlight(buf, line_index - 1, group, priority)
+  end
+end
+
 local function help_reference_target(reference)
   if type(reference) ~= "table" or type(reference.topic) ~= "string" or reference.topic == "" then
     return nil
@@ -893,13 +903,13 @@ local function apply_help_highlights(buf, rendered, references)
       add_line_highlight(buf, section.line - 1, "ArkHelpUsageHeader", 210)
       local block = code_blocks_by_header[section.line]
       if block then
-        add_range_highlight(buf, block.fence_start, block.fence_start, lines, "ArkHelpCodeFence", 120)
+        add_line_highlight(buf, block.fence_start - 1, "ArkHelpCodeFence", 120)
         if block.body_start <= block.body_end then
-          add_range_highlight(buf, block.body_start, block.body_end, lines, "ArkHelpUsageBody", 105)
+          add_line_highlight_range(buf, block.body_start, block.body_end, "ArkHelpUsageBody", 105)
         end
-        add_range_highlight(buf, block.fence_end, block.fence_end, lines, "ArkHelpCodeFence", 120)
+        add_line_highlight(buf, block.fence_end - 1, "ArkHelpCodeFence", 120)
       else
-        add_range_highlight(buf, body_start, body_end, lines, "ArkHelpUsageBody", 105)
+        add_line_highlight_range(buf, body_start, body_end, "ArkHelpUsageBody", 105)
       end
     else
       add_line_highlight(buf, section.line - 1, "ArkHelpSectionHeader", 200)

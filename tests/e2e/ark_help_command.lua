@@ -214,20 +214,12 @@ local ok, err = pcall(function()
   local extmarks = vim.api.nvim_buf_get_extmarks(help_buf, ns, 0, -1, { details = true })
   local line_groups = {}
   local has_reference_highlight = false
-  local usage_ranges = {}
-  local fence_ranges = 0
   for _, mark in ipairs(extmarks) do
     if mark[4].line_hl_group then
       line_groups[mark[2] + 1] = mark[4].line_hl_group
     end
     if mark[4].hl_group == "ArkHelpReference" then
       has_reference_highlight = true
-    end
-    if mark[4].hl_group == "ArkHelpUsageBody" then
-      usage_ranges[#usage_ranges + 1] = mark
-    end
-    if mark[4].hl_group == "ArkHelpCodeFence" then
-      fence_ranges = fence_ranges + 1
     end
   end
 
@@ -261,12 +253,39 @@ local ok, err = pcall(function()
     }), 0)
   end
 
-  if not has_reference_highlight then
-    error("expected at least one help reference highlight", 0)
+  if line_groups[8] ~= "ArkHelpCodeFence" or line_groups[10] ~= "ArkHelpCodeFence" then
+    error("expected Usage fences to use line highlights, got " .. vim.inspect({
+      line_8 = line_groups[8],
+      line_10 = line_groups[10],
+    }), 0)
   end
 
-  if #usage_ranges ~= 2 then
-    error("expected one usage range and one examples range, got " .. vim.inspect(usage_ranges), 0)
+  if line_groups[9] ~= "ArkHelpUsageBody" then
+    error("expected Usage body to use line highlights, got " .. vim.inspect({
+      line_9 = line_groups[9],
+    }), 0)
+  end
+
+  if line_groups[18] ~= "ArkHelpCodeFence" or line_groups[22] ~= "ArkHelpCodeFence" then
+    error("expected Examples fences to use line highlights, got " .. vim.inspect({
+      line_18 = line_groups[18],
+      line_22 = line_groups[22],
+    }), 0)
+  end
+
+  if line_groups[19] ~= "ArkHelpUsageBody"
+    or line_groups[20] ~= "ArkHelpUsageBody"
+    or line_groups[21] ~= "ArkHelpUsageBody"
+  then
+    error("expected Examples body to use line highlights, got " .. vim.inspect({
+      line_19 = line_groups[19],
+      line_20 = line_groups[20],
+      line_21 = line_groups[21],
+    }), 0)
+  end
+
+  if not has_reference_highlight then
+    error("expected at least one help reference highlight", 0)
   end
 
   vim.wait(120, function()
@@ -275,24 +294,6 @@ local ok, err = pcall(function()
   local extmarks_after_delay = vim.api.nvim_buf_get_extmarks(help_buf, ns, 0, -1, { details = true })
   if #extmarks_after_delay < #extmarks then
     error("expected ArkHelp highlights to persist after delayed redraw, got " .. tostring(#extmarks_after_delay), 0)
-  end
-
-  table.sort(usage_ranges, function(left, right)
-    return left[2] < right[2]
-  end)
-
-  local usage_range = usage_ranges[1]
-  local examples_range = usage_ranges[2]
-  if usage_range[2] + 1 ~= 9 or usage_range[4].end_row ~= 8 or usage_range[4].hl_eol ~= true then
-    error("expected usage chunk to use a single-line hl_eol range, got " .. vim.inspect(usage_range), 0)
-  end
-
-  if examples_range[2] + 1 ~= 19 or examples_range[4].end_row ~= 20 or examples_range[4].hl_eol ~= true then
-    error("expected examples chunk to use a multiline hl_eol range, got " .. vim.inspect(examples_range), 0)
-  end
-
-  if fence_ranges ~= 4 then
-    error("expected four fenced code line ranges, got " .. tostring(fence_ranges), 0)
   end
 
   local reference_column = assert(lines[5]:find("group_by%(%s*%)", 1)) - 1
