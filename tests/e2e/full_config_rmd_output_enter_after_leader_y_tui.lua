@@ -159,7 +159,8 @@ local ok, err = xpcall(function()
   end, 50, false)
 
   -- Reproduce the user's real flow under the full config: create frontmatter
-  -- with <leader>y, type `output: ` in the blank YAML line, then press Enter.
+  -- with <leader>y, type `output:` in the blank YAML line, then press Enter
+  -- as soon as the completion menu appears.
   tmux({ "send-keys", "-t", nvim_pane, "Escape", "Space", "y" })
 
   local yaml_insert = nil
@@ -173,12 +174,12 @@ local ok, err = xpcall(function()
     return yaml_insert ~= nil
   end)
 
-  tmux({ "send-keys", "-t", nvim_pane, "-l", "output: " })
+  tmux({ "send-keys", "-t", nvim_pane, "-l", "output:" })
 
   local completion_show = nil
   ark_test.wait_for("frontmatter output completion", 10000, function()
     completion_show = latest_matching(function(candidate)
-      if candidate.label ~= "BlinkCmpShow" or candidate.line ~= "output: " then
+      if candidate.label ~= "BlinkCmpShow" or candidate.line ~= "output:" then
         return false
       end
 
@@ -205,7 +206,7 @@ local ok, err = xpcall(function()
 
   if after_enter_snapshot.line ~= "output: html_document" then
     ark_test.fail(vim.inspect({
-      error = "frontmatter output completion left unexpected trailing space after Enter",
+      error = "frontmatter output completion did not insert required space after colon",
       yaml_insert = yaml_insert,
       completion_show = completion_show,
       hide_event = hide_event,

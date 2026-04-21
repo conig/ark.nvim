@@ -126,6 +126,19 @@ local function request_output_completion(line_text)
   return completion_items(result)
 end
 
+local colon_items = request_output_completion("output:")
+assert_exact_labels(colon_items, expected, "colon trigger")
+
+local colon_html = find_item(colon_items, "html_document")
+if not colon_html then
+  fail("colon trigger output completion missing html_document: " .. vim.inspect(item_labels(colon_items)))
+end
+
+local colon_text_edit = colon_html.textEdit or colon_html.text_edit
+if not colon_text_edit or colon_text_edit.newText ~= " html_document" then
+  fail("colon trigger output completion returned unexpected text edit: " .. vim.inspect(colon_text_edit))
+end
+
 local empty_items = request_output_completion("output: ")
 assert_exact_labels(empty_items, expected, "empty prefix")
 
@@ -153,6 +166,8 @@ if #spaced_items ~= 0 then
 end
 
 vim.print({
+  colon_prefix = item_labels(colon_items),
+  colon_html_text_edit = colon_text_edit,
   empty_prefix = item_labels(empty_items),
   partial_prefix = item_labels(partial_items),
   html_text_edit = text_edit,

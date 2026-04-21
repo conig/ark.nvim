@@ -64,6 +64,7 @@ struct OutputValueEditRange {
     start: Point,
     end: Point,
     value: String,
+    needs_leading_space: bool,
 }
 
 impl CompletionSource for FrontmatterSource {
@@ -110,6 +111,7 @@ fn completions_from_frontmatter_output(
             context,
             edit_range.start,
             edit_range.end,
+            edit_range.needs_leading_space,
         )?);
     }
 
@@ -156,10 +158,8 @@ fn output_value_edit_range(
     }
 
     let colon_index = trimmed.find(':').unwrap_or_default();
-    let value_start = indent +
-        colon_index +
-        1 +
-        (after_colon.len() - value_prefix.len());
+    let raw_value_start = indent + colon_index + 1;
+    let value_start = raw_value_start + (after_colon.len() - value_prefix.len());
     let value_end = context.point.column.min(line.len());
 
     if value_end < value_start {
@@ -174,6 +174,7 @@ fn output_value_edit_range(
         start: Point::new(context.point.row, value_start),
         end: Point::new(context.point.row, value_end),
         value: line[value_start..value_end].to_string(),
+        needs_leading_space: value_start == raw_value_start,
     }))
 }
 
@@ -187,6 +188,7 @@ fn completion_item_from_builtin_output(
     context: &DocumentContext,
     start: Point,
     end: Point,
+    needs_leading_space: bool,
 ) -> anyhow::Result<CompletionItem> {
     let output_ref = builtin.output.to_string();
     let mut item = completion_item(output_ref.clone(), CompletionData::Unknown)?;
@@ -202,7 +204,11 @@ fn completion_item_from_builtin_output(
             context.document.lsp_position_from_tree_sitter_point(start)?,
             context.document.lsp_position_from_tree_sitter_point(end)?,
         ),
-        new_text: output_ref,
+        new_text: if needs_leading_space {
+            format!(" {output_ref}")
+        } else {
+            output_ref
+        },
     }));
 
     Ok(item)
@@ -249,6 +255,31 @@ mod tests {
 
         assert_eq!(html.detail.as_deref(), Some("HTML Document"));
         assert_text_edit(html, "html_document");
+    }
+
+    #[test]
+    fn test_frontmatter_output_completion_after_colon_inserts_leading_space() {
+        let completions = frontmatter_output_completions(
+            "---\noutput:@\n---\n\nBody\n",
+        )
+        .unwrap();
+
+        let html = completions
+            .iter()
+            .find(|item| item.label == "html_document")
+            .unwrap();
+
+        assert_text_edit(html, " html_document");
+
+        match html.text_edit.as_ref().unwrap() {
+            CompletionTextEdit::Edit(edit) => {
+                assert_eq!(edit.range.start.line, 1);
+                assert_eq!(edit.range.start.character, 7);
+                assert_eq!(edit.range.end.line, 1);
+                assert_eq!(edit.range.end.character, 7);
+            },
+            _ => panic!("Unexpected TextEdit variant"),
+        }
     }
 
     #[test]
