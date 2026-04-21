@@ -8,7 +8,7 @@
 use serde::Deserialize;
 use serde::Serialize;
 use tower_lsp::lsp_types::Position;
-use tower_lsp::lsp_types::VersionedTextDocumentIdentifier;
+use tower_lsp::lsp_types::TextDocumentIdentifier;
 use tree_sitter::Node;
 use tree_sitter::Point;
 use tree_sitter::Tree;
@@ -26,7 +26,7 @@ pub static ARK_HELP_TOPIC_REQUEST: &str = "ark/textDocument/helpTopic";
 #[serde(rename_all = "camelCase")]
 pub struct HelpTopicParams {
     /// The document to provide a help topic for.
-    pub text_document: VersionedTextDocumentIdentifier,
+    pub text_document: TextDocumentIdentifier,
     /// The location of the cursor.
     pub position: Position,
 }
@@ -64,7 +64,9 @@ pub(crate) fn help_topic(
 fn locate_help_node(tree: &Tree, point: Point) -> Option<Node<'_>> {
     let root = tree.root_node();
 
-    let mut node = root.find_closest_node_to_point(point)?;
+    let mut node = root
+        .find_smallest_spanning_node(point)
+        .or_else(|| root.find_closest_node_to_point(point))?;
 
     // Find the nearest node that is an identifier.
     while !node.is_identifier() {
@@ -94,9 +96,12 @@ fn locate_help_node(tree: &Tree, point: Point) -> Option<Node<'_>> {
 
 #[cfg(test)]
 mod tests {
+    use tower_lsp::lsp_types::Position;
     use tree_sitter::Parser;
 
     use crate::fixtures::point_from_cursor;
+    use crate::lsp::document::Document;
+    use crate::lsp::help_topic::help_topic;
     use crate::lsp::help_topic::locate_help_node;
     use crate::lsp::traits::node::NodeExt;
 
@@ -124,6 +129,7 @@ mod tests {
             // With the package namespace
             ("tensorflow::tf$ab@s(x)", "tensorflow::tf$abs"),
             // Snake case function names should work across the identifier.
+            ("@geom_point()", "geom_point"),
             ("ge@om_point()", "geom_point"),
             ("geom@_point()", "geom_point"),
             ("geom_@point()", "geom_point"),
@@ -136,6 +142,27 @@ mod tests {
             let node = locate_help_node(&tree, point).unwrap();
             let text = node.node_as_str(&text).unwrap();
             assert_eq!(text, expected);
+        }
+    }
+
+    #[test]
+    fn test_help_topic_supports_boundary_positions() {
+        let document = Document::new("geom_point()", None);
+        let cases = [
+            Position::new(0, 0),
+            Position::new(0, 4),
+            Position::new(0, 5),
+            Position::new(0, 10),
+        ];
+
+        for position in cases {
+            let point = document
+                .tree_sitter_point_from_lsp_position(position)
+                .unwrap();
+            let response = help_topic(point, &document)
+                .unwrap()
+                .expect("expected help topic response");
+            assert_eq!(response.topic, "geom_point");
         }
     }
 }

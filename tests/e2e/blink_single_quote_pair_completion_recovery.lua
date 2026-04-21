@@ -1,6 +1,7 @@
 package.loaded["ark.blink"] = nil
 
 local blink_show_calls = {}
+local trigger_show_calls = {}
 
 package.preload["blink.cmp"] = function()
   return {
@@ -9,6 +10,15 @@ package.preload["blink.cmp"] = function()
     end,
     show = function(opts)
       blink_show_calls[#blink_show_calls + 1] = opts
+      return true
+    end,
+  }
+end
+
+package.preload["blink.cmp.completion.trigger"] = function()
+  return {
+    show = function(opts)
+      trigger_show_calls[#trigger_show_calls + 1] = opts
       return true
     end,
   }
@@ -55,11 +65,15 @@ vim.api.nvim_get_mode = original_get_mode
 vim.api.nvim_get_current_buf = original_get_current_buf
 vim.api.nvim_buf_is_valid = original_buf_is_valid
 
-if #blink_show_calls ~= 1 then
-  error("expected a single Blink show() recovery call for single-quote pair completion")
+if #blink_show_calls ~= 0 then
+  error("single-quote pair completion should not call blink.show(): " .. vim.inspect(blink_show_calls))
 end
 
-local providers = blink_show_calls[1] and blink_show_calls[1].providers or nil
-if type(providers) ~= "table" or providers[1] ~= "ark_lsp" or #providers ~= 1 then
-  error("expected single-quote pair recovery to show only ark_lsp completions: " .. vim.inspect(blink_show_calls))
+if #trigger_show_calls ~= 1 then
+  error("expected a single trigger.show() call for single-quote pair completion, got " .. vim.inspect(trigger_show_calls))
+end
+
+local trigger = trigger_show_calls[1] or {}
+if trigger.trigger_kind ~= "trigger_character" or trigger.trigger_character ~= "'" then
+  error("single-quote pair completion should use the direct trigger-character path: " .. vim.inspect(trigger_show_calls))
 end

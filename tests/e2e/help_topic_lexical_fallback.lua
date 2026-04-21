@@ -54,16 +54,16 @@ local ok, err = pcall(function()
     },
   }, bufnr)
 
-  if topic_err ~= nil then
-    error("expected lexical fallback to recover a help topic, got " .. vim.inspect(topic_err), 0)
+  if topic ~= nil then
+    error("help topic lookup should not fall back to lexical extraction: " .. vim.inspect(topic), 0)
   end
 
-  if topic ~= "dplyr::mutate" then
-    error("unexpected lexical fallback help topic: " .. vim.inspect(topic), 0)
+  if topic_err ~= "no help topic found" then
+    error("expected native help topic failure to surface directly, got " .. vim.inspect(topic_err), 0)
   end
 
   if requested_method ~= "ark/textDocument/helpTopic" then
-    error("expected ark-native help topic method before fallback, got " .. vim.inspect(requested_method), 0)
+    error("expected ark-native help topic method, got " .. vim.inspect(requested_method), 0)
   end
 end)
 

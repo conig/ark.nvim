@@ -12,6 +12,9 @@ package.loaded["ark.blink"] = {
   patch_blink_docs_for_signature_help = function() end,
   patch_signature_help_float = function() end,
   patch_blink_trigger = function() end,
+  ensure_integration = function()
+    return true
+  end,
 }
 package.loaded["ark.snippets"] = {}
 package.loaded["ark.view"] = {}
@@ -105,9 +108,8 @@ local ok, err = pcall(function()
     source = "LspBootstrap",
   })
 
-  -- One autopairs edit commonly produces both CursorMovedI and TextChangedI.
-  -- Ark should coalesce that into one recovery pass instead of running the
-  -- same hide/show logic twice.
+  -- Pair completion should now use the direct trigger path from InsertCharPre.
+  -- CursorMovedI/TextChangedI should stay out of completion recovery entirely.
   vim.api.nvim_exec_autocmds("CursorMovedI", {
     buffer = bufnr,
     modeline = false,
@@ -117,20 +119,13 @@ local ok, err = pcall(function()
     modeline = false,
   })
 
-  local initial = vim.wait(1000, function()
-    return hide_calls > 0 or show_calls > 0
-  end, 20, false)
-  if not initial then
-    error("expected blink recovery to run after insert-mode events", 0)
-  end
-
   vim.wait(50, function()
     return false
   end, 10, false)
 
-  if hide_calls ~= 1 or show_calls ~= 1 then
+  if hide_calls ~= 0 or show_calls ~= 0 then
     error(
-      "expected insert-mode recovery to coalesce to one hide/show pass, got "
+      "insert-mode events should not run Blink recovery hooks anymore, got "
         .. vim.inspect({ hide_calls = hide_calls, show_calls = show_calls }),
       0
     )

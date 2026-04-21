@@ -48,7 +48,29 @@
   .member_names_r(obj, accessor)
 }
 
+.member_lookup_envs <- function(obj) {
+  envs <- attr(obj, "rscope_lookup_envs", exact = TRUE)
+  if (!is.list(envs) || length(envs) == 0L) {
+    return(NULL)
+  }
+
+  if (!all(vapply(envs, is.environment, logical(1)))) {
+    return(NULL)
+  }
+
+  envs
+}
+
 .member_value <- function(obj, accessor, name) {
+  lookup_envs <- .member_lookup_envs(obj)
+  if (!is.null(lookup_envs)) {
+    for (env in lookup_envs) {
+      if (exists(name, envir = env, inherits = FALSE)) {
+        return(get(name, envir = env, inherits = FALSE))
+      }
+    }
+  }
+
   if (identical(accessor, "@") && isS4(obj)) {
     return(methods::slot(obj, name))
   }

@@ -14,7 +14,6 @@ local did_setup = false
 local options = nil
 local startup_tokens = {}
 local startup_traces = {}
-local pending_blink_recovery = {}
 local pending_session_sync = 0
 local help_float_ns = vim.api.nvim_create_namespace("ArkHelpFloat")
 local help_filetype = "arkhelp"
@@ -148,30 +147,6 @@ local function startup_unlocked(bufnr)
   end
 
   return trace.main_buffer_unlocked == true
-end
-
-local function schedule_blink_recovery(bufnr)
-  if pending_blink_recovery[bufnr] == true then
-    return
-  end
-
-  pending_blink_recovery[bufnr] = true
-  vim.schedule(function()
-    if pending_blink_recovery[bufnr] ~= true then
-      return
-    end
-    pending_blink_recovery[bufnr] = nil
-
-    if not is_ark_buffer(bufnr) then
-      return
-    end
-    if not startup_unlocked(bufnr) then
-      return
-    end
-
-    blink.maybe_hide_after_extractor(bufnr)
-    blink.maybe_show_after_pair(bufnr)
-  end)
 end
 
 local function record_startup_unlock(bufnr, source, unlock_opts)
@@ -1265,15 +1240,9 @@ function M.setup(opts)
       })
     end)
   end
-  blink.configure_blink_sources()
-  blink.register_lsp_commands()
-  blink.patch_blink_context()
-  blink.patch_blink_selection()
-  blink.patch_blink_show()
-  blink.patch_blink_menu_for_signature_help()
-  blink.patch_blink_docs_for_signature_help()
-  blink.patch_signature_help_float()
-  blink.patch_blink_trigger()
+  if type(blink.ensure_integration) == "function" then
+    blink.ensure_integration()
+  end
 
   local group = vim.api.nvim_create_augroup("ArkNvim", { clear = true })
   vim.api.nvim_create_autocmd("FileType", {
@@ -1283,6 +1252,22 @@ function M.setup(opts)
       start_managed_buffer(args.buf)
     end,
     desc = "Start ark.nvim pane and LSP for R-family buffers",
+  })
+
+  vim.api.nvim_create_autocmd("InsertEnter", {
+    group = group,
+    pattern = "*",
+    callback = function(args)
+      if not is_ark_buffer(args.buf) then
+        return
+      end
+      vim.schedule(function()
+        if type(blink.ensure_integration) == "function" then
+          blink.ensure_integration()
+        end
+      end)
+    end,
+    desc = "Apply Ark Blink runtime patches after Blink initialization",
   })
 
   vim.api.nvim_create_autocmd("InsertCharPre", {
@@ -1298,36 +1283,6 @@ function M.setup(opts)
       blink.handle_insert_char_pre(args.buf)
     end,
     desc = "Track opening-pair insertions for Ark completion recovery",
-  })
-
-  vim.api.nvim_create_autocmd("CursorMovedI", {
-    group = group,
-    pattern = "*",
-    callback = function(args)
-      if not is_ark_buffer(args.buf) then
-        return
-      end
-      if not startup_unlocked(args.buf) then
-        return
-      end
-      schedule_blink_recovery(args.buf)
-    end,
-    desc = "Re-show Blink completion after autopairs inserts closing delimiters",
-  })
-
-  vim.api.nvim_create_autocmd("TextChangedI", {
-    group = group,
-    pattern = "*",
-    callback = function(args)
-      if not is_ark_buffer(args.buf) then
-        return
-      end
-      if not startup_unlocked(args.buf) then
-        return
-      end
-      schedule_blink_recovery(args.buf)
-    end,
-    desc = "Recover Blink completion after autopairs text changes in R buffers",
   })
 
   vim.api.nvim_create_autocmd("SafeState", {

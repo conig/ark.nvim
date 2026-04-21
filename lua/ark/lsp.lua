@@ -57,74 +57,6 @@ local function resolve_bufnr(bufnr)
   return bufnr
 end
 
-local function topic_char_at(text, index)
-  if type(text) ~= "string" or index < 0 or index >= #text then
-    return nil
-  end
-
-  return text:sub(index + 1, index + 1)
-end
-
-local function is_topic_char(ch)
-  return type(ch) == "string" and ch:match("[A-Za-z0-9._:$]") ~= nil
-end
-
-local function lexical_help_topic(bufnr, position)
-  if type(position) ~= "table" or type(position.line) ~= "number" or type(position.character) ~= "number" then
-    return nil
-  end
-
-  local line = vim.api.nvim_buf_get_lines(bufnr, position.line, position.line + 1, false)[1] or ""
-  local anchor = nil
-
-  if is_topic_char(topic_char_at(line, position.character)) then
-    anchor = position.character
-  elseif is_topic_char(topic_char_at(line, position.character - 1)) then
-    anchor = position.character - 1
-  end
-
-  if anchor == nil then
-    return nil
-  end
-
-  local start_col = anchor
-  while is_topic_char(topic_char_at(line, start_col - 1)) do
-    start_col = start_col - 1
-  end
-
-  local end_col = anchor
-  while is_topic_char(topic_char_at(line, end_col + 1)) do
-    end_col = end_col + 1
-  end
-
-  local candidate = line:sub(start_col + 1, end_col + 1)
-  if candidate == "" then
-    return nil
-  end
-
-  if candidate:match("^[A-Za-z.][A-Za-z0-9._]*$") then
-    return candidate
-  end
-
-  if candidate:match("^[A-Za-z.][A-Za-z0-9._]*::[A-Za-z.][A-Za-z0-9._]*$") then
-    return candidate
-  end
-
-  if candidate:match("^[A-Za-z.][A-Za-z0-9._]*:::[A-Za-z.][A-Za-z0-9._]*$") then
-    return candidate
-  end
-
-  if candidate:match("^[A-Za-z.][A-Za-z0-9._]*%$[A-Za-z.][A-Za-z0-9._]*$") then
-    return candidate
-  end
-
-  if candidate:match("^[A-Za-z.][A-Za-z0-9._]*::[A-Za-z.][A-Za-z0-9._]*%$[A-Za-z.][A-Za-z0-9._]*$") then
-    return candidate
-  end
-
-  return nil
-end
-
 local function live_client(client)
   return client and client.initialized and not (client.is_stopped and client:is_stopped())
 end
@@ -1462,9 +1394,7 @@ function M.help_topic(opts, bufnr, position)
     return nil, "ark_lsp client unavailable"
   end
 
-  local text_document = vim.lsp.util.make_versioned_text_document_params
-      and vim.lsp.util.make_versioned_text_document_params(bufnr)
-    or vim.lsp.util.make_text_document_params(bufnr)
+  local text_document = vim.lsp.util.make_text_document_params(bufnr)
 
   local target_position = position
   if type(target_position) ~= "table" then
@@ -1489,6 +1419,10 @@ function M.help_topic(opts, bufnr, position)
       return nil, "no response"
     end
 
+    if response.err then
+      return nil, vim.inspect(response.err)
+    end
+
     if response.error then
       return nil, vim.inspect(response.error)
     end
@@ -1504,11 +1438,6 @@ function M.help_topic(opts, bufnr, position)
   local topic, err = request_topic(target_position)
   if topic then
     return topic, nil
-  end
-
-  local fallback_topic = lexical_help_topic(bufnr, target_position)
-  if fallback_topic then
-    return fallback_topic, nil
   end
 
   return nil, err

@@ -37,6 +37,7 @@ use crate::lsp::completions::call_node_position_type;
 use crate::lsp::completions::dedupe_and_sort_completion_items;
 use crate::lsp::completions::find_pipe_root_name;
 use crate::lsp::completions::CallNodePositionType;
+use crate::lsp::document::DocumentKind;
 use crate::lsp::document_context::DocumentContext;
 use crate::lsp::traits::node::NodeExt;
 use crate::lsp::traits::point::PointExt;
@@ -581,12 +582,7 @@ impl SessionBridge {
             {
                 Err(err)
             },
-            Err(err) => {
-                log::warn!(
-                    "Detached bootstrap command failed, falling back to legacy bootstrap: {err:?}"
-                );
-                self.bootstrap_legacy()
-            },
+            Err(err) => Err(err),
         }
     }
 
@@ -1151,32 +1147,6 @@ impl SessionBridge {
             SessionBridgeSource::Fixed(connection) => self.bootstrap_with_connection(connection),
             SessionBridgeSource::StatusFile(source) => self.bootstrap_dynamic(source),
         }
-    }
-
-    fn bootstrap_legacy(&self) -> anyhow::Result<SessionBootstrap> {
-        let total_start = std::time::Instant::now();
-        let search_path_start = std::time::Instant::now();
-        let search_path_symbols = self.inspect_names(search_path_completion_expr().as_str())?;
-        let search_path_symbols_ms = duration_ms(search_path_start.elapsed());
-        let library_paths_start = std::time::Instant::now();
-        let library_paths = match self.inspect_names(library_paths_completion_expr().as_str()) {
-            Ok(paths) => paths.into_iter().map(PathBuf::from).collect::<Vec<_>>(),
-            Err(err) => {
-                log::warn!("Detached bootstrap couldn't inspect library paths: {err:?}");
-                Vec::new()
-            },
-        };
-
-        Ok(SessionBootstrap {
-            search_path_symbols,
-            installed_packages: Vec::new(),
-            library_paths,
-            timings: SessionBootstrapTimings {
-                total_ms: duration_ms(total_start.elapsed()),
-                search_path_symbols_ms,
-                library_paths_ms: duration_ms(library_paths_start.elapsed()),
-            },
-        })
     }
 
     fn bootstrap_dynamic(
@@ -1887,9 +1857,9 @@ fn completion_item(
         CompletionFlavor::ComparisonString => CompletionItemKind::VALUE,
         CompletionFlavor::Extractor | CompletionFlavor::Namespace => CompletionItemKind::FIELD,
         CompletionFlavor::Package => CompletionItemKind::MODULE,
-        CompletionFlavor::Pipe => CompletionItemKind::VARIABLE,
-        CompletionFlavor::Subset => CompletionItemKind::VARIABLE,
-        CompletionFlavor::Symbol => CompletionItemKind::VARIABLE,
+        CompletionFlavor::Pipe | CompletionFlavor::Subset | CompletionFlavor::Symbol => {
+            runtime_completion_item_kind(&member)
+        },
     };
 
     CompletionItem {
@@ -1915,6 +1885,13 @@ fn completion_item(
         data: completion_item_data(request, &member)
             .and_then(|data| serde_json::to_value(data).ok()),
         ..Default::default()
+    }
+}
+
+fn runtime_completion_item_kind(member: &BridgeMember) -> CompletionItemKind {
+    match member.r#type.as_str() {
+        "builtin" | "closure" | "function" | "special" => CompletionItemKind::FUNCTION,
+        _ => CompletionItemKind::VARIABLE,
     }
 }
 
@@ -2807,15 +2784,22 @@ fn completion_request_from_search_path(
     context: &DocumentContext,
 ) -> anyhow::Result<Option<CompletionRequest>> {
     let prefix = symbol_prefix(context)?;
-    if prefix.is_none() {
+    let allow_empty_prefix = empty_inline_r_space_autotrigger_is_allowed(context);
+    if prefix.is_none() && !allow_empty_prefix {
         match context.trigger.as_deref() {
             None | Some(" ") | Some(",") => return Ok(None),
             _ => {},
         }
     }
 
+    let expr = if prefix.is_none() && allow_empty_prefix {
+        prioritized_empty_search_path_completion_expr()
+    } else {
+        search_path_completion_expr()
+    };
+
     Ok(Some(CompletionRequest {
-        expr: search_path_completion_expr(),
+        expr,
         flavor: CompletionFlavor::Symbol,
         prefix,
         accessor: None,
@@ -2823,6 +2807,23 @@ fn completion_request_from_search_path(
         quote_insert: false,
         subset_kind: None,
     }))
+}
+
+fn empty_inline_r_space_autotrigger_is_allowed(context: &DocumentContext) -> bool {
+    if context.document.kind != DocumentKind::LiterateR {
+        return false;
+    }
+
+    if context.trigger.as_deref() != Some(" ") {
+        return false;
+    }
+
+    let Some(line) = context.document.get_line(context.point.row) else {
+        return false;
+    };
+
+    let prefix = line.chars().take(context.point.column).collect::<String>();
+    prefix.ends_with("`r ")
 }
 
 fn completion_request_from_explicit_pipe_root(
@@ -3435,7 +3436,13 @@ fn signature_parameter_label(member: &BridgeMember) -> String {
 
 fn search_path_completion_expr() -> String {
     String::from(
-        "local({ .envs <- lapply(search(), as.environment); .names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); stats::setNames(vector(\"list\", length(.names)), .names) })",
+        "local({ .envs <- lapply(search(), as.environment); .names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); .out <- stats::setNames(vector(\"list\", length(.names)), .names); attr(.out, \"rscope_source_class\") <- \"symbol_lookup_envs\"; attr(.out, \"rscope_lookup_envs\") <- .envs; .out })",
+    )
+}
+
+fn prioritized_empty_search_path_completion_expr() -> String {
+    String::from(
+        "local({ .envs <- lapply(search(), as.environment); .names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); .find_env <- function(.name) { for (.env in .envs) { if (exists(.name, envir = .env, inherits = FALSE)) return(.env) }; NULL }; .is_function <- vapply(.names, function(.name) { .env <- .find_env(.name); if (is.null(.env)) return(FALSE); .value <- tryCatch(get(.name, envir = .env, inherits = FALSE), error = function(e) NULL); is.function(.value) }, logical(1)); .is_hidden <- startsWith(.names, \".\") | grepl(\"rscope\", .names, fixed = TRUE); .names <- c(.names[!.is_hidden & !.is_function], .names[!.is_hidden & .is_function], .names[.is_hidden & !.is_function], .names[.is_hidden & .is_function]); .out <- stats::setNames(vector(\"list\", length(.names)), .names); attr(.out, \"rscope_source_class\") <- \"symbol_lookup_envs\"; attr(.out, \"rscope_lookup_envs\") <- .envs; .out })",
     )
 }
 
@@ -3484,17 +3491,11 @@ fn literal_character_choices_completion_expr(callee: &str, formal_name: &str) ->
     )
 }
 
-fn library_paths_completion_expr() -> String {
-    String::from(
-        "local({ .x <- base::.libPaths(); stats::setNames(vector(\"list\", length(.x)), .x) })",
-    )
-}
-
 fn browser_locals_completion_expr(prefix: &str) -> String {
     let prefix = escape_r_string(prefix);
 
     format!(
-        "local({{ .prefix <- \"{prefix}\"; .frames <- sys.frames(); .target <- NULL; for (.env in .frames) {{ .names <- tryCatch(ls(envir = .env, all.names = TRUE), error = function(e) character()); if (length(.names) && any(startsWith(tolower(.names), tolower(.prefix)))) {{ .target <- .env; break }} }}; if (is.null(.target)) {{ stats::setNames(list(), character()) }} else {{ .names <- ls(envir = .target, all.names = TRUE); stats::setNames(vector(\"list\", length(.names)), .names) }} }})"
+        "local({{ .prefix <- \"{prefix}\"; .frames <- sys.frames(); .target <- NULL; for (.env in .frames) {{ .names <- tryCatch(ls(envir = .env, all.names = TRUE), error = function(e) character()); if (length(.names) && any(startsWith(tolower(.names), tolower(.prefix)))) {{ .target <- .env; break }} }}; if (is.null(.target)) {{ stats::setNames(list(), character()) }} else {{ .names <- ls(envir = .target, all.names = TRUE); .out <- stats::setNames(vector(\"list\", length(.names)), .names); attr(.out, \"rscope_source_class\") <- \"symbol_lookup_envs\"; attr(.out, \"rscope_lookup_envs\") <- list(.target); .out }} }})"
     )
 }
 
@@ -4224,6 +4225,35 @@ mod tests {
     }
 
     #[test]
+    fn test_search_path_request_rejects_explicit_empty_completion() {
+        let (text, point) = point_from_cursor("@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new_with_completion(&document, point, None, true);
+
+        let request = completion_request_from_search_path(&context).unwrap();
+        assert!(request.is_none());
+    }
+
+    #[test]
+    fn test_search_path_request_supports_empty_inline_r_space_trigger() {
+        let (text, point) = point_from_cursor("Text `r @`.\n");
+        let document = Document::new_with_kind(text.as_str(), None, DocumentKind::LiterateR);
+        let context =
+            DocumentContext::new_with_completion(&document, point, Some(String::from(" ")), false);
+
+        let request = completion_request_from_search_path(&context)
+            .unwrap()
+            .expect("expected inline search-path completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert_eq!(
+            request.expr,
+            prioritized_empty_search_path_completion_expr()
+        );
+        assert_eq!(request.prefix, None);
+    }
+
+    #[test]
     fn test_subset_completion_items_use_priority_sort_text() {
         let item = completion_item(
             BridgeMember {
@@ -4300,6 +4330,56 @@ mod tests {
     }
 
     #[test]
+    fn test_symbol_completion_items_use_function_kind_for_callable_members() {
+        let item = completion_item(
+            BridgeMember {
+                name_display: String::from("lapply"),
+                name_raw: String::from("lapply"),
+                r#type: String::from("closure"),
+                ..Default::default()
+            },
+            &CompletionRequest {
+                expr: String::from("baseenv()"),
+                flavor: CompletionFlavor::Symbol,
+                prefix: Some(String::from("la")),
+                accessor: None,
+                close_string: false,
+                quote_insert: false,
+                subset_kind: None,
+            },
+            None,
+            0,
+        );
+
+        assert_eq!(item.kind, Some(CompletionItemKind::FUNCTION));
+    }
+
+    #[test]
+    fn test_symbol_completion_items_use_variable_kind_for_unknown_members() {
+        let item = completion_item(
+            BridgeMember {
+                name_display: String::from("letters"),
+                name_raw: String::from("letters"),
+                r#type: String::from("character"),
+                ..Default::default()
+            },
+            &CompletionRequest {
+                expr: String::from("baseenv()"),
+                flavor: CompletionFlavor::Symbol,
+                prefix: Some(String::from("le")),
+                accessor: None,
+                close_string: false,
+                quote_insert: false,
+                subset_kind: None,
+            },
+            None,
+            0,
+        );
+
+        assert_eq!(item.kind, Some(CompletionItemKind::VARIABLE));
+    }
+
+    #[test]
     fn test_bootstrap_does_not_fallback_to_legacy_on_transient_io_error() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
         listener
@@ -4352,7 +4432,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bootstrap_falls_back_to_legacy_on_bootstrap_command_error() {
+    fn test_bootstrap_command_error_does_not_fall_back_to_legacy_inspect_requests() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
         let port = listener
             .local_addr()
@@ -4362,46 +4442,27 @@ mod tests {
         let connections_bg = connections.clone();
 
         let handle = thread::spawn(move || {
-            for expected in ["bootstrap", "search_path", "library_paths"] {
-                let (mut stream, _) = listener.accept().expect("expected bridge request");
-                connections_bg.fetch_add(1, Ordering::SeqCst);
-                let mut request = String::new();
-                stream
-                    .read_to_string(&mut request)
-                    .expect("expected bridge request payload");
+            let (mut stream, _) = listener.accept().expect("expected bridge request");
+            connections_bg.fetch_add(1, Ordering::SeqCst);
+            let mut request = String::new();
+            stream
+                .read_to_string(&mut request)
+                .expect("expected bridge request payload");
 
-                match expected {
-                    "bootstrap" => {
-                        let payload: serde_json::Value = serde_json::from_str(request.trim())
-                            .expect("expected bootstrap request");
-                        assert_eq!(
-                            payload
-                                .get("command")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or_default(),
-                            "bootstrap"
-                        );
-                        stream
-                            .write_all(
-                                br#"{"error":{"code":"E_IPC_BOOTSTRAP","message":"bootstrap unavailable"}}"#,
-                            )
-                            .expect("expected bootstrap error response");
-                    },
-                    "search_path" => {
-                        stream
-                            .write_all(
-                                br#"{"members":[{"name_raw":"library"},{"name_raw":"mtcars"}]}"#,
-                            )
-                            .expect("expected search path response");
-                    },
-                    "library_paths" => {
-                        stream
-                            .write_all(br#"{"members":[{"name_raw":"/tmp/ark-test-library"}]}"#)
-                            .expect("expected library path response");
-                    },
-                    _ => unreachable!(),
-                }
-            }
+            let payload: serde_json::Value =
+                serde_json::from_str(request.trim()).expect("expected bootstrap request");
+            assert_eq!(
+                payload
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                "bootstrap"
+            );
+            stream
+                .write_all(
+                    br#"{"error":{"code":"E_IPC_BOOTSTRAP","message":"bootstrap unavailable"}}"#,
+                )
+                .expect("expected bootstrap error response");
         });
 
         let bridge = SessionBridge::new(SessionBridgeConfig {
@@ -4413,22 +4474,17 @@ mod tests {
         })
         .expect("expected bridge");
 
-        let bootstrap = bridge
-            .bootstrap()
-            .expect("expected legacy fallback bootstrap");
+        let err = bridge.bootstrap().expect_err("expected bootstrap command failure");
         handle.join().expect("expected listener thread to join");
 
-        assert_eq!(bootstrap.search_path_symbols, vec![
-            String::from("library"),
-            String::from("mtcars")
-        ]);
-        assert_eq!(bootstrap.library_paths, vec![PathBuf::from(
-            "/tmp/ark-test-library"
-        )]);
+        assert!(
+            err.to_string().contains("bootstrap unavailable"),
+            "expected direct bootstrap error, got: {err:?}"
+        );
         assert_eq!(
             connections.load(Ordering::SeqCst),
-            3,
-            "bootstrap command error should fall back to legacy inspect requests"
+            1,
+            "bootstrap command error should not fall back to legacy inspect requests"
         );
     }
 

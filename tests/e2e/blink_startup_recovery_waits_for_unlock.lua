@@ -12,6 +12,9 @@ package.loaded["ark.blink"] = {
   patch_blink_docs_for_signature_help = function() end,
   patch_signature_help_float = function() end,
   patch_blink_trigger = function() end,
+  ensure_integration = function()
+    return true
+  end,
 }
 package.loaded["ark.snippets"] = {}
 package.loaded["ark.view"] = {}
@@ -97,8 +100,8 @@ local ok, err = pcall(function()
     configure_slime = false,
   })
 
-  -- Startup recovery hooks should stay quiet until the managed buffer has
-  -- finished bootstrapping and explicitly unlocked.
+  -- Pair completion should not rely on startup-gated insert-mode recovery
+  -- hooks anymore, so these events should stay quiet before unlock too.
   vim.api.nvim_exec_autocmds("CursorMovedI", {
     buffer = bufnr,
     modeline = false,
@@ -113,7 +116,7 @@ local ok, err = pcall(function()
 
   if hide_calls ~= 0 or show_calls ~= 0 then
     error(
-      "expected startup recovery hooks to stay idle before unlock, got "
+      "expected insert-mode recovery hooks to stay idle before unlock, got "
         .. vim.inspect({ hide_calls = hide_calls, show_calls = show_calls }),
       0
     )
@@ -136,12 +139,13 @@ local ok, err = pcall(function()
     modeline = false,
   })
 
-  local fired_after_unlock = vim.wait(1000, function()
-    return hide_calls > 0 and show_calls > 0
-  end, 20, false)
-  if not fired_after_unlock then
+  vim.wait(50, function()
+    return false
+  end, 10, false)
+
+  if hide_calls ~= 0 or show_calls ~= 0 then
     error(
-      "expected startup recovery hooks to resume after unlock, got "
+      "expected insert-mode recovery hooks to stay idle after unlock, got "
         .. vim.inspect({ hide_calls = hide_calls, show_calls = show_calls }),
       0
     )

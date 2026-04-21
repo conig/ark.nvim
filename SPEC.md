@@ -1,5 +1,9 @@
 # ark.nvim Spec
 
+## Addressing bugs
+
+NEVER paper-over a bug by adding a recovery branch. This just hides bugs, slows things down in ways that are hard to identify, and adds tech debt.
+
 ## Purpose
 
 This file captures the current product boundary of `ark.nvim` as it exists in

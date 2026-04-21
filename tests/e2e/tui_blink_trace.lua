@@ -20,6 +20,7 @@ local function snapshot(label, extra)
     for _, item in ipairs(list.items) do
       items[#items + 1] = {
         label = item.label,
+        kind = item.kind,
         source_id = item.source_id,
         source_name = item.source_name,
         client_name = item.client_name,

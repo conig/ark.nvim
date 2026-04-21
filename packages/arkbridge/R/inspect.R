@@ -170,6 +170,25 @@ inspect_object <- function(obj, options = list()) {
     names_all <- names_all[seq_len(max_members)]
   }
 
+  lean_member_type_error <- new.env(parent = emptyenv())
+
+  lean_member_type <- function(name) {
+    if (identical(accessor, "arg") && is.function(obj)) {
+      return("argument")
+    }
+
+    if (meta_only_mode) {
+      return("unknown")
+    }
+
+    value <- tryCatch(.member_value(obj, accessor, name), error = function(e) lean_member_type_error)
+    if (identical(value, lean_member_type_error)) {
+      return("unknown")
+    }
+
+    .member_type(value, accessor)
+  }
+
   make_lean_member <- function(name) {
     if (identical(accessor, "arg") && is.function(obj)) {
       return(list(
@@ -192,7 +211,7 @@ inspect_object <- function(obj, options = list()) {
       insert_text = .member_insert_text(name, accessor),
       completion_text = .member_completion_text(name, accessor),
       summary = "",
-      type = "unknown",
+      type = lean_member_type(name),
       size = 0L,
       member_stats = NULL
     )

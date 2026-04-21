@@ -549,6 +549,20 @@ function M.configure_blink_sources()
   sources_configured = true
 end
 
+function M.ensure_integration()
+  M.configure_blink_sources()
+  M.register_lsp_commands()
+  M.patch_blink_context()
+  M.patch_blink_selection()
+  M.patch_blink_show()
+  M.patch_blink_menu_for_signature_help()
+  M.patch_blink_docs_for_signature_help()
+  M.patch_signature_help_float()
+  M.patch_blink_trigger()
+
+  return true
+end
+
 function M.patch_blink_context()
   if context_patched then
     return
@@ -698,6 +712,8 @@ function M.patch_blink_show()
 
   local base_show = blink.show
   blink.show = function(opts)
+    M.configure_blink_sources()
+
     local bufnr = vim.api.nvim_get_current_buf()
     if in_ark_filetype(bufnr) then
       close_blink_docs()
@@ -849,10 +865,15 @@ function M.maybe_show_after_pair(bufnr, trigger_character)
   if not ok_blink or blink.is_visible() then
     return
   end
+  local ok_trigger, trigger = pcall(require, "blink.cmp.completion.trigger")
+  if not ok_trigger or type(trigger.show) ~= "function" then
+    return
+  end
 
-  M.patch_blink_context()
-  blink.show({
-    providers = { "ark_lsp" },
+  M.ensure_integration()
+  trigger.show({
+    trigger_kind = "trigger_character",
+    trigger_character = trigger_character,
   })
 end
 
