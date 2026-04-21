@@ -97,12 +97,12 @@ end)
 
 local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
 local expected = {
-  "rmarkdown::html_document",
-  "rmarkdown::pdf_document",
-  "rmarkdown::word_document",
-  "rmarkdown::beamer_presentation",
-  "rmarkdown::ioslides_presentation",
-  "rmarkdown::slidy_presentation",
+  "html_document",
+  "pdf_document",
+  "word_document",
+  "beamer_presentation",
+  "ioslides_presentation",
+  "slidy_presentation",
 }
 
 local function request_output_completion(line_text)
@@ -129,25 +129,25 @@ end
 local empty_items = request_output_completion("output: ")
 assert_exact_labels(empty_items, expected, "empty prefix")
 
-local partial_items = request_output_completion("output: rmarkdown::ht")
+local partial_items = request_output_completion("output: ht")
 assert_exact_labels(partial_items, expected, "partial prefix")
 
-local html = find_item(partial_items, "rmarkdown::html_document")
+local html = find_item(partial_items, "html_document")
 if not html then
   fail("output completion missing html_document: " .. vim.inspect(item_labels(partial_items)))
 end
 
 local text_edit = html.textEdit or html.text_edit
-if not text_edit or text_edit.newText ~= "rmarkdown::html_document " then
+if not text_edit or text_edit.newText ~= "html_document" then
   fail("output completion returned unexpected text edit: " .. vim.inspect(text_edit))
 end
 
-local exact_items = request_output_completion("output: rmarkdown::html_document")
+local exact_items = request_output_completion("output: html_document")
 if #exact_items ~= 0 then
   fail("exact builtin output should suppress further completions: " .. vim.inspect(item_labels(exact_items)))
 end
 
-local spaced_items = request_output_completion("output: rmarkdown::html_document ")
+local spaced_items = request_output_completion("output: html_document ")
 if #spaced_items ~= 0 then
   fail("exact builtin output with trailing space should suppress further completions: " .. vim.inspect(item_labels(spaced_items)))
 end

@@ -179,7 +179,7 @@ fn output_value_edit_range(
 
 fn builtin_output_from_value(value: &str) -> Option<&'static BuiltinOutput> {
     let trimmed = value.trim_end_matches(|ch: char| ch.is_ascii_whitespace());
-    BUILTIN_OUTPUTS.iter().find(|builtin| trimmed == format!("rmarkdown::{}", builtin.output))
+    BUILTIN_OUTPUTS.iter().find(|builtin| trimmed == builtin.output)
 }
 
 fn completion_item_from_builtin_output(
@@ -188,8 +188,8 @@ fn completion_item_from_builtin_output(
     start: Point,
     end: Point,
 ) -> anyhow::Result<CompletionItem> {
-    let package_ref = format!("rmarkdown::{}", builtin.output);
-    let mut item = completion_item(package_ref.clone(), CompletionData::Unknown)?;
+    let output_ref = builtin.output.to_string();
+    let mut item = completion_item(output_ref.clone(), CompletionData::Unknown)?;
 
     item.kind = Some(CompletionItemKind::MODULE);
     item.detail = Some(builtin.name.to_string());
@@ -202,7 +202,7 @@ fn completion_item_from_builtin_output(
             context.document.lsp_position_from_tree_sitter_point(start)?,
             context.document.lsp_position_from_tree_sitter_point(end)?,
         ),
-        new_text: format!("{package_ref} "),
+        new_text: output_ref,
     }));
 
     Ok(item)
@@ -234,43 +234,43 @@ mod tests {
         let labels: Vec<&str> = completions.iter().map(|item| item.label.as_str()).collect();
 
         assert_eq!(labels, vec![
-            "rmarkdown::html_document",
-            "rmarkdown::pdf_document",
-            "rmarkdown::word_document",
-            "rmarkdown::beamer_presentation",
-            "rmarkdown::ioslides_presentation",
-            "rmarkdown::slidy_presentation",
+            "html_document",
+            "pdf_document",
+            "word_document",
+            "beamer_presentation",
+            "ioslides_presentation",
+            "slidy_presentation",
         ]);
 
         let html = completions
             .iter()
-            .find(|item| item.label == "rmarkdown::html_document")
+            .find(|item| item.label == "html_document")
             .unwrap();
 
         assert_eq!(html.detail.as_deref(), Some("HTML Document"));
-        assert_text_edit(html, "rmarkdown::html_document ");
+        assert_text_edit(html, "html_document");
     }
 
     #[test]
     fn test_frontmatter_output_completion_replaces_partial_prefix() {
         let completions = frontmatter_output_completions(
-            "---\noutput: rmarkdown::ht@\n---\n\nBody\n",
+            "---\noutput: ht@\n---\n\nBody\n",
         )
         .unwrap();
 
         let html = completions
             .iter()
-            .find(|item| item.label == "rmarkdown::html_document")
+            .find(|item| item.label == "html_document")
             .unwrap();
 
-        assert_text_edit(html, "rmarkdown::html_document ");
+        assert_text_edit(html, "html_document");
 
         match html.text_edit.as_ref().unwrap() {
             CompletionTextEdit::Edit(edit) => {
                 assert_eq!(edit.range.start.line, 1);
                 assert_eq!(edit.range.start.character, 8);
                 assert_eq!(edit.range.end.line, 1);
-                assert_eq!(edit.range.end.character, 21);
+                assert_eq!(edit.range.end.character, 10);
             },
             _ => panic!("Unexpected TextEdit variant"),
         }
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn test_frontmatter_output_completion_claims_exact_builtin_without_items() {
         let completions =
-            frontmatter_output_completions("---\noutput: rmarkdown::html_document@\n---\n");
+            frontmatter_output_completions("---\noutput: html_document@\n---\n");
 
         assert!(matches!(completions, Some(ref items) if items.is_empty()));
     }
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn test_frontmatter_output_completion_claims_exact_builtin_with_trailing_space_without_items() {
         let completions =
-            frontmatter_output_completions("---\noutput: rmarkdown::html_document @\n---\n");
+            frontmatter_output_completions("---\noutput: html_document @\n---\n");
 
         assert!(matches!(completions, Some(ref items) if items.is_empty()));
     }

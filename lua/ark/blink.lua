@@ -22,6 +22,14 @@ local function in_ark_filetype(bufnr)
   return vim.tbl_contains(ark_filetypes, filetype)
 end
 
+local function current_insert_col()
+  local col = vim.fn.col(".") - 1
+  if type(col) ~= "number" or col < 0 then
+    return nil
+  end
+  return col
+end
+
 local function hide_visible_blink_menu()
   local ok_blink, blink = pcall(require, "blink.cmp")
   if not ok_blink or not blink.is_visible() then
@@ -340,6 +348,116 @@ local function is_lsp_subset_trigger(context)
     or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*c%s*%([^%]]*,%s*$') ~= nil
 end
 
+local function is_inline_r_space_trigger(context)
+  local trigger = type(context) == "table" and context.trigger or nil
+  local kind = type(trigger) == "table" and trigger.kind or nil
+  local character = type(trigger) == "table" and trigger.character or nil
+  if kind ~= "trigger_character" or character ~= " " then
+    return false
+  end
+
+  local prefix = line_prefix_at_cursor(context)
+  if type(prefix) ~= "string" then
+    return false
+  end
+
+  return prefix:match("`r%s*$") ~= nil
+end
+
+local function in_frontmatter_row(bufnr, row)
+  if vim.bo[bufnr].filetype ~= "rmd" then
+    return false
+  end
+
+  if type(row) ~= "number" or row < 1 then
+    return false
+  end
+
+  local first_line = vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1]
+  if first_line ~= "---" then
+    return false
+  end
+
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  for index = 2, line_count do
+    local line = vim.api.nvim_buf_get_lines(bufnr, index - 1, index, false)[1]
+    if line == "---" or line == "..." then
+      return row > 1 and row < index
+    end
+  end
+
+  return false
+end
+
+local function is_frontmatter_output_trigger(context)
+  local trigger = type(context) == "table" and context.trigger or nil
+  local kind = type(trigger) == "table" and trigger.kind or nil
+  local character = type(trigger) == "table" and trigger.character or nil
+  if kind ~= "trigger_character" then
+    return false
+  end
+
+  if not (character == " " or character == ":" or character == "_" or character:match("[%w]")) then
+    return false
+  end
+
+  local bufnr = type(context) == "table" and context.bufnr or nil
+  local cursor = type(context) == "table" and context.cursor or nil
+  local row = type(cursor) == "table" and cursor[1] or nil
+  if type(bufnr) ~= "number" or not in_frontmatter_row(bufnr, row) then
+    return false
+  end
+
+  local prefix = line_prefix_at_cursor(context)
+  if type(prefix) ~= "string" then
+    return false
+  end
+
+  return prefix:match("^%s*output:%s*$") ~= nil
+    or prefix:match("^%s*output:%s*[A-Za-z0-9_:]*$") ~= nil
+end
+
+local function current_trigger_context(trigger_character)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local win_cursor = vim.api.nvim_win_get_cursor(0)
+  local insert_col = current_insert_col()
+  if type(insert_col) ~= "number" then
+    insert_col = type(win_cursor) == "table" and win_cursor[2] or nil
+  end
+  if type(insert_col) ~= "number" or type(win_cursor) ~= "table" or type(win_cursor[1]) ~= "number" then
+    return nil
+  end
+
+  return {
+    bufnr = bufnr,
+    line = vim.api.nvim_get_current_line(),
+    cursor = { win_cursor[1], insert_col },
+    trigger = {
+      kind = "trigger_character",
+      character = trigger_character,
+    },
+  }
+end
+
+local function has_invalid_space_trigger_context(trigger)
+  local context = type(trigger) == "table" and type(trigger.context) == "table" and trigger.context or nil
+  local active_trigger = type(context) == "table" and type(context.trigger) == "table" and context.trigger or nil
+  if type(active_trigger) ~= "table" or active_trigger.kind ~= "trigger_character" then
+    return false
+  end
+
+  local active_character = active_trigger.character or active_trigger.initial_character
+  if active_character ~= " " then
+    return false
+  end
+
+  local current_context = current_trigger_context(" ")
+  return current_context == nil
+    or (not is_lsp_subset_trigger(current_context)
+      and not is_inline_r_space_trigger(current_context)
+      and not is_frontmatter_output_trigger(current_context))
+end
+
 local function ark_should_show_auto_items(context)
   local trigger = type(context) == "table" and context.trigger or nil
   local initial_kind = type(trigger) == "table" and trigger.initial_kind or nil
@@ -359,7 +477,11 @@ local function ark_should_show_auto_items(context)
 end
 
 local function ark_should_show_non_lsp_items(context)
-  if is_extractor_trigger(context) or is_lsp_string_trigger(context) or is_lsp_subset_trigger(context) then
+  if is_extractor_trigger(context)
+    or is_lsp_string_trigger(context)
+    or is_lsp_subset_trigger(context)
+    or is_frontmatter_output_trigger(context)
+  then
     return false
   end
   return ark_should_show_auto_items(context)
@@ -477,14 +599,35 @@ function M.patch_blink_trigger()
 
   local base_show = trigger.show
   trigger.show = function(opts)
+    M.configure_blink_sources()
+
     local bufnr = vim.api.nvim_get_current_buf()
     local trigger_kind = type(opts) == "table" and opts.trigger_kind or nil
     local trigger_character = type(opts) == "table" and opts.trigger_character or nil
 
-    if not in_ark_filetype(bufnr)
-      or trigger_kind ~= "trigger_character"
-      or not (trigger_character == "$" or trigger_character == "@")
-    then
+    if in_ark_filetype(bufnr) and trigger_kind == "keyword" and has_invalid_space_trigger_context(trigger) then
+      trigger.context = nil
+    end
+
+    if not in_ark_filetype(bufnr) or trigger_kind ~= "trigger_character" then
+      return base_show(opts)
+    end
+
+    if trigger_character == " " then
+      local context = current_trigger_context(trigger_character)
+      if context == nil
+        or (not is_lsp_subset_trigger(context)
+          and not is_inline_r_space_trigger(context)
+          and not is_frontmatter_output_trigger(context))
+      then
+        if type(trigger.hide) == "function" then
+          trigger.hide()
+        end
+        return
+      end
+    end
+
+    if not (trigger_character == "$" or trigger_character == "@") then
       return base_show(opts)
     end
 
