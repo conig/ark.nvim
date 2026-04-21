@@ -10,6 +10,7 @@ mod comment;
 mod custom;
 mod extractor;
 mod file_path;
+mod frontmatter;
 mod namespace;
 mod string;
 mod subset;
@@ -23,6 +24,7 @@ use crate::lsp::completions::sources::unique::comment::CommentSource;
 use crate::lsp::completions::sources::unique::custom::CustomSource;
 use crate::lsp::completions::sources::unique::extractor::AtSource;
 use crate::lsp::completions::sources::unique::extractor::DollarSource;
+use crate::lsp::completions::sources::unique::frontmatter::FrontmatterSource;
 use crate::lsp::completions::sources::unique::namespace::NamespaceSource;
 use crate::lsp::completions::sources::unique::string::StringSource;
 
@@ -35,6 +37,10 @@ pub(crate) fn get_completions(
     // Try to detect a single colon first, which is a special case where we
     // don't provide any completions
     if let Some(completions) = collect_completions(SingleColonSource, completion_context)? {
+        return Ok(Some(completions));
+    }
+
+    if let Some(completions) = collect_completions(FrontmatterSource, completion_context)? {
         return Ok(Some(completions));
     }
 
@@ -76,6 +82,10 @@ pub(crate) fn get_detached_pre_bridge_completions(
     completion_context: &CompletionContext,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
     if let Some(completions) = collect_completions(SingleColonSource, completion_context)? {
+        return Ok(Some(completions));
+    }
+
+    if let Some(completions) = collect_completions(FrontmatterSource, completion_context)? {
         return Ok(Some(completions));
     }
 
