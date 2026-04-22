@@ -284,209 +284,6 @@ local function ark_auto_keyword_min_length(context)
   return 1
 end
 
-local function is_extractor_trigger(context)
-  local trigger = type(context) == "table" and context.trigger or nil
-  local kind = type(trigger) == "table" and trigger.kind or nil
-  local character = type(trigger) == "table" and trigger.character or nil
-  return kind == "trigger_character" and (character == "$" or character == "@")
-end
-
-local function line_prefix_at_cursor(context)
-  local line = type(context) == "table" and context.line or nil
-  local cursor = type(context) == "table" and context.cursor or nil
-  local col = type(cursor) == "table" and cursor[2] or nil
-  if type(line) ~= "string" or type(col) ~= "number" or col < 0 then
-    return nil
-  end
-  return line:sub(1, col)
-end
-
-local function is_lsp_string_trigger(context)
-  local trigger = type(context) == "table" and context.trigger or nil
-  local kind = type(trigger) == "table" and trigger.kind or nil
-  local character = type(trigger) == "table" and trigger.character or nil
-  if kind ~= "trigger_character" or not (character == '"' or character == "'") then
-    return false
-  end
-
-  local prefix = line_prefix_at_cursor(context)
-  if type(prefix) ~= "string" then
-    return false
-  end
-
-  local quote_pattern = character == '"' and '"[^"]*$' or "'[^']*$"
-
-  return prefix:match("==%s*" .. quote_pattern) ~= nil
-    or prefix:match("!=%s*" .. quote_pattern) ~= nil
-    or prefix:match("^%s*library%s*%(%s*" .. quote_pattern) ~= nil
-    or prefix:match("^%s*require%s*%(%s*" .. quote_pattern) ~= nil
-    or prefix:match("[A-Za-z.][A-Za-z0-9._]*%s*%[%[%s*" .. quote_pattern) ~= nil
-    or prefix:match("[A-Za-z.][A-Za-z0-9._]*%s*%[%s*" .. quote_pattern) ~= nil
-    or prefix:match("[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*" .. quote_pattern) ~= nil
-    or prefix:match("[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*c%s*%(%s*" .. quote_pattern) ~= nil
-    or prefix:match("[,(]%s*[A-Za-z.][A-Za-z0-9._]*%s*=%s*" .. quote_pattern) ~= nil
-end
-
-local function is_lsp_subset_trigger(context)
-  local trigger = type(context) == "table" and context.trigger or nil
-  local kind = type(trigger) == "table" and trigger.kind or nil
-  local character = type(trigger) == "table" and trigger.character or nil
-  if kind ~= "trigger_character" or not (character == "[" or character == "(" or character == "," or character == " ") then
-    return false
-  end
-
-  local prefix = line_prefix_at_cursor(context)
-  if type(prefix) ~= "string" then
-    return false
-  end
-
-  return prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*$') ~= nil
-    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%[%s*$') ~= nil
-    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*%.%(%s*$') ~= nil
-    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*c%s*%(%s*$') ~= nil
-    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*%.%([^%]]*,%s*$') ~= nil
-    or prefix:match('[A-Za-z.][A-Za-z0-9._]*%s*%[%s*[^,%]]*,%s*c%s*%([^%]]*,%s*$') ~= nil
-end
-
-local function is_inline_r_space_trigger(context)
-  local trigger = type(context) == "table" and context.trigger or nil
-  local kind = type(trigger) == "table" and trigger.kind or nil
-  local character = type(trigger) == "table" and trigger.character or nil
-  if kind ~= "trigger_character" or character ~= " " then
-    return false
-  end
-
-  local prefix = line_prefix_at_cursor(context)
-  if type(prefix) ~= "string" then
-    return false
-  end
-
-  return prefix:match("`r%s*$") ~= nil
-end
-
-local function in_frontmatter_row(bufnr, row)
-  if vim.bo[bufnr].filetype ~= "rmd" then
-    return false
-  end
-
-  if type(row) ~= "number" or row < 1 then
-    return false
-  end
-
-  local first_line = vim.api.nvim_buf_get_lines(bufnr, 0, 1, false)[1]
-  if first_line ~= "---" then
-    return false
-  end
-
-  local line_count = vim.api.nvim_buf_line_count(bufnr)
-  for index = 2, line_count do
-    local line = vim.api.nvim_buf_get_lines(bufnr, index - 1, index, false)[1]
-    if line == "---" or line == "..." then
-      return row > 1 and row < index
-    end
-  end
-
-  return false
-end
-
-local function is_frontmatter_output_trigger(context)
-  local trigger = type(context) == "table" and context.trigger or nil
-  local kind = type(trigger) == "table" and trigger.kind or nil
-  local character = type(trigger) == "table" and trigger.character or nil
-  if kind ~= "trigger_character" then
-    return false
-  end
-
-  if not (character == " " or character == ":" or character == "_" or character:match("[%w]")) then
-    return false
-  end
-
-  local bufnr = type(context) == "table" and context.bufnr or nil
-  local cursor = type(context) == "table" and context.cursor or nil
-  local row = type(cursor) == "table" and cursor[1] or nil
-  if type(bufnr) ~= "number" or not in_frontmatter_row(bufnr, row) then
-    return false
-  end
-
-  local prefix = line_prefix_at_cursor(context)
-  if type(prefix) ~= "string" then
-    return false
-  end
-
-  return prefix:match("^%s*output:%s*$") ~= nil
-    or prefix:match("^%s*output:%s*[A-Za-z0-9_:]*$") ~= nil
-end
-
-local function current_trigger_context(trigger_character)
-  local bufnr = vim.api.nvim_get_current_buf()
-  local win_cursor = vim.api.nvim_win_get_cursor(0)
-  local insert_col = current_insert_col()
-  if type(insert_col) ~= "number" then
-    insert_col = type(win_cursor) == "table" and win_cursor[2] or nil
-  end
-  if type(insert_col) ~= "number" or type(win_cursor) ~= "table" or type(win_cursor[1]) ~= "number" then
-    return nil
-  end
-
-  return {
-    bufnr = bufnr,
-    line = vim.api.nvim_get_current_line(),
-    cursor = { win_cursor[1], insert_col },
-    trigger = {
-      kind = "trigger_character",
-      character = trigger_character,
-    },
-  }
-end
-
-local function has_invalid_space_trigger_context(trigger)
-  local context = type(trigger) == "table" and type(trigger.context) == "table" and trigger.context or nil
-  local active_trigger = type(context) == "table" and type(context.trigger) == "table" and context.trigger or nil
-  if type(active_trigger) ~= "table" or active_trigger.kind ~= "trigger_character" then
-    return false
-  end
-
-  local active_character = active_trigger.character or active_trigger.initial_character
-  if active_character ~= " " then
-    return false
-  end
-
-  local current_context = current_trigger_context(" ")
-  return current_context == nil
-    or (not is_lsp_subset_trigger(current_context)
-      and not is_inline_r_space_trigger(current_context)
-      and not is_frontmatter_output_trigger(current_context))
-end
-
-local function ark_should_show_auto_items(context)
-  local trigger = type(context) == "table" and context.trigger or nil
-  local initial_kind = type(trigger) == "table" and trigger.initial_kind or nil
-  if initial_kind == "manual" or initial_kind == "trigger_character" then
-    return true
-  end
-
-  local line = type(context) == "table" and context.line or nil
-  local cursor = type(context) == "table" and context.cursor or nil
-  local col = type(cursor) == "table" and cursor[2] or nil
-  if type(line) ~= "string" or type(col) ~= "number" or col < 0 then
-    return true
-  end
-
-  local prefix = line:sub(1, col)
-  return prefix:match("^%s*$") == nil
-end
-
-local function ark_should_show_non_lsp_items(context)
-  if is_extractor_trigger(context)
-    or is_lsp_string_trigger(context)
-    or is_lsp_subset_trigger(context)
-    or is_frontmatter_output_trigger(context)
-  then
-    return false
-  end
-  return ark_should_show_auto_items(context)
-end
-
 function M.configure_blink_sources()
   if sources_configured then
     return
@@ -504,41 +301,15 @@ function M.configure_blink_sources()
     return
   end
 
-  local has_buffer = type(providers.buffer) == "table"
-  local ark_buffer_id = has_buffer and "ark_buffer" or nil
-
-  if has_buffer and providers.ark_buffer == nil then
-    blink.add_source_provider("ark_buffer", ark_provider(providers.buffer, {
-      min_keyword_length = 1,
-      should_show_items = ark_should_show_non_lsp_items,
-    }))
-  end
-
   if providers.ark_lsp == nil then
     blink.add_source_provider("ark_lsp", ark_provider(providers.lsp, {
       min_keyword_length = ark_auto_keyword_min_length,
       fallbacks = {},
-      should_show_items = ark_should_show_auto_items,
-    }))
-  end
-
-  if type(providers.path) == "table" and providers.ark_path == nil then
-    blink.add_source_provider("ark_path", ark_provider(providers.path, {
-      min_keyword_length = ark_auto_keyword_min_length,
-      fallbacks = {},
-      should_show_items = ark_should_show_non_lsp_items,
     }))
   end
 
   sources.per_filetype = sources.per_filetype or {}
-
   local ark_sources = { "ark_lsp", inherit_defaults = false }
-  if providers.ark_path ~= nil or providers.path ~= nil then
-    ark_sources[#ark_sources + 1] = "ark_path"
-  end
-  if ark_buffer_id ~= nil then
-    ark_sources[#ark_sources + 1] = ark_buffer_id
-  end
 
   for _, filetype in ipairs(ark_filetypes) do
     if sources.per_filetype[filetype] == nil then
@@ -619,27 +390,28 @@ function M.patch_blink_trigger()
     local trigger_kind = type(opts) == "table" and opts.trigger_kind or nil
     local trigger_character = type(opts) == "table" and opts.trigger_character or nil
 
-    if in_ark_filetype(bufnr) and trigger_kind == "keyword" and has_invalid_space_trigger_context(trigger) then
-      trigger.context = nil
+    if in_ark_filetype(bufnr) and trigger_kind == "keyword" then
+      local ok_blink, blink = pcall(require, "blink.cmp")
+      local live_context = trigger.context
+      local live_trigger = type(live_context) == "table" and type(live_context.trigger) == "table"
+          and live_context.trigger
+        or nil
+
+      -- Blink reuses the same context id after a trigger-character request.
+      -- If that request stayed hidden and cached an empty result, the first
+      -- keyword character can inherit the empty cache instead of issuing a new
+      -- LSP request. Reset the hidden trigger-character context so Ark gets a
+      -- fresh keyword query on the first real identifier character.
+      if (not ok_blink or not blink.is_visible())
+        and type(live_trigger) == "table"
+        and live_trigger.initial_kind == "trigger_character"
+      then
+        trigger.context = nil
+      end
     end
 
     if not in_ark_filetype(bufnr) or trigger_kind ~= "trigger_character" then
       return base_show(opts)
-    end
-
-    if trigger_character == " " then
-      local context = current_trigger_context(trigger_character)
-      if context == nil
-        or (not is_lsp_subset_trigger(context)
-          and not is_inline_r_space_trigger(context)
-          and not is_frontmatter_output_trigger(context))
-      then
-        -- Blink clears trigger.context before calling show() for a trigger
-        -- character, so suppressing an invalid space trigger must close the
-        -- menu window directly instead of relying on trigger.hide().
-        hide_visible_blink_menu()
-        return
-      end
     end
 
     if not (trigger_character == "$" or trigger_character == "@") then

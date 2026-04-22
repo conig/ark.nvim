@@ -146,31 +146,40 @@ local ok, err = xpcall(function()
     "6G",
     "A",
   })
+  local before_word_ts = tonumber((latest_matching(function(candidate)
+    return candidate.label == "ArkTraceSnapshot" and candidate.args == "ready"
+  end) or {}).ts_ms or 0)
+
   tmux({ "send-keys", "-l", "-t", nvim_pane, "ordinary" })
 
-  local completion_show = nil
-  ark_test.wait_for("buffer completion on repeated prose word", 10000, function()
-    completion_show = latest_matching(function(candidate)
-      if candidate.label ~= "BlinkCmpShow" then
-        return false
-      end
-
-      for _, item in ipairs(candidate.items or {}) do
-        if item.label == "ordinary" then
-          return true
-        end
-      end
-
-      return false
+  local typed_word = nil
+  ark_test.wait_for("typed repeated prose word", 5000, function()
+    typed_word = latest_after(before_word_ts, function(candidate)
+      return candidate.label == "TextChangedI"
+        and candidate.line == "ordinary"
     end)
-    return completion_show ~= nil
+    return typed_word ~= nil
   end)
+
+  vim.wait(750, function()
+    return false
+  end, 50, false)
+
+  local after_word = typed_word
+
+  if after_word.visible or after_word.menu_open then
+    ark_test.fail(vim.inspect({
+      error = "prose typing should not auto-open Blink completion",
+      typed_word = typed_word,
+      after_word = after_word,
+    }))
+  end
 
   tmux({ "send-keys", "-t", nvim_pane, "Space", "Escape" })
 
   local line_with_space = nil
   ark_test.wait_for("typed trailing space", 5000, function()
-    line_with_space = latest_after(completion_show.ts_ms, function(candidate)
+    line_with_space = latest_after(tonumber(after_word.ts_ms or 0), function(candidate)
       return candidate.label == "TextChangedI"
         and candidate.line == "ordinary "
     end)
@@ -190,7 +199,8 @@ local ok, err = xpcall(function()
   if after_escape.mode ~= "n" then
     ark_test.fail(vim.inspect({
       error = "expected normal mode after escaping prose completion",
-      completion_show = completion_show,
+      typed_word = typed_word,
+      after_word = after_word,
       line_with_space = line_with_space,
       after_escape = after_escape,
     }))
@@ -198,15 +208,17 @@ local ok, err = xpcall(function()
 
   if after_escape.visible or after_escape.menu_open then
     ark_test.fail(vim.inspect({
-      error = "Blink stayed visible after typing a trailing space and escaping prose completion",
-      completion_show = completion_show,
+      error = "Blink should stay hidden while typing and escaping prose text",
+      typed_word = typed_word,
+      after_word = after_word,
       line_with_space = line_with_space,
       after_escape = after_escape,
     }))
   end
 
   vim.print({
-    completion_show = completion_show,
+    typed_word = typed_word,
+    after_word = after_word,
     line_with_space = line_with_space,
     after_escape = after_escape,
   })
