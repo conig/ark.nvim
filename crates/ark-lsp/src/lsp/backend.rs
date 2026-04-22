@@ -7,9 +7,9 @@
 
 #![allow(deprecated)]
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::mpsc::unbounded_channel as tokio_unbounded_channel;
@@ -800,9 +800,10 @@ fn new_jsonrpc_error(message: String) -> jsonrpc::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::NotificationBarrier;
     use std::sync::Arc;
     use std::time::Duration;
+
+    use super::NotificationBarrier;
 
     #[tokio::test]
     async fn notification_barrier_waits_for_prior_notifications_only() {

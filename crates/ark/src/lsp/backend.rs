@@ -955,9 +955,10 @@ fn new_jsonrpc_error(message: String) -> jsonrpc::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::NotificationBarrier;
     use std::sync::Arc;
     use std::time::Duration;
+
+    use super::NotificationBarrier;
 
     #[tokio::test]
     async fn notification_barrier_waits_for_prior_notifications_only() {

@@ -8,6 +8,7 @@
 mod completion_context;
 mod completion_item;
 mod function_context;
+mod plan;
 mod provide;
 mod resolve;
 mod sources;

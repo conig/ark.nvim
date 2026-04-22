@@ -180,7 +180,9 @@ fn output_value_edit_range(
 
 fn builtin_output_from_value(value: &str) -> Option<&'static BuiltinOutput> {
     let trimmed = value.trim_end_matches(|ch: char| ch.is_ascii_whitespace());
-    BUILTIN_OUTPUTS.iter().find(|builtin| trimmed == builtin.output)
+    BUILTIN_OUTPUTS
+        .iter()
+        .find(|builtin| trimmed == builtin.output)
 }
 
 fn completion_item_from_builtin_output(
@@ -201,7 +203,9 @@ fn completion_item_from_builtin_output(
     }));
     item.text_edit = Some(CompletionTextEdit::Edit(TextEdit {
         range: LspRange::new(
-            context.document.lsp_position_from_tree_sitter_point(start)?,
+            context
+                .document
+                .lsp_position_from_tree_sitter_point(start)?,
             context.document.lsp_position_from_tree_sitter_point(end)?,
         ),
         new_text: if needs_leading_space {
@@ -233,10 +237,9 @@ mod tests {
 
     #[test]
     fn test_frontmatter_output_completion_offers_builtin_starters() {
-        let completions = frontmatter_output_completions(
-            "---\noutput: @\ntitle: \"Report\"\n---\n\nBody\n",
-        )
-        .unwrap();
+        let completions =
+            frontmatter_output_completions("---\noutput: @\ntitle: \"Report\"\n---\n\nBody\n")
+                .unwrap();
         let labels: Vec<&str> = completions.iter().map(|item| item.label.as_str()).collect();
 
         assert_eq!(labels, vec![
@@ -259,10 +262,7 @@ mod tests {
 
     #[test]
     fn test_frontmatter_output_completion_after_colon_inserts_leading_space() {
-        let completions = frontmatter_output_completions(
-            "---\noutput:@\n---\n\nBody\n",
-        )
-        .unwrap();
+        let completions = frontmatter_output_completions("---\noutput:@\n---\n\nBody\n").unwrap();
 
         let html = completions
             .iter()
@@ -284,10 +284,8 @@ mod tests {
 
     #[test]
     fn test_frontmatter_output_completion_replaces_partial_prefix() {
-        let completions = frontmatter_output_completions(
-            "---\noutput: ht@\n---\n\nBody\n",
-        )
-        .unwrap();
+        let completions =
+            frontmatter_output_completions("---\noutput: ht@\n---\n\nBody\n").unwrap();
 
         let html = completions
             .iter()
@@ -323,16 +321,14 @@ mod tests {
 
     #[test]
     fn test_frontmatter_output_completion_claims_exact_builtin_without_items() {
-        let completions =
-            frontmatter_output_completions("---\noutput: html_document@\n---\n");
+        let completions = frontmatter_output_completions("---\noutput: html_document@\n---\n");
 
         assert!(matches!(completions, Some(ref items) if items.is_empty()));
     }
 
     #[test]
     fn test_frontmatter_output_completion_claims_exact_builtin_with_trailing_space_without_items() {
-        let completions =
-            frontmatter_output_completions("---\noutput: html_document @\n---\n");
+        let completions = frontmatter_output_completions("---\noutput: html_document @\n---\n");
 
         assert!(matches!(completions, Some(ref items) if items.is_empty()));
     }

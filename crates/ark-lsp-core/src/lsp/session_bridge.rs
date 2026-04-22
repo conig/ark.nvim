@@ -4474,7 +4474,9 @@ mod tests {
         })
         .expect("expected bridge");
 
-        let err = bridge.bootstrap().expect_err("expected bootstrap command failure");
+        let err = bridge
+            .bootstrap()
+            .expect_err("expected bootstrap command failure");
         handle.join().expect("expected listener thread to join");
 
         assert!(

@@ -8,8 +8,10 @@
 use tower_lsp::lsp_types::CompletionItem;
 
 use crate::lsp::completions::completion_context::CompletionContext;
+use crate::lsp::completions::plan::plan_completions;
+use crate::lsp::completions::plan::plan_detached_static_completions;
+use crate::lsp::completions::plan::CompletionPlan;
 use crate::lsp::completions::sources::composite;
-use crate::lsp::completions::sources::unique;
 use crate::lsp::document_context::DocumentContext;
 use crate::lsp::state::WorldState;
 use crate::lsp::traits::node::NodeExt;
@@ -31,15 +33,15 @@ pub(crate) fn provide_completions(
     );
 
     let completion_context = CompletionContext::new(document_context, state);
-
-    // Try unique sources first
-    if let Some(completions) = unique::get_completions(&completion_context)? {
-        return Ok(completions);
+    match plan_completions(&completion_context)? {
+        CompletionPlan::HandledEmpty => Ok(vec![]),
+        CompletionPlan::Unique(plan) => Ok(plan.items),
+        CompletionPlan::Composite(plan) => Ok(composite::get_completions_from_kinds(
+            &plan.kinds,
+            &completion_context,
+        )?
+        .unwrap_or_default()),
     }
-
-    // At this point we aren't in a "unique" completion case, so just return a
-    // set of reasonable completions from composite sources
-    Ok(composite::get_completions(&completion_context)?.unwrap_or_default())
 }
 
 pub(crate) fn provide_detached_pre_bridge_completions(
@@ -47,7 +49,10 @@ pub(crate) fn provide_detached_pre_bridge_completions(
     state: &WorldState,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
     let completion_context = CompletionContext::new(document_context, state);
-    unique::get_detached_pre_bridge_completions(&completion_context)
+    match plan_detached_static_completions(&completion_context)? {
+        CompletionPlan::Unique(plan) if plan.kind.is_detached_pre_bridge() => Ok(Some(plan.items)),
+        _ => Ok(None),
+    }
 }
 
 pub(crate) fn provide_detached_post_bridge_completions(
@@ -55,7 +60,10 @@ pub(crate) fn provide_detached_post_bridge_completions(
     state: &WorldState,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
     let completion_context = CompletionContext::new(document_context, state);
-    unique::get_detached_post_bridge_completions(&completion_context)
+    match plan_detached_static_completions(&completion_context)? {
+        CompletionPlan::Unique(plan) if plan.kind.is_detached_post_bridge() => Ok(Some(plan.items)),
+        _ => Ok(None),
+    }
 }
 
 pub(crate) fn provide_detached_static_completions(
@@ -63,5 +71,13 @@ pub(crate) fn provide_detached_static_completions(
     state: &WorldState,
 ) -> anyhow::Result<Vec<CompletionItem>> {
     let completion_context = CompletionContext::new(document_context, state);
-    Ok(composite::get_detached_static_completions(&completion_context)?.unwrap_or_default())
+    match plan_detached_static_completions(&completion_context)? {
+        CompletionPlan::HandledEmpty => Ok(vec![]),
+        CompletionPlan::Composite(plan) => Ok(composite::get_completions_from_kinds(
+            &plan.detached_static_kinds(),
+            &completion_context,
+        )?
+        .unwrap_or_default()),
+        CompletionPlan::Unique(_) => Ok(vec![]),
+    }
 }

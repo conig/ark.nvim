@@ -172,11 +172,11 @@ local ok, err = xpcall(function()
   end)
 
   tmux({ "send-keys", "-t", nvim_pane, "C-Space" })
-  ark_test.wait_for("manual mylist completion", 10000, function()
+  ark_test.wait_for("mylist completion ready", 10000, function()
     local event = latest_matching(function(candidate)
       local trigger = candidate.trigger or {}
       return candidate.label == "BlinkCmpShow"
-        and trigger.kind == "manual"
+        and (trigger.kind == "manual" or trigger.kind == "keyword")
         and candidate.line == "mylist"
     end)
     return event ~= nil

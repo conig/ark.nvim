@@ -22,6 +22,7 @@ use tower_lsp::lsp_types::CompletionItemKind;
 use tree_sitter::Node;
 
 use crate::lsp::completions::completion_context::CompletionContext;
+use crate::lsp::completions::plan::CompositeSourceKind;
 use crate::lsp::completions::sources::collect_completions;
 use crate::lsp::completions::sources::utils::has_priority_prefix;
 use crate::lsp::completions::sources::CompletionSource;
@@ -53,32 +54,22 @@ struct CompletionItemWithSource {
 }
 
 /// Gets completions from all composite sources, with deduplication and sorting
+#[cfg(test)]
 pub(crate) fn get_completions(
     completion_context: &CompletionContext,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
-    log::info!("Getting completions from composite sources");
+    let kinds = composite_source_kinds(completion_context);
+    get_completions_from_kinds(&kinds, completion_context)
+}
 
-    if completion_context
-        .document_context
-        .is_empty_assignment_rhs()
-    {
-        return Ok(Some(vec![]));
-    }
-
-    let mut completions = HashMap::new();
-
-    // Call, pipe, and subset completions should show up no matter what when
-    // the user requests completions. This allows them to "tab" their way
-    // through completions effectively without typing anything.
-
-    // argument completions
-    push_completions(call::CallSource, completion_context, &mut completions)?;
-
-    // pipe completions, such as column names of a data frame
-    push_completions(pipe::PipeSource, completion_context, &mut completions)?;
-
-    // subset completions (`[` or `[[`)
-    push_completions(subset::SubsetSource, completion_context, &mut completions)?;
+pub(crate) fn composite_source_kinds(
+    completion_context: &CompletionContext,
+) -> Vec<CompositeSourceKind> {
+    let mut kinds = vec![
+        CompositeSourceKind::Call,
+        CompositeSourceKind::Pipe,
+        CompositeSourceKind::Subset,
+    ];
 
     // To offer the rest of the general completions, we should be completing:
     // * on an empty line, outside of any function or expression, or
@@ -86,61 +77,25 @@ pub(crate) fn get_completions(
     if completion_context.document_context.node.is_program() ||
         is_identifier_like(completion_context.document_context.node)
     {
-        push_completions(keyword::KeywordSource, completion_context, &mut completions)?;
-
-        push_completions(
-            search_path::SearchPathSource,
-            completion_context,
-            &mut completions,
-        )?;
-
-        push_completions(
-            document::DocumentSource,
-            completion_context,
-            &mut completions,
-        )?;
-
-        push_completions(
-            workspace::WorkspaceSource,
-            completion_context,
-            &mut completions,
-        )?;
+        kinds.push(CompositeSourceKind::Keyword);
+        kinds.push(CompositeSourceKind::SearchPath);
+        kinds.push(CompositeSourceKind::Document);
+        kinds.push(CompositeSourceKind::Workspace);
     }
 
-    // Simplify to plain old CompletionItems and sort them
-    let completions = finalize_completions(completions);
-
-    Ok(Some(completions))
+    kinds
 }
 
-pub(crate) fn get_detached_static_completions(
+pub(crate) fn get_completions_from_kinds(
+    kinds: &[CompositeSourceKind],
     completion_context: &CompletionContext,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
-    if completion_context
-        .document_context
-        .is_empty_assignment_rhs()
-    {
-        return Ok(Some(vec![]));
-    }
+    log::info!("Getting completions from composite sources");
 
     let mut completions = HashMap::new();
 
-    if completion_context.document_context.node.is_program() ||
-        is_identifier_like(completion_context.document_context.node)
-    {
-        push_completions(keyword::KeywordSource, completion_context, &mut completions)?;
-
-        push_completions(
-            document::DocumentSource,
-            completion_context,
-            &mut completions,
-        )?;
-
-        push_completions(
-            workspace::WorkspaceSource,
-            completion_context,
-            &mut completions,
-        )?;
+    for kind in kinds {
+        push_completions(*kind, completion_context, &mut completions)?;
     }
 
     Ok(Some(finalize_completions(completions)))
@@ -164,7 +119,7 @@ pub(crate) fn dedupe_and_sort_completion_items(
     finalize_completions(completions)
 }
 
-fn push_completions<S>(
+fn push_completions_from_source<S>(
     source: S,
     completion_context: &CompletionContext,
     completions: &mut HashMap<CompletionItemKey, CompletionItemWithSource>,
@@ -195,6 +150,40 @@ where
     }
 
     Ok(())
+}
+
+fn push_completions(
+    kind: CompositeSourceKind,
+    completion_context: &CompletionContext,
+    completions: &mut HashMap<CompletionItemKey, CompletionItemWithSource>,
+) -> anyhow::Result<()> {
+    match kind {
+        CompositeSourceKind::Call => {
+            push_completions_from_source(call::CallSource, completion_context, completions)
+        },
+        CompositeSourceKind::Pipe => {
+            push_completions_from_source(pipe::PipeSource, completion_context, completions)
+        },
+        CompositeSourceKind::Subset => {
+            push_completions_from_source(subset::SubsetSource, completion_context, completions)
+        },
+        CompositeSourceKind::Keyword => {
+            push_completions_from_source(keyword::KeywordSource, completion_context, completions)
+        },
+        CompositeSourceKind::SearchPath => push_completions_from_source(
+            search_path::SearchPathSource,
+            completion_context,
+            completions,
+        ),
+        CompositeSourceKind::Document => {
+            push_completions_from_source(document::DocumentSource, completion_context, completions)
+        },
+        CompositeSourceKind::Workspace => push_completions_from_source(
+            workspace::WorkspaceSource,
+            completion_context,
+            completions,
+        ),
+    }
 }
 
 /// Produce plain old CompletionItems and sort them

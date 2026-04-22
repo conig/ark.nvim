@@ -192,6 +192,7 @@ function M.assert_fresh_detached_lsp_binary(binary_path)
     "rg",
     "--files",
     "crates/ark-lsp/src",
+    "crates/ark-lsp-core/src",
     "crates/ark/src",
   })
   if vim.v.shell_error ~= 0 then
