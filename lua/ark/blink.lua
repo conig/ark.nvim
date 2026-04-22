@@ -634,9 +634,10 @@ function M.patch_blink_trigger()
           and not is_inline_r_space_trigger(context)
           and not is_frontmatter_output_trigger(context))
       then
-        if type(trigger.hide) == "function" then
-          trigger.hide()
-        end
+        -- Blink clears trigger.context before calling show() for a trigger
+        -- character, so suppressing an invalid space trigger must close the
+        -- menu window directly instead of relying on trigger.hide().
+        hide_visible_blink_menu()
         return
       end
     end
