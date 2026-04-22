@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::future;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::LazyLock;
@@ -32,6 +33,7 @@ use crate::console::ConsoleNotification;
 use crate::lsp;
 use crate::lsp::backend::LspMessage;
 use crate::lsp::backend::LspNotification;
+use crate::lsp::backend::NotificationBarrier;
 use crate::lsp::backend::LspRequest;
 use crate::lsp::backend::LspResponse;
 use crate::lsp::backend::LspResult;
@@ -132,6 +134,9 @@ pub(crate) struct GlobalState {
     /// `Event::Task`.
     events_tx: TokioUnboundedSender<Event>,
     events_rx: TokioUnboundedReceiver<Event>,
+
+    /// Tracks notification progress so requests can wait for earlier updates.
+    notification_barrier: Arc<NotificationBarrier>,
 }
 
 /// Unlike `WorldState`, `ParserState` cannot be cloned and is only accessed by
@@ -173,6 +178,7 @@ impl GlobalState {
         client: Client,
         console_notification_tx: TokioUnboundedSender<ConsoleNotification>,
         runtime_mode: RuntimeMode,
+        notification_barrier: Arc<NotificationBarrier>,
     ) -> Self {
         // Transmission channel for the main loop events. Shared with the
         // tower-lsp backend and the Jupyter kernel.
@@ -193,6 +199,7 @@ impl GlobalState {
             client,
             events_tx,
             events_rx,
+            notification_barrier,
         };
 
         if runtime_mode == RuntimeMode::Detached {
@@ -265,53 +272,62 @@ impl GlobalState {
 
         match event {
             Event::Lsp(msg) => match msg {
-                LspMessage::Notification(notif) => {
+                LspMessage::Notification(sequence, notif) => {
                     lsp::log_info!("{notif:#?}");
 
-                    match notif {
+                    let result = match notif {
                         LspNotification::Initialized(_params) => {
-                            handlers::handle_initialized(&self.client, &self.lsp_state).await?;
+                            handlers::handle_initialized(&self.client, &self.lsp_state).await
                         },
                         LspNotification::SessionUpdate(params) => {
                             let hydration =
                                 state_handlers::did_update_session(params, &mut self.world)?;
                             self.spawn_detached_session_hydration(hydration);
+                            Ok(())
                         },
                         LspNotification::DidChangeWorkspaceFolders(_params) => {
                             // TODO: Restart indexer with new folders.
+                            Ok(())
                         },
                         LspNotification::DidChangeConfiguration(params) => {
-                            state_handlers::did_change_configuration(params, &self.client, &mut self.world).await?;
+                            state_handlers::did_change_configuration(params, &self.client, &mut self.world).await
                         },
                         LspNotification::DidChangeWatchedFiles(_params) => {
                             // TODO: Re-index the changed files.
+                            Ok(())
                         },
                         LspNotification::DidOpenTextDocument(params) => {
                             let hydration =
                                 state_handlers::did_open(params, &mut self.lsp_state, &mut self.world)?;
                             self.spawn_detached_session_hydration(hydration);
+                            Ok(())
                         },
                         LspNotification::DidChangeTextDocument(params) => {
                             let hydration =
                                 state_handlers::did_change(params, &mut self.lsp_state, &mut self.world)?;
                             self.spawn_detached_session_hydration(hydration);
+                            Ok(())
                         },
                         LspNotification::DidSaveTextDocument(_params) => {
                             // Currently ignored
+                            Ok(())
                         },
                         LspNotification::DidCloseTextDocument(params) => {
-                            state_handlers::did_close(params, &mut self.lsp_state, &mut self.world)?;
+                            state_handlers::did_close(params, &mut self.lsp_state, &mut self.world)
                         },
                         LspNotification::DidCreateFiles(params) => {
-                            state_handlers::did_create_files(params, &self.world)?;
+                            state_handlers::did_create_files(params, &self.world)
                         },
                         LspNotification::DidDeleteFiles(params) => {
-                            state_handlers::did_delete_files(params, &self.world)?;
+                            state_handlers::did_delete_files(params, &self.world)
                         },
                         LspNotification::DidRenameFiles(params) => {
-                            state_handlers::did_rename_files(params, &mut self.world)?;
+                            state_handlers::did_rename_files(params, &mut self.world)
                         },
-                    }
+                    };
+
+                    self.notification_barrier.mark_processed(sequence);
+                    result?;
                 },
 
                 LspMessage::Request(request, tx) => {

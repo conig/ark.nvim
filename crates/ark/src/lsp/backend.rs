@@ -7,6 +7,7 @@
 
 #![allow(deprecated)]
 
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::unbounded_channel as tokio_unbounded_channel;
 use tokio::sync::mpsc::UnboundedSender as AsyncUnboundedSender;
+use tokio::sync::Notify;
 use tower_lsp::jsonrpc;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::request::GotoImplementationParams;
@@ -154,7 +156,7 @@ fn report_crash() {
 #[derive(Debug)]
 #[expect(clippy::large_enum_variant)]
 pub(crate) enum LspMessage {
-    Notification(LspNotification),
+    Notification(u64, LspNotification),
     Request(LspRequest, TokioUnboundedSender<RequestResponse>),
 }
 
@@ -272,9 +274,40 @@ struct Backend {
     /// Channel for communication with the main loop.
     events_tx: TokioUnboundedSender<Event>,
 
+    /// Ensures requests see the effects of earlier notifications.
+    notification_barrier: Arc<NotificationBarrier>,
+
     /// Handle to main loop. Drop it to cancel the loop, all associated tasks,
     /// and drop all owned state.
     _main_loop: tokio::task::JoinSet<()>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct NotificationBarrier {
+    queued: AtomicU64,
+    processed: AtomicU64,
+    wake: Notify,
+}
+
+impl NotificationBarrier {
+    fn enqueue(&self) -> u64 {
+        self.queued.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    fn queued(&self) -> u64 {
+        self.queued.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn wait_for(&self, target: u64) {
+        while self.processed.load(Ordering::Acquire) < target {
+            self.wake.notified().await;
+        }
+    }
+
+    pub(crate) fn mark_processed(&self, sequence: u64) {
+        self.processed.store(sequence, Ordering::Release);
+        self.wake.notify_waiters();
+    }
 }
 
 impl Backend {
@@ -293,6 +326,10 @@ impl Backend {
             return RequestResponse::Disabled;
         }
 
+        self.notification_barrier
+            .wait_for(self.notification_barrier.queued())
+            .await;
+
         let (response_tx, mut response_rx) = tokio_unbounded_channel::<RequestResponse>();
 
         // Relay request to main loop
@@ -305,9 +342,11 @@ impl Backend {
     }
 
     fn notify(&self, notif: LspNotification) {
+        let sequence = self.notification_barrier.enqueue();
+
         // Relay notification to main loop
         self.events_tx
-            .send(Event::Lsp(LspMessage::Notification(notif)))
+            .send(Event::Lsp(LspMessage::Notification(sequence, notif)))
             .unwrap();
     }
 }
@@ -751,7 +790,13 @@ pub(crate) fn start_lsp(
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
         let init = |client: Client| {
-            let state = GlobalState::new(client, console_notification_tx);
+            let notification_barrier = Arc::new(NotificationBarrier::default());
+            let state = GlobalState::new_with_runtime_mode(
+                client,
+                console_notification_tx,
+                RuntimeMode::Attached,
+                notification_barrier.clone(),
+            );
             let events_tx = state.events_tx();
 
             // Start main loop and hold onto the handle that keeps it alive
@@ -773,6 +818,7 @@ pub(crate) fn start_lsp(
             Backend {
                 shutdown_tx,
                 events_tx,
+                notification_barrier,
                 _main_loop: main_loop,
             }
         };
@@ -842,10 +888,12 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         tokio_unbounded_channel::<ConsoleNotification>();
 
     let init = move |client: Client| {
+        let notification_barrier = Arc::new(NotificationBarrier::default());
         let state = GlobalState::new_with_runtime_mode(
             client,
             console_notification_tx.clone(),
             runtime_mode,
+            notification_barrier.clone(),
         );
         let events_tx = state.events_tx();
         let main_loop = state.start();
@@ -853,6 +901,7 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         Backend {
             shutdown_tx,
             events_tx,
+            notification_barrier,
             _main_loop: main_loop,
         }
     };
@@ -901,5 +950,37 @@ fn new_jsonrpc_error(message: String) -> jsonrpc::Error {
         code: jsonrpc::ErrorCode::ServerError(-1),
         message: message.into(),
         data: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NotificationBarrier;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn notification_barrier_waits_for_prior_notifications_only() {
+        let barrier = Arc::new(NotificationBarrier::default());
+        let first = barrier.enqueue();
+        let target = barrier.queued();
+
+        let waiter = tokio::spawn({
+            let barrier = barrier.clone();
+            async move {
+                barrier.wait_for(target).await;
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!waiter.is_finished());
+
+        let _second = barrier.enqueue();
+        barrier.mark_processed(first);
+
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter should be released after first notification is processed")
+            .expect("waiter task should finish cleanly");
     }
 }
