@@ -13,12 +13,19 @@ local main_session = "project"
 local current_pane = "%anchor"
 local next_pane = 100
 local next_window = 20
+local window_width = 180
+local window_height = 60
 local commands = {}
 
 local panes = {
   ["%anchor"] = {
     session = main_session,
     exists = true,
+    visible = true,
+    left = 0,
+    top = 0,
+    width = window_width,
+    height = window_height,
   },
 }
 
@@ -36,6 +43,11 @@ local function new_pane(session_name)
   panes[pane_id] = {
     session = session_name,
     exists = true,
+    visible = false,
+    left = nil,
+    top = nil,
+    width = nil,
+    height = nil,
   }
   return pane_id
 end
@@ -43,6 +55,26 @@ end
 local function new_window_id()
   next_window = next_window + 1
   return "@" .. tostring(next_window)
+end
+
+local function pane_size_from_percent(total, pct)
+  local cells = math.floor((total * pct) / 100)
+  if cells < 10 then
+    return 10
+  end
+  if cells >= total then
+    return math.max(10, total - 1)
+  end
+  return cells
+end
+
+local function command_arg(command, flag)
+  for index = 1, #command do
+    if command[index] == flag then
+      return command[index + 1]
+    end
+  end
+  return nil
 end
 
 local function normalize_tmux_command(command)
@@ -96,21 +128,80 @@ vim.fn.system = function(command)
       return "missing pane\n"
     end
     if format == "#{window_width}" then
-      return "180\n"
+      return tostring(window_width) .. "\n"
     end
     if format == "#{window_height}" then
-      return "60\n"
+      return tostring(window_height) .. "\n"
     end
     if format == "#{pane_width}" then
-      return "60\n"
+      local pane = panes[target]
+      return tostring((pane and pane.width) or window_width) .. "\n"
     end
     if format == "#{pane_height}" then
-      return "60\n"
+      local pane = panes[target]
+      return tostring((pane and pane.height) or window_height) .. "\n"
     end
   end
 
+  if normalized[2] == "list-panes" then
+    local format = command_arg(normalized, "-F")
+    if format ~= "#{pane_id}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{window_width}\t#{window_height}" then
+      return "unexpected format\n"
+    end
+    local lines = {}
+    for pane_id, pane in pairs(panes) do
+      if pane.exists and pane.visible ~= false then
+        lines[#lines + 1] = table.concat({
+          pane_id,
+          tostring(pane.left or 0),
+          tostring(pane.top or 0),
+          tostring(pane.width or window_width),
+          tostring(pane.height or window_height),
+          tostring(window_width),
+          tostring(window_height),
+        }, "\t")
+      end
+    end
+    table.sort(lines)
+    return table.concat(lines, "\n") .. "\n"
+  end
+
   if normalized[2] == "split-window" then
+    local target = command_arg(normalized, "-t")
+    local target_pane = panes[target]
+    local pct = tonumber(command_arg(normalized, "-p")) or 33
     local pane_id = new_pane(main_session)
+    if vim.tbl_contains(normalized, "-v") then
+      local new_height = pane_size_from_percent((target_pane and target_pane.height) or window_height, pct)
+      panes[pane_id].left = (target_pane and target_pane.left) or 0
+      panes[pane_id].top = vim.tbl_contains(normalized, "-b")
+          and ((target_pane and target_pane.top) or 0)
+        or (((target_pane and target_pane.top) or 0) + ((target_pane and target_pane.height) or window_height) - new_height)
+      panes[pane_id].width = (target_pane and target_pane.width) or window_width
+      panes[pane_id].height = new_height
+      panes[pane_id].visible = true
+      if target_pane then
+        target_pane.height = target_pane.height - new_height - 1
+        if vim.tbl_contains(normalized, "-b") then
+          target_pane.top = panes[pane_id].top + new_height + 1
+        end
+      end
+    else
+      local new_width = pane_size_from_percent((target_pane and target_pane.width) or window_width, pct)
+      panes[pane_id].left = vim.tbl_contains(normalized, "-b")
+          and ((target_pane and target_pane.left) or 0)
+        or (((target_pane and target_pane.left) or 0) + ((target_pane and target_pane.width) or window_width) - new_width)
+      panes[pane_id].top = (target_pane and target_pane.top) or 0
+      panes[pane_id].width = new_width
+      panes[pane_id].height = (target_pane and target_pane.height) or window_height
+      panes[pane_id].visible = true
+      if target_pane then
+        target_pane.width = target_pane.width - new_width - 1
+        if vim.tbl_contains(normalized, "-b") then
+          target_pane.left = panes[pane_id].left + new_width + 1
+        end
+      end
+    end
     return pane_id .. "\n" .. socket_path .. "\n" .. main_session .. "\n"
   end
 
@@ -134,21 +225,34 @@ vim.fn.system = function(command)
       return "failed break-pane\n"
     end
     panes[source].session = target
+    panes[source].visible = false
+    panes[source].left = nil
+    panes[source].top = nil
+    panes[source].width = nil
+    panes[source].height = nil
     local window_id = new_window_id()
     return window_id .. "\n"
   end
 
   if normalized[2] == "join-pane" then
     local source
+    local target
     for index = 1, #normalized do
       if normalized[index] == "-s" then
         source = normalized[index + 1]
+      elseif normalized[index] == "-t" then
+        target = normalized[index + 1]
       end
     end
     if not (panes[source] and panes[source].exists) then
       return "failed join-pane\n"
     end
     panes[source].session = main_session
+    panes[source].visible = true
+    panes[source].left = panes[target] and panes[target].left or 0
+    panes[source].top = panes[target] and panes[target].top or 0
+    panes[source].width = panes[target] and panes[target].width or window_width
+    panes[source].height = panes[target] and panes[target].height or window_height
     return ""
   end
 
@@ -168,6 +272,16 @@ vim.fn.system = function(command)
     local tmp_session = panes[source].session
     panes[source].session = panes[target].session
     panes[target].session = tmp_session
+    panes[source].visible = true
+    panes[source].left = panes[target].left
+    panes[source].top = panes[target].top
+    panes[source].width = panes[target].width
+    panes[source].height = panes[target].height
+    panes[target].visible = false
+    panes[target].left = nil
+    panes[target].top = nil
+    panes[target].width = nil
+    panes[target].height = nil
     return ""
   end
 
@@ -175,6 +289,7 @@ vim.fn.system = function(command)
     local pane_id = normalized[4]
     if panes[pane_id] then
       panes[pane_id].exists = false
+      panes[pane_id].visible = false
     end
     return ""
   end

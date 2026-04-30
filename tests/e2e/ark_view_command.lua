@@ -574,6 +574,20 @@ local ok, err = pcall(function()
 
   move_cursor(sidebar_win, 3, 0)
   assert_sidebar_selected(sidebar_buf, 3)
+  if vim.api.nvim_get_current_win() ~= sidebar_win then
+    error("expected live column movement to keep focus in the columns pane", 0)
+  end
+  local live_grid_cursor = vim.api.nvim_win_get_cursor(grid_win)
+  local live_grid_col = header_column(vim.api.nvim_buf_get_lines(grid_buf, 0, 1, false), "mpg")
+  if live_grid_cursor[2] ~= live_grid_col then
+    error(
+      "expected moving in the columns pane to update the grid column immediately, expected col "
+        .. tostring(live_grid_col)
+        .. " got cursor "
+        .. vim.inspect(live_grid_cursor),
+      0
+    )
+  end
 
   press("S")
   if picker_spec == nil then

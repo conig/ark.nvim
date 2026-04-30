@@ -1,28 +1,39 @@
 vim.opt.rtp:prepend(vim.fn.getcwd())
 
-local original_tmux = vim.env.TMUX
-local original_system = vim.fn.system
-
-vim.env.TMUX = "/tmp/ark-test,456,0"
 _G.__ark_nvim_state = {}
 package.loaded["ark.tmux"] = nil
+
+local original_system = vim.fn.system
+local original_tmux = vim.env.TMUX
+
+vim.env.TMUX = "/tmp/ark-test,789,0"
 
 local socket_path = "/tmp/ark.sock"
 local main_session = "project"
 local current_pane = "%anchor"
 local next_pane = 100
 local next_window = 20
+local window_width = 180
+local window_height = 60
 local commands = {}
-local window_width = 80
-local window_height = 160
 
 local panes = {
   ["%anchor"] = {
     session = main_session,
     exists = true,
     visible = true,
+    left = 0,
     top = 0,
-    width = window_width,
+    width = 119,
+    height = window_height,
+  },
+  ["%right"] = {
+    session = main_session,
+    exists = true,
+    visible = true,
+    left = 120,
+    top = 0,
+    width = 60,
     height = window_height,
   },
 }
@@ -30,17 +41,6 @@ local panes = {
 local sessions = {
   [main_session] = true,
 }
-
-local function pane_size_from_percent(total, pct)
-  local cells = math.floor((total * pct) / 100)
-  if cells < 10 then
-    return 10
-  end
-  if cells >= total then
-    return math.max(10, total - 1)
-  end
-  return cells
-end
 
 local function command_arg(command, flag)
   for index = 1, #command do
@@ -58,15 +58,17 @@ local function new_pane(session_name)
     session = session_name,
     exists = true,
     visible = false,
+    left = nil,
     top = nil,
-    width = window_width,
+    width = nil,
     height = nil,
   }
   return pane_id
 end
 
-local function clear_commands()
-  commands = {}
+local function new_window_id()
+  next_window = next_window + 1
+  return "@" .. tostring(next_window)
 end
 
 local function normalize_tmux_command(command)
@@ -76,6 +78,48 @@ local function normalize_tmux_command(command)
     table.remove(normalized, 2)
   end
   return normalized
+end
+
+local function pane_lines()
+  local lines = {}
+  for pane_id, pane in pairs(panes) do
+    if pane.exists and pane.visible ~= false then
+      lines[#lines + 1] = table.concat({
+        pane_id,
+        tostring(pane.left or 0),
+        tostring(pane.top or 0),
+        tostring(pane.width or window_width),
+        tostring(pane.height or window_height),
+        tostring(window_width),
+        tostring(window_height),
+      }, "\t")
+    end
+  end
+  table.sort(lines)
+  return table.concat(lines, "\n") .. "\n"
+end
+
+local function split_above_target(source, target, size)
+  local target_pane = panes[target]
+  panes[source].visible = true
+  panes[source].left = target_pane.left
+  panes[source].top = target_pane.top
+  panes[source].width = target_pane.width
+  panes[source].height = size
+  target_pane.top = target_pane.top + size + 1
+  target_pane.height = target_pane.height - size - 1
+end
+
+local function restore_right_slot()
+  panes["%right"].visible = true
+  panes["%right"].left = 120
+  panes["%right"].top = 0
+  panes["%right"].width = 60
+  panes["%right"].height = window_height
+end
+
+local function clear_commands()
+  commands = {}
 end
 
 vim.fn.system = function(command)
@@ -94,15 +138,12 @@ vim.fn.system = function(command)
     error("unexpected command: " .. vim.inspect(normalized), 0)
   end
 
-  if normalized[2] == "display-message" and normalized[3] == "-p" and normalized[4] == "#{TMUX_CODING_PANE_WIDTH}" then
-    return "33\n"
-  end
-
   if normalized[2] == "display-message" and normalized[3] == "-p" and normalized[4] == "-t" then
     local target = normalized[5]
     local format = normalized[6]
+    local pane = panes[target]
     if format == "#{pane_id}" then
-      if panes[target] and panes[target].exists then
+      if pane and pane.exists then
         return target .. "\n"
       end
       if sessions[target] then
@@ -117,7 +158,6 @@ vim.fn.system = function(command)
       return "missing session\n"
     end
     if format == "#{socket_path}\n#{session_name}" then
-      local pane = panes[target]
       if pane and pane.exists then
         return socket_path .. "\n" .. pane.session .. "\n"
       end
@@ -130,11 +170,9 @@ vim.fn.system = function(command)
       return tostring(window_height) .. "\n"
     end
     if format == "#{pane_width}" then
-      local pane = panes[target]
       return tostring((pane and pane.width) or window_width) .. "\n"
     end
     if format == "#{pane_height}" then
-      local pane = panes[target]
       return tostring((pane and pane.height) or window_height) .. "\n"
     end
   end
@@ -144,114 +182,81 @@ vim.fn.system = function(command)
     if format ~= "#{pane_id}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{window_width}\t#{window_height}" then
       return "unexpected format\n"
     end
-    local lines = {}
-    for pane_id, pane in pairs(panes) do
-      if pane.exists and pane.visible ~= false then
-        lines[#lines + 1] = table.concat({
-          pane_id,
-          tostring(pane.left or 0),
-          tostring(pane.top or 0),
-          tostring(pane.width or window_width),
-          tostring(pane.height or window_height),
-          tostring(window_width),
-          tostring(window_height),
-        }, "\t")
-      end
-    end
-    table.sort(lines)
-    return table.concat(lines, "\n") .. "\n"
+    return pane_lines()
   end
 
   if normalized[2] == "split-window" then
     local target = command_arg(normalized, "-t")
-    local target_pane = panes[target]
     local pct = tonumber(command_arg(normalized, "-p")) or 50
-    local new_height = pane_size_from_percent(window_height, pct)
+    local target_pane = panes[target]
+    if not (target_pane and target_pane.exists) then
+      return "failed split-window\n"
+    end
     local pane_id = new_pane(main_session)
-    target_pane.height = window_height - new_height - 1
-    target_pane.top = 0
-    target_pane.visible = true
-    panes[pane_id].height = new_height
-    panes[pane_id].top = target_pane.height + 1
-    panes[pane_id].visible = true
+    if vim.tbl_contains(normalized, "-v") then
+      local size = math.floor((target_pane.height * pct) / 100)
+      if vim.tbl_contains(normalized, "-b") then
+        split_above_target(pane_id, target, size)
+      else
+        panes[pane_id].visible = true
+        panes[pane_id].left = target_pane.left
+        panes[pane_id].top = target_pane.top + target_pane.height - size
+        panes[pane_id].width = target_pane.width
+        panes[pane_id].height = size
+        target_pane.height = target_pane.height - size - 1
+      end
+    else
+      local size = math.floor((target_pane.width * pct) / 100)
+      panes[pane_id].visible = true
+      panes[pane_id].left = target_pane.left + target_pane.width - size
+      panes[pane_id].top = target_pane.top
+      panes[pane_id].width = size
+      panes[pane_id].height = target_pane.height
+      target_pane.width = target_pane.width - size - 1
+    end
     return pane_id .. "\n" .. socket_path .. "\n" .. main_session .. "\n"
   end
 
   if normalized[2] == "new-window" then
-    next_window = next_window + 1
     local pane_id = new_pane(main_session)
-    return pane_id .. "\n@" .. tostring(next_window) .. "\n" .. socket_path .. "\n" .. main_session .. "\n"
+    local window_id = new_window_id()
+    return pane_id .. "\n" .. window_id .. "\n" .. socket_path .. "\n" .. main_session .. "\n"
   end
 
   if normalized[2] == "swap-pane" then
-    local source
-    local target
-    for index = 1, #normalized do
-      if normalized[index] == "-s" then
-        source = normalized[index + 1]
-      elseif normalized[index] == "-t" then
-        target = normalized[index + 1]
-      end
-    end
+    local source = command_arg(normalized, "-s")
+    local target = command_arg(normalized, "-t")
     if not (panes[source] and panes[source].exists and panes[target] and panes[target].exists) then
       return "failed swap-pane\n"
     end
-    local tmp_session = panes[source].session
-    panes[source].session = panes[target].session
-    panes[target].session = tmp_session
     panes[source].visible = true
+    panes[source].left = panes[target].left
     panes[source].top = panes[target].top
     panes[source].width = panes[target].width
     panes[source].height = panes[target].height
     panes[target].visible = false
+    panes[target].left = nil
     panes[target].top = nil
+    panes[target].width = nil
     panes[target].height = nil
     current_pane = source
     return ""
   end
 
   if normalized[2] == "join-pane" then
-    local source
-    local target
-    local size
-    for index = 1, #normalized do
-      if normalized[index] == "-s" then
-        source = normalized[index + 1]
-      elseif normalized[index] == "-t" then
-        target = normalized[index + 1]
-      elseif normalized[index] == "-l" then
-        size = tonumber(normalized[index + 1])
-      end
-    end
+    local source = command_arg(normalized, "-s")
+    local target = command_arg(normalized, "-t")
+    local size = tonumber(command_arg(normalized, "-l"))
     if not (panes[source] and panes[source].exists and panes[target] and panes[target].exists and size) then
       return "failed join-pane\n"
     end
     panes[source].session = main_session
-    panes[target].height = window_height - size - 1
-    panes[target].top = 0
-    panes[target].visible = true
-    panes[source].visible = true
-    panes[source].top = panes[target].height + 1
-    panes[source].width = window_width
-    panes[source].height = size
+    if vim.tbl_contains(normalized, "-v") and vim.tbl_contains(normalized, "-b") then
+      split_above_target(source, target, size)
+    else
+      panes[source].visible = true
+    end
     current_pane = source
-    return ""
-  end
-
-  if normalized[2] == "kill-pane" then
-    local pane_id = normalized[4]
-    if panes[pane_id] then
-      panes["%anchor"].visible = true
-      panes["%anchor"].top = 0
-      panes["%anchor"].height = window_height
-      panes[pane_id].exists = false
-      panes[pane_id].visible = false
-      panes[pane_id].top = nil
-      panes[pane_id].height = nil
-    end
-    if current_pane == pane_id then
-      current_pane = "%anchor"
-    end
     return ""
   end
 
@@ -267,8 +272,8 @@ local ok, err = pcall(function()
       launcher = "/tmp/ark-r-launcher.sh",
       pane_layout = "auto",
       pane_percent = 33,
-      stacked_pane_percent = require("ark.config").defaults().tmux.stacked_pane_percent,
-      pane_width_env_keys = { "TMUX_CODING_PANE_WIDTH" },
+      stacked_pane_percent = 33,
+      pane_width_env_keys = {},
       startup_status_dir = "/tmp/ark-status",
       session_pkg_path = "/tmp/arkbridge",
       session_lib_path = "/tmp/ark-lib",
@@ -279,43 +284,57 @@ local ok, err = pcall(function()
 
   local first_pane = assert(tmux.start(opts))
   if first_pane ~= "%101" then
-    error("expected first visible pane to be %101, got " .. tostring(first_pane), 0)
+    error("expected first pane to be %101, got " .. tostring(first_pane), 0)
   end
 
   local split_command = nil
-  for _, command in ipairs(commands) do
-    if type(command) == "table" and command[2] == "split-window" then
-      split_command = command
+  for _, cmd in ipairs(commands) do
+    if cmd[2] == "split-window" then
+      split_command = cmd
       break
     end
   end
-  if not split_command or not vim.tbl_contains(split_command, "-v") or not vim.tbl_contains(split_command, "33") then
-    error("expected portrait auto layout to keep the new pane in a 33% bottom slot, got " .. vim.inspect(split_command), 0)
+  if not split_command
+    or command_arg(split_command, "-t") ~= "%right"
+    or command_arg(split_command, "-p") ~= "50"
+    or not vim.tbl_contains(split_command, "-v")
+    or not vim.tbl_contains(split_command, "-b")
+    or vim.tbl_contains(split_command, "-h")
+  then
+    error("expected existing right split to be reused as an upper stacked slot, got " .. vim.inspect(split_command), 0)
   end
 
   local second_pane = assert(tmux.tab_new(opts))
-  if second_pane == first_pane then
-    error("expected ArkTabNew to create a distinct visible pane, got " .. tostring(second_pane), 0)
+  if second_pane ~= "%102" then
+    error("expected tab_new to swap hidden pane %102 into the managed slot, got " .. tostring(second_pane), 0)
   end
 
   clear_commands()
   panes[second_pane].exists = false
+  panes[second_pane].visible = false
+  restore_right_slot()
   current_pane = "%anchor"
 
   local restored = assert(tmux.start(opts))
   if restored ~= first_pane then
-    error("expected restore to recover the parked portrait pane, got " .. tostring(restored), 0)
+    error("expected start to restore parked pane " .. first_pane .. ", got " .. tostring(restored), 0)
   end
 
   local join_command = nil
-  for _, command in ipairs(commands) do
-    if type(command) == "table" and command[2] == "join-pane" then
-      join_command = command
+  for _, cmd in ipairs(commands) do
+    if cmd[2] == "join-pane" then
+      join_command = cmd
       break
     end
   end
-  if not join_command or not vim.tbl_contains(join_command, "-v") or not vim.tbl_contains(join_command, "52") then
-    error("expected portrait restore to keep the parked pane in a 52-line bottom slot, got " .. vim.inspect(join_command), 0)
+  if not join_command
+    or command_arg(join_command, "-t") ~= "%right"
+    or command_arg(join_command, "-l") ~= "30"
+    or not vim.tbl_contains(join_command, "-v")
+    or not vim.tbl_contains(join_command, "-b")
+    or vim.tbl_contains(join_command, "-h")
+  then
+    error("expected restore to join parked pane above the existing right split, got " .. vim.inspect(join_command), 0)
   end
 end)
 

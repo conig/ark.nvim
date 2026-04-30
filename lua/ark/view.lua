@@ -570,21 +570,36 @@ local function show_details(state, title, text)
   render_details(state, title, text)
 end
 
+local function move_grid_cursor_to_selected_column(state)
+  if not valid_win(state.grid_win) then
+    return
+  end
+
+  local row = math.max(1, (tonumber(state.selected_row) or 1) + 1)
+  if valid_buf(state.grid_buf) then
+    row = math.min(row, math.max(1, vim.api.nvim_buf_line_count(state.grid_buf)))
+  end
+  local col = 0
+  for _, span in ipairs(state.column_spans or {}) do
+    if span.column_index == tonumber(state.selected_column) then
+      col = math.max(0, span.start_col)
+      break
+    end
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(state.grid_win)
+  if cursor[1] ~= row or cursor[2] ~= col then
+    vim.api.nvim_win_set_cursor(state.grid_win, { row, col })
+  end
+end
+
 local function focus_selected_column_in_grid(state)
   if not valid_win(state.grid_win) then
     return
   end
 
   vim.api.nvim_set_current_win(state.grid_win)
-  local row = math.max(1, (state.selected_row or 1) + 1)
-  for _, span in ipairs(state.column_spans or {}) do
-    if span.column_index == tonumber(state.selected_column) then
-      vim.api.nvim_win_set_cursor(state.grid_win, { row, math.max(0, span.start_col - 1) })
-      return
-    end
-  end
-
-  vim.api.nvim_win_set_cursor(state.grid_win, { row, 0 })
+  move_grid_cursor_to_selected_column(state)
 end
 
 local function render_grid(state)
@@ -636,8 +651,7 @@ local function render_grid(state)
   apply_grid_highlights(state, lines, row_width)
   update_grid_summary(state)
   if valid_win(state.grid_win) then
-    local target_row = math.min(#lines, math.max(1, (state.selected_row or 1) + 1))
-    vim.api.nvim_win_set_cursor(state.grid_win, { target_row, 0 })
+    move_grid_cursor_to_selected_column(state)
   end
 end
 
@@ -664,6 +678,9 @@ local function sync_selected_column(state)
 
   if tonumber(state.selected_column) ~= previous_column then
     render_sidebar(state)
+    if win == state.sidebar_win then
+      move_grid_cursor_to_selected_column(state)
+    end
   end
 end
 

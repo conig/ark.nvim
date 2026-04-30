@@ -572,6 +572,67 @@ local function current_pane_height(pane_id)
   return height, nil
 end
 
+local function list_window_panes(target)
+  local output, err = run_tmux({
+    "list-panes",
+    "-t",
+    target,
+    "-F",
+    "#{pane_id}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}\t#{window_width}\t#{window_height}",
+  })
+  if not output then
+    return nil, "failed to list tmux panes: " .. tostring(err or "unknown")
+  end
+
+  local panes = {}
+  for line in (output .. "\n"):gmatch("(.-)\n") do
+    if line ~= "" then
+      local pane_id, left, top, width, height, window_width_value, window_height_value =
+        line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)$")
+      left = tonumber(left)
+      top = tonumber(top)
+      width = tonumber(width)
+      height = tonumber(height)
+      window_width_value = tonumber(window_width_value)
+      window_height_value = tonumber(window_height_value)
+      if pane_id and left and top and width and height and window_width_value and window_height_value then
+        panes[#panes + 1] = {
+          pane_id = pane_id,
+          left = left,
+          top = top,
+          width = width,
+          height = height,
+          window_width = window_width_value,
+          window_height = window_height_value,
+        }
+      end
+    end
+  end
+
+  return panes, nil
+end
+
+local function find_listed_pane(panes, pane_id)
+  for _, pane in ipairs(panes or {}) do
+    if pane.pane_id == pane_id then
+      return pane
+    end
+  end
+  return nil
+end
+
+local function panes_share_column(a, b)
+  return a and b and a.left == b.left and a.width == b.width
+end
+
+local function panes_share_row(a, b)
+  return a and b and a.top == b.top and a.height == b.height
+end
+
+local function pane_spans_window_height(pane)
+  return pane and pane.top == 0 and pane.height >= (pane.window_height - 1)
+end
+
 local function normalize_pane_layout(value)
   if value == nil then
     return "auto"
@@ -641,6 +702,22 @@ local function resolve_pane_layout(target, config)
 end
 
 local function active_pane_layout(pane_id, config)
+  local panes = list_window_panes(pane_id)
+  local active = panes and find_listed_pane(panes, pane_id) or nil
+  if active then
+    for _, pane in ipairs(panes) do
+      if pane.pane_id ~= pane_id and panes_share_column(active, pane) then
+        return pane_layout("stacked"), nil
+      end
+    end
+
+    for _, pane in ipairs(panes) do
+      if pane.pane_id ~= pane_id and panes_share_row(active, pane) then
+        return pane_layout("side_by_side"), nil
+      end
+    end
+  end
+
   local pane_width, pane_width_err = current_pane_width(pane_id)
   if not pane_width then
     return nil, pane_width_err
@@ -672,6 +749,63 @@ local function active_pane_layout(pane_id, config)
   return resolve_pane_layout(pane_id, config)
 end
 
+local function existing_side_split_target(anchor_pane_id)
+  local panes = list_window_panes(anchor_pane_id)
+  local anchor = panes and find_listed_pane(panes, anchor_pane_id) or nil
+  if not anchor or #panes < 2 or not pane_spans_window_height(anchor) then
+    return nil
+  end
+
+  local leftmost = anchor.left
+  local target = nil
+  for _, pane in ipairs(panes) do
+    if pane_spans_window_height(pane) then
+      if pane.left < leftmost then
+        leftmost = pane.left
+      end
+      if pane.left > anchor.left and (not target or pane.left < target.left) then
+        target = pane
+      end
+    end
+  end
+
+  if target then
+    return target.pane_id
+  end
+
+  if anchor.left > leftmost then
+    return anchor.pane_id
+  end
+
+  return nil
+end
+
+local function visible_pane_placement(anchor_pane_id, config)
+  local layout, layout_err = resolve_pane_layout(anchor_pane_id, config)
+  if not layout then
+    return nil, layout_err
+  end
+
+  local placement = {
+    layout = layout,
+    target_pane_id = anchor_pane_id,
+    before = false,
+    percent = pane_percent_for_layout(config, layout.name),
+  }
+
+  if layout.name == "side_by_side" then
+    local side_target = existing_side_split_target(anchor_pane_id)
+    if side_target then
+      placement.layout = pane_layout("stacked")
+      placement.target_pane_id = side_target
+      placement.before = true
+      placement.percent = "50"
+    end
+  end
+
+  return placement, nil
+end
+
 local function slot_size_cells(layout)
   if layout.name == "stacked" then
     return state.slot_height_cells
@@ -689,7 +823,7 @@ local function set_slot_size_cells(layout, cells)
   state.slot_width_cells = cells
 end
 
-local function desired_slot_size(anchor_pane_id, config, layout)
+local function desired_slot_size(anchor_pane_id, config, layout, percent)
   local stored = slot_size_cells(layout)
   if stored and stored > 0 then
     return tostring(stored), nil
@@ -705,7 +839,7 @@ local function desired_slot_size(anchor_pane_id, config, layout)
     return nil, err
   end
 
-  local pct = tonumber(pane_percent_for_layout(config, layout.name)) or tonumber(config.pane_percent) or 33
+  local pct = tonumber(percent or pane_percent_for_layout(config, layout.name)) or tonumber(config.pane_percent) or 33
   local cells = math.floor((total * pct) / 100)
   if cells < 10 then
     cells = 10
@@ -764,24 +898,29 @@ local function create_visible_tab(opts, insert_index)
     return nil, nil, anchor_err
   end
 
-  local layout, layout_err = resolve_pane_layout(anchor_pane_id, opts.tmux)
-  if not layout then
-    return nil, nil, layout_err
+  local placement, placement_err = visible_pane_placement(anchor_pane_id, opts.tmux)
+  if not placement then
+    return nil, nil, placement_err
   end
 
-  local output, split_err = run_tmux({
-    "split-window",
-    layout.split_flag,
+  local args = { "split-window" }
+  if placement.before then
+    args[#args + 1] = "-b"
+  end
+  vim.list_extend(args, {
+    placement.layout.split_flag,
     "-p",
-    pane_percent_for_layout(opts.tmux, layout.name),
+    placement.percent,
     "-d",
     "-P",
     "-F",
     "#{pane_id}\n#{socket_path}\n#{session_name}",
     "-t",
-    anchor_pane_id,
+    placement.target_pane_id,
     M.pane_command(opts.tmux),
   })
+
+  local output, split_err = run_tmux(args)
   if not output then
     return nil, nil, "failed to create pane: " .. tostring(split_err or "unknown")
   end
@@ -907,27 +1046,31 @@ local function restore_tab(index, config)
     return nil, anchor_err
   end
 
-  local layout, layout_err = resolve_pane_layout(anchor_pane_id, config)
-  if not layout then
-    return nil, layout_err
+  local placement, placement_err = visible_pane_placement(anchor_pane_id, config)
+  if not placement then
+    return nil, placement_err
   end
 
-  local size, size_err = desired_slot_size(anchor_pane_id, config, layout)
+  local size, size_err = desired_slot_size(placement.target_pane_id, config, placement.layout, placement.percent)
   if not size then
     return nil, size_err
   end
 
-  local _, join_err = run_tmux({
-    "join-pane",
-    "-d",
-    layout.split_flag,
+  local args = { "join-pane", "-d" }
+  if placement.before then
+    args[#args + 1] = "-b"
+  end
+  vim.list_extend(args, {
+    placement.layout.split_flag,
     "-l",
     size,
     "-s",
     tab.pane_id,
     "-t",
-    anchor_pane_id,
+    placement.target_pane_id,
   })
+
+  local _, join_err = run_tmux(args)
   if join_err then
     return nil, "failed to restore pane: " .. tostring(join_err or "unknown")
   end
