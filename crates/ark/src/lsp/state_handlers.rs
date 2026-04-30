@@ -460,6 +460,7 @@ pub(crate) fn did_open(
     // update_config(vec![uri]).await;
     let hydration = begin_detached_session_hydration(state, false);
 
+    lsp::main_loop::index_update(vec![uri], state.clone());
     lsp::main_loop::diagnostics_refresh_all_from_state(state);
 
     Ok(hydration)

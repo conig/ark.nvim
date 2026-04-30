@@ -13,12 +13,14 @@ use tower_lsp::lsp_types::Range;
 
 use crate::lsp::document::Document;
 use crate::lsp::indexer;
+use crate::lsp::state::WorldState;
 use crate::lsp::traits::node::NodeExt;
 use crate::treesitter::NodeTypeExt;
 
-pub fn goto_definition(
+pub(crate) fn goto_definition(
     document: &Document,
     params: GotoDefinitionParams,
+    state: &WorldState,
 ) -> Result<Option<GotoDefinitionResponse>> {
     // get reference to AST
     let ast = &document.ast;
@@ -40,9 +42,8 @@ pub fn goto_definition(
     if node.is_identifier() {
         let symbol = node.node_as_str(&document.contents)?;
 
-        // First search in current file, then in all files
         let uri = &params.text_document_position_params.text_document.uri;
-        let info = indexer::find_in_file(symbol, uri).or_else(|| indexer::find(symbol));
+        let info = find_symbol_definition(symbol, uri, document, state);
 
         if let Some((file_id, entry)) = info {
             let target_uri = file_id.as_uri().clone();
@@ -76,6 +77,37 @@ pub fn goto_definition(
     Ok(Some(response))
 }
 
+fn find_symbol_definition(
+    symbol: &str,
+    uri: &tower_lsp::lsp_types::Url,
+    document: &Document,
+    state: &WorldState,
+) -> Option<(indexer::FileId, indexer::IndexEntry)> {
+    // Prefer live buffers over the eventually consistent global index so `gd`
+    // works against newly opened or unsaved files.
+    if let Some(info) = indexer::find_in_document(symbol, uri, document) {
+        return Some(info);
+    }
+
+    let mut open_uris: Vec<_> = state
+        .documents
+        .keys()
+        .filter(|open_uri| *open_uri != uri)
+        .collect();
+    open_uris.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+
+    for open_uri in open_uris {
+        let Some(open_document) = state.documents.get(open_uri) else {
+            continue;
+        };
+        if let Some(info) = indexer::find_in_document(symbol, open_uri, open_document) {
+            return Some(info);
+        }
+    }
+
+    indexer::find_in_file(symbol, uri).or_else(|| indexer::find(symbol))
+}
+
 #[cfg(test)]
 mod tests {
     use assert_matches::assert_matches;
@@ -83,21 +115,26 @@ mod tests {
 
     use super::*;
     use crate::lsp::document::Document;
-    use crate::lsp::indexer;
+    use crate::lsp::state::WorldState;
     use crate::lsp::util::test_path;
+
+    fn state_with_documents(documents: Vec<(lsp_types::Url, Document)>) -> WorldState {
+        let mut state = WorldState::default();
+        for (uri, document) in documents {
+            state.documents.insert(uri, document);
+        }
+        state
+    }
 
     #[test]
     fn test_goto_definition() {
-        let _guard = indexer::ResetIndexerGuard;
-
         let code = r#"
 foo <- 42
 print(foo)
 "#;
         let doc = Document::new(code, None);
         let uri = test_path("test.R");
-
-        indexer::update(&doc, &uri).unwrap();
+        let state = state_with_documents(vec![(uri.clone(), doc.clone())]);
 
         let params = GotoDefinitionParams {
             text_document_position_params: lsp_types::TextDocumentPositionParams {
@@ -109,7 +146,7 @@ print(foo)
         };
 
         assert_matches!(
-            goto_definition(&doc, params).unwrap(),
+            goto_definition(&doc, params, &state).unwrap(),
             Some(GotoDefinitionResponse::Link(ref links)) => {
                 assert_eq!(
                     links[0].target_range,
@@ -124,8 +161,6 @@ print(foo)
 
     #[test]
     fn test_goto_definition_comment_section() {
-        let _guard = indexer::ResetIndexerGuard;
-
         let code = r#"
 # foo ----
 foo <- 1
@@ -133,8 +168,7 @@ print(foo)
 "#;
         let doc = Document::new(code, None);
         let uri = test_path("test.R");
-
-        indexer::update(&doc, &uri).unwrap();
+        let state = state_with_documents(vec![(uri.clone(), doc.clone())]);
 
         let params = lsp_types::GotoDefinitionParams {
             text_document_position_params: lsp_types::TextDocumentPositionParams {
@@ -146,7 +180,7 @@ print(foo)
         };
 
         assert_matches!(
-            goto_definition(&doc, params).unwrap(),
+            goto_definition(&doc, params, &state).unwrap(),
             Some(lsp_types::GotoDefinitionResponse::Link(ref links)) => {
                 // The section should is not the target, the variable has priority
                 assert_eq!(
@@ -162,8 +196,6 @@ print(foo)
 
     #[test]
     fn test_goto_definition_prefers_local_symbol() {
-        let _guard = indexer::ResetIndexerGuard;
-
         // Both files define the same symbol
         let code1 = r#"
 foo <- 1
@@ -179,9 +211,10 @@ foo
 
         let uri1 = test_path("file1.R");
         let uri2 = test_path("file2.R");
-
-        indexer::update(&doc1, &uri1).unwrap();
-        indexer::update(&doc2, &uri2).unwrap();
+        let state = state_with_documents(vec![
+            (uri1.clone(), doc1.clone()),
+            (uri2.clone(), doc2.clone()),
+        ]);
 
         // Go to definition for foo in file1
         let params1 = GotoDefinitionParams {
@@ -193,7 +226,7 @@ foo
             partial_result_params: Default::default(),
         };
         assert_matches!(
-            goto_definition(&doc1, params1).unwrap(),
+            goto_definition(&doc1, params1, &state).unwrap(),
             Some(GotoDefinitionResponse::Link(ref links)) => {
                 // Should jump to foo in file1
                 assert_eq!(links[0].target_uri, uri1);
@@ -210,7 +243,7 @@ foo
             partial_result_params: Default::default(),
         };
         assert_matches!(
-            goto_definition(&doc2, params2).unwrap(),
+            goto_definition(&doc2, params2, &state).unwrap(),
             Some(GotoDefinitionResponse::Link(ref links)) => {
                 // Should jump to foo in file2
                 assert_eq!(links[0].target_uri, uri2);
@@ -220,8 +253,6 @@ foo
 
     #[test]
     fn test_goto_definition_falls_back_to_other_file() {
-        let _guard = indexer::ResetIndexerGuard;
-
         // file1 defines foo, file2 does not
         let code1 = r#"
 foo <- 1
@@ -236,9 +267,10 @@ foo
         // Use test_path for cross-platform compatibility
         let uri1 = test_path("file1.R");
         let uri2 = test_path("file2.R");
-
-        indexer::update(&doc1, &uri1).unwrap();
-        indexer::update(&doc2, &uri2).unwrap();
+        let state = state_with_documents(vec![
+            (uri1.clone(), doc1.clone()),
+            (uri2.clone(), doc2.clone()),
+        ]);
 
         // Go to definition for foo in file2 (should jump to file1)
         let params2 = GotoDefinitionParams {
@@ -249,7 +281,7 @@ foo
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
         };
-        let result2 = goto_definition(&doc2, params2).unwrap();
+        let result2 = goto_definition(&doc2, params2, &state).unwrap();
         assert_matches!(
             result2,
             Some(GotoDefinitionResponse::Link(ref links)) => {

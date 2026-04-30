@@ -287,6 +287,14 @@ pub(crate) fn create(uri: &Url) -> anyhow::Result<()> {
 }
 
 fn index_document(doc: &Document, uri: &Url) {
+    for entry in index_document_entries(doc) {
+        if let Err(err) = insert(uri, entry) {
+            lsp::log_error!("Can't insert index entry: {err:?}");
+        }
+    }
+}
+
+fn index_document_entries(doc: &Document) -> Vec<IndexEntry> {
     let ast = &doc.ast;
     let root = ast.root_node();
     let mut cursor = root.walk();
@@ -298,11 +306,24 @@ fn index_document(doc: &Document, uri: &Url) {
         }
     }
 
-    for entry in entries {
-        if let Err(err) = insert(uri, entry) {
-            lsp::log_error!("Can't insert index entry: {err:?}");
-        }
+    entries
+}
+
+pub fn find_in_document(
+    symbol: &str,
+    uri: &Url,
+    document: &Document,
+) -> Option<(FileId, IndexEntry)> {
+    let mut symbol_index = HashMap::new();
+
+    for entry in index_document_entries(document) {
+        index_insert(&mut symbol_index, entry);
     }
+
+    symbol_index
+        .get(symbol)
+        .cloned()
+        .map(|entry| (FileId::from_uri(uri.clone()), entry))
 }
 
 fn index_node(doc: &Document, node: &Node, entries: &mut Vec<IndexEntry>) -> anyhow::Result<()> {

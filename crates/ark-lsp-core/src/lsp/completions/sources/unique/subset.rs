@@ -46,6 +46,13 @@ pub(super) fn completions_from_string_subset(
     // completion sources from running.
     let mut completions: Vec<CompletionItem> = vec![];
 
+    // Detached ark-lsp routes runtime-backed subset completions through the
+    // session bridge. If that bridge is unavailable, we still need to claim this
+    // context as handled, but we must not fall back to local R evaluation.
+    if !crate::console::Console::is_initialized() {
+        return Ok(Some(completions));
+    }
+
     let text = node.node_as_str(&context.document.contents)?;
 
     if let Some(mut candidates) =

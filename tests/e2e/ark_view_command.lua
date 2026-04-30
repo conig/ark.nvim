@@ -178,6 +178,58 @@ local function press(keys)
   vim.cmd("redraw")
 end
 
+local function assert_winbar_contains(win, text)
+  local winbar = vim.wo[win].winbar
+  if not winbar:find(text, 1, true) then
+    error("expected ArkView winbar to contain " .. vim.inspect(text) .. ", got " .. vim.inspect(winbar), 0)
+  end
+end
+
+local function extmark_has_group(details, group)
+  local highlight = details.hl_group
+  if highlight == group then
+    return true
+  end
+  if type(highlight) == "table" then
+    for _, item in ipairs(highlight) do
+      if item == group then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+local function has_highlight(buf, group, row, col)
+  local namespace = vim.api.nvim_get_namespaces()["ark-view"]
+  if not namespace then
+    error("expected ark-view highlight namespace", 0)
+  end
+
+  local extmarks = vim.api.nvim_buf_get_extmarks(buf, namespace, 0, -1, { details = true })
+  for _, mark in ipairs(extmarks) do
+    local mark_row = mark[2]
+    local mark_col = mark[3]
+    local details = mark[4] or {}
+    local end_row = details.end_row or mark_row
+    local end_col = details.end_col or mark_col
+    if mark_row == row and end_row == row and mark_col <= col and col < end_col and extmark_has_group(details, group) then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function find_line(lines, text)
+  for index, line in ipairs(lines) do
+    if line:find(text, 1, true) then
+      return index - 1
+    end
+  end
+  error("expected line containing " .. vim.inspect(text) .. ", got " .. vim.inspect(lines), 0)
+end
+
 local ok, err = pcall(function()
   local ark = require("ark")
   local lsp = require("ark.lsp")
@@ -258,7 +310,29 @@ local ok, err = pcall(function()
     profile_calls[#profile_calls + 1] = column_index
     local item = backend.schema[column_index]
     return {
-      text = string.format("Profile for %s", item and item.name or "?"),
+      text = table.concat({
+        "# " .. (item and item.name or "?"),
+        "",
+        "Type: double",
+        "Class: numeric",
+        "Rows: 3",
+        "Missing: 0",
+        "Unique values: 3",
+        "",
+        "Summary:",
+        "Min: 4",
+        "Median: 6",
+        "Max: 8",
+        "",
+        "Distribution:",
+        "  4-6 | #### 2",
+        "  6-8 | ## 1",
+        "",
+        "Top values:",
+        "4: 1",
+        "6: 1",
+        "8: 1",
+      }, "\n"),
     }, nil
   end
 
@@ -399,7 +473,63 @@ local ok, err = pcall(function()
     error("unexpected ArkView sidebar header: " .. vim.inspect(sidebar_lines), 0)
   end
 
+  local header_col = header_column(grid_lines, "mpg")
+  local separator_col = assert(grid_lines[1]:find("|", 1, true)) - 1
+  if not has_highlight(grid_buf, "ArkViewHeader", 0, header_col) then
+    error("expected ArkView grid header highlight", 0)
+  end
+  if not has_highlight(sidebar_buf, "ArkViewHeader", 0, 0) then
+    error("expected ArkView columns header highlight", 0)
+  end
+  if not has_highlight(grid_buf, "ArkViewSeparator", 0, separator_col) then
+    error("expected ArkView separator highlight on pipe characters", 0)
+  end
+  if not has_highlight(grid_buf, "ArkViewRowNumber", 1, 0) then
+    error("expected ArkView row-number highlight", 0)
+  end
+
+  assert_winbar_contains(grid_win, "mtcars")
+  assert_winbar_contains(grid_win, "Rows 1-3/3")
+  assert_winbar_contains(grid_win, "Columns 2")
+  assert_winbar_contains(grid_win, "Filters 0")
+  assert_winbar_contains(grid_win, "Sort none")
+  assert_winbar_contains(grid_win, "%#ArkViewSummary#")
+
+  press("?")
+  local help_win = vim.api.nvim_get_current_win()
+  local help_config = vim.api.nvim_win_get_config(help_win)
+  if help_config.relative ~= "editor" then
+    error("expected ArkView help to open in a floating window, got " .. vim.inspect(help_config), 0)
+  end
+  if help_config.width < 52 or help_config.height < 16 then
+    error("expected ArkView help float to be roomy, got " .. vim.inspect(help_config), 0)
+  end
+
+  local help_buf = vim.api.nvim_win_get_buf(help_win)
+  local help_lines = vim.api.nvim_buf_get_lines(help_buf, 0, -1, false)
+  if help_lines[1] ~= "Navigation" or not table.concat(help_lines, "\n"):find("Esc/q  close this help", 1, true) then
+    error("unexpected ArkView help contents: " .. vim.inspect(help_lines), 0)
+  end
+
+  press("<Esc>")
+  if vim.api.nvim_win_is_valid(help_win) then
+    error("expected <Esc> to close the ArkView help float", 0)
+  end
+  if vim.api.nvim_get_current_win() ~= grid_win then
+    error("expected closing ArkView help to return focus to the grid", 0)
+  end
+
   assert_sidebar_selected(sidebar_buf, 3)
+
+  press("<Tab>")
+  if vim.api.nvim_get_current_win() ~= sidebar_win then
+    error("expected <Tab> in ArkView grid to focus the columns pane", 0)
+  end
+
+  press("<Tab>")
+  if vim.api.nvim_get_current_win() ~= grid_win then
+    error("expected <Tab> in ArkView columns pane to return to the grid", 0)
+  end
 
   move_cursor(grid_win, 2, header_column(grid_lines, "cyl"))
   local updated_sidebar = assert_sidebar_selected(sidebar_buf, 4)
@@ -483,6 +613,7 @@ local ok, err = pcall(function()
   if not (grid_lines[2] or ""):find("22.8", 1, true) then
     error("expected sorted rows to place cyl=4 first, got " .. vim.inspect(grid_lines), 0)
   end
+  assert_winbar_contains(grid_win, "Sort cyl asc")
 
   press("/")
   if not vim.deep_equal(filter_calls[1], {
@@ -501,15 +632,68 @@ local ok, err = pcall(function()
   if #grid_lines ~= 2 or not (grid_lines[2] or ""):find("22.8", 1, true) then
     error("expected filtered grid to contain the cyl=4 row only, got " .. vim.inspect(grid_lines), 0)
   end
+  assert_winbar_contains(grid_win, "Rows 1-1/1")
+  assert_winbar_contains(grid_win, "Filter cyl")
 
   press("p")
   if profile_calls[1] ~= 2 then
     error("expected profile request for selected column, got " .. vim.inspect(profile_calls), 0)
   end
 
+  local profile_win = vim.api.nvim_get_current_win()
+  local profile_config = vim.api.nvim_win_get_config(profile_win)
+  if profile_config.relative ~= "editor" then
+    error("expected column profile to open in a floating window, got " .. vim.inspect(profile_config), 0)
+  end
+  if profile_config.width < 64 or profile_config.height < 10 then
+    error("expected column profile float to be roomy, got " .. vim.inspect(profile_config), 0)
+  end
+
+  local profile_buf = vim.api.nvim_win_get_buf(profile_win)
+  local profile_lines = vim.api.nvim_buf_get_lines(profile_buf, 0, -1, false)
+  if profile_lines[1] ~= "Column Profile" or profile_lines[3] ~= "# cyl" then
+    error("unexpected floating profile contents: " .. vim.inspect(profile_lines), 0)
+  end
+  if not has_highlight(profile_buf, "ArkViewProfileTitle", 0, 0) then
+    error("expected profile title highlight", 0)
+  end
+  if not has_highlight(profile_buf, "ArkViewProfileSection", find_line(profile_lines, "Summary:"), 0) then
+    error("expected profile section highlight", 0)
+  end
+  if not has_highlight(profile_buf, "ArkViewProfileLabel", find_line(profile_lines, "Unique values:"), 0) then
+    error("expected profile label highlight", 0)
+  end
+  local density_row = find_line(profile_lines, "4-6 |")
+  local density_bar_col = assert(profile_lines[density_row + 1]:find("#", 1, true)) - 1
+  if not has_highlight(profile_buf, "ArkViewProfileBar", density_row, density_bar_col) then
+    error("expected profile ASCII distribution bar highlight", 0)
+  end
+
+  press("<Esc>")
+  if vim.api.nvim_win_is_valid(profile_win) then
+    error("expected <Esc> to close the column profile float", 0)
+  end
+  if vim.api.nvim_get_current_win() ~= grid_win then
+    error("expected closing column profile to return focus to the grid", 0)
+  end
+
+  wins = vim.api.nvim_tabpage_list_wins(current_tab)
+  if #wins ~= 2 then
+    error("expected column profile to avoid opening a details split, got " .. tostring(#wins), 0)
+  end
+
+  move_cursor(grid_win, 2, header_column(grid_lines, "cyl"))
+  press("c")
+  if code_calls ~= 1 then
+    error("expected generated code request once, got " .. tostring(code_calls), 0)
+  end
+  if vim.fn.getreg('"') ~= "mtcars[order(cyl)]" then
+    error("expected generated code in default register, got " .. vim.inspect(vim.fn.getreg('"')), 0)
+  end
+
   wins = vim.api.nvim_tabpage_list_wins(current_tab)
   if #wins ~= 3 then
-    error("expected details split after profile, got " .. tostring(#wins), 0)
+    error("expected details split after generated code, got " .. tostring(#wins), 0)
   end
 
   local details_buf = nil
@@ -522,24 +706,10 @@ local ok, err = pcall(function()
   end
 
   if not details_buf then
-    error("expected details buffer after profile", 0)
+    error("expected details buffer after generated code", 0)
   end
 
   local details_lines = vim.api.nvim_buf_get_lines(details_buf, 0, -1, false)
-  if details_lines[1] ~= "Column Profile" or details_lines[3] ~= "Profile for cyl" then
-    error("unexpected details after profile: " .. vim.inspect(details_lines), 0)
-  end
-
-  move_cursor(grid_win, 2, header_column(grid_lines, "cyl"))
-  press("c")
-  if code_calls ~= 1 then
-    error("expected generated code request once, got " .. tostring(code_calls), 0)
-  end
-  if vim.fn.getreg('"') ~= "mtcars[order(cyl)]" then
-    error("expected generated code in default register, got " .. vim.inspect(vim.fn.getreg('"')), 0)
-  end
-
-  details_lines = vim.api.nvim_buf_get_lines(details_buf, 0, -1, false)
   if details_lines[1] ~= "Generated Code" or details_lines[3] ~= "mtcars[order(cyl)]" then
     error("unexpected details after generated code: " .. vim.inspect(details_lines), 0)
   end

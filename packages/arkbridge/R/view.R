@@ -360,30 +360,87 @@
 }
 
 .ark_view_profile_text <- function(column, name) {
+  value_labels <- vapply(seq_along(column), function(index) {
+    value <- column[[index]]
+    if (length(value) == 1L && is.atomic(value) && is.na(value)) {
+      return("<NA>")
+    }
+    .ark_view_stringify_value(value, max_chars = 40L)
+  }, character(1))
+  non_missing_labels <- value_labels[value_labels != "<NA>"]
+  unique_count <- length(unique(non_missing_labels))
+
   lines <- c(
     sprintf("# %s", name),
     "",
     sprintf("Type: %s", typeof(column)),
     sprintf("Class: %s", paste(class(column), collapse = "/")),
     sprintf("Rows: %d", length(column)),
-    sprintf("Missing: %d", sum(is.na(column)))
+    sprintf("Missing: %d", sum(is.na(column))),
+    sprintf("Unique values: %d", unique_count)
   )
 
   if (is.numeric(column)) {
-    stats <- stats::quantile(column, probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = TRUE, names = TRUE)
-    lines <- c(lines, "", "Summary:", paste(names(stats), stats, sep = ": "))
-  } else if (is.logical(column)) {
-    counts <- table(column, useNA = "ifany")
-    lines <- c(lines, "", "Counts:", paste(names(counts), as.integer(counts), sep = ": "))
-  } else {
-    top <- sort(table(as.character(column), useNA = "ifany"), decreasing = TRUE)
-    if (length(top) > 5L) {
-      top <- top[seq_len(5L)]
+    numeric_values <- suppressWarnings(as.numeric(column))
+    numeric_values <- numeric_values[is.finite(numeric_values)]
+    if (length(numeric_values)) {
+      stats <- stats::quantile(numeric_values, probs = c(0, 0.25, 0.5, 0.75, 1), names = TRUE)
+      names(stats) <- c("Min", "Q1", "Median", "Q3", "Max")
+      lines <- c(lines, "", "Summary:", paste(names(stats), stats, sep = ": "))
+    } else {
+      lines <- c(lines, "", "Summary:", "no finite values")
     }
+    lines <- c(lines, "", "Distribution:", .ark_view_numeric_distribution_lines(column))
+  }
+
+  top <- sort(table(value_labels, useNA = "no"), decreasing = TRUE)
+  if (length(top) > 5L) {
+    top <- top[seq_len(5L)]
+  }
+  if (length(top)) {
     lines <- c(lines, "", "Top values:", paste(names(top), as.integer(top), sep = ": "))
   }
 
   paste(lines, collapse = "\n")
+}
+
+.ark_view_numeric_distribution_lines <- function(column, bins = 10L, width = 24L) {
+  values <- suppressWarnings(as.numeric(column))
+  values <- values[is.finite(values)]
+  if (!length(values)) {
+    return("  no finite values")
+  }
+
+  if (length(unique(values)) == 1L) {
+    return(sprintf(
+      "  %s | %s %d",
+      .ark_view_stringify_value(values[[1L]], max_chars = 14L),
+      paste(rep("#", width), collapse = ""),
+      length(values)
+    ))
+  }
+
+  histogram <- hist(values, breaks = "FD", plot = FALSE, include.lowest = TRUE, right = FALSE)
+  if (length(histogram$counts) > bins) {
+    histogram <- hist(values, breaks = bins, plot = FALSE, include.lowest = TRUE, right = FALSE)
+  }
+
+  max_count <- max(histogram$counts)
+  vapply(seq_along(histogram$counts), function(index) {
+    count <- histogram$counts[[index]]
+    bar_width <- if (count > 0L && max_count > 0L) {
+      max(1L, as.integer(round((count / max_count) * width)))
+    } else {
+      0L
+    }
+    sprintf(
+      "  %s-%s | %s %d",
+      .ark_view_stringify_value(histogram$breaks[[index]], max_chars = 8L),
+      .ark_view_stringify_value(histogram$breaks[[index + 1L]], max_chars = 8L),
+      paste(rep("#", bar_width), collapse = ""),
+      count
+    )
+  }, character(1))
 }
 
 .ark_view_profile_payload <- function(session, session_id, column_index) {

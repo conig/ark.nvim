@@ -6,6 +6,7 @@
 //
 
 use std::env::current_dir;
+use std::env::var_os;
 use std::path::PathBuf;
 
 use harp::utils::r_is_string;
@@ -34,24 +35,11 @@ pub(super) fn completions_from_string_file_path(
     // by parsing it before searching the path entries.
     let token = node.node_as_str(&context.document.contents)?;
 
-    // It's entirely possible that we can fail to parse the string, `R_ParseVector()`
-    // can fail in various ways. We silently swallow these because they are unlikely
-    // to report to real file paths and just bail (posit-dev/positron#6584).
-    let Ok(contents) = harp::parse_expr(token) else {
+    let Some(mut path) = normalize_string_path(token)? else {
         return Ok(completions);
     };
 
-    // Double check that parsing gave a string. It should, because `node` points to
-    // a tree-sitter string node.
-    if !r_is_string(contents.sexp) {
-        return Ok(completions);
-    }
-
-    // Use R to normalize the path.
-    let path = r_normalize_path(contents)?;
-
     // parse the file path and get the directory component
-    let mut path = PathBuf::from(path.as_str());
     log::trace!("Normalized path: {}", path.display());
 
     // if this path doesn't have a root, add it on
@@ -92,10 +80,100 @@ pub(super) fn completions_from_string_file_path(
     Ok(completions)
 }
 
+fn normalize_string_path(token: &str) -> anyhow::Result<Option<PathBuf>> {
+    if crate::console::Console::is_initialized() {
+        return normalize_string_path_with_r(token);
+    }
+
+    Ok(normalize_string_path_detached(token))
+}
+
+fn normalize_string_path_with_r(token: &str) -> anyhow::Result<Option<PathBuf>> {
+    // It's entirely possible that we can fail to parse the string, `R_ParseVector()`
+    // can fail in various ways. We silently swallow these because they are unlikely
+    // to report to real file paths and just bail (posit-dev/positron#6584).
+    let Ok(contents) = harp::parse_expr(token) else {
+        return Ok(None);
+    };
+
+    // Double check that parsing gave a string. It should, because `node` points to
+    // a tree-sitter string node.
+    if !r_is_string(contents.sexp) {
+        return Ok(None);
+    }
+
+    // Use R to normalize the path when local R is available.
+    let path = r_normalize_path(contents)?;
+    Ok(Some(PathBuf::from(path.as_str())))
+}
+
+fn normalize_string_path_detached(token: &str) -> Option<PathBuf> {
+    let contents = decode_string_token(token)?;
+    Some(expand_tilde_path(&contents))
+}
+
+fn decode_string_token(token: &str) -> Option<String> {
+    let quote = token.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+
+    if token.len() < 2 || !token.ends_with(quote) {
+        return None;
+    }
+
+    let mut chars = token[1..token.len() - 1].chars();
+    let mut contents = String::new();
+
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            contents.push(ch);
+            continue;
+        }
+
+        let escaped = chars.next()?;
+        match escaped {
+            '\\' => contents.push('\\'),
+            '"' => contents.push('"'),
+            '\'' => contents.push('\''),
+            'a' => contents.push('\u{0007}'),
+            'b' => contents.push('\u{0008}'),
+            'f' => contents.push('\u{000C}'),
+            'n' => contents.push('\n'),
+            'r' => contents.push('\r'),
+            't' => contents.push('\t'),
+            'v' => contents.push('\u{000B}'),
+            _ => return None,
+        }
+    }
+
+    Some(contents)
+}
+
+fn expand_tilde_path(path: &str) -> PathBuf {
+    if path == "~" {
+        if let Some(home) = var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+
+    PathBuf::from(path)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use crate::fixtures::point_from_cursor;
     use crate::lsp::completions::sources::unique::file_path::completions_from_string_file_path;
+    use crate::lsp::completions::sources::unique::file_path::decode_string_token;
+    use crate::lsp::completions::sources::unique::file_path::expand_tilde_path;
     use crate::lsp::document::Document;
     use crate::lsp::document_context::DocumentContext;
     use crate::r_task;
@@ -114,5 +192,20 @@ mod tests {
             let completions = completions_from_string_file_path(&node, &context).unwrap();
             assert_eq!(completions.len(), 0);
         })
+    }
+
+    #[test]
+    fn test_decode_string_token() {
+        assert_eq!(decode_string_token("\".R\""), Some(String::from(".R")));
+        assert_eq!(decode_string_token("\" .R \""), Some(String::from(" .R ")));
+        assert_eq!(decode_string_token(r#""\.R""#), None);
+        assert_eq!(decode_string_token(r#""a\\b""#), Some(String::from("a\\b")));
+        assert_eq!(decode_string_token(r#""a\nb""#), Some(String::from("a\nb")));
+        assert_eq!(decode_string_token(r#"'a\'b'"#), Some(String::from("a'b")));
+    }
+
+    #[test]
+    fn test_expand_tilde_path_passthrough() {
+        assert_eq!(expand_tilde_path(".R"), PathBuf::from(".R"));
     }
 }

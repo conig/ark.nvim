@@ -4,7 +4,30 @@ local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test
 local buffer_path = vim.fs.normalize(ark_test.run_tmpdir() .. "/ark_view_live.R")
 local stop_watchdog = ark_test.start_watchdog(120000, "ark_view_live")
 
+local function rebuild_bridge_runtime()
+  local bridge = require("ark.bridge")
+  local config = require("ark.config").defaults().tmux
+  local completed = nil
+  local ok, build_err = bridge.build_session_runtime(config, {
+    on_complete = function(result)
+      completed = result
+    end,
+  })
+  if not ok then
+    error("failed to rebuild pane-side arkbridge runtime: " .. vim.inspect(build_err), 0)
+  end
+
+  local ready = vim.wait(30000, function()
+    return type(completed) == "table"
+  end, 50, false)
+  if not ready or completed.ok ~= true then
+    error("timed out rebuilding pane-side arkbridge runtime: " .. vim.inspect(completed), 0)
+  end
+end
+
 local ok, err = pcall(function()
+  rebuild_bridge_runtime()
+
   local _, client = ark_test.setup_managed_buffer(buffer_path, { "mtcars" })
 
   local opened = ark_test.request(client, "ark/internal/viewOpen", {
@@ -37,6 +60,34 @@ local ok, err = pcall(function()
   local first_value = tostring((page.rows[1] or {})[1] or "")
   if not first_value:match("^21") then
     error("expected first mpg cell from mtcars page, got " .. vim.inspect(page.rows[1]), 0)
+  end
+
+  local mpg_profile = ark_test.request(client, "ark/internal/viewProfile", {
+    sessionId = opened.session_id,
+    columnIndex = 1,
+  }, 10000)
+
+  if type(mpg_profile.text) ~= "string"
+    or not mpg_profile.text:find("Unique values:", 1, true)
+    or not mpg_profile.text:find("Median:", 1, true)
+    or not mpg_profile.text:find("Max:", 1, true)
+    or not mpg_profile.text:find("Distribution:", 1, true)
+    or not mpg_profile.text:find("#", 1, true)
+  then
+    error("expected numeric profile to include unique values and an ASCII distribution, got " .. vim.inspect(mpg_profile), 0)
+  end
+
+  local cyl_profile = ark_test.request(client, "ark/internal/viewProfile", {
+    sessionId = opened.session_id,
+    columnIndex = 2,
+  }, 10000)
+
+  if type(cyl_profile.text) ~= "string"
+    or not cyl_profile.text:find("Unique values: 3", 1, true)
+    or not cyl_profile.text:find("Top values:", 1, true)
+    or not cyl_profile.text:find("8: 14", 1, true)
+  then
+    error("expected profile to include unique count and top value frequencies, got " .. vim.inspect(cyl_profile), 0)
   end
 
   local sorted = ark_test.request(client, "ark/internal/viewSort", {

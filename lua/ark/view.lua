@@ -1,6 +1,19 @@
 local M = {}
 
 local states = {}
+local highlight_namespace = vim.api.nvim_create_namespace("ark-view")
+
+local function ensure_highlights()
+  vim.api.nvim_set_hl(0, "ArkViewHeader", { link = "Title", default = true })
+  vim.api.nvim_set_hl(0, "ArkViewSummary", { link = "Comment", default = true })
+  vim.api.nvim_set_hl(0, "ArkViewSeparator", { link = "NonText", default = true })
+  vim.api.nvim_set_hl(0, "ArkViewRowNumber", { link = "LineNr", default = true })
+  vim.api.nvim_set_hl(0, "ArkViewProfileTitle", { link = "Title", default = true })
+  vim.api.nvim_set_hl(0, "ArkViewProfileSection", { link = "Statement", default = true })
+  vim.api.nvim_set_hl(0, "ArkViewProfileLabel", { link = "Identifier", default = true })
+  vim.api.nvim_set_hl(0, "ArkViewProfileBar", { link = "String", default = true })
+  vim.api.nvim_set_hl(0, "ArkViewProfileMuted", { link = "Comment", default = true })
+end
 
 local function valid_tab(tabpage)
   return type(tabpage) == "number" and vim.api.nvim_tabpage_is_valid(tabpage)
@@ -100,6 +113,107 @@ local function pad_text(text, width)
   return text .. string.rep(" ", padding)
 end
 
+local function statusline_escape(text)
+  return tostring(text or ""):gsub("%%", "%%%%")
+end
+
+local function set_highlight(buf, group, row, start_col, end_col, priority)
+  if start_col >= end_col then
+    return
+  end
+
+  vim.api.nvim_buf_set_extmark(buf, highlight_namespace, row, start_col, {
+    end_row = row,
+    end_col = end_col,
+    hl_group = group,
+    priority = priority or 100,
+  })
+end
+
+local function highlight_pipe_separators(buf, row, line)
+  local search_start = 1
+  while true do
+    local pipe_col = line:find("|", search_start, true)
+    if not pipe_col then
+      return
+    end
+
+    set_highlight(buf, "ArkViewSeparator", row, pipe_col - 1, pipe_col, 120)
+    search_start = pipe_col + 1
+  end
+end
+
+local function apply_grid_highlights(state, lines, row_width)
+  if not valid_buf(state.grid_buf) then
+    return
+  end
+
+  ensure_highlights()
+  vim.api.nvim_buf_clear_namespace(state.grid_buf, highlight_namespace, 0, -1)
+
+  for index, line in ipairs(lines) do
+    local row = index - 1
+    if row == 0 then
+      set_highlight(state.grid_buf, "ArkViewHeader", row, 0, #line, 100)
+      set_highlight(state.grid_buf, "ArkViewRowNumber", row, 0, math.min(row_width, #line), 110)
+    elseif line ~= "(no rows)" then
+      set_highlight(state.grid_buf, "ArkViewRowNumber", row, 0, math.min(row_width, #line), 110)
+    end
+    highlight_pipe_separators(state.grid_buf, row, line)
+  end
+end
+
+local function apply_sidebar_highlights(state, lines)
+  if not valid_buf(state.sidebar_buf) then
+    return
+  end
+
+  ensure_highlights()
+  vim.api.nvim_buf_clear_namespace(state.sidebar_buf, highlight_namespace, 0, -1)
+  if lines[1] then
+    set_highlight(state.sidebar_buf, "ArkViewHeader", 0, 0, #lines[1], 100)
+  end
+end
+
+local function apply_profile_highlights(buf, lines)
+  if not valid_buf(buf) then
+    return
+  end
+
+  ensure_highlights()
+  vim.api.nvim_buf_clear_namespace(buf, highlight_namespace, 0, -1)
+
+  for index, line in ipairs(lines) do
+    local row = index - 1
+    if row == 0 then
+      set_highlight(buf, "ArkViewProfileTitle", row, 0, #line, 130)
+    elseif line:match("^#%s+") then
+      set_highlight(buf, "ArkViewProfileSection", row, 0, #line, 130)
+    elseif line:match("^[%w%s]+:$") then
+      set_highlight(buf, "ArkViewProfileSection", row, 0, #line, 130)
+    elseif line:match("^%s+no ") then
+      set_highlight(buf, "ArkViewProfileMuted", row, 0, #line, 110)
+    else
+      local pipe_col = line:find("|", 1, true)
+      local colon_col = line:find(":", 1, true)
+      if pipe_col then
+        set_highlight(buf, "ArkViewSeparator", row, pipe_col - 1, pipe_col, 130)
+        local bar_start = line:find("#", pipe_col + 1, true)
+        if bar_start then
+          local bar_end = bar_start
+          while line:sub(bar_end + 1, bar_end + 1) == "#" do
+            bar_end = bar_end + 1
+          end
+          set_highlight(buf, "ArkViewProfileBar", row, bar_start - 1, bar_end, 140)
+        end
+      elseif colon_col then
+        local label_start = line:find("%S") or 1
+        set_highlight(buf, "ArkViewProfileLabel", row, label_start - 1, colon_col, 120)
+      end
+    end
+  end
+end
+
 local function schema_by_index(state, column_index)
   for _, item in ipairs(state.schema or {}) do
     if tonumber(item.index) == tonumber(column_index) then
@@ -107,6 +221,83 @@ local function schema_by_index(state, column_index)
     end
   end
   return nil
+end
+
+local function column_label(state, column_index)
+  local item = schema_by_index(state, column_index)
+  return (item and item.name) or ("#" .. tostring(column_index))
+end
+
+local function active_filter_count(state)
+  local count = 0
+  local first_column = nil
+  for _, item in ipairs(state.filters or {}) do
+    if tostring(item.query or "") ~= "" then
+      count = count + 1
+      if not first_column then
+        first_column = tonumber(item.column_index)
+      end
+    end
+  end
+  return count, first_column
+end
+
+local function row_summary(state)
+  local total = tonumber(state.total_rows or 0) or 0
+  if total <= 0 then
+    return "Rows 0"
+  end
+
+  local rows = state.rows or {}
+  if #rows == 0 then
+    return string.format("Rows 0/%d", total)
+  end
+
+  local offset = tonumber(state.page_offset or 0) or 0
+  local first = math.min(total, offset + 1)
+  local last = math.min(total, offset + #rows)
+  return string.format("Rows %d-%d/%d", first, last, total)
+end
+
+local function filter_summary(state)
+  local count, first_column = active_filter_count(state)
+  if count == 0 then
+    return "Filters 0"
+  end
+  if count == 1 then
+    return "Filter " .. column_label(state, first_column)
+  end
+  return "Filters " .. tostring(count)
+end
+
+local function sort_summary(state)
+  local sort = state.sort or {}
+  local direction = tostring(sort.direction or "")
+  local column_index = tonumber(sort.column_index)
+  if direction == "" or not column_index or column_index <= 0 then
+    return "Sort none"
+  end
+  return "Sort " .. column_label(state, column_index) .. " " .. direction
+end
+
+local function update_grid_summary(state)
+  if not valid_win(state.grid_win) then
+    return
+  end
+
+  ensure_highlights()
+  local title = state.title or state.expr or "ArkView"
+  local parts = {
+    statusline_escape(title),
+    statusline_escape(row_summary(state)),
+    statusline_escape(string.format("Columns %d", tonumber(state.total_columns or 0) or 0)),
+    statusline_escape(filter_summary(state)),
+    statusline_escape(sort_summary(state)),
+  }
+  local separator = "%#ArkViewSeparator# | %#ArkViewSummary#"
+  pcall(function()
+    vim.wo[state.grid_win].winbar = "%#ArkViewSummary#" .. table.concat(parts, separator) .. "%*"
+  end)
 end
 
 local function current_filter(state, column_index)
@@ -209,6 +400,7 @@ local function render_sidebar(state)
   end
 
   set_buffer_lines(state.sidebar_buf, lines)
+  apply_sidebar_highlights(state, lines)
   update_sidebar_cursor(state)
 end
 
@@ -221,6 +413,131 @@ local function render_details(state, title, text)
   end
 
   set_buffer_lines(state.details_buf, lines)
+end
+
+local function close_float_window(state)
+  if not state then
+    return
+  end
+
+  local return_win = state.float_return_win
+  if valid_win(state.float_win) then
+    pcall(vim.api.nvim_win_close, state.float_win, true)
+  end
+  if valid_buf(state.float_buf) then
+    pcall(vim.api.nvim_buf_delete, state.float_buf, { force = true })
+  end
+
+  state.float_win = nil
+  state.float_buf = nil
+  state.float_return_win = nil
+
+  if valid_win(return_win) then
+    pcall(vim.api.nvim_set_current_win, return_win)
+  elseif valid_win(state.grid_win) then
+    pcall(vim.api.nvim_set_current_win, state.grid_win)
+  end
+end
+
+local function open_float_window(state, title, lines, opts)
+  if not state or not valid_tab(state.tabpage) then
+    return nil, nil
+  end
+
+  close_float_window(state)
+
+  if vim.api.nvim_get_current_tabpage() ~= state.tabpage then
+    vim.api.nvim_set_current_tabpage(state.tabpage)
+  end
+
+  opts = opts or {}
+  local return_win = vim.api.nvim_get_current_win()
+  local min_width = tonumber(opts.min_width or 52) or 52
+  local width_fraction = tonumber(opts.width_fraction or 0.58) or 0.58
+  local width = math.min(math.max(min_width, math.floor(vim.o.columns * width_fraction)), math.max(20, vim.o.columns - 6))
+  local min_height = tonumber(opts.min_height or 8) or 8
+  local height = math.min(math.max(min_height, #lines), math.max(4, vim.o.lines - 8))
+  local row = math.max(1, math.floor((vim.o.lines - height) / 2) - 1)
+  local col = math.max(0, math.floor((vim.o.columns - width) / 2))
+  local buf = new_scratch_buffer(opts.filetype or "text")
+
+  set_buffer_lines(buf, lines)
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = row,
+    col = col,
+    style = "minimal",
+    border = "single",
+    title = " " .. tostring(title or "ArkView") .. " ",
+    title_pos = "center",
+  })
+
+  vim.wo[win].wrap = opts.wrap == true
+  vim.wo[win].number = false
+  vim.wo[win].relativenumber = false
+  vim.wo[win].cursorline = true
+  vim.wo[win].winbar = ""
+
+  state.float_buf = buf
+  state.float_win = win
+  state.float_return_win = return_win
+
+  for _, lhs in ipairs({ "q", "<Esc>" }) do
+    vim.keymap.set("n", lhs, function()
+      close_float_window(state)
+    end, { buffer = buf, nowait = true, silent = true })
+  end
+
+  return win, buf
+end
+
+local function show_help_window(state)
+  local lines = {
+    "Navigation",
+    "  <Tab>  toggle grid/columns focus",
+    "  <CR>   inspect current grid cell or jump from columns to grid",
+    "  ]p     next page",
+    "  [p     previous page",
+    "",
+    "Columns",
+    "  S      search columns",
+    "  s      toggle sort on selected column",
+    "  /      set text filter on selected column",
+    "  p      show column profile",
+    "",
+    "Data",
+    "  c      show generated code",
+    "  y      copy current cell",
+    "  Y      copy visible filtered table as TSV",
+    "",
+    "View",
+    "  r      refresh",
+    "  q      close ArkView outside this help",
+    "  Esc/q  close this help",
+  }
+
+  open_float_window(state, "ArkView Help", lines, {
+    min_width = 52,
+    width_fraction = 0.58,
+  })
+end
+
+local function show_profile_window(state, text)
+  local lines = { "Column Profile", "" }
+  if type(text) == "string" and text ~= "" then
+    vim.list_extend(lines, vim.split(text, "\n", { plain = true, trimempty = false }))
+  else
+    lines[#lines + 1] = "No details."
+  end
+
+  local _, buf = open_float_window(state, "Column Profile", lines, {
+    min_width = 64,
+    min_height = 10,
+    width_fraction = 0.66,
+  })
+  apply_profile_highlights(buf, lines)
 end
 
 local function ensure_details_window(state)
@@ -316,6 +633,8 @@ local function render_grid(state)
 
   state.column_spans = column_spans
   set_buffer_lines(state.grid_buf, lines)
+  apply_grid_highlights(state, lines, row_width)
+  update_grid_summary(state)
   if valid_win(state.grid_win) then
     local target_row = math.min(#lines, math.max(1, (state.selected_row or 1) + 1))
     vim.api.nvim_win_set_cursor(state.grid_win, { target_row, 0 })
@@ -348,6 +667,24 @@ local function sync_selected_column(state)
   end
 end
 
+local function toggle_grid_sidebar_focus(state)
+  if not state then
+    return
+  end
+
+  sync_selected_column(state)
+
+  if vim.api.nvim_get_current_win() == state.sidebar_win then
+    focus_selected_column_in_grid(state)
+    return
+  end
+
+  if valid_win(state.sidebar_win) then
+    vim.api.nvim_set_current_win(state.sidebar_win)
+    update_sidebar_cursor(state)
+  end
+end
+
 local function safe_close_session(state)
   if not state or type(state.session_id) ~= "string" or state.session_id == "" then
     return
@@ -362,6 +699,7 @@ local function teardown_state(state)
     return
   end
   state.closing = true
+  close_float_window(state)
   safe_close_session(state)
   states[state.tabpage] = nil
   if state.augroup then
@@ -441,6 +779,14 @@ local function close_tab(state)
   end
 end
 
+local function close_tab_from_owner(state)
+  if not state or state.closing then
+    return
+  end
+
+  close_tab(state)
+end
+
 local function open_schema_picker(state)
   local items = {}
   for _, item in ipairs(state.schema or {}) do
@@ -506,21 +852,7 @@ local function setup_keymaps(state)
   end)
 
   map("?", function()
-    show_details(state, "ArkView Keys", table.concat({
-      "q close",
-      "r refresh",
-      "s toggle sort on selected column",
-      "/ set text filter on selected column",
-      "S search columns",
-      "p show column profile",
-      "c show generated code",
-      "y copy current cell",
-      "Y copy visible filtered table as TSV",
-      "<CR> inspect current cell in the grid",
-      "<CR> jump to selected column from the sidebar",
-      "]p next page",
-      "[p previous page",
-    }, "\n"))
+    show_help_window(state)
   end)
 
   map("r", function()
@@ -591,6 +923,10 @@ local function setup_keymaps(state)
     open_schema_picker(state)
   end)
 
+  map("<Tab>", function()
+    toggle_grid_sidebar_focus(state)
+  end)
+
   map("p", function()
     local column_index = tonumber(state.selected_column)
     if not column_index then
@@ -600,7 +936,7 @@ local function setup_keymaps(state)
     if not profile then
       return
     end
-    show_details(state, "Column Profile", profile.text or "")
+    show_profile_window(state, profile.text or "")
   end)
 
   map("c", function()
@@ -729,6 +1065,9 @@ function M.open(opts)
     grid_win = grid_win,
     sidebar_win = sidebar_win,
     details_win = nil,
+    float_buf = nil,
+    float_win = nil,
+    float_return_win = nil,
     notify = opts.notify,
     options = opts.options,
     lsp = opts.lsp,
@@ -756,7 +1095,14 @@ function M.open(opts)
     group = group,
     buffer = grid_buf,
     callback = function()
-      teardown_state(state)
+      close_tab_from_owner(state)
+    end,
+  })
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = group,
+    pattern = tostring(grid_win),
+    callback = function()
+      close_tab_from_owner(state)
     end,
   })
 
