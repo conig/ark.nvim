@@ -163,6 +163,11 @@ pub(crate) fn generate_diagnostics(
         indexer::IndexEntryData::Variable { name } => {
             context.workspace_symbols.insert(name.to_string());
         },
+        indexer::IndexEntryData::PackageImport { package } => {
+            if let Err(err) = handle_targets_package_import(package, &mut context) {
+                lsp::log_warn!("Can't handle targets package import `{package}`: {err:?}");
+            }
+        },
         _ => {},
     });
 
@@ -880,8 +885,7 @@ fn recurse_call(
 }
 
 fn package_is_installed(package: &str, context: &DiagnosticContext) -> bool {
-    context.installed_packages.contains(package) ||
-        (!context.library.library_paths.is_empty() && context.library.get(package).is_some())
+    context.installed_packages.contains(package) || context.library.get(package).is_some()
 }
 
 fn push_missing_package_diagnostic(
@@ -923,8 +927,10 @@ fn handle_package_attach_call(
     let package_name = package_node.get_identifier_or_string_text(&context.doc.contents)?;
     let attach_pos = node.end_position();
 
-    let package = match context.library.get(package_name) {
-        Some(package) => package,
+    match context.library.get(package_name) {
+        Some(package) => {
+            insert_attached_package_exports(package, attach_pos, context)?;
+        },
         None if context.installed_packages.contains(package_name) => return Ok(()),
         None => {
             push_missing_package_diagnostic(package_node, package_name, context, diagnostics)?;
@@ -932,6 +938,25 @@ fn handle_package_attach_call(
         },
     };
 
+    Ok(())
+}
+
+fn handle_targets_package_import(
+    package_name: &str,
+    context: &mut DiagnosticContext,
+) -> anyhow::Result<()> {
+    let Some(package) = context.library.get(package_name) else {
+        return Ok(());
+    };
+
+    insert_attached_package_exports(package, Point { row: 0, column: 0 }, context)
+}
+
+fn insert_attached_package_exports(
+    package: Arc<Package>,
+    attach_pos: Point,
+    context: &mut DiagnosticContext,
+) -> anyhow::Result<()> {
     context
         .library_symbols
         .entry(attach_pos)
@@ -939,8 +964,8 @@ fn handle_package_attach_call(
         .extend(package.exported_symbols.iter().cloned());
 
     // Also attach packages from `Depends` field
-    for package_name in package.description.depends.iter() {
-        insert_package_exports(package_name, attach_pos, context)?;
+    for package_name in package.description.depends.clone() {
+        insert_package_exports(&package_name, attach_pos, context)?;
     }
 
     // Special handling for the tidyverse and tidymodels packages. Hard-coded
@@ -1215,10 +1240,12 @@ mod tests {
     use tempfile::TempDir;
     use tower_lsp::lsp_types;
     use tower_lsp::lsp_types::Position;
+    use url::Url;
 
     use crate::console::console_inputs;
     use crate::lsp::document::Document;
     use crate::lsp::document::DocumentKind;
+    use crate::lsp::indexer;
     use crate::lsp::inputs::library::Library;
     use crate::lsp::inputs::package::Package;
     use crate::lsp::inputs::package_description::Dcf;
@@ -2082,6 +2109,90 @@ mtcars$mp";
                 .iter()
                 .any(|d| d.message.contains("No symbol named 'foo'")));
             assert_eq!(diagnostics.len(), 1);
+        });
+    }
+
+    #[test]
+    fn test_targets_option_packages_attach_exports_to_workspace_scripts() {
+        r_task(|| {
+            let _guard = indexer::ResetIndexerGuard;
+
+            let data_table = Package::from_parts(
+                PathBuf::from("/mock/data.table"),
+                Description {
+                    name: String::from("data.table"),
+                    version: String::from("1.0.0"),
+                    ..Default::default()
+                },
+                Namespace {
+                    exports: vec![String::from("data.table")],
+                    ..Default::default()
+                },
+            );
+            let dplyr = Package::from_parts(
+                PathBuf::from("/mock/dplyr"),
+                Description {
+                    name: String::from("dplyr"),
+                    version: String::from("1.0.0"),
+                    ..Default::default()
+                },
+                Namespace {
+                    exports: vec![String::from("mutate")],
+                    ..Default::default()
+                },
+            );
+            let library = Library::new(vec![])
+                .insert("data.table", data_table)
+                .insert("dplyr", dplyr);
+
+            let targets_document = Document::new(
+                r#"
+targets::tar_option_set(
+  packages = c("data.table", "dplyr"),
+  controller = crew::crew_controller_local(workers = snipe::n_workers())
+)
+"#,
+                None,
+            );
+            let targets_uri = Url::parse("file:///tmp/ark-targets-project/_targets.R").unwrap();
+            indexer::update(&targets_document, &targets_uri).unwrap();
+
+            // R scripts sourced by {targets} run with packages from
+            // tar_option_set(packages = ...) attached by the pipeline.
+            let script_document = Document::new(
+                r#"
+dt <- data.table(x = 1)
+mutate(dt)
+undefined_symbol_ark
+"#,
+                None,
+            );
+            let state = WorldState {
+                library,
+                ..Default::default()
+            };
+
+            let diagnostics = generate_diagnostics(script_document, state);
+            let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+
+            assert!(
+                !messages
+                    .iter()
+                    .any(|m| m.contains("No symbol named 'data.table' in scope.")),
+                "unexpected diagnostics: {messages:?}"
+            );
+            assert!(
+                !messages
+                    .iter()
+                    .any(|m| m.contains("No symbol named 'mutate' in scope.")),
+                "unexpected diagnostics: {messages:?}"
+            );
+            assert!(
+                messages
+                    .iter()
+                    .any(|m| m.contains("No symbol named 'undefined_symbol_ark' in scope.")),
+                "expected diagnostics to keep reporting unrelated missing symbols: {messages:?}"
+            );
         });
     }
 

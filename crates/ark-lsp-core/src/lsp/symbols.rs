@@ -124,6 +124,8 @@ pub(crate) fn symbols(
                     container_name: None,
                 });
             },
+
+            IndexEntryData::PackageImport { .. } => {},
         };
     });
 

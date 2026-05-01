@@ -137,6 +137,7 @@ fn completions_from_workspace(
 
             // Methods are currently only indexed for workspace symbols
             indexer::IndexEntryData::Method { .. } => {},
+            indexer::IndexEntryData::PackageImport { .. } => {},
         }
     });
 

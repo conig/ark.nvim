@@ -263,6 +263,7 @@ fn completions_from_workspace_arguments(
         },
         indexer::IndexEntryData::Variable { .. } => return Ok(None),
         indexer::IndexEntryData::Method { .. } => return Ok(None),
+        indexer::IndexEntryData::PackageImport { .. } => return Ok(None),
     }
 
     // Only 1 call worth of arguments are added to the completion set.

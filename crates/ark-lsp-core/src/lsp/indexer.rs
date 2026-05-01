@@ -68,6 +68,9 @@ pub enum IndexEntryData {
         level: usize,
         title: String,
     },
+    PackageImport {
+        package: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -287,7 +290,7 @@ pub(crate) fn create(uri: &Url) -> anyhow::Result<()> {
 }
 
 fn index_document(doc: &Document, uri: &Url) {
-    for entry in index_document_entries(doc) {
+    for entry in index_document_entries_for_uri(doc, uri) {
         if let Err(err) = insert(uri, entry) {
             lsp::log_error!("Can't insert index entry: {err:?}");
         }
@@ -295,6 +298,14 @@ fn index_document(doc: &Document, uri: &Url) {
 }
 
 fn index_document_entries(doc: &Document) -> Vec<IndexEntry> {
+    index_document_entries_impl(doc, false)
+}
+
+fn index_document_entries_for_uri(doc: &Document, uri: &Url) -> Vec<IndexEntry> {
+    index_document_entries_impl(doc, is_targets_pipeline_uri(uri))
+}
+
+fn index_document_entries_impl(doc: &Document, index_targets_options: bool) -> Vec<IndexEntry> {
     let ast = &doc.ast;
     let root = ast.root_node();
     let mut cursor = root.walk();
@@ -304,9 +315,20 @@ fn index_document_entries(doc: &Document) -> Vec<IndexEntry> {
         if let Err(err) = index_node(doc, &node, &mut entries) {
             lsp::log_error!("Can't index document: {err:?}");
         }
+        if index_targets_options {
+            if let Err(err) = index_targets_option_set(doc, &node, &mut entries) {
+                lsp::log_error!("Can't index targets options: {err:?}");
+            }
+        }
     }
 
     entries
+}
+
+fn is_targets_pipeline_uri(uri: &Url) -> bool {
+    uri.path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .is_some_and(|segment| segment == "_targets.R")
 }
 
 pub fn find_in_document(
@@ -329,6 +351,96 @@ pub fn find_in_document(
 fn index_node(doc: &Document, node: &Node, entries: &mut Vec<IndexEntry>) -> anyhow::Result<()> {
     index_assignment(doc, node, entries)?;
     index_comment(doc, node, entries)?;
+    Ok(())
+}
+
+fn index_targets_option_set(
+    doc: &Document,
+    node: &Node,
+    entries: &mut Vec<IndexEntry>,
+) -> anyhow::Result<()> {
+    if !node.is_call() {
+        return Ok(());
+    }
+
+    let Some(callee) = node.child_by_field_name("function") else {
+        return Ok(());
+    };
+    let callee = callee.node_as_str(&doc.contents)?;
+    if !matches!(
+        callee,
+        "tar_option_set" | "targets::tar_option_set" | "targets:::tar_option_set"
+    ) {
+        return Ok(());
+    }
+
+    for (name, value) in node.arguments() {
+        let Some(name) = name else {
+            continue;
+        };
+        let Some(value) = value else {
+            continue;
+        };
+        if name.node_as_str(&doc.contents)? != "packages" {
+            continue;
+        }
+
+        let start = doc.lsp_position_from_tree_sitter_point(value.start_position())?;
+        let end = doc.lsp_position_from_tree_sitter_point(value.end_position())?;
+        let range = Range { start, end };
+
+        for package in targets_option_package_values(doc, value)? {
+            entries.push(IndexEntry {
+                key: format!("targets-package:{package}"),
+                range,
+                data: IndexEntryData::PackageImport { package },
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn targets_option_package_values(doc: &Document, node: Node) -> anyhow::Result<Vec<String>> {
+    let mut packages = Vec::new();
+    collect_targets_option_package_values(doc, node, &mut packages)?;
+    packages.sort();
+    packages.dedup();
+    Ok(packages)
+}
+
+fn collect_targets_option_package_values(
+    doc: &Document,
+    node: Node,
+    packages: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    if node.is_string() {
+        packages.push(
+            node.get_identifier_or_string_text(&doc.contents)?
+                .to_string(),
+        );
+        return Ok(());
+    }
+
+    if !node.is_call() {
+        return Ok(());
+    }
+
+    let Some(callee) = node.child_by_field_name("function") else {
+        return Ok(());
+    };
+    let callee = callee.node_as_str(&doc.contents)?;
+    if !matches!(callee, "c" | "base::c" | "base:::c") {
+        return Ok(());
+    }
+
+    for (_name, value) in node.arguments() {
+        let Some(value) = value else {
+            continue;
+        };
+        collect_targets_option_package_values(doc, value, packages)?;
+    }
+
     Ok(())
 }
 
@@ -581,6 +693,36 @@ x <- function() {
 }
 
 "#
+        );
+    }
+
+    #[test]
+    fn test_index_targets_option_packages() {
+        let doc = Document::new(
+            r#"
+targets::tar_option_set(
+    packages = c("data.table", "dplyr"),
+    controller = crew::crew_controller_local(workers = snipe::n_workers())
+)
+"#,
+            None,
+        );
+        let uri = Url::parse("file:///tmp/example/_targets.R").unwrap();
+
+        let packages: Vec<_> = index_document_entries_for_uri(&doc, &uri)
+            .into_iter()
+            .filter_map(|entry| match entry.data {
+                IndexEntryData::PackageImport { package } => Some(package),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(packages, vec!["data.table", "dplyr"]);
+        assert!(
+            index_document_entries(&doc)
+                .into_iter()
+                .all(|entry| !matches!(entry.data, IndexEntryData::PackageImport { .. })),
+            "targets package imports should only be indexed from _targets.R"
         );
     }
 
