@@ -163,6 +163,9 @@ pub(crate) fn generate_diagnostics(
         indexer::IndexEntryData::Variable { name } => {
             context.workspace_symbols.insert(name.to_string());
         },
+        indexer::IndexEntryData::Target { name } => {
+            context.workspace_symbols.insert(name.to_string());
+        },
         indexer::IndexEntryData::PackageImport { package } => {
             if let Err(err) = handle_targets_package_import(package, &mut context) {
                 lsp::log_warn!("Can't handle targets package import `{package}`: {err:?}");

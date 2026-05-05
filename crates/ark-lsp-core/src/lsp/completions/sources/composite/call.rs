@@ -262,6 +262,7 @@ fn completions_from_workspace_arguments(
             return Ok(None);
         },
         indexer::IndexEntryData::Variable { .. } => return Ok(None),
+        indexer::IndexEntryData::Target { .. } => return Ok(None),
         indexer::IndexEntryData::Method { .. } => return Ok(None),
         indexer::IndexEntryData::PackageImport { .. } => return Ok(None),
     }

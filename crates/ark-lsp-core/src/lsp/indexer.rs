@@ -58,6 +58,9 @@ pub enum IndexEntryData {
     Variable {
         name: String,
     },
+    Target {
+        name: String,
+    },
     Function {
         name: String,
         arguments: Vec<String>,
@@ -483,7 +486,7 @@ fn index_targets_target_call(
     entries.push(IndexEntry {
         key: name.clone(),
         range,
-        data: IndexEntryData::Variable { name },
+        data: IndexEntryData::Target { name },
     });
 
     Ok(())
@@ -1016,7 +1019,7 @@ list(
         let targets: Vec<_> = index_document_entries_for_uri(&doc, &uri)
             .into_iter()
             .filter_map(|entry| match entry.data {
-                IndexEntryData::Variable { name } => Some(name),
+                IndexEntryData::Target { name } => Some(name),
                 _ => None,
             })
             .collect();
@@ -1025,7 +1028,7 @@ list(
         assert!(
             index_document_entries(&doc)
                 .into_iter()
-                .all(|entry| !matches!(entry.data, IndexEntryData::Variable { name } if name == "raw_data" || name == "clean_data")),
+                .all(|entry| !matches!(entry.data, IndexEntryData::Target { name } if name == "raw_data" || name == "clean_data")),
             "targets should only be indexed from _targets.R"
         );
     }
@@ -1047,7 +1050,7 @@ list(
 
         assert_matches!(
             entry.data,
-            IndexEntryData::Variable { ref name } if name == "open_target"
+            IndexEntryData::Target { ref name } if name == "open_target"
         );
     }
 
@@ -1066,7 +1069,7 @@ list(
         let targets: Vec<_> = index_document_entries_for_uri(&doc, &uri)
             .into_iter()
             .filter_map(|entry| match entry.data {
-                IndexEntryData::Variable { name } => Some(name),
+                IndexEntryData::Target { name } => Some(name),
                 _ => None,
             })
             .collect();
@@ -1108,7 +1111,7 @@ list(
             .expect("expected sourced target definition");
         assert_matches!(
             entry.data,
-            IndexEntryData::Variable { ref name } if name == "sourced_target"
+            IndexEntryData::Target { ref name } if name == "sourced_target"
         );
     }
 

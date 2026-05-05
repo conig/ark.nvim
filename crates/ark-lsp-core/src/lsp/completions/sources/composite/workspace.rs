@@ -135,6 +135,18 @@ fn completions_from_workspace(
                 completions.push(completion);
             },
 
+            indexer::IndexEntryData::Target { name } => {
+                let mut completion = match completion_item_from_variable(name) {
+                    Ok(item) => item,
+                    Err(err) => {
+                        log::error!("{err:?}");
+                        return;
+                    },
+                };
+                completion.detail = Some(String::from("targets target"));
+                completions.push(completion);
+            },
+
             // Methods are currently only indexed for workspace symbols
             indexer::IndexEntryData::Method { .. } => {},
             indexer::IndexEntryData::PackageImport { .. } => {},

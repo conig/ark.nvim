@@ -28,6 +28,8 @@ use tower_lsp::lsp_types::Hover;
 use tower_lsp::lsp_types::HoverContents;
 use tower_lsp::lsp_types::HoverParams;
 use tower_lsp::lsp_types::Location;
+use tower_lsp::lsp_types::MarkupContent;
+use tower_lsp::lsp_types::MarkupKind;
 use tower_lsp::lsp_types::MessageType;
 use tower_lsp::lsp_types::ReferenceParams;
 use tower_lsp::lsp_types::Registration;
@@ -61,6 +63,7 @@ use crate::lsp::help_topic::HelpTopicParams;
 use crate::lsp::help_topic::HelpTopicResponse;
 use crate::lsp::hover::r_hover;
 use crate::lsp::indent::indent_edit;
+use crate::lsp::indexer;
 use crate::lsp::input_boundaries::InputBoundariesParams;
 use crate::lsp::input_boundaries::InputBoundariesResponse;
 use crate::lsp::main_loop::LspState;
@@ -78,6 +81,7 @@ use crate::lsp::statement_range::StatementRangeParams;
 use crate::lsp::statement_range::StatementRangeResponse;
 use crate::lsp::symbols;
 use crate::r_task;
+use crate::treesitter::NodeTypeExt;
 
 pub static ARK_VDOC_REQUEST: &str = "ark/internal/virtualDocument";
 pub static ARK_STATUS_REQUEST: &str = "ark/internal/status";
@@ -689,6 +693,10 @@ pub(crate) fn handle_hover(params: HoverParams, state: &WorldState) -> LspResult
     // build document context
     let context = DocumentContext::new(document, point, None);
 
+    if let Some(hover) = static_target_hover(&context, &uri, state).map_err(LspError::Anyhow)? {
+        return Ok(Some(hover));
+    }
+
     if !state.has_attached_runtime() {
         if let Some(session_bridge) = state.session_bridge.as_ref() {
             return match session_bridge.hover(&context) {
@@ -727,6 +735,88 @@ pub(crate) fn handle_hover(params: HoverParams, state: &WorldState) -> LspResult
         contents: HoverContents::Markup(result),
         range: None,
     }))
+}
+
+fn static_target_hover(
+    context: &DocumentContext,
+    uri: &tower_lsp::lsp_types::Url,
+    state: &WorldState,
+) -> anyhow::Result<Option<Hover>> {
+    let node = context.closest_node;
+    if !node.is_identifier_or_string() {
+        return Ok(None);
+    }
+
+    let name = node
+        .get_identifier_or_string_text(context.document.contents.as_str())?
+        .to_string();
+    let Some((definition_uri, definition)) =
+        find_static_target_definition(name.as_str(), uri, context.document, state)
+    else {
+        return Ok(None);
+    };
+
+    let indexer::IndexEntryData::Target { name } = definition.data else {
+        return Ok(None);
+    };
+
+    let source = target_hover_source_label(definition_uri.as_uri());
+    let line = definition.range.start.line + 1;
+    let value = format!("```r\n{name}\n```\n\nTarget declared in `{source}` on line `{line}`.");
+
+    Ok(Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value,
+        }),
+        range: None,
+    }))
+}
+
+fn find_static_target_definition(
+    name: &str,
+    uri: &tower_lsp::lsp_types::Url,
+    document: &crate::lsp::document::Document,
+    state: &WorldState,
+) -> Option<(indexer::FileId, indexer::IndexEntry)> {
+    if let Some(info) = indexer::find_in_document(name, uri, document) {
+        if matches!(info.1.data, indexer::IndexEntryData::Target { .. }) {
+            return Some(info);
+        }
+    }
+
+    let mut open_uris: Vec<_> = state
+        .documents
+        .keys()
+        .filter(|open_uri| *open_uri != uri)
+        .collect();
+    open_uris.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+
+    for open_uri in open_uris {
+        let Some(open_document) = state.documents.get(open_uri) else {
+            continue;
+        };
+        let Some(info) = indexer::find_in_document(name, open_uri, open_document) else {
+            continue;
+        };
+        if matches!(info.1.data, indexer::IndexEntryData::Target { .. }) {
+            return Some(info);
+        }
+    }
+
+    indexer::find_in_file(name, uri)
+        .or_else(|| indexer::find(name))
+        .filter(|(_, entry)| matches!(entry.data, indexer::IndexEntryData::Target { .. }))
+}
+
+fn target_hover_source_label(uri: &tower_lsp::lsp_types::Url) -> String {
+    if uri.scheme() == "file" {
+        if let Ok(path) = uri.to_file_path() {
+            return path.display().to_string();
+        }
+    }
+
+    uri.to_string()
 }
 
 #[tracing::instrument(level = "info", skip_all)]
@@ -994,6 +1084,48 @@ mod tests {
         );
 
         assert!(result.expect("expected detached hover fallback").is_none());
+    }
+
+    #[test]
+    fn test_static_target_hover_uses_open_targets_script_definition() {
+        let targets_uri =
+            Url::parse("file:///tmp/ark-target-hover/_targets.R").expect("expected targets uri");
+        let analysis_uri =
+            Url::parse("file:///tmp/ark-target-hover/analysis.R").expect("expected analysis uri");
+        let mut state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            ..Default::default()
+        };
+        state.documents.insert(
+            targets_uri,
+            Document::new("list(tar_target(clean_data, 1))", None),
+        );
+        state.documents.insert(
+            analysis_uri.clone(),
+            Document::new("targets::tar_read(clean_data)", None),
+        );
+
+        let result = handle_hover(
+            HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: analysis_uri },
+                    position: Position::new(0, 19),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            &state,
+        )
+        .expect("expected target hover");
+
+        let Some(Hover {
+            contents: HoverContents::Markup(markup),
+            ..
+        }) = result
+        else {
+            panic!("expected static target hover");
+        };
+        assert!(markup.value.contains("clean_data"));
+        assert!(markup.value.contains("_targets.R"));
     }
 
     #[test]

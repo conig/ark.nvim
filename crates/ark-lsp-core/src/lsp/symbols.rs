@@ -111,6 +111,20 @@ pub(crate) fn symbols(
                 });
             },
 
+            IndexEntryData::Target { name } => {
+                info.push(SymbolInformation {
+                    name: name.clone(),
+                    kind: SymbolKind::OBJECT,
+                    location: Location {
+                        uri: uri.clone(),
+                        range: entry.range,
+                    },
+                    tags: None,
+                    deprecated: None,
+                    container_name: Some(String::from("targets")),
+                });
+            },
+
             IndexEntryData::Method { name } => {
                 info.push(SymbolInformation {
                     name: name.clone(),
