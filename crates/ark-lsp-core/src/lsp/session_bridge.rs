@@ -3952,6 +3952,7 @@ mod tests {
     use super::*;
     use crate::fixtures::point_from_cursor;
     use crate::lsp::document::Document;
+    use crate::lsp::document::DocumentKind;
 
     #[test]
     fn test_symbol_prefix_prefers_typed_subset_identifier() {
@@ -4532,6 +4533,55 @@ mod tests {
         assert!(matches!(request.flavor, CompletionFlavor::Symbol));
         assert_eq!(request.prefix, Some(String::from("rep_")));
         assert!(request.expr.contains("targets::tar_manifest()"));
+    }
+
+    #[test]
+    fn test_target_call_request_completes_in_literate_fenced_chunk() {
+        let (text, point) = point_from_cursor("```{r}\ntargets::tar_read(clean_@)\n```\n");
+        let document = Document::new_with_kind(text.as_str(), None, DocumentKind::LiterateR);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_custom_call(&context)
+            .unwrap()
+            .expect("expected target completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert_eq!(request.prefix, Some(String::from("clean_")));
+        assert!(request.expr.contains("targets::tar_manifest()"));
+    }
+
+    #[test]
+    fn test_target_call_request_completes_in_literate_inline_r() {
+        let (text, point) = point_from_cursor("Report uses `r targets::tar_read(clean_@)`.\n");
+        let document = Document::new_with_kind(text.as_str(), None, DocumentKind::LiterateR);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_custom_call(&context)
+            .unwrap()
+            .expect("expected target completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert_eq!(request.prefix, Some(String::from("clean_")));
+        assert!(request.expr.contains("targets::tar_manifest()"));
+    }
+
+    #[test]
+    fn test_string_subset_request_canonicalizes_tar_read_assignment_in_literate_chunk() {
+        let (text, point) =
+            point_from_cursor("```{r}\ntable1 <- tar_read(table1)\ntable1[[\"@\"]]\n```\n");
+        let document = Document::new_with_kind(text.as_str(), None, DocumentKind::LiterateR);
+        let context = DocumentContext::new(&document, point, Some(String::from("\"")));
+
+        let request = completion_request_from_string_subset(&context)
+            .unwrap()
+            .expect("expected string subset completion request");
+
+        assert!(request.expr.contains("targets::tar_read"));
+        assert!(request.expr.contains("table1"));
+        assert_eq!(
+            request.subset_kind,
+            Some(SubsetCompletionKind::StringSubset2)
+        );
     }
 
     #[test]
