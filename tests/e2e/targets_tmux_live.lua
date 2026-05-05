@@ -45,11 +45,25 @@ vim.fn.writefile({
 }, root .. "/_targets.R")
 
 local test_file = root .. "/analysis.R"
-ark_test.setup_managed_buffer(test_file, {
-  "targets::tar_read(clean_data)",
+local pane_id, client = ark_test.setup_managed_buffer(test_file, {
+  'tar_read(clean_data)[["',
+  "clean_data <- tar_read(clean_data)",
+  'clean_data[["',
 })
 
 local ark = require("ark")
+
+ark_test.tmux({
+  "send-keys",
+  "-t",
+  pane_id,
+  string.format("setwd(%q); getwd()", root),
+  "Enter",
+})
+ark_test.wait_for("managed R project working directory", 10000, function()
+  local capture = ark_test.tmux({ "capture-pane", "-p", "-t", pane_id })
+  return capture:find(root, 1, true) ~= nil
+end)
 
 local function target_names(records)
   local names = {}
@@ -94,6 +108,31 @@ if not vim.tbl_contains(classes, "data.frame") then
   ark_test.fail("expected clean_data object metadata to include data.frame, got " .. vim.inspect(object))
 end
 
+local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+local function completion_at(line, trigger)
+  local params = {
+    textDocument = vim.lsp.util.make_text_document_params(0),
+    position = { line = line - 1, character = #lines[line] },
+  }
+  if trigger then
+    params.context = {
+      triggerKind = vim.lsp.protocol.CompletionTriggerKind.TriggerCharacter,
+      triggerCharacter = trigger,
+    }
+  end
+  return ark_test.completion_items(ark_test.request(client, "textDocument/completion", params, 10000))
+end
+
+local direct_items = completion_at(1, '"')
+if not ark_test.find_item(direct_items, "id") or not ark_test.find_item(direct_items, "value") then
+  ark_test.fail("direct tar_read extractor completion missing target columns: " .. vim.inspect(ark_test.item_labels(direct_items)))
+end
+
+local assigned_items = completion_at(3, '"')
+if not ark_test.find_item(assigned_items, "id") or not ark_test.find_item(assigned_items, "value") then
+  ark_test.fail("assigned tar_read subset completion missing target columns: " .. vim.inspect(ark_test.item_labels(assigned_items)))
+end
+
 local load = ark.targets_action("load", "clean_data", 0)
 if type(load) ~= "table" or load.status ~= "ok" or load.action ~= "load" then
   ark_test.fail("expected target load payload, got " .. vim.inspect(load))
@@ -104,5 +143,7 @@ vim.print({
   make = action.names,
   meta = #meta.meta,
   object = classes,
+  direct_completion = ark_test.item_labels(direct_items),
+  assigned_completion = ark_test.item_labels(assigned_items),
   load = load.names,
 })
