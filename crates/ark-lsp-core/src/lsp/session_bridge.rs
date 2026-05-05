@@ -2538,6 +2538,32 @@ fn completion_request_from_custom_call(
     let in_string = node_find_string(&context.node).is_some();
     let position = call_node_position_type(&context.node, context.point);
 
+    if target_name_call_callee(call.callee.as_str()) {
+        if !target_name_call_target(&call, position, in_string) {
+            return Ok(None);
+        }
+
+        let prefix = if let Some(string_node) = node_find_string(&context.node) {
+            string_prefix(&string_node, context)?
+        } else {
+            symbol_prefix(context)?
+        };
+
+        if prefix.is_none() && context.trigger.is_none() {
+            return Ok(None);
+        }
+
+        return Ok(Some(CompletionRequest {
+            expr: target_names_completion_expr(),
+            flavor: CompletionFlavor::Symbol,
+            prefix,
+            accessor: None,
+            close_string: in_string,
+            quote_insert: false,
+            subset_kind: None,
+        }));
+    }
+
     match call.callee.as_str() {
         "Sys.getenv" | "Sys.unsetenv" | "getOption" => {
             if !custom_string_call_target(&call, position, in_string) {
@@ -2596,6 +2622,44 @@ fn completion_request_from_custom_call(
         },
         _ => Ok(None),
     }
+}
+
+fn target_name_call_callee(callee: &str) -> bool {
+    matches!(
+        unqualified_callee(callee),
+        "tar_read" | "tar_load" | "tar_make" | "tar_invalidate"
+    )
+}
+
+fn unqualified_callee(callee: &str) -> &str {
+    callee
+        .rsplit_once(":::")
+        .or_else(|| callee.rsplit_once("::"))
+        .map(|(_, name)| name)
+        .unwrap_or(callee)
+}
+
+fn target_name_call_target(
+    call: &CallContext,
+    position: CallNodePositionType,
+    in_string: bool,
+) -> bool {
+    if let Some(active_argument) = call.active_argument.as_deref() {
+        return matches!(active_argument, "name" | "names");
+    }
+
+    if call.num_unnamed_arguments > 0 {
+        return false;
+    }
+
+    if in_string {
+        return true;
+    }
+
+    matches!(
+        position,
+        CallNodePositionType::Name | CallNodePositionType::Ambiguous
+    )
 }
 
 fn custom_string_call_target(
@@ -3581,6 +3645,12 @@ fn env_names_completion_expr() -> String {
     )
 }
 
+fn target_names_completion_expr() -> String {
+    String::from(
+        "local({ if (!requireNamespace(\"targets\", quietly = TRUE)) { stats::setNames(list(), character()) } else { .x <- tryCatch(targets::tar_manifest(), error = function(e) NULL); .names <- if (is.null(.x) || is.null(.x$name)) character() else as.character(.x$name); .names <- .names[!is.na(.names)]; stats::setNames(vector(\"list\", length(.names)), .names) } })",
+    )
+}
+
 fn call_formals_completion_expr(callee: &str) -> String {
     format!(
         "local({{ .x <- tryCatch(names(formals({callee})), error = function(e) character()); .x <- .x[!is.na(.x)]; stats::setNames(vector(\"list\", length(.x)), .x) }})"
@@ -4182,6 +4252,39 @@ mod tests {
 
         assert!(matches!(request.flavor, CompletionFlavor::ComparisonString));
         assert_eq!(request.prefix, Some(String::from("PA")));
+        assert!(!request.quote_insert);
+        assert!(request.close_string);
+    }
+
+    #[test]
+    fn test_target_call_request_completes_bare_target_names() {
+        let (text, point) = point_from_cursor("targets::tar_read(raw_@)");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_custom_call(&context)
+            .unwrap()
+            .expect("expected target completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert_eq!(request.prefix, Some(String::from("raw_")));
+        assert!(!request.quote_insert);
+        assert!(!request.close_string);
+        assert!(request.expr.contains("targets::tar_manifest()"));
+    }
+
+    #[test]
+    fn test_target_call_request_completes_names_argument_strings() {
+        let (text, point) = point_from_cursor("tar_make(names = \"clean_@\")");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_custom_call(&context)
+            .unwrap()
+            .expect("expected target completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert_eq!(request.prefix, Some(String::from("clean_")));
         assert!(!request.quote_insert);
         assert!(request.close_string);
     }
