@@ -498,7 +498,12 @@ fn collect_call(
         }
         if matches!(
             fun_symbol,
-            "tar_target" | "targets::tar_target" | "targets:::tar_target"
+            "tar_target" |
+                "targets::tar_target" |
+                "targets:::tar_target" |
+                "tar_render" |
+                "tarchetypes::tar_render" |
+                "tarchetypes:::tar_render"
         ) {
             return collect_call_tar_target(node, doc, symbols);
         }
@@ -1081,12 +1086,13 @@ test_that('bar', {
             r#"
 list(
   tar_target(clean_data, raw_data + 1),
-  targets::tar_target("report", clean_data)
+  targets::tar_target("report", clean_data),
+  tarchetypes::tar_render(rendered_report, "report.Rmd")
 )
 "#,
         );
 
-        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols.len(), 3);
         assert_eq!(symbols[0].name, "clean_data");
         assert_eq!(symbols[0].kind, SymbolKind::OBJECT);
         assert_eq!(symbols[0].detail, Some(String::from("targets target")));
@@ -1094,6 +1100,8 @@ list(
         assert_eq!(symbols[0].selection_range.start.character, 13);
         assert_eq!(symbols[1].name, "report");
         assert_eq!(symbols[1].kind, SymbolKind::OBJECT);
+        assert_eq!(symbols[2].name, "rendered_report");
+        assert_eq!(symbols[2].kind, SymbolKind::OBJECT);
     }
 
     #[test]

@@ -2627,7 +2627,7 @@ fn completion_request_from_custom_call(
 fn target_name_call_callee(callee: &str) -> bool {
     matches!(
         unqualified_callee(callee),
-        "tar_read" | "tar_load" | "tar_make" | "tar_invalidate"
+        "tar_read" | "tar_load" | "tar_make" | "tar_invalidate" | "tar_render"
     )
 }
 
@@ -4287,6 +4287,21 @@ mod tests {
         assert_eq!(request.prefix, Some(String::from("clean_")));
         assert!(!request.quote_insert);
         assert!(request.close_string);
+    }
+
+    #[test]
+    fn test_target_call_request_completes_tar_render_target_name() {
+        let (text, point) = point_from_cursor("tarchetypes::tar_render(rep_@)");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_custom_call(&context)
+            .unwrap()
+            .expect("expected target completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert_eq!(request.prefix, Some(String::from("rep_")));
+        assert!(request.expr.contains("targets::tar_manifest()"));
     }
 
     #[test]

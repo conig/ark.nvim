@@ -464,7 +464,12 @@ fn index_targets_target_call(
     let callee = callee.node_as_str(&doc.contents)?;
     if !matches!(
         callee,
-        "tar_target" | "targets::tar_target" | "targets:::tar_target"
+        "tar_target" |
+            "targets::tar_target" |
+            "targets:::tar_target" |
+            "tar_render" |
+            "tarchetypes::tar_render" |
+            "tarchetypes:::tar_render"
     ) {
         return Ok(());
     }
@@ -1016,7 +1021,8 @@ targets::tar_option_set(
             r#"
 list(
     targets::tar_target(raw_data, read.csv("data.csv")),
-    tar_target(clean_data, raw_data)
+    tar_target(clean_data, raw_data),
+    tarchetypes::tar_render(report, "report.Rmd")
 )
 "#,
             None,
@@ -1031,11 +1037,11 @@ list(
             })
             .collect();
 
-        assert_eq!(targets, vec!["raw_data", "clean_data"]);
+        assert_eq!(targets, vec!["raw_data", "clean_data", "report"]);
         assert!(
             index_document_entries(&doc)
                 .into_iter()
-                .all(|entry| !matches!(entry.data, IndexEntryData::Target { name } if name == "raw_data" || name == "clean_data")),
+                .all(|entry| !matches!(entry.data, IndexEntryData::Target { name } if name == "raw_data" || name == "clean_data" || name == "report")),
             "targets should only be indexed from _targets.R"
         );
     }
