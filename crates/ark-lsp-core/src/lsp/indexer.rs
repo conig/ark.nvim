@@ -6,6 +6,8 @@
 //
 
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::Path;
 use std::result::Result::Ok;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -85,6 +87,8 @@ type DocumentSymbolIndex = HashMap<DocumentSymbol, IndexEntry>;
 type WorkspaceIndex = Arc<Mutex<HashMap<FileId, DocumentSymbolIndex>>>;
 
 static WORKSPACE_INDEX: LazyLock<WorkspaceIndex> = LazyLock::new(Default::default);
+static SOURCED_TARGET_PIPELINE_URIS: LazyLock<Mutex<HashSet<Url>>> =
+    LazyLock::new(Default::default);
 pub static RE_COMMENT_SECTION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(#+)\s*(.*?)\s*[#=-]{4,}\s*$").unwrap());
 
@@ -165,6 +169,7 @@ pub fn update(document: &Document, uri: &Url) -> anyhow::Result<()> {
     }
     delete(uri)?;
     index_document(document, uri);
+    index_targets_sourced_pipeline_files(document, uri);
     Ok(())
 }
 
@@ -203,6 +208,7 @@ pub(crate) fn delete(uri: &Url) -> anyhow::Result<()> {
     index.entry(file_id).and_modify(|index| {
         index.clear();
     });
+    SOURCED_TARGET_PIPELINE_URIS.lock().unwrap().remove(uri);
 
     Ok(())
 }
@@ -225,6 +231,7 @@ pub(crate) fn rename(old_uri: &Url, new_uri: &Url) -> anyhow::Result<()> {
 pub(crate) fn indexer_clear() {
     let mut index = WORKSPACE_INDEX.lock().unwrap();
     index.clear();
+    SOURCED_TARGET_PIPELINE_URIS.lock().unwrap().clear();
 }
 
 /// RAII guard that clears `WORKSPACE_INDEX` when dropped.
@@ -285,6 +292,7 @@ pub(crate) fn create(uri: &Url) -> anyhow::Result<()> {
     let document = Document::new(contents.as_str(), None);
 
     index_document(&document, uri);
+    index_targets_sourced_pipeline_files(&document, uri);
 
     Ok(())
 }
@@ -297,6 +305,7 @@ fn index_document(doc: &Document, uri: &Url) {
     }
 }
 
+#[cfg(test)]
 fn index_document_entries(doc: &Document) -> Vec<IndexEntry> {
     index_document_entries_impl(doc, false)
 }
@@ -329,9 +338,22 @@ fn index_document_entries_impl(doc: &Document, index_targets_options: bool) -> V
 }
 
 fn is_targets_pipeline_uri(uri: &Url) -> bool {
+    if is_targets_script_uri(uri) || is_conventional_targets_pipeline_uri(uri) {
+        return true;
+    }
+
+    SOURCED_TARGET_PIPELINE_URIS.lock().unwrap().contains(uri)
+}
+
+fn is_targets_script_uri(uri: &Url) -> bool {
     uri.path_segments()
         .and_then(|mut segments| segments.next_back())
         .is_some_and(|segment| segment == "_targets.R")
+}
+
+fn is_conventional_targets_pipeline_uri(uri: &Url) -> bool {
+    uri.path_segments()
+        .is_some_and(|mut segments| segments.any(|segment| segment == "_target_pipelines"))
 }
 
 pub fn find_in_document(
@@ -341,7 +363,7 @@ pub fn find_in_document(
 ) -> Option<(FileId, IndexEntry)> {
     let mut symbol_index = HashMap::new();
 
-    for entry in index_document_entries(document) {
+    for entry in index_document_entries_for_uri(document, uri) {
         index_insert(&mut symbol_index, entry);
     }
 
@@ -465,6 +487,192 @@ fn index_targets_target_call(
     });
 
     Ok(())
+}
+
+fn index_targets_sourced_pipeline_files(doc: &Document, uri: &Url) {
+    if !is_targets_script_uri(uri) {
+        return;
+    }
+
+    for sourced_uri in targets_sourced_pipeline_uris(doc, uri) {
+        if sourced_uri == *uri {
+            continue;
+        }
+
+        SOURCED_TARGET_PIPELINE_URIS
+            .lock()
+            .unwrap()
+            .insert(sourced_uri.clone());
+
+        if let Err(err) = create(&sourced_uri) {
+            lsp::log_error!("Can't index sourced targets pipeline {sourced_uri}: {err:?}");
+        }
+    }
+}
+
+fn targets_sourced_pipeline_uris(doc: &Document, uri: &Url) -> Vec<Url> {
+    let Ok(root_path) = uri.to_file_path() else {
+        return Vec::new();
+    };
+    let Some(root_dir) = root_path.parent() else {
+        return Vec::new();
+    };
+
+    let mut paths = Vec::new();
+    collect_targets_source_paths(doc, &doc.ast.root_node(), root_dir, &mut paths);
+
+    let mut uris = Vec::new();
+    for path in paths {
+        if path.is_dir() {
+            for entry in WalkDir::new(path).into_iter().filter_entry(filter_entry) {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                if !is_r_file(entry.path()) {
+                    continue;
+                }
+                if let Ok(uri) = Url::from_file_path(entry.path()) {
+                    uris.push(uri);
+                }
+            }
+        } else if path.is_file() && is_r_file(path.as_path()) {
+            if let Ok(uri) = Url::from_file_path(path.as_path()) {
+                uris.push(uri);
+            }
+        }
+    }
+
+    uris.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    uris.dedup();
+    uris
+}
+
+fn collect_targets_source_paths(
+    doc: &Document,
+    node: &Node,
+    root_dir: &Path,
+    paths: &mut Vec<std::path::PathBuf>,
+) {
+    if node.is_call() {
+        if let Err(err) = collect_targets_source_call_paths(doc, node, root_dir, paths) {
+            lsp::log_error!("Can't collect target source paths: {err:?}");
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_targets_source_paths(doc, &child, root_dir, paths);
+    }
+}
+
+fn collect_targets_source_call_paths(
+    doc: &Document,
+    node: &Node,
+    root_dir: &Path,
+    paths: &mut Vec<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    let Some(callee) = node.child_by_field_name("function") else {
+        return Ok(());
+    };
+    let callee = callee.node_as_str(&doc.contents)?;
+    if !matches!(
+        callee,
+        "source" |
+            "base::source" |
+            "base:::source" |
+            "tar_source" |
+            "targets::tar_source" |
+            "targets:::tar_source"
+    ) {
+        return Ok(());
+    }
+
+    for (index, (name, value)) in node.arguments().into_iter().enumerate() {
+        if !is_targets_source_path_argument(doc, index, name.as_ref())? {
+            continue;
+        }
+        let Some(value) = value else {
+            continue;
+        };
+        for path in targets_source_path_values(doc, value)? {
+            let path = Path::new(path.as_str());
+            let path = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                root_dir.join(path)
+            };
+            paths.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn is_targets_source_path_argument(
+    doc: &Document,
+    index: usize,
+    name: Option<&Node>,
+) -> anyhow::Result<bool> {
+    let Some(name) = name else {
+        return Ok(index == 0);
+    };
+
+    Ok(matches!(
+        name.node_as_str(&doc.contents)?,
+        "file" | "files" | "path" | "paths"
+    ))
+}
+
+fn targets_source_path_values(doc: &Document, node: Node) -> anyhow::Result<Vec<String>> {
+    let mut paths = Vec::new();
+    collect_targets_source_path_values(doc, node, &mut paths)?;
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn collect_targets_source_path_values(
+    doc: &Document,
+    node: Node,
+    paths: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    if node.is_string() {
+        paths.push(
+            node.get_identifier_or_string_text(&doc.contents)?
+                .to_string(),
+        );
+        return Ok(());
+    }
+
+    if !node.is_call() {
+        return Ok(());
+    }
+
+    let Some(callee) = node.child_by_field_name("function") else {
+        return Ok(());
+    };
+    let callee = callee.node_as_str(&doc.contents)?;
+    if !matches!(callee, "c" | "base::c" | "base:::c") {
+        return Ok(());
+    }
+
+    for (_name, value) in node.arguments() {
+        let Some(value) = value else {
+            continue;
+        };
+        collect_targets_source_path_values(doc, value, paths)?;
+    }
+
+    Ok(())
+}
+
+fn is_r_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension, "r" | "R"))
 }
 
 fn targets_option_package_values(doc: &Document, node: Node) -> anyhow::Result<Vec<String>> {
@@ -819,6 +1027,130 @@ list(
                 .into_iter()
                 .all(|entry| !matches!(entry.data, IndexEntryData::Variable { name } if name == "raw_data" || name == "clean_data")),
             "targets should only be indexed from _targets.R"
+        );
+    }
+
+    #[test]
+    fn test_find_in_document_indexes_open_targets_script_targets() {
+        let doc = Document::new(
+            r#"
+list(
+    tar_target(open_target, 1)
+)
+"#,
+            None,
+        );
+        let uri = Url::parse("file:///tmp/example/_targets.R").unwrap();
+
+        let (_, entry) =
+            find_in_document("open_target", &uri, &doc).expect("expected open target definition");
+
+        assert_matches!(
+            entry.data,
+            IndexEntryData::Variable { ref name } if name == "open_target"
+        );
+    }
+
+    #[test]
+    fn test_index_conventional_target_pipeline_names() {
+        let doc = Document::new(
+            r#"
+list(
+    tar_target(split_target, 1)
+)
+"#,
+            None,
+        );
+        let uri = Url::parse("file:///tmp/example/_target_pipelines/analysis.R").unwrap();
+
+        let targets: Vec<_> = index_document_entries_for_uri(&doc, &uri)
+            .into_iter()
+            .filter_map(|entry| match entry.data {
+                IndexEntryData::Variable { name } => Some(name),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(targets, vec!["split_target"]);
+    }
+
+    #[test]
+    fn test_index_targets_script_sources_pipeline_files() {
+        let _guard = ResetIndexerGuard;
+        let tempdir = tempfile::tempdir().expect("expected tempdir");
+        let targets_path = tempdir.path().join("_targets.R");
+        let pipeline_dir = tempdir.path().join("pipelines");
+        let pipeline_path = pipeline_dir.join("analysis.R");
+
+        std::fs::create_dir_all(&pipeline_dir).expect("expected pipeline dir");
+        std::fs::write(
+            &targets_path,
+            r#"
+targets::tar_source("pipelines")
+"#,
+        )
+        .expect("expected targets script");
+        std::fs::write(
+            &pipeline_path,
+            r#"
+list(
+    tar_target(sourced_target, 1)
+)
+"#,
+        )
+        .expect("expected pipeline script");
+
+        let targets_uri = Url::from_file_path(&targets_path).expect("expected targets uri");
+        let pipeline_uri = Url::from_file_path(&pipeline_path).expect("expected pipeline uri");
+        create(&targets_uri).expect("expected targets script indexing");
+
+        let (_, entry) = find_in_file("sourced_target", &pipeline_uri)
+            .expect("expected sourced target definition");
+        assert_matches!(
+            entry.data,
+            IndexEntryData::Variable { ref name } if name == "sourced_target"
+        );
+    }
+
+    #[test]
+    fn test_index_targets_script_ignores_non_path_source_string_arguments() {
+        let _guard = ResetIndexerGuard;
+        let tempdir = tempfile::tempdir().expect("expected tempdir");
+        let targets_path = tempdir.path().join("_targets.R");
+        let pipeline_path = tempdir.path().join("analysis.R");
+        let encoding_path = tempdir.path().join("UTF-8.R");
+
+        std::fs::write(
+            &targets_path,
+            r#"
+source("analysis.R", encoding = "UTF-8")
+"#,
+        )
+        .expect("expected targets script");
+        std::fs::write(
+            &pipeline_path,
+            r#"
+list(tar_target(real_source_target, 1))
+"#,
+        )
+        .expect("expected pipeline script");
+        std::fs::write(
+            &encoding_path,
+            r#"
+list(tar_target(wrong_encoding_target, 1))
+"#,
+        )
+        .expect("expected decoy script");
+
+        let targets_uri = Url::from_file_path(&targets_path).expect("expected targets uri");
+        let pipeline_uri = Url::from_file_path(&pipeline_path).expect("expected pipeline uri");
+        let encoding_uri = Url::from_file_path(&encoding_path).expect("expected encoding uri");
+        create(&targets_uri).expect("expected targets script indexing");
+
+        assert!(find_in_file("real_source_target", &pipeline_uri).is_some());
+        assert!(
+            find_in_file("wrong_encoding_target", &encoding_uri).is_none(),
+            "source() option strings should not be treated as sourced pipeline paths"
         );
     }
 
