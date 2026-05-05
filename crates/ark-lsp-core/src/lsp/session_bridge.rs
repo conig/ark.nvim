@@ -2156,7 +2156,7 @@ fn completion_request_from_extractor(
         return Ok(None);
     };
 
-    let expr = match target_read_object_expr_from_node(&lhs, context.document.contents.as_str())? {
+    let expr = match target_read_object_expr_from_context_node(&lhs, context)? {
         Some(expr) => expr,
         None => lhs.node_to_string(context.document.contents.as_str())?,
     };
@@ -2290,10 +2290,7 @@ fn completion_request_from_string_subset(
         return Ok(completion_request_from_string_subset_text(context));
     };
 
-    let expr = match target_read_object_expr_from_node(
-        &object_node,
-        context.document.contents.as_str(),
-    )? {
+    let expr = match target_read_object_expr_from_context_node(&object_node, context)? {
         Some(expr) => expr,
         None => object_node.node_to_string(context.document.contents.as_str())?,
     };
@@ -2321,10 +2318,7 @@ fn completion_request_from_subset(
         return Ok(None);
     };
 
-    let expr = match target_read_object_expr_from_node(
-        &object_node,
-        context.document.contents.as_str(),
-    )? {
+    let expr = match target_read_object_expr_from_context_node(&object_node, context)? {
         Some(expr) => expr,
         None => object_node.node_to_string(context.document.contents.as_str())?,
     };
@@ -2674,10 +2668,82 @@ fn target_read_object_expr_from_node(
         return Ok(None);
     };
 
-    Ok(Some(format!(
+    Ok(Some(target_read_object_expr(name.as_str())))
+}
+
+fn target_read_object_expr_from_context_node(
+    node: &Node,
+    context: &DocumentContext,
+) -> anyhow::Result<Option<String>> {
+    if let Some(expr) = target_read_object_expr_from_node(node, context.document.contents.as_str())?
+    {
+        return Ok(Some(expr));
+    }
+
+    let NodeType::Identifier = node.node_type() else {
+        return Ok(None);
+    };
+
+    let name = node.node_to_string(context.document.contents.as_str())?;
+    target_read_assignment_expr_from_name(name.as_str(), context)
+}
+
+fn target_read_assignment_expr_from_name(
+    name: &str,
+    context: &DocumentContext,
+) -> anyhow::Result<Option<String>> {
+    static ASSIGNMENT_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"^\s*(?P<lhs>[A-Za-z.][A-Za-z0-9._]*)\s*(?:<-|=)\s*"#).unwrap()
+    });
+    static TARGET_READ_ASSIGNMENT_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"^\s*(?P<lhs>[A-Za-z.][A-Za-z0-9._]*)\s*(?:<-|=)\s*(?:(?:[A-Za-z.][A-Za-z0-9._]*)(?:::|::))?tar_read\s*\(\s*(?:name\s*=\s*)?(?:"(?P<double>[^"]+)"|'(?P<single>[^']+)'|(?P<bare>[A-Za-z.][A-Za-z0-9._]*))"#,
+        )
+        .unwrap()
+    });
+
+    for row in (0..=context.point.row).rev() {
+        let Some(line) = context.document.get_line(row) else {
+            continue;
+        };
+        let line = if row == context.point.row {
+            line.chars().take(context.point.column).collect::<String>()
+        } else {
+            line.to_string()
+        };
+
+        if let Some(captures) = TARGET_READ_ASSIGNMENT_RE.captures(line.as_str()) {
+            if captures.name("lhs").map(|capture| capture.as_str()) != Some(name) {
+                continue;
+            }
+            let Some(target_name) = captures
+                .name("double")
+                .or_else(|| captures.name("single"))
+                .or_else(|| captures.name("bare"))
+                .map(|capture| capture.as_str())
+            else {
+                return Ok(None);
+            };
+            return Ok(Some(target_read_object_expr(target_name)));
+        }
+
+        if ASSIGNMENT_RE
+            .captures(line.as_str())
+            .and_then(|captures| captures.name("lhs"))
+            .is_some_and(|capture| capture.as_str() == name)
+        {
+            return Ok(None);
+        }
+    }
+
+    Ok(None)
+}
+
+fn target_read_object_expr(name: &str) -> String {
+    format!(
         "local({{ if (!requireNamespace(\"targets\", quietly = TRUE)) NULL else targets::tar_read(name = \"{}\") }})",
-        escape_r_string(name.as_str())
-    )))
+        escape_r_string(name)
+    )
 }
 
 fn target_call_name_arg(node: &Node, contents: &str) -> anyhow::Result<Option<String>> {
@@ -4102,6 +4168,58 @@ mod tests {
         assert!(request.expr.contains("clean_data"));
         assert_eq!(request.accessor, Some(String::from("$")));
         assert_eq!(request.prefix, None);
+    }
+
+    #[test]
+    fn test_extractor_completion_request_canonicalizes_tar_read_assignment() {
+        let (text, point) =
+            point_from_cursor("clean_data <- targets::tar_read(\"clean_data\")\nclean_data$@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("$")));
+
+        let request = completion_request_from_extractor(&context)
+            .unwrap()
+            .expect("expected extractor completion request");
+
+        assert!(request.expr.contains("targets::tar_read"));
+        assert!(request.expr.contains("clean_data"));
+        assert_eq!(request.accessor, Some(String::from("$")));
+        assert_eq!(request.prefix, None);
+    }
+
+    #[test]
+    fn test_extractor_completion_request_does_not_cross_shadowing_assignment() {
+        let (text, point) = point_from_cursor(
+            "clean_data <- targets::tar_read(\"clean_data\")\nclean_data <- list()\nclean_data$@",
+        );
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("$")));
+
+        let request = completion_request_from_extractor(&context)
+            .unwrap()
+            .expect("expected extractor completion request");
+
+        assert_eq!(request.expr, "clean_data");
+        assert_eq!(request.accessor, Some(String::from("$")));
+        assert_eq!(request.prefix, None);
+    }
+
+    #[test]
+    fn test_string_subset_completion_request_canonicalizes_tar_read_assignment() {
+        let (text, point) = point_from_cursor("table1 <- tar_read(table1)\ntable1[[\"@\"]]");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("\"")));
+
+        let request = completion_request_from_string_subset(&context)
+            .unwrap()
+            .expect("expected string subset completion request");
+
+        assert!(request.expr.contains("targets::tar_read"));
+        assert!(request.expr.contains("table1"));
+        assert_eq!(
+            request.subset_kind,
+            Some(SubsetCompletionKind::StringSubset2)
+        );
     }
 
     #[test]
