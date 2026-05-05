@@ -5,6 +5,7 @@
 //
 //
 
+use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::anyhow;
@@ -773,6 +774,7 @@ fn static_target_hover(
     ) {
         sections.push(format!("Command:\n```r\n{command}\n```"));
     }
+    sections.extend(static_target_dynamic_hover_sections(name, uri, state));
     sections.push(format!("Target declared in `{source}` on line `{line}`."));
     let value = sections.join("\n\n");
 
@@ -858,6 +860,260 @@ fn static_target_command(
 
     static_target_command_node(&call, document.contents.as_str())
         .and_then(|node| node.node_to_string(document.contents.as_str()).ok())
+}
+
+fn static_target_dynamic_hover_sections(
+    name: &str,
+    uri: &tower_lsp::lsp_types::Url,
+    state: &WorldState,
+) -> Vec<String> {
+    let Some(session_bridge) = state.session_bridge.as_ref() else {
+        return Vec::new();
+    };
+    let Some((root, script, store)) = target_project_paths(uri, state) else {
+        return Vec::new();
+    };
+
+    let mut sections = Vec::new();
+    let mut meta_payload = None;
+
+    if let Ok(network) = session_bridge.targets_network(root.clone(), script.clone(), store.clone())
+    {
+        if let Some(section) = target_network_hover_section(name, &network) {
+            sections.push(section);
+        }
+    }
+
+    if let Ok(meta) =
+        session_bridge.targets_meta(root.clone(), script.clone(), store.clone(), vec![
+            String::from(name),
+        ])
+    {
+        if let Some(section) = target_meta_hover_section(&meta) {
+            sections.push(section);
+        }
+        meta_payload = Some(meta);
+    }
+
+    if meta_payload
+        .as_ref()
+        .is_some_and(target_meta_allows_hover_object_inspection)
+    {
+        if let Ok(object_meta) =
+            session_bridge.targets_object_meta(root, script, store, String::from(name))
+        {
+            if let Some(section) = target_object_meta_hover_section(&object_meta) {
+                sections.push(section);
+            }
+        }
+    }
+
+    sections
+}
+
+fn target_project_paths(
+    uri: &tower_lsp::lsp_types::Url,
+    state: &WorldState,
+) -> Option<(String, String, String)> {
+    let path = uri.to_file_path().ok()?;
+    let root = find_targets_root_for_path(path.as_path())
+        .or_else(|| find_open_targets_root(state))
+        .or_else(|| path.parent().map(Path::to_path_buf))?;
+    let script = root.join("_targets.R");
+    let store = root.join("_targets");
+
+    Some((
+        root.to_string_lossy().to_string(),
+        script.to_string_lossy().to_string(),
+        store.to_string_lossy().to_string(),
+    ))
+}
+
+fn find_targets_root_for_path(path: &Path) -> Option<PathBuf> {
+    let start = if path.is_dir() { path } else { path.parent()? };
+
+    for ancestor in start.ancestors() {
+        if ancestor.join("_targets.R").exists() {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+
+    None
+}
+
+fn find_open_targets_root(state: &WorldState) -> Option<PathBuf> {
+    state.documents.keys().find_map(|uri| {
+        let path = uri.to_file_path().ok()?;
+        if path.file_name()?.to_str()? == "_targets.R" {
+            path.parent().map(Path::to_path_buf)
+        } else {
+            None
+        }
+    })
+}
+
+fn target_network_hover_section(name: &str, value: &Value) -> Option<String> {
+    let edges = value.get("edges")?.as_array()?;
+    let mut upstream = Vec::new();
+    let mut downstream = Vec::new();
+
+    for edge in edges {
+        let from = edge.get("from").and_then(Value::as_str).unwrap_or_default();
+        let to = edge.get("to").and_then(Value::as_str).unwrap_or_default();
+        if to == name && !from.is_empty() {
+            upstream.push(from.to_string());
+        }
+        if from == name && !to.is_empty() {
+            downstream.push(to.to_string());
+        }
+    }
+
+    if upstream.is_empty() && downstream.is_empty() {
+        return None;
+    }
+
+    upstream.sort();
+    upstream.dedup();
+    downstream.sort();
+    downstream.dedup();
+
+    let mut details = Vec::new();
+    if !upstream.is_empty() {
+        details.push(format!(
+            "Upstream: {}",
+            format_target_list(upstream.as_slice())
+        ));
+    }
+    if !downstream.is_empty() {
+        details.push(format!(
+            "Downstream: {}",
+            format_target_list(downstream.as_slice())
+        ));
+    }
+
+    Some(details.join("\n"))
+}
+
+fn target_meta_hover_section(value: &Value) -> Option<String> {
+    let meta = value.get("meta")?.as_array()?.first()?;
+    let mut details = Vec::new();
+
+    for (label, key) in [
+        ("Status", "progress"),
+        ("Time", "time"),
+        ("Runtime", "seconds"),
+        ("Bytes", "bytes"),
+        ("Format", "format"),
+        ("Error", "error"),
+        ("Warning", "warning"),
+        ("Path", "path"),
+    ] {
+        if let Some(value) = target_hover_scalar(meta.get(key)) {
+            details.push(format!("{label}: `{value}`"));
+        }
+    }
+
+    if details.is_empty() {
+        None
+    } else {
+        Some(details.join("\n"))
+    }
+}
+
+fn target_object_meta_hover_section(value: &Value) -> Option<String> {
+    let object_meta = value
+        .get("objectMeta")
+        .or_else(|| value.get("object_meta"))?;
+    let mut details = Vec::new();
+
+    if let Some(summary) = target_hover_scalar(object_meta.get("summary")) {
+        details.push(summary);
+    }
+    if let Some(value) = target_hover_scalar(object_meta.get("type")) {
+        details.push(format!("Object type: `{value}`"));
+    }
+    if let Some(class) = object_meta.get("class").and_then(Value::as_array) {
+        let class: Vec<_> = class
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(String::from)
+            .collect();
+        if !class.is_empty() {
+            details.push(format!("Object class: `{}`", class.join(", ")));
+        }
+    }
+    if let Some(value) = target_hover_scalar(object_meta.get("length")) {
+        details.push(format!("Object length: `{value}`"));
+    }
+
+    if details.is_empty() {
+        None
+    } else {
+        Some(details.join("\n"))
+    }
+}
+
+fn target_meta_allows_hover_object_inspection(value: &Value) -> bool {
+    const MAX_HOVER_OBJECT_BYTES: u64 = 5 * 1024 * 1024;
+
+    let Some(meta) = value
+        .get("meta")
+        .and_then(Value::as_array)
+        .and_then(|meta| meta.first())
+    else {
+        return false;
+    };
+
+    let Some(bytes) = meta.get("bytes") else {
+        return false;
+    };
+
+    if let Some(bytes) = bytes.as_u64() {
+        return bytes <= MAX_HOVER_OBJECT_BYTES;
+    }
+
+    if let Some(bytes) = bytes.as_f64() {
+        return bytes.is_finite() && bytes >= 0.0 && bytes <= MAX_HOVER_OBJECT_BYTES as f64;
+    }
+
+    false
+}
+
+fn target_hover_scalar(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    if value.is_null() {
+        return None;
+    }
+
+    let text = match value {
+        Value::String(value) => value.clone(),
+        Value::Number(value) => value.to_string(),
+        Value::Bool(value) => value.to_string(),
+        _ => return None,
+    };
+
+    if text.is_empty() || text == "NA" {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn format_target_list(names: &[String]) -> String {
+    let max_names = 8;
+    let rendered = names
+        .iter()
+        .take(max_names)
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    if names.len() > max_names {
+        format!("{rendered}, ...")
+    } else {
+        rendered
+    }
 }
 
 fn static_target_declaration_call(node: &tree_sitter::Node, contents: &str) -> bool {
@@ -1204,6 +1460,52 @@ mod tests {
         assert!(markup.value.contains("clean_data"));
         assert!(markup.value.contains("raw_data + 1"));
         assert!(markup.value.contains("_targets.R"));
+    }
+
+    #[test]
+    fn test_target_hover_dynamic_sections_format_bridge_payloads() {
+        let network = serde_json::json!({
+            "edges": [
+                { "from": "raw_data", "to": "clean_data" },
+                { "from": "clean_data", "to": "report" }
+            ]
+        });
+        let meta = serde_json::json!({
+            "meta": [
+                {
+                    "progress": "built",
+                    "seconds": 1.25,
+                    "bytes": 2048,
+                    "format": "rds"
+                }
+            ]
+        });
+        let object_meta = serde_json::json!({
+            "objectMeta": {
+                "summary": "10 x 3 data frame",
+                "type": "list",
+                "class": ["data.frame"],
+                "length": 3
+            }
+        });
+
+        let network_section =
+            target_network_hover_section("clean_data", &network).expect("expected network");
+        assert!(network_section.contains("Upstream: `raw_data`"));
+        assert!(network_section.contains("Downstream: `report`"));
+
+        let meta_section = target_meta_hover_section(&meta).expect("expected meta");
+        assert!(meta_section.contains("Status: `built`"));
+        assert!(meta_section.contains("Format: `rds`"));
+        assert!(target_meta_allows_hover_object_inspection(&meta));
+
+        let object_section =
+            target_object_meta_hover_section(&object_meta).expect("expected object meta");
+        assert!(object_section.contains("10 x 3 data frame"));
+        assert!(object_section.contains("Object class: `data.frame`"));
+
+        let huge_meta = serde_json::json!({ "meta": [{ "bytes": 10000000 }] });
+        assert!(!target_meta_allows_hover_object_inspection(&huge_meta));
     }
 
     #[test]
