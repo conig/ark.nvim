@@ -30,6 +30,16 @@
   list(root = root, script = script, store = store)
 }
 
+.ark_targets_names <- function(names = character()) {
+  names <- names %||% character()
+  if (is.list(names)) {
+    names <- unlist(names, recursive = TRUE, use.names = FALSE)
+  }
+  names <- as.character(names)
+  names <- names[nzchar(names)]
+  unique(names)
+}
+
 .ark_targets_package_available <- function() {
   requireNamespace("targets", quietly = TRUE)
 }
@@ -338,6 +348,7 @@
 
 .ark_targets_meta_payload <- function(session, root = "", script = "", store = "", names = character()) {
   .ark_targets_safe(session, {
+    names <- .ark_targets_names(names)
     project <- .ark_targets_project(root, script, store)
     meta <- .ark_targets_with_project(project, {
       .ark_targets_call_export("tar_meta", list(names = names, store = project$store))
@@ -381,6 +392,7 @@
       return(.ark_targets_error_payload(session, "E_IPC_REQUEST", "missing targets action", "ipc_targets_action"))
     }
 
+    names <- .ark_targets_names(names)
     project <- .ark_targets_project(root, script, store)
     action <- match.arg(action, c("make", "make_downstream", "invalidate", "load"))
 

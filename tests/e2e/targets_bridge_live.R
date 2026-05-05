@@ -56,10 +56,10 @@ edge_labels <- vapply(edges, function(edge) paste(edge$from %||% "", edge$to %||
 expect_true("raw_data->clean_data" %in% edge_labels, "network should include raw_data -> clean_data")
 expect_true("clean_data->report" %in% edge_labels, "network should include clean_data -> report")
 
-make <- decode_payload(.ark_targets_action_payload(session, "make", root, script, store, c("clean_data")))
+make <- decode_payload(.ark_targets_action_payload(session, "make", root, script, store, list("clean_data")))
 expect_true(identical(make$status, "ok"), "make action should be ok")
 
-meta <- decode_payload(.ark_targets_meta_payload(session, root, script, store, c("clean_data")))
+meta <- decode_payload(.ark_targets_meta_payload(session, root, script, store, list("clean_data")))
 expect_true(identical(meta$status, "ok"), "metadata should be ok")
 expect_true(length(meta$meta) >= 1L, "metadata should include clean_data")
 
@@ -68,5 +68,5 @@ expect_true(identical(object$status, "ok"), "object metadata should be ok")
 classes <- object$object_meta$object_meta$class %||% character()
 expect_true("data.frame" %in% classes, "object metadata should report data.frame class")
 
-load <- decode_payload(.ark_targets_action_payload(session, "load", root, script, store, c("clean_data")))
+load <- decode_payload(.ark_targets_action_payload(session, "load", root, script, store, list("clean_data")))
 expect_true(identical(load$status, "ok"), "load action should be ok")
