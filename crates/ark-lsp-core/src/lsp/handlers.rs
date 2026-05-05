@@ -80,6 +80,7 @@ use crate::lsp::statement_range::statement_range;
 use crate::lsp::statement_range::StatementRangeParams;
 use crate::lsp::statement_range::StatementRangeResponse;
 use crate::lsp::symbols;
+use crate::lsp::traits::node::NodeExt;
 use crate::r_task;
 use crate::treesitter::NodeTypeExt;
 
@@ -756,13 +757,24 @@ fn static_target_hover(
         return Ok(None);
     };
 
-    let indexer::IndexEntryData::Target { name } = definition.data else {
+    let indexer::IndexEntryData::Target { ref name } = definition.data else {
         return Ok(None);
     };
 
     let source = target_hover_source_label(definition_uri.as_uri());
     let line = definition.range.start.line + 1;
-    let value = format!("```r\n{name}\n```\n\nTarget declared in `{source}` on line `{line}`.");
+    let mut sections = vec![format!("```r\n{name}\n```")];
+    if let Some(command) = static_target_command(
+        definition_uri.as_uri(),
+        &definition,
+        uri,
+        context.document,
+        state,
+    ) {
+        sections.push(format!("Command:\n```r\n{command}\n```"));
+    }
+    sections.push(format!("Target declared in `{source}` on line `{line}`."));
+    let value = sections.join("\n\n");
 
     Ok(Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
@@ -817,6 +829,71 @@ fn target_hover_source_label(uri: &tower_lsp::lsp_types::Url) -> String {
     }
 
     uri.to_string()
+}
+
+fn static_target_command(
+    definition_uri: &tower_lsp::lsp_types::Url,
+    definition: &indexer::IndexEntry,
+    current_uri: &tower_lsp::lsp_types::Url,
+    current_document: &crate::lsp::document::Document,
+    state: &WorldState,
+) -> Option<String> {
+    let document = if definition_uri == current_uri {
+        current_document
+    } else {
+        state.documents.get(definition_uri)?
+    };
+
+    let point = document
+        .tree_sitter_point_from_lsp_position(definition.range.start)
+        .ok()?;
+    let node = document
+        .ast
+        .root_node()
+        .descendant_for_point_range(point, point)?;
+
+    let call = node
+        .ancestors()
+        .find(|node| static_target_declaration_call(node, document.contents.as_str()))?;
+
+    static_target_command_node(&call, document.contents.as_str())
+        .and_then(|node| node.node_to_string(document.contents.as_str()).ok())
+}
+
+fn static_target_declaration_call(node: &tree_sitter::Node, contents: &str) -> bool {
+    if !node.is_call() {
+        return false;
+    }
+
+    let Some(callee) = node.child_by_field_name("function") else {
+        return false;
+    };
+    let Ok(callee) = callee.node_as_str(contents) else {
+        return false;
+    };
+
+    matches!(
+        callee,
+        "tar_target" |
+            "targets::tar_target" |
+            "targets:::tar_target" |
+            "tar_render" |
+            "tarchetypes::tar_render" |
+            "tarchetypes:::tar_render"
+    )
+}
+
+fn static_target_command_node<'a>(
+    call: &'a tree_sitter::Node,
+    _contents: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    let mut unnamed_values =
+        call.arguments()
+            .into_iter()
+            .filter_map(|(name, value)| if name.is_none() { value } else { None });
+
+    unnamed_values.next()?;
+    unnamed_values.next()
 }
 
 #[tracing::instrument(level = "info", skip_all)]
@@ -1098,7 +1175,7 @@ mod tests {
         };
         state.documents.insert(
             targets_uri,
-            Document::new("list(tar_target(clean_data, 1))", None),
+            Document::new("list(tar_target(clean_data, raw_data + 1))", None),
         );
         state.documents.insert(
             analysis_uri.clone(),
@@ -1125,6 +1202,7 @@ mod tests {
             panic!("expected static target hover");
         };
         assert!(markup.value.contains("clean_data"));
+        assert!(markup.value.contains("raw_data + 1"));
         assert!(markup.value.contains("_targets.R"));
     }
 
