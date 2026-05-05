@@ -744,7 +744,11 @@ fn static_target_hover(
     uri: &tower_lsp::lsp_types::Url,
     state: &WorldState,
 ) -> anyhow::Result<Option<Hover>> {
-    let node = context.closest_node;
+    let node = context
+        .closest_node
+        .ancestors()
+        .find(|node| node.is_identifier_or_string())
+        .unwrap_or(context.closest_node);
     if !node.is_identifier_or_string() {
         return Ok(None);
     }
@@ -755,6 +759,9 @@ fn static_target_hover(
     let Some((definition_uri, definition)) =
         find_static_target_definition(name.as_str(), uri, context.document, state)
     else {
+        if target_reference_hover_context(&node, context.document.contents.as_str()) {
+            return Ok(manifest_only_target_hover(name.as_str(), uri, state));
+        }
         return Ok(None);
     };
 
@@ -785,6 +792,44 @@ fn static_target_hover(
         }),
         range: None,
     }))
+}
+
+fn manifest_only_target_hover(
+    name: &str,
+    uri: &tower_lsp::lsp_types::Url,
+    state: &WorldState,
+) -> Option<Hover> {
+    let session_bridge = state.session_bridge.as_ref()?;
+    let (root, script, store) = target_project_paths(uri, state)?;
+    let manifest = session_bridge.targets_manifest(root, script, store).ok()?;
+    let target = target_manifest_record(name, &manifest)?;
+
+    let mut sections = vec![
+        format!("```r\n{name}\n```"),
+        String::from("Manifest-only `{targets}` target."),
+    ];
+
+    if let Some(command) = target_hover_scalar(target.get("command")) {
+        sections.push(format!("Command:\n```r\n{command}\n```"));
+    }
+    if let Some(description) = target_hover_scalar(target.get("description")) {
+        sections.push(format!("Description: {description}"));
+    }
+    if let Some(format) = target_hover_scalar(target.get("format")) {
+        sections.push(format!("Format: `{format}`"));
+    }
+
+    sections.push(String::from(
+        "No static source location is available for this target.",
+    ));
+
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: sections.join("\n\n"),
+        }),
+        range: None,
+    })
 }
 
 fn find_static_target_definition(
@@ -831,6 +876,37 @@ fn target_hover_source_label(uri: &tower_lsp::lsp_types::Url) -> String {
     }
 
     uri.to_string()
+}
+
+fn target_reference_hover_context(node: &tree_sitter::Node, contents: &str) -> bool {
+    node.ancestors()
+        .any(|ancestor| target_reference_call(&ancestor, contents))
+}
+
+fn target_reference_call(node: &tree_sitter::Node, contents: &str) -> bool {
+    if !node.is_call() {
+        return false;
+    }
+
+    let Some(function) = node.child_by_field_name("function") else {
+        return false;
+    };
+    let Ok(callee) = function.node_to_string(contents) else {
+        return false;
+    };
+
+    matches!(
+        target_reference_unqualified_callee(callee.as_str()),
+        "tar_read" | "tar_load" | "tar_make" | "tar_invalidate" | "tar_render"
+    )
+}
+
+fn target_reference_unqualified_callee(callee: &str) -> &str {
+    callee
+        .rsplit_once(":::")
+        .or_else(|| callee.rsplit_once("::"))
+        .map(|(_, name)| name)
+        .unwrap_or(callee)
 }
 
 fn static_target_command(
@@ -992,6 +1068,18 @@ fn target_network_hover_section(name: &str, value: &Value) -> Option<String> {
     }
 
     Some(details.join("\n"))
+}
+
+fn target_manifest_record<'a>(
+    name: &str,
+    value: &'a Value,
+) -> Option<&'a serde_json::Map<String, Value>> {
+    value
+        .get("targets")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_object)
+        .find(|target| target.get("name").and_then(Value::as_str) == Some(name))
 }
 
 fn target_meta_hover_section(value: &Value) -> Option<String> {
@@ -1228,6 +1316,7 @@ mod tests {
     use url::Url;
 
     use super::*;
+    use crate::fixtures::point_from_cursor;
     use crate::lsp::document::Document;
     use crate::lsp::session_bridge::SessionBridge;
     use crate::lsp::session_bridge::SessionBridgeConfig;
@@ -1288,6 +1377,40 @@ mod tests {
                         .as_bytes(),
                 )
                 .expect("expected bridge error response");
+        });
+
+        SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port,
+            auth_token: String::from("test-token"),
+            status_file: None,
+            backend: String::from("tmux"),
+            session_id: String::from("ark-test-session"),
+            tmux_socket: String::from("/tmp/ark-test.sock"),
+            tmux_session: String::from("ark-test"),
+            tmux_pane: String::from("%1"),
+            timeout_ms: 1000,
+        })
+        .expect("expected session bridge")
+    }
+
+    fn json_response_bridge(response: &'static str) -> SessionBridge {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("expected bridge request");
+            let mut request = String::new();
+            stream
+                .read_to_string(&mut request)
+                .expect("expected bridge request payload");
+            assert!(!request.is_empty(), "expected bridge request body");
+            stream
+                .write_all(response.as_bytes())
+                .expect("expected bridge response");
         });
 
         SessionBridge::new(SessionBridgeConfig {
@@ -1460,6 +1583,55 @@ mod tests {
         assert!(markup.value.contains("clean_data"));
         assert!(markup.value.contains("raw_data + 1"));
         assert!(markup.value.contains("_targets.R"));
+    }
+
+    #[test]
+    fn test_manifest_only_target_hover_degrades_dynamic_target() {
+        let tempdir = tempdir().expect("expected tempdir");
+        let targets_uri =
+            Url::from_file_path(tempdir.path().join("_targets.R")).expect("expected targets uri");
+        let report_uri =
+            Url::from_file_path(tempdir.path().join("report.Rmd")).expect("expected report uri");
+        let (text, point) = point_from_cursor(r#"targets::tar_read("generated_report@")"#);
+        let report_document = Document::new(text.as_str(), None);
+        let position = report_document
+            .lsp_position_from_tree_sitter_point(point)
+            .expect("expected hover position");
+        let mut state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            session_bridge: Some(json_response_bridge(
+                r#"{"targets":[{"name":"generated_report","command":"factory()","description":"Generated from a factory","format":"file"}]}"#,
+            )),
+            ..Default::default()
+        };
+        state
+            .documents
+            .insert(targets_uri, Document::new("list()\n", None));
+        state.documents.insert(report_uri.clone(), report_document);
+
+        let result = handle_hover(
+            HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: report_uri },
+                    position,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            },
+            &state,
+        )
+        .expect("expected target hover");
+
+        let Some(Hover {
+            contents: HoverContents::Markup(markup),
+            ..
+        }) = result
+        else {
+            panic!("expected manifest-only target hover");
+        };
+        assert!(markup.value.contains("generated_report"));
+        assert!(markup.value.contains("Manifest-only"));
+        assert!(markup.value.contains("factory()"));
+        assert!(markup.value.contains("No static source location"));
     }
 
     #[test]
