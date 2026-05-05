@@ -427,6 +427,7 @@ enum CompletionFlavor {
     Pipe,
     Subset,
     Symbol,
+    Target,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -468,6 +469,12 @@ pub(crate) struct SessionBridgeCompletion {
 pub(crate) struct TargetCompletionProject {
     pub root: String,
     pub script: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TargetNameCompletionContext {
+    pub prefix: Option<String>,
+    pub close_string: bool,
 }
 
 impl SessionBridge {
@@ -1957,7 +1964,8 @@ fn completion_item(
         CompletionFlavor::Extractor |
         CompletionFlavor::Namespace |
         CompletionFlavor::Package |
-        CompletionFlavor::Symbol => member.name_raw.clone(),
+        CompletionFlavor::Symbol |
+        CompletionFlavor::Target => member.name_raw.clone(),
         CompletionFlavor::Pipe => sym_quote_invalid(member.name_raw.as_str()),
         CompletionFlavor::Subset => subset_insert_text(
             member.name_raw.as_str(),
@@ -1974,9 +1982,10 @@ fn completion_item(
         CompletionFlavor::Pipe | CompletionFlavor::Subset | CompletionFlavor::Symbol => {
             runtime_completion_item_kind(&member)
         },
+        CompletionFlavor::Target => CompletionItemKind::VALUE,
     };
 
-    CompletionItem {
+    let mut item = CompletionItem {
         label: member.name_display.clone(),
         detail: if member.r#type.is_empty() || member.r#type == "unknown" {
             None
@@ -1999,7 +2008,13 @@ fn completion_item(
         data: completion_item_data(request, &member)
             .and_then(|data| serde_json::to_value(data).ok()),
         ..Default::default()
+    };
+
+    if matches!(request.flavor, CompletionFlavor::Target) {
+        item.detail = Some(String::from("targets target"));
     }
+
+    item
 }
 
 fn runtime_completion_item_kind(member: &BridgeMember) -> CompletionItemKind {
@@ -2080,7 +2095,7 @@ fn completion_item_data(
             accessor: Some(String::from("$")),
             member_name: Some(member.name_raw.clone()),
         }),
-        CompletionFlavor::Namespace | CompletionFlavor::Package => None,
+        CompletionFlavor::Namespace | CompletionFlavor::Package | CompletionFlavor::Target => None,
     }
 }
 
@@ -2613,38 +2628,24 @@ fn completion_request_from_custom_call(
     context: &DocumentContext,
     target_project: Option<&TargetCompletionProject>,
 ) -> anyhow::Result<Option<CompletionRequest>> {
+    if let Some(target_context) = target_name_completion_context(context)? {
+        return Ok(Some(CompletionRequest {
+            expr: target_names_completion_expr(target_project),
+            flavor: CompletionFlavor::Target,
+            prefix: target_context.prefix,
+            accessor: None,
+            close_string: target_context.close_string,
+            quote_insert: false,
+            subset_kind: None,
+        }));
+    }
+
     let Some(call) = analyze_call_context(context)? else {
         return Ok(None);
     };
 
     let in_string = node_find_string(&context.node).is_some();
     let position = call_node_position_type(&context.node, context.point);
-
-    if target_name_call_callee(call.callee.as_str()) {
-        if !target_name_call_target(&call, position, in_string) {
-            return Ok(None);
-        }
-
-        let prefix = if let Some(string_node) = node_find_string(&context.node) {
-            string_prefix(&string_node, context)?
-        } else {
-            symbol_prefix(context)?
-        };
-
-        if prefix.is_none() && context.trigger.is_none() {
-            return Ok(None);
-        }
-
-        return Ok(Some(CompletionRequest {
-            expr: target_names_completion_expr(target_project),
-            flavor: CompletionFlavor::Symbol,
-            prefix,
-            accessor: None,
-            close_string: in_string,
-            quote_insert: false,
-            subset_kind: None,
-        }));
-    }
 
     match call.callee.as_str() {
         "Sys.getenv" | "Sys.unsetenv" | "getOption" => {
@@ -2704,6 +2705,40 @@ fn completion_request_from_custom_call(
         },
         _ => Ok(None),
     }
+}
+
+pub(crate) fn target_name_completion_context(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<TargetNameCompletionContext>> {
+    let Some(call) = analyze_call_context(context)? else {
+        return Ok(None);
+    };
+
+    if !target_name_call_callee(call.callee.as_str()) {
+        return Ok(None);
+    }
+
+    let in_string = node_find_string(&context.node).is_some();
+    let position = call_node_position_type(&context.node, context.point);
+
+    if !target_name_call_target(&call, position, in_string) {
+        return Ok(None);
+    }
+
+    let prefix = if let Some(string_node) = node_find_string(&context.node) {
+        string_prefix(&string_node, context)?
+    } else {
+        symbol_prefix(context)?
+    };
+
+    if prefix.is_none() && context.trigger.is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(TargetNameCompletionContext {
+        prefix,
+        close_string: in_string,
+    }))
 }
 
 fn target_name_call_callee(callee: &str) -> bool {
@@ -4661,7 +4696,7 @@ mod tests {
             .unwrap()
             .expect("expected target completion request");
 
-        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert!(matches!(request.flavor, CompletionFlavor::Target));
         assert_eq!(request.prefix, Some(String::from("raw_")));
         assert!(!request.quote_insert);
         assert!(!request.close_string);
@@ -4682,7 +4717,7 @@ mod tests {
             .unwrap()
             .expect("expected target completion request");
 
-        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert!(matches!(request.flavor, CompletionFlavor::Target));
         assert_eq!(request.prefix, None);
         assert!(request.expr.contains("setwd(\"/tmp/ark-target-project\")"));
         assert!(request
@@ -4700,7 +4735,7 @@ mod tests {
             .unwrap()
             .expect("expected target completion request");
 
-        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert!(matches!(request.flavor, CompletionFlavor::Target));
         assert_eq!(request.prefix, Some(String::from("clean_")));
         assert!(!request.quote_insert);
         assert!(request.close_string);
@@ -4716,7 +4751,7 @@ mod tests {
             .unwrap()
             .expect("expected target completion request");
 
-        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert!(matches!(request.flavor, CompletionFlavor::Target));
         assert_eq!(request.prefix, Some(String::from("clean_")));
         assert!(!request.quote_insert);
         assert!(request.close_string);
@@ -4733,7 +4768,7 @@ mod tests {
             .unwrap()
             .expect("expected target completion request");
 
-        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert!(matches!(request.flavor, CompletionFlavor::Target));
         assert_eq!(request.prefix, Some(String::from("clean_")));
         assert!(!request.quote_insert);
         assert!(!request.close_string);
@@ -4750,7 +4785,7 @@ mod tests {
             .unwrap()
             .expect("expected target completion request");
 
-        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert!(matches!(request.flavor, CompletionFlavor::Target));
         assert_eq!(request.prefix, Some(String::from("rep_")));
         assert!(request.expr.contains("targets::tar_manifest()"));
     }
@@ -4765,7 +4800,7 @@ mod tests {
             .unwrap()
             .expect("expected target completion request");
 
-        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert!(matches!(request.flavor, CompletionFlavor::Target));
         assert_eq!(request.prefix, Some(String::from("clean_")));
         assert!(request.expr.contains("targets::tar_manifest()"));
     }
@@ -4780,7 +4815,7 @@ mod tests {
             .unwrap()
             .expect("expected target completion request");
 
-        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert!(matches!(request.flavor, CompletionFlavor::Target));
         assert_eq!(request.prefix, Some(String::from("clean_")));
         assert!(request.expr.contains("targets::tar_manifest()"));
     }

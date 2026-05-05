@@ -5,6 +5,7 @@
 //
 //
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -17,7 +18,9 @@ use stdext::result::ResultExt;
 use stdext::unwrap;
 use tower_lsp::lsp_types::CodeActionParams;
 use tower_lsp::lsp_types::CodeActionResponse;
+use tower_lsp::lsp_types::Command;
 use tower_lsp::lsp_types::CompletionItem;
+use tower_lsp::lsp_types::CompletionItemKind;
 use tower_lsp::lsp_types::CompletionParams;
 use tower_lsp::lsp_types::CompletionResponse;
 use tower_lsp::lsp_types::CompletionTriggerKind;
@@ -77,6 +80,7 @@ use crate::lsp::selection_range::selection_range;
 use crate::lsp::session_bridge::is_bridge_unavailable;
 use crate::lsp::session_bridge::is_eval_missing_object_error;
 use crate::lsp::session_bridge::is_ipc_auth_error;
+use crate::lsp::session_bridge::target_name_completion_context;
 use crate::lsp::session_bridge::HelpPage;
 use crate::lsp::session_bridge::TargetCompletionProject;
 use crate::lsp::signature_help::r_signature_help;
@@ -594,6 +598,12 @@ pub(crate) fn handle_completion(
     lsp::log_info!("Completion context: {:#?}", context);
 
     if !state.has_attached_runtime() {
+        if let Some(completions) = provide_static_target_name_completions(&context, &uri, state)
+            .map_err(LspError::Anyhow)?
+        {
+            return Ok(completion_response_from_items(completions));
+        }
+
         if let Some(completions) =
             provide_detached_pre_bridge_completions(&context, state).map_err(LspError::Anyhow)?
         {
@@ -687,6 +697,77 @@ fn completion_response_from_items(items: Vec<CompletionItem>) -> Option<Completi
         None
     } else {
         Some(CompletionResponse::Array(items))
+    }
+}
+
+fn provide_static_target_name_completions(
+    context: &DocumentContext,
+    uri: &tower_lsp::lsp_types::Url,
+    state: &WorldState,
+) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    let Some(target_context) = target_name_completion_context(context)? else {
+        return Ok(None);
+    };
+
+    let Some((root, _, _)) = target_project_paths(uri, state) else {
+        return Ok(None);
+    };
+
+    let root = PathBuf::from(root);
+    let prefix = target_context.prefix.as_deref().unwrap_or("");
+    let mut names = BTreeSet::new();
+
+    indexer::map(|entry_uri, _symbol, entry| {
+        if !indexed_uri_is_under_root(entry_uri, root.as_path()) {
+            return;
+        }
+
+        let indexer::IndexEntryData::Target { name } = &entry.data else {
+            return;
+        };
+
+        if !prefix.is_empty() && !name.starts_with(prefix) {
+            return;
+        }
+
+        names.insert(name.clone());
+    });
+
+    if names.is_empty() {
+        return Ok(None);
+    }
+
+    let items = names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| target_completion_item(name, index, target_context.close_string))
+        .collect();
+
+    Ok(Some(items))
+}
+
+fn indexed_uri_is_under_root(uri: &tower_lsp::lsp_types::Url, root: &Path) -> bool {
+    let Ok(path) = uri.to_file_path() else {
+        return false;
+    };
+
+    path.starts_with(root)
+}
+
+fn target_completion_item(name: String, index: usize, close_string: bool) -> CompletionItem {
+    CompletionItem {
+        label: name.clone(),
+        detail: Some(String::from("targets target")),
+        filter_text: Some(name.clone()),
+        insert_text: Some(name),
+        kind: Some(CompletionItemKind::VALUE),
+        sort_text: Some(format!("{index:04}")),
+        command: close_string.then(|| Command {
+            title: String::from("Complete String Delimiter"),
+            command: String::from("ark.completeStringDelimiter"),
+            ..Default::default()
+        }),
+        ..Default::default()
     }
 }
 
@@ -1387,6 +1468,7 @@ mod tests {
     use std::thread;
 
     use tempfile::tempdir;
+    use tower_lsp::lsp_types::CompletionContext as LspCompletionContext;
     use tower_lsp::lsp_types::Position;
     use tower_lsp::lsp_types::TextDocumentIdentifier;
     use tower_lsp::lsp_types::TextDocumentPositionParams;
@@ -1740,6 +1822,93 @@ list()
             PathBuf::from(store),
             tempdir.path().join("cache").join("targets")
         );
+    }
+
+    #[test]
+    fn test_detached_completion_uses_static_targets_before_bridge() {
+        let _lock = indexer::indexer_test_lock();
+        let _guard = indexer::ResetIndexerGuard;
+        indexer::indexer_clear();
+
+        let project = tempdir().expect("expected project tempdir");
+        let other_project = tempdir().expect("expected other project tempdir");
+        fs::write(project.path().join("_targets.R"), "").expect("expected targets script");
+        fs::write(other_project.path().join("_targets.R"), "").expect("expected targets script");
+
+        let targets_uri =
+            Url::from_file_path(project.path().join("_targets.R")).expect("expected targets uri");
+        let other_targets_uri = Url::from_file_path(other_project.path().join("_targets.R"))
+            .expect("expected other targets uri");
+        let report_uri =
+            Url::from_file_path(project.path().join("analysis.R")).expect("expected report uri");
+
+        let targets_document = Document::new(
+            "list(tar_target(clean_data, raw_data), tar_target(report, clean_data))",
+            None,
+        );
+        let other_targets_document = Document::new("list(tar_target(other_project, 1))", None);
+        indexer::update(&targets_document, &targets_uri).expect("expected target index");
+        indexer::update(&other_targets_document, &other_targets_uri)
+            .expect("expected other target index");
+
+        let (text, point) = point_from_cursor("targets::tar_read(cle@)");
+        let report_document = Document::new(text.as_str(), None);
+        let position = report_document
+            .lsp_position_from_tree_sitter_point(point)
+            .expect("expected completion position");
+        let mut state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            ..Default::default()
+        };
+        state.documents.insert(targets_uri, targets_document);
+        state.documents.insert(report_uri.clone(), report_document);
+
+        let direct_context = state
+            .get_document(&report_uri)
+            .expect("expected report document");
+        let direct_context =
+            DocumentContext::new_with_completion(direct_context, point, None, true);
+        let target_context = target_name_completion_context(&direct_context)
+            .expect("expected target context lookup")
+            .expect("expected target context");
+        assert_eq!(target_context.prefix, Some(String::from("cle")));
+        let direct_items =
+            provide_static_target_name_completions(&direct_context, &report_uri, &state)
+                .expect("expected static target lookup")
+                .expect("expected static target items");
+        assert!(direct_items.iter().any(|item| item.label == "clean_data"));
+        assert!(direct_items
+            .iter()
+            .all(|item| item.label != "other_project"));
+
+        let result = handle_completion(
+            CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: report_uri },
+                    position,
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: Default::default(),
+                context: Some(LspCompletionContext {
+                    trigger_kind: CompletionTriggerKind::INVOKED,
+                    trigger_character: None,
+                }),
+            },
+            &state,
+        )
+        .expect("expected static target completion");
+
+        let Some(CompletionResponse::Array(items)) = result else {
+            panic!("expected completion items");
+        };
+
+        let clean_data = items
+            .iter()
+            .find(|item| item.label == "clean_data")
+            .expect("expected clean_data target completion");
+        assert!(items.iter().all(|item| item.label != "other_project"));
+        assert_eq!(clean_data.detail, Some(String::from("targets target")));
+        assert_eq!(clean_data.kind, Some(CompletionItemKind::VALUE));
     }
 
     #[test]

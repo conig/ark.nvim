@@ -8,6 +8,7 @@ local docs_patched = false
 local show_patched = false
 local menu_patched = false
 local signature_float_patched = false
+local target_items_patched = false
 local active_signature_help_win = nil
 
 local ark_filetypes = { "r", "rmd", "qmd", "quarto" }
@@ -275,6 +276,35 @@ local function ark_provider(base_provider, overrides)
   return vim.tbl_deep_extend("force", vim.deepcopy(base_provider or {}), overrides or {})
 end
 
+local function annotate_ark_target_items(items)
+  if type(items) ~= "table" then
+    return items
+  end
+
+  for _, item in ipairs(items) do
+    if type(item) == "table" and item.client_name == "ark_lsp" and item.detail == "targets target" then
+      item.kind_name = "Target"
+    end
+  end
+
+  return items
+end
+
+local function wrap_target_item_transform(provider)
+  if type(provider) ~= "table" or provider.__ark_target_item_transform then
+    return
+  end
+
+  local base_transform = provider.transform_items
+  provider.transform_items = function(ctx, items)
+    if type(base_transform) == "function" then
+      items = base_transform(ctx, items) or items
+    end
+    return annotate_ark_target_items(items)
+  end
+  provider.__ark_target_item_transform = true
+end
+
 local function ark_auto_keyword_min_length(context)
   local trigger = type(context) == "table" and context.trigger or nil
   local initial_kind = type(trigger) == "table" and trigger.initial_kind or nil
@@ -302,11 +332,15 @@ function M.configure_blink_sources()
   end
 
   if providers.ark_lsp == nil then
-    blink.add_source_provider("ark_lsp", ark_provider(providers.lsp, {
+    local provider = ark_provider(providers.lsp, {
       min_keyword_length = ark_auto_keyword_min_length,
       fallbacks = {},
-    }))
+    })
+    wrap_target_item_transform(provider)
+    blink.add_source_provider("ark_lsp", provider)
   end
+
+  M.patch_blink_target_items()
 
   sources.per_filetype = sources.per_filetype or {}
   local ark_sources = { "ark_lsp", inherit_defaults = false }
@@ -320,9 +354,28 @@ function M.configure_blink_sources()
   sources_configured = true
 end
 
+function M.patch_blink_target_items()
+  if target_items_patched then
+    return
+  end
+
+  local ok_config, blink_config = pcall(require, "blink.cmp.config")
+  if not ok_config then
+    return
+  end
+
+  local sources = blink_config.sources or {}
+  local providers = sources.providers or {}
+  wrap_target_item_transform(providers.lsp)
+  wrap_target_item_transform(providers.ark_lsp)
+
+  target_items_patched = true
+end
+
 function M.ensure_integration()
   M.configure_blink_sources()
   M.register_lsp_commands()
+  M.patch_blink_target_items()
   M.patch_blink_context()
   M.patch_blink_selection()
   M.patch_blink_show()

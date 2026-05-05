@@ -69,6 +69,31 @@ if type(added.ark_lsp.min_keyword_length) ~= "function" then
   error("ark_lsp min_keyword_length policy missing")
 end
 
+if type(added.ark_lsp.transform_items) ~= "function" then
+  error("ark_lsp target item transform missing")
+end
+
+local transformed_items = added.ark_lsp.transform_items({}, {
+  {
+    client_name = "ark_lsp",
+    label = "clean_data",
+    detail = "targets target",
+  },
+  {
+    client_name = "ark_lsp",
+    label = "other",
+    detail = "character",
+  },
+})
+
+if transformed_items[1].kind_name ~= "Target" then
+  error("Ark target completions should render with Blink kind_name Target")
+end
+
+if transformed_items[2].kind_name ~= nil then
+  error("Ark non-target completions should not be relabelled")
+end
+
 if added.ark_lsp.min_keyword_length(trigger_context) ~= 0 then
   error("ark_lsp should allow zero-length trigger-character popup")
 end
