@@ -46,7 +46,7 @@ vim.fn.writefile({
 
 local test_file = root .. "/analysis.R"
 local pane_id, client = ark_test.setup_managed_buffer(test_file, {
-  'tar_read(clean_data)[["',
+  "targets::tar_read(clean_data)$",
   "clean_data <- tar_read(clean_data)",
   'clean_data[["',
 })
@@ -123,7 +123,7 @@ local function completion_at(line, trigger)
   return ark_test.completion_items(ark_test.request(client, "textDocument/completion", params, 10000))
 end
 
-local direct_items = completion_at(1, '"')
+local direct_items = completion_at(1, "$")
 if not ark_test.find_item(direct_items, "id") or not ark_test.find_item(direct_items, "value") then
   ark_test.fail("direct tar_read extractor completion missing target columns: " .. vim.inspect(ark_test.item_labels(direct_items)))
 end

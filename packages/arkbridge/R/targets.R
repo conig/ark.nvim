@@ -30,6 +30,50 @@
   list(root = root, script = script, store = store)
 }
 
+.ark_targets_store_config <- function(script = "_targets.R") {
+  if (!file.exists(script)) {
+    return(NULL)
+  }
+
+  contents <- paste(readLines(script, warn = FALSE), collapse = "\n")
+  match <- regexec(
+    "(?s)(?:[A-Za-z.][A-Za-z0-9._]*(?:::|::))?tar_config_set\\s*\\([^)]*?\\bstore\\s*=\\s*[\"']([^\"']+)[\"']",
+    contents,
+    perl = TRUE
+  )
+  captures <- regmatches(contents, match)[[1L]]
+  if (length(captures) < 2L || !nzchar(captures[[2L]])) {
+    return(NULL)
+  }
+
+  captures[[2L]]
+}
+
+.ark_targets_project_from_cwd <- function() {
+  root <- normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+  script <- file.path(root, "_targets.R")
+  store <- .ark_targets_store_config(script) %||% "_targets"
+  if (!grepl("^(/|[A-Za-z]:[/\\\\])", store)) {
+    store <- file.path(root, store)
+  }
+
+  .ark_targets_project(root, script, store)
+}
+
+.ark_targets_read_for_completion <- function(name) {
+  if (!is.character(name) || length(name) != 1L || !nzchar(name)) {
+    stop("missing target name", call. = FALSE)
+  }
+  if (!.ark_targets_package_available()) {
+    stop("the targets package is not installed in the managed R session", call. = FALSE)
+  }
+
+  project <- .ark_targets_project_from_cwd()
+  .ark_targets_with_project(project, {
+    .ark_targets_call_export("tar_read", list(name = name, store = project$store))
+  })
+}
+
 .ark_targets_names <- function(names = character()) {
   names <- names %||% character()
   if (is.list(names)) {

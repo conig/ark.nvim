@@ -2160,15 +2160,18 @@ fn completion_request_from_extractor(
         Some(expr) => expr,
         None => lhs.node_to_string(context.document.contents.as_str())?,
     };
-    let prefix = operator
-        .child_by_field_name("rhs")
-        .map(|rhs| rhs.node_to_string(context.document.contents.as_str()))
-        .transpose()?;
-
     let accessor = match operator.node_type() {
         NodeType::ExtractOperator(ExtractOperatorType::At) => Some(String::from("@")),
         NodeType::ExtractOperator(ExtractOperatorType::Dollar) => Some(String::from("$")),
         _ => None,
+    };
+    let prefix = if context_at_trigger_accessor_end(context, accessor.as_deref()) {
+        None
+    } else {
+        operator
+            .child_by_field_name("rhs")
+            .map(|rhs| rhs.node_to_string(context.document.contents.as_str()))
+            .transpose()?
     };
 
     Ok(Some(CompletionRequest {
@@ -2182,7 +2185,44 @@ fn completion_request_from_extractor(
     }))
 }
 
+fn context_at_trigger_accessor_end(context: &DocumentContext, accessor: Option<&str>) -> bool {
+    let Some(accessor) = accessor else {
+        return false;
+    };
+    if context.trigger.as_deref() != Some(accessor) {
+        return false;
+    }
+
+    let Some(line) = context.document.get_line(context.point.row) else {
+        return false;
+    };
+    line.chars()
+        .take(context.point.column)
+        .collect::<String>()
+        .ends_with(accessor)
+}
+
 fn completion_request_from_extractor_text(context: &DocumentContext) -> Option<CompletionRequest> {
+    static TARGET_READ_EXTRACTOR_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)
+            (?:(?:[A-Za-z.][A-Za-z0-9._]*)(?:::|::))?
+            tar_read
+            \s*\(\s*
+            (?:name\s*=\s*)?
+            (?:
+                "(?P<double>[^"]+)"
+                |
+                '(?P<single>[^']+)'
+                |
+                (?P<bare>[A-Za-z.][A-Za-z0-9._]*)
+            )
+            \s*\)
+            \s*(?P<accessor>\$|@)(?P<prefix>[A-Za-z0-9._]*)$
+            "#,
+        )
+        .unwrap()
+    });
     static EXTRACTOR_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(
             r#"(?x)(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*(?P<accessor>\$|@)(?P<prefix>[A-Za-z0-9._]*)$"#,
@@ -2197,6 +2237,28 @@ fn completion_request_from_extractor_text(context: &DocumentContext) -> Option<C
 
     let line = context.document.get_line(context.point.row)?;
     let prefix = line.chars().take(context.point.column).collect::<String>();
+
+    if let Some(captures) = TARGET_READ_EXTRACTOR_RE.captures(prefix.as_str()) {
+        let accessor = captures.name("accessor")?.as_str();
+        if accessor != trigger {
+            return None;
+        }
+        let target_name = captures
+            .name("double")
+            .or_else(|| captures.name("single"))
+            .or_else(|| captures.name("bare"))?
+            .as_str();
+        return Some(CompletionRequest {
+            expr: target_read_object_expr(target_name),
+            flavor: CompletionFlavor::Extractor,
+            prefix: capture_prefix(&captures, "prefix"),
+            accessor: Some(accessor.to_string()),
+            close_string: false,
+            quote_insert: false,
+            subset_kind: None,
+        });
+    }
+
     let captures = EXTRACTOR_RE.captures(prefix.as_str())?;
     let accessor = captures.name("accessor")?.as_str();
 
@@ -2741,7 +2803,8 @@ fn target_read_assignment_expr_from_name(
 
 fn target_read_object_expr(name: &str) -> String {
     format!(
-        "local({{ if (!requireNamespace(\"targets\", quietly = TRUE)) NULL else targets::tar_read(name = \"{}\") }})",
+        "local({{ .ark_reader <- if (\"arkbridge\" %in% loadedNamespaces() && exists(\".ark_targets_read_for_completion\", envir = asNamespace(\"arkbridge\"), mode = \"function\", inherits = FALSE)) get(\".ark_targets_read_for_completion\", envir = asNamespace(\"arkbridge\"), mode = \"function\", inherits = FALSE) else NULL; if (!is.null(.ark_reader)) .ark_reader(\"{}\") else if (!requireNamespace(\"targets\", quietly = TRUE)) NULL else targets::tar_read(name = \"{}\") }})",
+        escape_r_string(name),
         escape_r_string(name)
     )
 }
@@ -2853,8 +2916,14 @@ fn completion_request_from_string_subset_text(
     let prefix = line.chars().take(context.point.column).collect::<String>();
 
     if let Some(captures) = STRING_SUBSET2_RE.captures(prefix.as_str()) {
+        let expr_name = captures.name("expr")?.as_str();
+        let expr = target_read_assignment_expr_from_name(expr_name, context)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| expr_name.to_string());
+
         return Some(CompletionRequest {
-            expr: captures.name("expr")?.as_str().to_string(),
+            expr,
             flavor: CompletionFlavor::Subset,
             prefix: None,
             accessor: None,
@@ -2865,8 +2934,14 @@ fn completion_request_from_string_subset_text(
     }
 
     let captures = STRING_SUBSET_RE.captures(prefix.as_str())?;
+    let expr_name = captures.name("expr")?.as_str();
+    let expr = target_read_assignment_expr_from_name(expr_name, context)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| expr_name.to_string());
+
     Some(CompletionRequest {
-        expr: captures.name("expr")?.as_str().to_string(),
+        expr,
         flavor: CompletionFlavor::Subset,
         prefix: None,
         accessor: None,
@@ -4132,7 +4207,7 @@ mod tests {
             .unwrap()
             .expect("expected string subset completion request");
 
-        assert!(request.expr.contains("targets::tar_read"));
+        assert!(request.expr.contains(".ark_targets_read_for_completion"));
         assert!(request.expr.contains("table1"));
         assert_eq!(
             request.subset_kind,
@@ -4165,7 +4240,23 @@ mod tests {
             .unwrap()
             .expect("expected extractor completion request");
 
-        assert!(request.expr.contains("targets::tar_read"));
+        assert!(request.expr.contains(".ark_targets_read_for_completion"));
+        assert!(request.expr.contains("clean_data"));
+        assert_eq!(request.accessor, Some(String::from("$")));
+        assert_eq!(request.prefix, None);
+    }
+
+    #[test]
+    fn test_extractor_completion_request_canonicalizes_namespaced_tar_read_object() {
+        let (text, point) = point_from_cursor("targets::tar_read(clean_data)$@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("$")));
+
+        let request = completion_request_from_extractor(&context)
+            .unwrap()
+            .expect("expected extractor completion request");
+
+        assert!(request.expr.contains(".ark_targets_read_for_completion"));
         assert!(request.expr.contains("clean_data"));
         assert_eq!(request.accessor, Some(String::from("$")));
         assert_eq!(request.prefix, None);
@@ -4182,7 +4273,7 @@ mod tests {
             .unwrap()
             .expect("expected extractor completion request");
 
-        assert!(request.expr.contains("targets::tar_read"));
+        assert!(request.expr.contains(".ark_targets_read_for_completion"));
         assert!(request.expr.contains("clean_data"));
         assert_eq!(request.accessor, Some(String::from("$")));
         assert_eq!(request.prefix, None);
@@ -4215,7 +4306,25 @@ mod tests {
             .unwrap()
             .expect("expected string subset completion request");
 
-        assert!(request.expr.contains("targets::tar_read"));
+        assert!(request.expr.contains(".ark_targets_read_for_completion"));
+        assert!(request.expr.contains("table1"));
+        assert_eq!(
+            request.subset_kind,
+            Some(SubsetCompletionKind::StringSubset2)
+        );
+    }
+
+    #[test]
+    fn test_string_subset_text_fallback_canonicalizes_tar_read_assignment() {
+        let (text, point) = point_from_cursor("table1 <- tar_read(table1)\ntable1[[\"@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("\"")));
+
+        let request = completion_request_from_string_subset(&context)
+            .unwrap()
+            .expect("expected string subset completion request");
+
+        assert!(request.expr.contains(".ark_targets_read_for_completion"));
         assert!(request.expr.contains("table1"));
         assert_eq!(
             request.subset_kind,
@@ -4233,6 +4342,21 @@ mod tests {
             .expect("expected text fallback extractor completion request");
 
         assert_eq!(request.expr, "mylist");
+        assert_eq!(request.accessor, Some(String::from("$")));
+        assert_eq!(request.prefix, None);
+    }
+
+    #[test]
+    fn test_extractor_completion_request_text_fallback_canonicalizes_tar_read_object() {
+        let (text, point) = point_from_cursor("targets::tar_read(clean_data)$@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("$")));
+
+        let request = completion_request_from_extractor_text(&context)
+            .expect("expected text fallback extractor completion request");
+
+        assert!(request.expr.contains(".ark_targets_read_for_completion"));
+        assert!(request.expr.contains("clean_data"));
         assert_eq!(request.accessor, Some(String::from("$")));
         assert_eq!(request.prefix, None);
     }
@@ -4269,7 +4393,7 @@ mod tests {
     #[test]
     fn test_extractor_completion_request_treats_next_line_as_rhs_continuation() {
         let document = Document::new("mtcars$\nmtcars$mp\n", None);
-        let context = DocumentContext::new(&document, Point::new(0, 7), Some(String::from("$")));
+        let context = DocumentContext::new(&document, Point::new(0, 7), None);
 
         let request = completion_request_from_extractor(&context)
             .unwrap()
@@ -4278,6 +4402,20 @@ mod tests {
         assert_eq!(request.expr, "mtcars");
         assert_eq!(request.accessor, Some(String::from("$")));
         assert_eq!(request.prefix, Some(String::from("mtcars")));
+    }
+
+    #[test]
+    fn test_extractor_completion_request_trigger_ignores_next_line_rhs() {
+        let document = Document::new("mtcars$\nclean_data <- tar_read(clean_data)\n", None);
+        let context = DocumentContext::new(&document, Point::new(0, 7), Some(String::from("$")));
+
+        let request = completion_request_from_extractor(&context)
+            .unwrap()
+            .expect("expected extractor completion request");
+
+        assert_eq!(request.expr, "mtcars");
+        assert_eq!(request.accessor, Some(String::from("$")));
+        assert_eq!(request.prefix, None);
     }
 
     #[test]
@@ -4576,7 +4714,7 @@ mod tests {
             .unwrap()
             .expect("expected string subset completion request");
 
-        assert!(request.expr.contains("targets::tar_read"));
+        assert!(request.expr.contains(".ark_targets_read_for_completion"));
         assert!(request.expr.contains("table1"));
         assert_eq!(
             request.subset_kind,

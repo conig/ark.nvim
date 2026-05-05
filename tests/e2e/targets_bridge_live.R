@@ -31,6 +31,7 @@ script <- file.path(root, "_targets.R")
 store <- file.path(root, "cache", "targets")
 
 writeLines(c(
+  "targets::tar_config_set(store = 'cache/targets')",
   "list(",
   "  targets::tar_target(raw_data, data.frame(id = 1:3, value = c('a', 'b', 'c'))),",
   "  targets::tar_target(clean_data, raw_data),",
@@ -58,6 +59,14 @@ expect_true("clean_data->report" %in% edge_labels, "network should include clean
 
 make <- decode_payload(.ark_targets_action_payload(session, "make", root, script, store, list("clean_data")))
 expect_true(identical(make$status, "ok"), "make action should be ok")
+
+old <- setwd(root)
+completion_value <- tryCatch(
+  .ark_targets_read_for_completion("clean_data"),
+  finally = setwd(old)
+)
+expect_true(is.data.frame(completion_value), "completion target reader should return a data frame")
+expect_true(identical(names(completion_value), c("id", "value")), "completion target reader should preserve columns")
 
 meta <- decode_payload(.ark_targets_meta_payload(session, root, script, store, list("clean_data")))
 expect_true(identical(meta$status, "ok"), "metadata should be ok")
