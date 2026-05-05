@@ -259,6 +259,64 @@
     return(.ark_view_close_payload(session, req$session_id %||% ""))
   }
 
+  if (identical(req$command %||% "", "targets_project_info")) {
+    return(.ark_targets_project_info_payload(
+      session,
+      req$root %||% "",
+      req$script %||% "",
+      req$store %||% ""
+    ))
+  }
+
+  if (identical(req$command %||% "", "targets_manifest")) {
+    return(.ark_targets_manifest_payload(
+      session,
+      req$root %||% "",
+      req$script %||% "",
+      req$store %||% ""
+    ))
+  }
+
+  if (identical(req$command %||% "", "targets_network")) {
+    return(.ark_targets_network_payload(
+      session,
+      req$root %||% "",
+      req$script %||% "",
+      req$store %||% ""
+    ))
+  }
+
+  if (identical(req$command %||% "", "targets_meta")) {
+    return(.ark_targets_meta_payload(
+      session,
+      req$root %||% "",
+      req$script %||% "",
+      req$store %||% "",
+      req$names %||% character()
+    ))
+  }
+
+  if (identical(req$command %||% "", "targets_object_meta")) {
+    return(.ark_targets_object_meta_payload(
+      session,
+      req$root %||% "",
+      req$script %||% "",
+      req$store %||% "",
+      req$name %||% ""
+    ))
+  }
+
+  if (identical(req$command %||% "", "targets_action")) {
+    return(.ark_targets_action_payload(
+      session,
+      req$action %||% "",
+      req$root %||% "",
+      req$script %||% "",
+      req$store %||% "",
+      req$names %||% character()
+    ))
+  }
+
   expr <- req$expr %||% ""
   if (!is.character(expr) || length(expr) != 1L || !nzchar(expr)) {
     return(.emit_json(.new_error_payload("E_IPC_REQUEST", "missing expr", "ipc_request", session)))

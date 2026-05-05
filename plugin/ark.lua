@@ -65,6 +65,53 @@ vim.api.nvim_create_user_command("ArkViewClose", function()
   require("ark").view_close()
 end, { desc = "Close the current Ark data explorer tab" })
 
+vim.api.nvim_create_user_command("ArkTargetsInfo", function()
+  vim.print(require("ark").targets_project_info(0))
+end, { desc = "Print target project information for the current buffer" })
+
+vim.api.nvim_create_user_command("ArkTargetsManifest", function()
+  vim.print(require("ark").targets_manifest(0))
+end, { desc = "Print the target manifest for the current buffer" })
+
+vim.api.nvim_create_user_command("ArkTargetsNetwork", function()
+  vim.print(require("ark").targets_network(0))
+end, { desc = "Print the target graph for the current buffer" })
+
+vim.api.nvim_create_user_command("ArkTargetsMeta", function(args)
+  vim.print(require("ark").targets_meta(args.args, 0))
+end, {
+  desc = "Print target cache metadata; accepts optional target names",
+  nargs = "?",
+})
+
+vim.api.nvim_create_user_command("ArkTargetObjectMeta", function(args)
+  vim.print(require("ark").targets_object_meta(args.args, 0))
+end, {
+  desc = "Print bounded object metadata for one target",
+  nargs = 1,
+})
+
+vim.api.nvim_create_user_command("ArkTargetMake", function(args)
+  vim.print(require("ark").targets_action("make", args.args, 0))
+end, {
+  desc = "Run targets::tar_make() for optional target names",
+  nargs = "?",
+})
+
+vim.api.nvim_create_user_command("ArkTargetInvalidate", function(args)
+  vim.print(require("ark").targets_action("invalidate", args.args, 0))
+end, {
+  desc = "Run targets::tar_invalidate() for optional target names",
+  nargs = "?",
+})
+
+vim.api.nvim_create_user_command("ArkTargetLoad", function(args)
+  vim.print(require("ark").targets_action("load", args.args, 0))
+end, {
+  desc = "Run targets::tar_load() for optional target names",
+  nargs = "?",
+})
+
 vim.api.nvim_create_user_command("ArkSnippets", function()
   require("ark").snippets(0)
 end, { desc = "Open the Ark snippets picker for the current R-family buffer" })

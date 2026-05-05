@@ -425,6 +425,9 @@ impl GlobalState {
                         LspRequest::ViewRpc(params) => {
                             respond(tx, || handlers::handle_view_rpc(params, &self.world), LspResponse::ViewRpc)?;
                         },
+                        LspRequest::TargetsRpc(params) => {
+                            respond(tx, || handlers::handle_targets_rpc(params, &self.world), LspResponse::TargetsRpc)?;
+                        },
                     };
                 },
             },

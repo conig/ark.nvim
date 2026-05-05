@@ -876,6 +876,110 @@ impl SessionBridge {
         )
     }
 
+    pub(crate) fn targets_project_info(
+        &self,
+        root: String,
+        script: String,
+        store: String,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "targets_project_info",
+            serde_json::json!({
+                "root": root,
+                "script": script,
+                "store": store,
+            }),
+        )
+    }
+
+    pub(crate) fn targets_manifest(
+        &self,
+        root: String,
+        script: String,
+        store: String,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "targets_manifest",
+            serde_json::json!({
+                "root": root,
+                "script": script,
+                "store": store,
+            }),
+        )
+    }
+
+    pub(crate) fn targets_network(
+        &self,
+        root: String,
+        script: String,
+        store: String,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "targets_network",
+            serde_json::json!({
+                "root": root,
+                "script": script,
+                "store": store,
+            }),
+        )
+    }
+
+    pub(crate) fn targets_meta(
+        &self,
+        root: String,
+        script: String,
+        store: String,
+        names: Vec<String>,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "targets_meta",
+            serde_json::json!({
+                "root": root,
+                "script": script,
+                "store": store,
+                "names": names,
+            }),
+        )
+    }
+
+    pub(crate) fn targets_object_meta(
+        &self,
+        root: String,
+        script: String,
+        store: String,
+        name: String,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "targets_object_meta",
+            serde_json::json!({
+                "root": root,
+                "script": script,
+                "store": store,
+                "name": name,
+            }),
+        )
+    }
+
+    pub(crate) fn targets_action(
+        &self,
+        action: String,
+        root: String,
+        script: String,
+        store: String,
+        names: Vec<String>,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "targets_action",
+            serde_json::json!({
+                "action": action,
+                "root": root,
+                "script": script,
+                "store": store,
+                "names": names,
+            }),
+        )
+    }
+
     pub(crate) fn resolve_completion_item(
         &self,
         mut item: CompletionItem,
@@ -4841,6 +4945,92 @@ mod tests {
                     package: Some(String::from("dplyr")),
                 }],
             })
+        );
+    }
+
+    #[test]
+    fn test_targets_project_info_request_uses_bridge_command() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("expected target request");
+            let mut request = String::new();
+            stream
+                .read_to_string(&mut request)
+                .expect("expected target request payload");
+            let payload: serde_json::Value =
+                serde_json::from_str(request.trim()).expect("expected json target request");
+
+            assert_eq!(
+                payload
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                "targets_project_info"
+            );
+            assert_eq!(
+                payload
+                    .get("root")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                "/tmp/ark-targets-project"
+            );
+            assert_eq!(
+                payload
+                    .get("script")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                "/tmp/ark-targets-project/_targets.R"
+            );
+            assert_eq!(
+                payload
+                    .get("store")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                "/tmp/ark-targets-project/_targets"
+            );
+
+            stream
+                .write_all(
+                    br#"{"status":"ok","project":{"root":"/tmp/ark-targets-project"},"targets_available":true}"#,
+                )
+                .expect("expected target response");
+        });
+
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port,
+            auth_token: String::from("ark-test-token"),
+            timeout_ms: 50,
+            ..Default::default()
+        })
+        .expect("expected bridge");
+
+        let response = bridge
+            .targets_project_info(
+                String::from("/tmp/ark-targets-project"),
+                String::from("/tmp/ark-targets-project/_targets.R"),
+                String::from("/tmp/ark-targets-project/_targets"),
+            )
+            .expect("expected target response");
+        handle.join().expect("expected listener thread to join");
+
+        assert_eq!(
+            response
+                .get("project")
+                .and_then(|project| project.get("root"))
+                .and_then(serde_json::Value::as_str),
+            Some("/tmp/ark-targets-project")
+        );
+        assert_eq!(
+            response
+                .get("targets_available")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
         );
     }
 }

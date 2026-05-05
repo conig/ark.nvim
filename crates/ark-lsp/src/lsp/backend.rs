@@ -32,6 +32,11 @@ use crate::lsp::handlers::HelpTextParams;
 use crate::lsp::handlers::SessionBootstrapResponse;
 use crate::lsp::handlers::SessionUpdateParams;
 use crate::lsp::handlers::StatusParams;
+use crate::lsp::handlers::TargetsActionParams;
+use crate::lsp::handlers::TargetsMetaParams;
+use crate::lsp::handlers::TargetsObjectMetaParams;
+use crate::lsp::handlers::TargetsProjectParams;
+use crate::lsp::handlers::TargetsRpcRequest;
 use crate::lsp::handlers::ViewCellParams;
 use crate::lsp::handlers::ViewExportParams;
 use crate::lsp::handlers::ViewFilterParams;
@@ -48,6 +53,12 @@ use crate::lsp::handlers::ARK_HELP_TEXT_REQUEST;
 use crate::lsp::handlers::ARK_SESSION_BOOTSTRAP_REQUEST;
 use crate::lsp::handlers::ARK_SESSION_UPDATE_NOTIFICATION;
 use crate::lsp::handlers::ARK_STATUS_REQUEST;
+use crate::lsp::handlers::ARK_TARGETS_ACTION_REQUEST;
+use crate::lsp::handlers::ARK_TARGETS_MANIFEST_REQUEST;
+use crate::lsp::handlers::ARK_TARGETS_META_REQUEST;
+use crate::lsp::handlers::ARK_TARGETS_NETWORK_REQUEST;
+use crate::lsp::handlers::ARK_TARGETS_OBJECT_META_REQUEST;
+use crate::lsp::handlers::ARK_TARGETS_PROJECT_INFO_REQUEST;
 use crate::lsp::handlers::ARK_VDOC_REQUEST;
 use crate::lsp::handlers::ARK_VIEW_CELL_REQUEST;
 use crate::lsp::handlers::ARK_VIEW_CLOSE_REQUEST;
@@ -176,6 +187,7 @@ pub(crate) enum LspRequest {
     InputBoundaries(InputBoundariesParams),
     SessionBootstrap(SessionUpdateParams),
     ViewRpc(ViewRpcRequest),
+    TargetsRpc(TargetsRpcRequest),
 }
 
 #[derive(Debug)]
@@ -204,6 +216,7 @@ pub(crate) enum LspResponse {
     InputBoundaries(InputBoundariesResponse),
     SessionBootstrap(SessionBootstrapResponse),
     ViewRpc(Value),
+    TargetsRpc(Value),
 }
 
 pub(crate) type LspResult<T> = std::result::Result<T, LspError>;
@@ -711,6 +724,79 @@ impl Backend {
         )
     }
 
+    async fn targets_project_info(
+        &self,
+        params: TargetsProjectParams,
+    ) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::TargetsRpc(TargetsRpcRequest::ProjectInfo(
+                params
+            )))
+            .await,
+            LspResponse::TargetsRpc
+        )
+    }
+
+    async fn targets_manifest(
+        &self,
+        params: TargetsProjectParams,
+    ) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::TargetsRpc(TargetsRpcRequest::Manifest(params)))
+                .await,
+            LspResponse::TargetsRpc
+        )
+    }
+
+    async fn targets_network(
+        &self,
+        params: TargetsProjectParams,
+    ) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::TargetsRpc(TargetsRpcRequest::Network(params)))
+                .await,
+            LspResponse::TargetsRpc
+        )
+    }
+
+    async fn targets_meta(&self, params: TargetsMetaParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::TargetsRpc(TargetsRpcRequest::Meta(params)))
+                .await,
+            LspResponse::TargetsRpc
+        )
+    }
+
+    async fn targets_object_meta(
+        &self,
+        params: TargetsObjectMetaParams,
+    ) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::TargetsRpc(TargetsRpcRequest::ObjectMeta(
+                params
+            )))
+            .await,
+            LspResponse::TargetsRpc
+        )
+    }
+
+    async fn targets_action(
+        &self,
+        params: TargetsActionParams,
+    ) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::TargetsRpc(TargetsRpcRequest::Action(params)))
+                .await,
+            LspResponse::TargetsRpc
+        )
+    }
+
     async fn notification(&self, params: Option<Value>) {
         log::info!("Received legacy ark/notification payload: {:?}", params);
     }
@@ -773,6 +859,18 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         .custom_method(ARK_VIEW_EXPORT_REQUEST, Backend::view_export)
         .custom_method(ARK_VIEW_CELL_REQUEST, Backend::view_cell)
         .custom_method(ARK_VIEW_CLOSE_REQUEST, Backend::view_close)
+        .custom_method(
+            ARK_TARGETS_PROJECT_INFO_REQUEST,
+            Backend::targets_project_info,
+        )
+        .custom_method(ARK_TARGETS_MANIFEST_REQUEST, Backend::targets_manifest)
+        .custom_method(ARK_TARGETS_NETWORK_REQUEST, Backend::targets_network)
+        .custom_method(ARK_TARGETS_META_REQUEST, Backend::targets_meta)
+        .custom_method(
+            ARK_TARGETS_OBJECT_META_REQUEST,
+            Backend::targets_object_meta,
+        )
+        .custom_method(ARK_TARGETS_ACTION_REQUEST, Backend::targets_action)
         .custom_method(
             input_boundaries::ARK_INPUT_BOUNDARIES_REQUEST,
             Backend::input_boundaries,

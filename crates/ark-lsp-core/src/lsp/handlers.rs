@@ -95,6 +95,12 @@ pub static ARK_VIEW_CODE_REQUEST: &str = "ark/internal/viewCode";
 pub static ARK_VIEW_EXPORT_REQUEST: &str = "ark/internal/viewExport";
 pub static ARK_VIEW_CELL_REQUEST: &str = "ark/internal/viewCell";
 pub static ARK_VIEW_CLOSE_REQUEST: &str = "ark/internal/viewClose";
+pub static ARK_TARGETS_PROJECT_INFO_REQUEST: &str = "ark/internal/targetsProjectInfo";
+pub static ARK_TARGETS_MANIFEST_REQUEST: &str = "ark/internal/targetsManifest";
+pub static ARK_TARGETS_NETWORK_REQUEST: &str = "ark/internal/targetsNetwork";
+pub static ARK_TARGETS_META_REQUEST: &str = "ark/internal/targetsMeta";
+pub static ARK_TARGETS_OBJECT_META_REQUEST: &str = "ark/internal/targetsObjectMeta";
+pub static ARK_TARGETS_ACTION_REQUEST: &str = "ark/internal/targetsAction";
 
 #[derive(Debug, Eq, PartialEq, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -247,6 +253,68 @@ pub(crate) enum ViewRpcRequest {
     Export(ViewExportParams),
     Cell(ViewCellParams),
     Close(ViewSessionParams),
+}
+
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TargetsProjectParams {
+    #[serde(default)]
+    pub root: String,
+    #[serde(default)]
+    pub script: String,
+    #[serde(default)]
+    pub store: String,
+}
+
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TargetsMetaParams {
+    #[serde(default)]
+    pub root: String,
+    #[serde(default)]
+    pub script: String,
+    #[serde(default)]
+    pub store: String,
+    #[serde(default)]
+    pub names: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TargetsObjectMetaParams {
+    #[serde(default)]
+    pub root: String,
+    #[serde(default)]
+    pub script: String,
+    #[serde(default)]
+    pub store: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TargetsActionParams {
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub root: String,
+    #[serde(default)]
+    pub script: String,
+    #[serde(default)]
+    pub store: String,
+    #[serde(default)]
+    pub names: Vec<String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum TargetsRpcRequest {
+    ProjectInfo(TargetsProjectParams),
+    Manifest(TargetsProjectParams),
+    Network(TargetsProjectParams),
+    Meta(TargetsMetaParams),
+    ObjectMeta(TargetsObjectMetaParams),
+    Action(TargetsActionParams),
 }
 
 fn log_detached_bridge_auth_fallback(feature: &str, err: &anyhow::Error) {
@@ -439,6 +507,51 @@ pub(crate) fn handle_view_rpc(params: ViewRpcRequest, state: &WorldState) -> Lsp
             params.column_index,
         ),
         ViewRpcRequest::Close(params) => session_bridge.view_close(params.session_id.as_str()),
+    };
+
+    response.map_err(LspError::Anyhow)
+}
+
+pub(crate) fn handle_targets_rpc(
+    params: TargetsRpcRequest,
+    state: &WorldState,
+) -> LspResult<Value> {
+    if state.has_attached_runtime() {
+        return Err(LspError::Anyhow(anyhow!(
+            "Ark target requests are only supported in detached runtime mode"
+        )));
+    }
+
+    let Some(session_bridge) = state.session_bridge.as_ref() else {
+        return Err(LspError::Anyhow(anyhow!("session bridge missing")));
+    };
+
+    let response = match params {
+        TargetsRpcRequest::ProjectInfo(params) => {
+            session_bridge.targets_project_info(params.root, params.script, params.store)
+        },
+        TargetsRpcRequest::Manifest(params) => {
+            session_bridge.targets_manifest(params.root, params.script, params.store)
+        },
+        TargetsRpcRequest::Network(params) => {
+            session_bridge.targets_network(params.root, params.script, params.store)
+        },
+        TargetsRpcRequest::Meta(params) => {
+            session_bridge.targets_meta(params.root, params.script, params.store, params.names)
+        },
+        TargetsRpcRequest::ObjectMeta(params) => session_bridge.targets_object_meta(
+            params.root,
+            params.script,
+            params.store,
+            params.name,
+        ),
+        TargetsRpcRequest::Action(params) => session_bridge.targets_action(
+            params.action,
+            params.root,
+            params.script,
+            params.store,
+            params.names,
+        ),
     };
 
     response.map_err(LspError::Anyhow)

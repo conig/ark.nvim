@@ -319,6 +319,9 @@ fn index_document_entries_impl(doc: &Document, index_targets_options: bool) -> V
             if let Err(err) = index_targets_option_set(doc, &node, &mut entries) {
                 lsp::log_error!("Can't index targets options: {err:?}");
             }
+            if let Err(err) = index_targets_target_calls(doc, &node, &mut entries) {
+                lsp::log_error!("Can't index targets: {err:?}");
+            }
         }
     }
 
@@ -397,6 +400,69 @@ fn index_targets_option_set(
             });
         }
     }
+
+    Ok(())
+}
+
+fn index_targets_target_calls(
+    doc: &Document,
+    node: &Node,
+    entries: &mut Vec<IndexEntry>,
+) -> anyhow::Result<()> {
+    if node.is_call() {
+        index_targets_target_call(doc, node, entries)?;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        index_targets_target_calls(doc, &child, entries)?;
+    }
+
+    Ok(())
+}
+
+fn index_targets_target_call(
+    doc: &Document,
+    node: &Node,
+    entries: &mut Vec<IndexEntry>,
+) -> anyhow::Result<()> {
+    let Some(callee) = node.child_by_field_name("function") else {
+        return Ok(());
+    };
+    let callee = callee.node_as_str(&doc.contents)?;
+    if !matches!(
+        callee,
+        "tar_target" | "targets::tar_target" | "targets:::tar_target"
+    ) {
+        return Ok(());
+    }
+
+    let target_node =
+        node.arguments().into_iter().find_map(
+            |(name, value)| {
+                if name.is_none() {
+                    value
+                } else {
+                    None
+                }
+            },
+        );
+    let Some(target_node) = target_node else {
+        return Ok(());
+    };
+
+    let name = target_node
+        .get_identifier_or_string_text(&doc.contents)?
+        .to_string();
+    let start = doc.lsp_position_from_tree_sitter_point(target_node.start_position())?;
+    let end = doc.lsp_position_from_tree_sitter_point(target_node.end_position())?;
+    let range = Range { start, end };
+
+    entries.push(IndexEntry {
+        key: name.clone(),
+        range,
+        data: IndexEntryData::Variable { name },
+    });
 
     Ok(())
 }
@@ -723,6 +789,36 @@ targets::tar_option_set(
                 .into_iter()
                 .all(|entry| !matches!(entry.data, IndexEntryData::PackageImport { .. })),
             "targets package imports should only be indexed from _targets.R"
+        );
+    }
+
+    #[test]
+    fn test_index_targets_target_names() {
+        let doc = Document::new(
+            r#"
+list(
+    targets::tar_target(raw_data, read.csv("data.csv")),
+    tar_target(clean_data, raw_data)
+)
+"#,
+            None,
+        );
+        let uri = Url::parse("file:///tmp/example/_targets.R").unwrap();
+
+        let targets: Vec<_> = index_document_entries_for_uri(&doc, &uri)
+            .into_iter()
+            .filter_map(|entry| match entry.data {
+                IndexEntryData::Variable { name } => Some(name),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(targets, vec!["raw_data", "clean_data"]);
+        assert!(
+            index_document_entries(&doc)
+                .into_iter()
+                .all(|entry| !matches!(entry.data, IndexEntryData::Variable { name } if name == "raw_data" || name == "clean_data")),
+            "targets should only be indexed from _targets.R"
         );
     }
 

@@ -19,6 +19,12 @@ local VIEW_CODE_METHOD = "ark/internal/viewCode"
 local VIEW_EXPORT_METHOD = "ark/internal/viewExport"
 local VIEW_CELL_METHOD = "ark/internal/viewCell"
 local VIEW_CLOSE_METHOD = "ark/internal/viewClose"
+local TARGETS_PROJECT_INFO_METHOD = "ark/internal/targetsProjectInfo"
+local TARGETS_MANIFEST_METHOD = "ark/internal/targetsManifest"
+local TARGETS_NETWORK_METHOD = "ark/internal/targetsNetwork"
+local TARGETS_META_METHOD = "ark/internal/targetsMeta"
+local TARGETS_OBJECT_META_METHOD = "ark/internal/targetsObjectMeta"
+local TARGETS_ACTION_METHOD = "ark/internal/targetsAction"
 
 local session_watches = {}
 local buffer_watch_cleanup = {}
@@ -1573,6 +1579,46 @@ function M.view_close(opts, bufnr, session_id)
   return view_request(opts, bufnr, VIEW_CLOSE_METHOD, {
     sessionId = session_id,
   }, 3000)
+end
+
+local function targets_project_payload(project)
+  project = project or {}
+  return {
+    root = project.root or "",
+    script = project.script or "",
+    store = project.store or "",
+  }
+end
+
+function M.targets_project_info(opts, bufnr, project)
+  return view_request(opts, bufnr, TARGETS_PROJECT_INFO_METHOD, targets_project_payload(project), 3000)
+end
+
+function M.targets_manifest(opts, bufnr, project)
+  return view_request(opts, bufnr, TARGETS_MANIFEST_METHOD, targets_project_payload(project), 5000)
+end
+
+function M.targets_network(opts, bufnr, project)
+  return view_request(opts, bufnr, TARGETS_NETWORK_METHOD, targets_project_payload(project), 5000)
+end
+
+function M.targets_meta(opts, bufnr, project, names)
+  local payload = targets_project_payload(project)
+  payload.names = names or {}
+  return view_request(opts, bufnr, TARGETS_META_METHOD, payload, 5000)
+end
+
+function M.targets_object_meta(opts, bufnr, project, name)
+  local payload = targets_project_payload(project)
+  payload.name = name or ""
+  return view_request(opts, bufnr, TARGETS_OBJECT_META_METHOD, payload, 5000)
+end
+
+function M.targets_action(opts, bufnr, project, action, names)
+  local payload = targets_project_payload(project)
+  payload.action = action or ""
+  payload.names = names or {}
+  return view_request(opts, bufnr, TARGETS_ACTION_METHOD, payload, 30000)
 end
 
 return M

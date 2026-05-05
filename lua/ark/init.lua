@@ -1675,6 +1675,89 @@ function M.view_close()
   return view.close()
 end
 
+local function targets_project(bufnr)
+  bufnr = resolve_bufnr(bufnr)
+  local path = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) or ""
+  local anchor = path ~= "" and path or vim.loop.cwd()
+  local root = vim.fs.root(anchor, { "_targets.R", ".git" }) or vim.loop.cwd()
+  root = vim.fs.normalize(root)
+
+  return {
+    root = root,
+    script = vim.fs.normalize(root .. "/_targets.R"),
+    store = vim.fs.normalize(root .. "/_targets"),
+  }
+end
+
+local function normalize_target_names(value)
+  if type(value) ~= "string" or value == "" then
+    return {}
+  end
+
+  local names = {}
+  for name in value:gmatch("[^,%s]+") do
+    names[#names + 1] = name
+  end
+  return names
+end
+
+local function targets_request(bufnr, label, request)
+  ensure_setup()
+  bufnr = resolve_bufnr(bufnr)
+
+  local ok, runtime_err = ensure_runtime_ready(bufnr, label or "ark.nvim target lens")
+  if not ok then
+    notify(runtime_err, vim.log.levels.WARN)
+    return nil, runtime_err
+  end
+
+  local result, err = request(targets_project(bufnr), bufnr)
+  if not result then
+    notify(err or "target request failed", vim.log.levels.WARN)
+    return nil, err
+  end
+
+  return result
+end
+
+function M.targets_project_info(bufnr)
+  return targets_request(bufnr, "ark.nvim target project info", function(project, target_bufnr)
+    return lsp.targets_project_info(options, target_bufnr, project)
+  end)
+end
+
+function M.targets_manifest(bufnr)
+  return targets_request(bufnr, "ark.nvim target manifest", function(project, target_bufnr)
+    return lsp.targets_manifest(options, target_bufnr, project)
+  end)
+end
+
+function M.targets_network(bufnr)
+  return targets_request(bufnr, "ark.nvim target network", function(project, target_bufnr)
+    return lsp.targets_network(options, target_bufnr, project)
+  end)
+end
+
+function M.targets_meta(names, bufnr)
+  names = normalize_target_names(names)
+  return targets_request(bufnr, "ark.nvim target metadata", function(project, target_bufnr)
+    return lsp.targets_meta(options, target_bufnr, project, names)
+  end)
+end
+
+function M.targets_object_meta(name, bufnr)
+  return targets_request(bufnr, "ark.nvim target object metadata", function(project, target_bufnr)
+    return lsp.targets_object_meta(options, target_bufnr, project, name)
+  end)
+end
+
+function M.targets_action(action, names, bufnr)
+  names = normalize_target_names(names)
+  return targets_request(bufnr, "ark.nvim target action", function(project, target_bufnr)
+    return lsp.targets_action(options, target_bufnr, project, action, names)
+  end)
+end
+
 function M.refresh(bufnr)
   ensure_setup()
 
