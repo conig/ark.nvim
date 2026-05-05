@@ -188,6 +188,272 @@ part of the default supported path.
 - R Markdown / Quarto inline `` `r ...` `` completion
 - Safety-oriented E2E runner for tmux-backed and Blink-backed tests
 
+## Named Future Version: v1.1 Target Lens
+
+`v1.1 Target Lens` is the named version for making `{targets}` projects a
+first-class Ark concept.
+
+This version exists because the target user workflow is not just editing loose
+R scripts. The common high-value workflow is:
+
+1. maintain a project-level `_targets.R`
+2. split pipeline declarations across `_target_pipelines/` or similar files
+3. define analysis functions in `R/`
+4. render `.Rmd` / `.qmd` manuscripts from cached targets
+5. iterate by building, invalidating, inspecting, and loading individual targets
+
+`Target Lens` should turn that pipeline graph into editor-native language
+intelligence. The goal is not to replace `{targets}`. The goal is to let Ark
+understand target names, dependencies, cache state, and cached objects well
+enough that editing a manuscript or analysis function feels connected to the
+actual pipeline.
+
+### Product Capability
+
+The v1.1 user-facing feature set is:
+
+- complete target names in `tar_read()`, `tar_load()`, `tar_make(names = ...)`,
+  `tar_invalidate(names = ...)`, `tarchetypes::tar_render()`, and common
+  project helpers that forward to those APIs
+- jump from a target reference to the nearest static declaration such as
+  `tar_target(clean_data, ...)`, even when that declaration lives in a sourced
+  pipeline file
+- show references for a target across `_targets.R`, `_target_pipelines/`,
+  `R/`, and literate documents
+- hover a target name to show its command, upstream dependencies, downstream
+  dependents, status, last build time, error/warning state, object format, and
+  lightweight object metadata when available
+- surface target-aware document and workspace symbols so fuzzy navigation can
+  find pipeline nodes, rendered reports, and major pipeline sections
+- provide code actions or Ark commands for "build this target", "build
+  downstream", "invalidate this target", "load this target", "open target log",
+  and "show local graph"
+- in `.Rmd` / `.qmd`, make target references in inline and fenced R code behave
+  like normal symbols rather than opaque strings or bare names
+- when safe, provide member and column completion for cached target objects, for
+  example `tar_read(clean_data)$`, `targets::tar_read(table1)[["`, and
+  manuscript variables assigned from `tar_read()`
+
+### Macro Architecture Change
+
+The current product has three active layers:
+
+1. Neovim plugin
+2. detached `ark-lsp`
+3. pane-side `arkbridge`
+
+`Target Lens` adds a fourth conceptual layer:
+
+4. project intelligence
+
+This is not a new long-running daemon by default. It is a set of indexed,
+cached, and bridge-hydrated project models owned primarily by `ark-lsp-core`.
+The plugin presents the model, and `arkbridge` hydrates runtime/cache facts that
+cannot be known statically.
+
+The resulting architecture is:
+
+- **Plugin layer**: commands, pickers, quickfix/log views, progress reporting,
+  and user-triggered pipeline actions
+- **LSP layer**: target-aware parsing, symbol resolution, completions, hover,
+  definitions, references, diagnostics, and code actions
+- **Session bridge layer**: trusted local execution of `{targets}` queries and
+  selected actions inside the managed R session
+- **Project intelligence layer**: the merged static/dynamic target model used
+  by the LSP and bridge-backed features
+
+This layer must sit at the same boundary as the existing session bridge. It
+must not scrape tmux text or infer pipeline state from console output.
+
+### Project Model
+
+`ark-lsp-core` should maintain a target project model per workspace root:
+
+- project root and `_targets.R` path
+- target store path, including non-default `tar_config_set(store = ...)` or
+  equivalent detected configuration when available
+- target declarations found statically in `_targets.R`, `_target_pipelines/`,
+  and other files reached by `tar_source()` / `source()` where practical
+- manifest targets from `targets::tar_manifest()`
+- graph edges from `targets::tar_network(targets_only = TRUE)` or an
+  equivalent bridge-owned query
+- cache metadata from `targets::tar_meta()`
+- lightweight object metadata for cached targets, such as class, type,
+  dimensions, names, column names, and top-level member names
+- stale/error/warning status
+- source ranges for static declarations and references
+
+The model is deliberately two-tiered:
+
+- **Static tier**: cheap and always available from open files and workspace
+  indexing. It powers immediate completion, definitions, references, and
+  diagnostics without needing the R session.
+- **Dynamic tier**: bridge-hydrated data from the real project environment. It
+  powers graph truth, cache status, target metadata, and actions that require
+  `{targets}` itself.
+
+The dynamic tier must refine the static model, not block it. Opening a project
+must not wait for `targets::tar_manifest()` or cache inspection before normal R
+language features become usable.
+
+### Static Indexing Requirements
+
+The static indexer should recognize at least:
+
+- `_targets.R`
+- files loaded with `tar_source()`
+- simple `source()` calls from `_targets.R`
+- conventional `_target_pipelines/*.R` files
+- direct `tar_target(name, command, ...)` declarations
+- namespace-qualified declarations such as `targets::tar_target(...)`
+- `tarchetypes::tar_render(name, path, ...)`
+- calls that return lists of `tar_target()` objects when the target name itself
+  is still syntactically present
+
+Static analysis should be conservative. If a target is generated dynamically by
+a factory and no reliable source range exists, Ark should still surface the
+manifest target but mark the definition as dynamic or manifest-only instead of
+pretending there is a precise source location.
+
+### Bridge Requirements
+
+`arkbridge` should gain a small `{targets}` request family. Candidate requests:
+
+- `targets_project_info`: resolve active project root, target script, store, and
+  whether `{targets}` is installed
+- `targets_manifest`: return target names, commands, descriptions where
+  available, patterns, and declared formats
+- `targets_network`: return upstream/downstream edges
+- `targets_meta`: return cache status, timestamps, errors, warnings, runtime,
+  bytes, and path-like metadata
+- `targets_object_meta`: return bounded object metadata for one target without
+  eagerly materializing large payloads unless allowed by config
+- `targets_action`: run approved actions such as make, invalidate, load, or
+  downstream make against explicit target names
+
+Bridge requests must be project-scoped and side-effect aware:
+
+- read-only queries should be safe to run automatically after debounce
+- build, invalidate, and load actions require explicit user commands or code
+  actions
+- commands must pass explicit `names = ...` rather than fuzzy strings unless the
+  UI has already resolved the exact set of targets
+- long-running actions should stream progress or expose a log path, but Ark
+  should not parse the interactive console as the source of truth
+- target object inspection must have size/time limits and should degrade to
+  status-only metadata when an object is too expensive to inspect
+
+The managed R session remains the canonical runtime authority because it has
+the right `.Renviron`, `renv`, package library, project working directory, and
+local data mounts. A separate hidden R process may be considered later only if
+it can reproduce that environment without splitting the user's runtime state.
+
+### LSP Feature Integration
+
+Target intelligence should be exposed through normal LSP features where
+possible:
+
+- completion: target names, target-aware arguments, cached-object members
+- definition: target reference to declaration source range
+- references: target declaration/reference search
+- hover: merged static/dynamic target summary
+- document symbols: target nodes and pipeline sections
+- workspace symbols: target names with project/file labels
+- code actions: build/invalidate/load/show graph/open log
+- diagnostics: unknown target references, impossible static definitions, and
+  optionally stale/failed target state
+
+Ark-native custom requests may be added for UI surfaces that are not naturally
+LSP-shaped, such as target graph exploration, target action progress, and rich
+target status panes. Keep custom methods Ark-native, for example under an
+`ark/targets/*` namespace.
+
+### Plugin Surface
+
+The plugin should present target intelligence without creating a competing
+pipeline runner UI.
+
+Expected commands:
+
+- `:ArkTargets`
+- `:ArkTargetGraph`
+- `:ArkTargetBuild`
+- `:ArkTargetBuildDownstream`
+- `:ArkTargetInvalidate`
+- `:ArkTargetLoad`
+- `:ArkTargetLog`
+- `:ArkTargetStatus`
+
+The commands may use Snacks pickers when available, but the canonical operation
+should remain available through LSP code actions and direct commands. The
+commands should use exact target identities supplied by the LSP model rather
+than shelling out to fuzzy text matching.
+
+### Cache And Invalidation
+
+Target project state should be cached with explicit invalidation:
+
+- buffer edits invalidate static declarations and references for that document
+- writes to `_targets.R` or sourced pipeline files invalidate the static project
+  target index
+- changes under the target store invalidate dynamic metadata
+- a successful build/invalidate action invalidates affected target metadata and
+  graph status
+- a bridge session restart invalidates dynamic data but should preserve static
+  indexing
+
+Expensive dynamic refresh should be debounced and cancelable. The default
+startup path should only schedule target hydration after normal LSP/session
+readiness, unless the user explicitly runs a target command.
+
+### Non-Goals
+
+`Target Lens` does not:
+
+- reimplement `{targets}`
+- replace `snipe`, `stop`, or project-specific helper packages
+- make Ark responsible for remote/HPC pipeline orchestration
+- run arbitrary target builds automatically
+- parse tmux pane output as target state
+- require all target factories to have perfect static source locations
+- make stale target diagnostics noisy by default
+
+### Acceptance Criteria
+
+`v1.1 Target Lens` is shippable when:
+
+- target-name completion works in R scripts and literate R documents
+- go-to-definition works for statically declared targets across `_targets.R` and
+  sourced pipeline files
+- hover shows a useful merged static/dynamic target summary
+- `tar_read()` / `tar_load()` references are not reported as unknown symbols
+  when the target exists
+- cached-object member or column completion works for at least data frames,
+  data.tables, lists, and rendered target objects when inspection is safe
+- build, invalidate, load, status, graph, and log actions operate on exact
+  target identities
+- generated/dynamic targets degrade gracefully as manifest-only targets
+- opening a target project does not regress current Ark startup timing in the
+  no-target-command path
+
+### Verification Expectations For v1.1
+
+Verification should use a small repo-owned toy `{targets}` project plus at
+least one real-world-style split-pipeline fixture.
+
+Required coverage:
+
+- Rust unit tests for static target extraction and reference classification
+- request-level LSP tests for completion, definition, references, hover, and
+  diagnostics
+- bridge tests for manifest, network, metadata, object metadata, and bounded
+  failure behavior
+- headless Neovim tests for commands and code actions
+- tmux-backed E2E tests that prove live bridge hydration and exact target
+  actions
+- R Markdown / Quarto tests where target references occur inside fenced chunks
+  and inline `` `r ...` `` expressions
+
 ## Open Work After This Tranche
 
 These are still legitimate follow-ups, but they are not required to treat the
