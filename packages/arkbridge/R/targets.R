@@ -302,6 +302,10 @@
   selected
 }
 
+.ark_targets_progress_path <- function(project) {
+  file.path(project$store, "meta", "progress")
+}
+
 .ark_targets_project_info_payload <- function(session, root = "", script = "", store = "") {
   .ark_targets_safe(session, {
     project <- .ark_targets_project(root, script, store)
@@ -425,7 +429,11 @@
       session = session,
       project = project,
       name = name,
-      object_meta = inspect_object(value, options = list(include_members = FALSE))
+      object_meta = inspect_object(value, options = list(
+        request_profile = "meta_only",
+        max_members = 200L,
+        include_member_stats = FALSE
+      ))
     ))
   })
 }
@@ -439,15 +447,15 @@
     names <- .ark_targets_names(names)
     project <- .ark_targets_project(root, script, store)
     action <- match.arg(action, c("make", "make_downstream", "invalidate", "load"))
+    resolved_names <- if (identical(action, "make_downstream")) {
+      .ark_targets_downstream_names(project, names)
+    } else {
+      names
+    }
 
     result <- .ark_targets_with_project(project, {
       if (identical(action, "make") || identical(action, "make_downstream")) {
-        build_names <- if (identical(action, "make_downstream")) {
-          .ark_targets_downstream_names(project, names)
-        } else {
-          names
-        }
-        .ark_targets_call_export("tar_make", list(names = build_names, script = project$script, store = project$store))
+        .ark_targets_call_export("tar_make", list(names = resolved_names, script = project$script, store = project$store))
       } else if (identical(action, "invalidate")) {
         .ark_targets_call_export("tar_invalidate", list(names = names, store = project$store))
       } else {
@@ -462,6 +470,8 @@
       project = project,
       action = action,
       names = names,
+      resolved_names = resolved_names,
+      log_path = .ark_targets_progress_path(project),
       result = result
     ))
   })

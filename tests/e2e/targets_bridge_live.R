@@ -86,6 +86,10 @@ object <- decode_payload(.ark_targets_object_meta_payload(session, root, script,
 expect_true(identical(object$status, "ok"), "object metadata should be ok")
 classes <- object$object_meta$object_meta$class %||% character()
 expect_true("data.frame" %in% classes, "object metadata should report data.frame class")
+object_members <- vapply(object$object_meta$members, function(member) {
+  member$name_display %||% member$nameDisplay %||% ""
+}, character(1))
+expect_true(all(c("id", "value") %in% object_members), "object metadata should include bounded data frame member names")
 
 dt_object <- decode_payload(.ark_targets_object_meta_payload(session, root, script, store, "dt_data"))
 expect_true(identical(dt_object$status, "ok"), "data.table object metadata should be ok")
@@ -102,6 +106,8 @@ expect_true(identical(load$status, "ok"), "load action should be ok")
 
 downstream <- decode_payload(.ark_targets_action_payload(session, "make_downstream", root, script, store, list("raw_data")))
 expect_true(identical(downstream$status, "ok"), "downstream make action should be ok")
+expect_true(all(c("raw_data", "clean_data", "report") %in% downstream$resolved_names), "downstream make should report resolved target identities")
+expect_true(is.character(downstream$log_path) && length(downstream$log_path) == 1L && nzchar(downstream$log_path), "target actions should expose a progress log path")
 
 invalidate <- decode_payload(.ark_targets_action_payload(session, "invalidate", root, script, store, list("report")))
 expect_true(identical(invalidate$status, "ok"), "invalidate action should be ok")

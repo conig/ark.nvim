@@ -111,6 +111,13 @@ end
 if not vim.tbl_contains(classes, "data.frame") then
   ark_test.fail("expected clean_data object metadata to include data.frame, got " .. vim.inspect(object))
 end
+local object_members = {}
+for _, member in ipairs(object_meta.members or object_meta.Members or {}) do
+  object_members[member.name_display or member.nameDisplay or member.name_raw or member.nameRaw or ""] = true
+end
+if not object_members.id or not object_members.value then
+  ark_test.fail("expected clean_data object metadata to include data frame member names, got " .. vim.inspect(object))
+end
 
 local dt_object = ark.targets_object_meta("dt_data", 0)
 if type(dt_object) ~= "table" or dt_object.status ~= "ok" then
@@ -179,6 +186,16 @@ end
 local downstream = ark.targets_action("make_downstream", "raw_data", 0)
 if type(downstream) ~= "table" or downstream.status ~= "ok" or downstream.action ~= "make_downstream" then
   ark_test.fail("expected target downstream make payload, got " .. vim.inspect(downstream))
+end
+local resolved = {}
+for _, name in ipairs(downstream.resolved_names or downstream.resolvedNames or {}) do
+  resolved[name] = true
+end
+if not (resolved.raw_data and resolved.clean_data and resolved.report) then
+  ark_test.fail("expected downstream make to report resolved target identities, got " .. vim.inspect(downstream))
+end
+if type(downstream.log_path or downstream.logPath) ~= "string" or (downstream.log_path or downstream.logPath) == "" then
+  ark_test.fail("expected downstream make to expose a progress log path, got " .. vim.inspect(downstream))
 end
 
 local invalidate = ark.targets_action("invalidate", "report", 0)

@@ -1150,9 +1150,13 @@ fn target_meta_hover_section(value: &Value) -> Option<String> {
 }
 
 fn target_object_meta_hover_section(value: &Value) -> Option<String> {
-    let object_meta = value
+    let payload = value
         .get("objectMeta")
         .or_else(|| value.get("object_meta"))?;
+    let object_meta = payload
+        .get("objectMeta")
+        .or_else(|| payload.get("object_meta"))
+        .unwrap_or(payload);
     let mut details = Vec::new();
 
     if let Some(summary) = target_hover_scalar(object_meta.get("summary")) {
@@ -1175,11 +1179,41 @@ fn target_object_meta_hover_section(value: &Value) -> Option<String> {
     if let Some(value) = target_hover_scalar(object_meta.get("length")) {
         details.push(format!("Object length: `{value}`"));
     }
+    if let Some(members) = target_object_member_names(payload) {
+        details.push(format!(
+            "Members: {}",
+            format_target_list(members.as_slice())
+        ));
+    }
 
     if details.is_empty() {
         None
     } else {
         Some(details.join("\n"))
+    }
+}
+
+fn target_object_member_names(value: &Value) -> Option<Vec<String>> {
+    let names: Vec<_> = value
+        .get("members")?
+        .as_array()?
+        .iter()
+        .filter_map(|member| {
+            member
+                .get("nameDisplay")
+                .or_else(|| member.get("name_display"))
+                .or_else(|| member.get("nameRaw"))
+                .or_else(|| member.get("name_raw"))
+                .and_then(Value::as_str)
+        })
+        .filter(|name| !name.is_empty())
+        .map(String::from)
+        .collect();
+
+    if names.is_empty() {
+        None
+    } else {
+        Some(names)
     }
 }
 
@@ -1725,10 +1759,16 @@ list()
         });
         let object_meta = serde_json::json!({
             "objectMeta": {
-                "summary": "10 x 3 data frame",
-                "type": "list",
-                "class": ["data.frame"],
-                "length": 3
+                "objectMeta": {
+                    "summary": "10 x 3 data frame",
+                    "type": "list",
+                    "class": ["data.frame"],
+                    "length": 3
+                },
+                "members": [
+                    { "nameDisplay": "id" },
+                    { "name_display": "value" }
+                ]
             }
         });
 
@@ -1746,6 +1786,7 @@ list()
             target_object_meta_hover_section(&object_meta).expect("expected object meta");
         assert!(object_section.contains("10 x 3 data frame"));
         assert!(object_section.contains("Object class: `data.frame`"));
+        assert!(object_section.contains("Members: `id`, `value`"));
 
         let huge_meta = serde_json::json!({ "meta": [{ "bytes": 10000000 }] });
         assert!(!target_meta_allows_hover_object_inspection(&huge_meta));
