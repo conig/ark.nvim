@@ -1736,13 +1736,27 @@ local function targets_request(bufnr, label, request)
     return nil, runtime_err
   end
 
-  local result, err = request(targets_project(bufnr), bufnr)
-  if not result then
-    notify(err or "target request failed", vim.log.levels.WARN)
-    return nil, err
+  local project = targets_project(bufnr)
+  local result, err = nil, nil
+  for attempt = 1, 5 do
+    result, err = request(project, bufnr)
+    if result then
+      return result
+    end
+
+    local err_text = tostring(err or "")
+    local transient = err_text:find("Resource temporarily unavailable", 1, true) ~= nil
+      or err_text:find("bridge connection failed", 1, true) ~= nil
+    if not transient or attempt == 5 then
+      break
+    end
+    vim.wait(150 * attempt, function()
+      return false
+    end, 150 * attempt, false)
   end
 
-  return result
+  notify(err or "target request failed", vim.log.levels.WARN)
+  return nil, err
 end
 
 local function target_records(payload, key)

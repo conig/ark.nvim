@@ -1618,7 +1618,7 @@ function M.targets_action(opts, bufnr, project, action, names)
   local payload = targets_project_payload(project)
   payload.action = action or ""
   payload.names = names or {}
-  return view_request(opts, bufnr, TARGETS_ACTION_METHOD, payload, 30000)
+  return view_request(opts, bufnr, TARGETS_ACTION_METHOD, payload, 120000)
 end
 
 return M

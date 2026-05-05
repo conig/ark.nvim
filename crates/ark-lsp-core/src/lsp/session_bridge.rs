@@ -1479,7 +1479,7 @@ impl SessionBridge {
         Request: FnMut(&SessionBridgeConnection) -> anyhow::Result<T>,
     {
         let mut connection = source.current_connection()?;
-        let max_attempts = 3;
+        let max_attempts = 30;
 
         for attempt in 0..max_attempts {
             match request(&connection) {
@@ -1494,9 +1494,8 @@ impl SessionBridge {
                     }
 
                     if retry_io && attempt + 1 < max_attempts {
-                        if attempt > 0 {
-                            std::thread::sleep(Duration::from_millis(15));
-                        }
+                        let delay_ms = 15 * u64::try_from(attempt + 1).unwrap_or(1);
+                        std::thread::sleep(Duration::from_millis(delay_ms.min(100)));
                         continue;
                     }
 

@@ -265,14 +265,14 @@
     return(character())
   }
 
-  network <- tryCatch(
-    .ark_targets_with_project(project, {
-      .ark_targets_call_export("tar_network", list(targets_only = TRUE, script = project$script))
-    }),
-    error = function(e) NULL
-  )
-  if (is.null(network)) {
-    network <- .ark_targets_static_network(project)
+  network <- .ark_targets_static_network(project)
+  if (!length(.ark_targets_edge_records(network)) && .ark_targets_package_available()) {
+    network <- tryCatch(
+      .ark_targets_with_project(project, {
+        .ark_targets_call_export("tar_network", list(targets_only = TRUE, script = project$script))
+      }),
+      error = function(e) NULL
+    )
   }
 
   edges <- .ark_targets_edge_records(network)
