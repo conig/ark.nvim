@@ -200,8 +200,7 @@ fn find_references_in_folder(
     for entry in walker.into_iter().filter_entry(filter_entry) {
         let entry = unwrap!(entry, Err(_) => { continue; });
         let path = entry.path();
-        let ext = unwrap!(path.extension(), None => { continue; });
-        if ext != "r" && ext != "R" {
+        if !is_reference_search_file(path) {
             continue;
         }
 
@@ -218,6 +217,17 @@ fn find_references_in_folder(
             },
         }
     }
+}
+
+fn is_reference_search_file(path: &Path) -> bool {
+    let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+        return false;
+    };
+
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "r" | "rmd" | "qmd" | "quarto"
+    )
 }
 
 fn find_references_in_document(
@@ -286,6 +296,7 @@ mod tests {
         let tempdir = tempfile::tempdir().expect("expected tempdir");
         let targets_path = tempdir.path().join("_targets.R");
         let analysis_path = tempdir.path().join("analysis.R");
+        let report_path = tempdir.path().join("report.Rmd");
 
         std::fs::write(&targets_path, "list(tar_target(clean_data, 1))\n")
             .expect("expected targets file");
@@ -294,6 +305,11 @@ mod tests {
             "x <- targets::tar_read(\"clean_data\")\ny <- clean_data\n",
         )
         .expect("expected analysis file");
+        std::fs::write(
+            &report_path,
+            "Report `r clean_data`.\n\n```{r}\ntargets::tar_read(\"clean_data\")\n```\n",
+        )
+        .expect("expected report file");
 
         let targets_uri = Url::from_file_path(&targets_path).expect("expected targets uri");
         let analysis_uri = Url::from_file_path(&analysis_path).expect("expected analysis uri");
@@ -335,6 +351,14 @@ mod tests {
                 .count() >=
                 2,
             "expected string and bare target references in analysis file: {locations:?}"
+        );
+        assert!(
+            locations
+                .iter()
+                .filter(|location| location.uri.as_str().ends_with("report.Rmd"))
+                .count() >=
+                2,
+            "expected inline and fenced target references in report file: {locations:?}"
         );
     }
 }
