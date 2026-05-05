@@ -69,13 +69,28 @@ vim.api.nvim_create_user_command("ArkTargetsInfo", function()
   vim.print(require("ark").targets_project_info(0))
 end, { desc = "Print target project information for the current buffer" })
 
+vim.api.nvim_create_user_command("ArkTargets", function()
+  vim.print(require("ark").targets_manifest(0))
+end, { desc = "Print the target manifest for the current buffer" })
+
 vim.api.nvim_create_user_command("ArkTargetsManifest", function()
   vim.print(require("ark").targets_manifest(0))
 end, { desc = "Print the target manifest for the current buffer" })
 
+vim.api.nvim_create_user_command("ArkTargetGraph", function()
+  vim.print(require("ark").targets_network(0))
+end, { desc = "Print the target graph for the current buffer" })
+
 vim.api.nvim_create_user_command("ArkTargetsNetwork", function()
   vim.print(require("ark").targets_network(0))
 end, { desc = "Print the target graph for the current buffer" })
+
+vim.api.nvim_create_user_command("ArkTargetStatus", function(args)
+  vim.print(require("ark").targets_meta(args.args, 0))
+end, {
+  desc = "Print target status metadata; accepts optional target names",
+  nargs = "?",
+})
 
 vim.api.nvim_create_user_command("ArkTargetsMeta", function(args)
   vim.print(require("ark").targets_meta(args.args, 0))
@@ -89,6 +104,13 @@ vim.api.nvim_create_user_command("ArkTargetObjectMeta", function(args)
 end, {
   desc = "Print bounded object metadata for one target",
   nargs = 1,
+})
+
+vim.api.nvim_create_user_command("ArkTargetBuild", function(args)
+  vim.print(require("ark").targets_action("make", args.args, 0))
+end, {
+  desc = "Run targets::tar_make() for optional target names",
+  nargs = "?",
 })
 
 vim.api.nvim_create_user_command("ArkTargetMake", function(args)
