@@ -464,6 +464,12 @@ pub(crate) struct SessionBridgeCompletion {
     pub merge_static: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TargetCompletionProject {
+    pub root: String,
+    pub script: String,
+}
+
 impl SessionBridge {
     pub(crate) fn debug_info(&self) -> SessionBridgeDebugInfo {
         let (source_kind, status_file, host, port) = match &self.source {
@@ -537,8 +543,9 @@ impl SessionBridge {
     pub(crate) fn completion_items(
         &self,
         context: &DocumentContext,
+        target_project: Option<TargetCompletionProject>,
     ) -> anyhow::Result<Option<SessionBridgeCompletion>> {
-        let Some(plan) = self.completion_plan(context)? else {
+        let Some(plan) = self.completion_plan(context, target_project.as_ref())? else {
             return Ok(None);
         };
 
@@ -1032,7 +1039,11 @@ impl SessionBridge {
         Ok(item)
     }
 
-    fn completion_plan(&self, context: &DocumentContext) -> anyhow::Result<Option<CompletionPlan>> {
+    fn completion_plan(
+        &self,
+        context: &DocumentContext,
+        target_project: Option<&TargetCompletionProject>,
+    ) -> anyhow::Result<Option<CompletionPlan>> {
         if context.is_empty_assignment_rhs() {
             return Ok(None);
         }
@@ -1049,7 +1060,7 @@ impl SessionBridge {
         if let Some(request) = completion_request_from_package_string(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
-        if let Some(request) = completion_request_from_custom_call(context)? {
+        if let Some(request) = completion_request_from_custom_call(context, target_project)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
         if let Some(request) = completion_request_from_argument_string(context)? {
@@ -2600,6 +2611,7 @@ fn completion_request_from_argument_string_text(
 
 fn completion_request_from_custom_call(
     context: &DocumentContext,
+    target_project: Option<&TargetCompletionProject>,
 ) -> anyhow::Result<Option<CompletionRequest>> {
     let Some(call) = analyze_call_context(context)? else {
         return Ok(None);
@@ -2624,7 +2636,7 @@ fn completion_request_from_custom_call(
         }
 
         return Ok(Some(CompletionRequest {
-            expr: target_names_completion_expr(),
+            expr: target_names_completion_expr(target_project),
             flavor: CompletionFlavor::Symbol,
             prefix,
             accessor: None,
@@ -3869,9 +3881,18 @@ fn env_names_completion_expr() -> String {
     )
 }
 
-fn target_names_completion_expr() -> String {
-    String::from(
-        "local({ if (!requireNamespace(\"targets\", quietly = TRUE)) { stats::setNames(list(), character()) } else { .x <- tryCatch(targets::tar_manifest(), error = function(e) NULL); .names <- if (is.null(.x) || is.null(.x$name)) character() else as.character(.x$name); .names <- .names[!is.na(.names)]; stats::setNames(vector(\"list\", length(.names)), .names) } })",
+fn target_names_completion_expr(project: Option<&TargetCompletionProject>) -> String {
+    let Some(project) = project else {
+        return String::from(
+            "local({ if (!requireNamespace(\"targets\", quietly = TRUE)) { stats::setNames(list(), character()) } else { .x <- tryCatch(targets::tar_manifest(), error = function(e) NULL); .names <- if (is.null(.x) || is.null(.x$name)) character() else as.character(.x$name); .names <- .names[!is.na(.names)]; stats::setNames(vector(\"list\", length(.names)), .names) } })",
+        );
+    };
+
+    format!(
+        "local({{ if (!requireNamespace(\"targets\", quietly = TRUE)) {{ stats::setNames(list(), character()) }} else {{ .old <- getwd(); on.exit(setwd(.old), add = TRUE); if (dir.exists(\"{}\")) setwd(\"{}\"); .x <- tryCatch(targets::tar_manifest(script = \"{}\"), error = function(e) NULL); .names <- if (is.null(.x) || is.null(.x$name)) character() else as.character(.x$name); .names <- .names[!is.na(.names)]; stats::setNames(vector(\"list\", length(.names)), .names) }} }})",
+        escape_r_string(project.root.as_str()),
+        escape_r_string(project.root.as_str()),
+        escape_r_string(project.script.as_str())
     )
 }
 
@@ -4551,7 +4572,7 @@ mod tests {
         .unwrap();
 
         let plan = bridge
-            .completion_plan(&context)
+            .completion_plan(&context, None)
             .unwrap()
             .expect("expected completion plan");
 
@@ -4604,7 +4625,7 @@ mod tests {
         let document = Document::new(text.as_str(), None);
         let context = DocumentContext::new(&document, point, None);
 
-        let request = completion_request_from_custom_call(&context)
+        let request = completion_request_from_custom_call(&context, None)
             .unwrap()
             .expect("expected custom completion request");
 
@@ -4620,7 +4641,7 @@ mod tests {
         let document = Document::new(text.as_str(), None);
         let context = DocumentContext::new(&document, point, None);
 
-        let request = completion_request_from_custom_call(&context)
+        let request = completion_request_from_custom_call(&context, None)
             .unwrap()
             .expect("expected custom completion request");
 
@@ -4636,7 +4657,7 @@ mod tests {
         let document = Document::new(text.as_str(), None);
         let context = DocumentContext::new(&document, point, None);
 
-        let request = completion_request_from_custom_call(&context)
+        let request = completion_request_from_custom_call(&context, None)
             .unwrap()
             .expect("expected target completion request");
 
@@ -4648,12 +4669,34 @@ mod tests {
     }
 
     #[test]
+    fn test_target_call_request_scopes_empty_tar_load_to_project() {
+        let (text, point) = point_from_cursor("```{r}\ntar_load(@)\n```\n");
+        let document = Document::new_with_kind(text.as_str(), None, DocumentKind::LiterateR);
+        let context = DocumentContext::new(&document, point, Some(String::from("(")));
+        let project = TargetCompletionProject {
+            root: String::from("/tmp/ark-target-project"),
+            script: String::from("/tmp/ark-target-project/_targets.R"),
+        };
+
+        let request = completion_request_from_custom_call(&context, Some(&project))
+            .unwrap()
+            .expect("expected target completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert_eq!(request.prefix, None);
+        assert!(request.expr.contains("setwd(\"/tmp/ark-target-project\")"));
+        assert!(request
+            .expr
+            .contains("targets::tar_manifest(script = \"/tmp/ark-target-project/_targets.R\")"));
+    }
+
+    #[test]
     fn test_target_call_request_completes_names_argument_strings() {
         let (text, point) = point_from_cursor("tar_make(names = \"clean_@\")");
         let document = Document::new(text.as_str(), None);
         let context = DocumentContext::new(&document, point, None);
 
-        let request = completion_request_from_custom_call(&context)
+        let request = completion_request_from_custom_call(&context, None)
             .unwrap()
             .expect("expected target completion request");
 
@@ -4669,7 +4712,7 @@ mod tests {
         let document = Document::new(text.as_str(), None);
         let context = DocumentContext::new(&document, point, None);
 
-        let request = completion_request_from_custom_call(&context)
+        let request = completion_request_from_custom_call(&context, None)
             .unwrap()
             .expect("expected target completion request");
 
@@ -4686,7 +4729,7 @@ mod tests {
         let document = Document::new(text.as_str(), None);
         let context = DocumentContext::new(&document, point, None);
 
-        let request = completion_request_from_custom_call(&context)
+        let request = completion_request_from_custom_call(&context, None)
             .unwrap()
             .expect("expected target completion request");
 
@@ -4703,7 +4746,7 @@ mod tests {
         let document = Document::new(text.as_str(), None);
         let context = DocumentContext::new(&document, point, None);
 
-        let request = completion_request_from_custom_call(&context)
+        let request = completion_request_from_custom_call(&context, None)
             .unwrap()
             .expect("expected target completion request");
 
@@ -4718,7 +4761,7 @@ mod tests {
         let document = Document::new_with_kind(text.as_str(), None, DocumentKind::LiterateR);
         let context = DocumentContext::new(&document, point, None);
 
-        let request = completion_request_from_custom_call(&context)
+        let request = completion_request_from_custom_call(&context, None)
             .unwrap()
             .expect("expected target completion request");
 
@@ -4733,7 +4776,7 @@ mod tests {
         let document = Document::new_with_kind(text.as_str(), None, DocumentKind::LiterateR);
         let context = DocumentContext::new(&document, point, None);
 
-        let request = completion_request_from_custom_call(&context)
+        let request = completion_request_from_custom_call(&context, None)
             .unwrap()
             .expect("expected target completion request");
 

@@ -48,6 +48,7 @@ vim.fn.writefile({
 
 local test_file = root .. "/analysis.R"
 local pane_id, client = ark_test.setup_managed_buffer(test_file, {
+  "tar_load(",
   "targets::tar_read(clean_data)$",
   "targets::tar_read(dt_data)$",
   "targets::tar_read(list_data)$",
@@ -56,6 +57,42 @@ local pane_id, client = ark_test.setup_managed_buffer(test_file, {
 })
 
 local ark = require("ark")
+
+local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+local function completion_at(line, trigger)
+  local params = {
+    textDocument = vim.lsp.util.make_text_document_params(0),
+    position = { line = line - 1, character = #lines[line] },
+  }
+  if trigger then
+    params.context = {
+      triggerKind = vim.lsp.protocol.CompletionTriggerKind.TriggerCharacter,
+      triggerCharacter = trigger,
+    }
+  end
+  return ark_test.completion_items(ark_test.request(client, "textDocument/completion", params, 10000))
+end
+
+local non_project = vim.fs.normalize(ark_test.run_tmpdir() .. "/non-project")
+vim.fn.mkdir(non_project, "p")
+ark_test.tmux({
+  "send-keys",
+  "-t",
+  pane_id,
+  string.format("setwd(%q); getwd()", non_project),
+  "Enter",
+})
+ark_test.wait_for("managed R non-project working directory", 10000, function()
+  local capture = ark_test.tmux({ "capture-pane", "-p", "-t", pane_id })
+  return capture:find(non_project, 1, true) ~= nil
+end)
+
+local target_name_items = completion_at(1, "(")
+for _, name in ipairs({ "raw_data", "clean_data", "dt_data", "list_data", "report" }) do
+  if not ark_test.find_item(target_name_items, name) then
+    ark_test.fail("project-scoped tar_load completion missing target " .. name .. ": " .. vim.inspect(ark_test.item_labels(target_name_items)))
+  end
+end
 
 ark_test.tmux({
   "send-keys",
@@ -143,37 +180,22 @@ if list_nested_meta.type ~= "list" then
   ark_test.fail("expected list_data object metadata to report list type, got " .. vim.inspect(list_object))
 end
 
-local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-local function completion_at(line, trigger)
-  local params = {
-    textDocument = vim.lsp.util.make_text_document_params(0),
-    position = { line = line - 1, character = #lines[line] },
-  }
-  if trigger then
-    params.context = {
-      triggerKind = vim.lsp.protocol.CompletionTriggerKind.TriggerCharacter,
-      triggerCharacter = trigger,
-    }
-  end
-  return ark_test.completion_items(ark_test.request(client, "textDocument/completion", params, 10000))
-end
-
-local direct_items = completion_at(1, "$")
+local direct_items = completion_at(2, "$")
 if not ark_test.find_item(direct_items, "id") or not ark_test.find_item(direct_items, "value") then
   ark_test.fail("direct tar_read extractor completion missing target columns: " .. vim.inspect(ark_test.item_labels(direct_items)))
 end
 
-local dt_items = completion_at(2, "$")
+local dt_items = completion_at(3, "$")
 if not ark_test.find_item(dt_items, "dt_id") or not ark_test.find_item(dt_items, "dt_value") then
   ark_test.fail("data.table tar_read extractor completion missing target columns: " .. vim.inspect(ark_test.item_labels(dt_items)))
 end
 
-local list_items = completion_at(3, "$")
+local list_items = completion_at(4, "$")
 if not ark_test.find_item(list_items, "alpha") or not ark_test.find_item(list_items, "beta") then
   ark_test.fail("list tar_read extractor completion missing target members: " .. vim.inspect(ark_test.item_labels(list_items)))
 end
 
-local assigned_items = completion_at(5, '"')
+local assigned_items = completion_at(6, '"')
 if not ark_test.find_item(assigned_items, "id") or not ark_test.find_item(assigned_items, "value") then
   ark_test.fail("assigned tar_read subset completion missing target columns: " .. vim.inspect(ark_test.item_labels(assigned_items)))
 end
@@ -210,6 +232,7 @@ vim.print({
   object = classes,
   data_table_object = dt_classes,
   list_object = list_nested_meta.type,
+  target_name_completion = ark_test.item_labels(target_name_items),
   direct_completion = ark_test.item_labels(direct_items),
   data_table_completion = ark_test.item_labels(dt_items),
   list_completion = ark_test.item_labels(list_items),

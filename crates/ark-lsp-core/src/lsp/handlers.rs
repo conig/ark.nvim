@@ -78,6 +78,7 @@ use crate::lsp::session_bridge::is_bridge_unavailable;
 use crate::lsp::session_bridge::is_eval_missing_object_error;
 use crate::lsp::session_bridge::is_ipc_auth_error;
 use crate::lsp::session_bridge::HelpPage;
+use crate::lsp::session_bridge::TargetCompletionProject;
 use crate::lsp::signature_help::r_signature_help;
 use crate::lsp::state::WorldState;
 use crate::lsp::statement_range::statement_range;
@@ -600,7 +601,9 @@ pub(crate) fn handle_completion(
         }
 
         if let Some(session_bridge) = state.session_bridge.as_ref() {
-            let detached = match session_bridge.completion_items(&context) {
+            let target_project = target_project_paths(&uri, state)
+                .map(|(root, script, _store)| TargetCompletionProject { root, script });
+            let detached = match session_bridge.completion_items(&context, target_project) {
                 Ok(detached) => detached,
                 Err(err) => {
                     if is_bridge_unavailable(&err) || is_eval_missing_object_error(&err) {
