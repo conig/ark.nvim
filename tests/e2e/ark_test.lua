@@ -241,13 +241,13 @@ function M.assert_no_snippet_items(items, label)
   end
 end
 
-function M.setup_managed_buffer(test_file, lines)
-  require("ark").setup({
+function M.setup_managed_buffer(test_file, lines, setup_opts)
+  require("ark").setup(vim.tbl_deep_extend("force", {
     auto_start_pane = false,
     auto_start_lsp = false,
     async_startup = false,
     configure_slime = true,
-  })
+  }, setup_opts or {}))
 
   vim.fn.writefile(lines, test_file)
   vim.cmd("edit " .. test_file)

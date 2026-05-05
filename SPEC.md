@@ -167,6 +167,9 @@ part of the default supported path.
   should rely on the current installed-package snapshot or lazy library-path
   metadata, without forcing an eager installed-package enumeration on the
   startup path.
+- The launcher may prepend Ark's private session library while bootstrapping
+  `arkbridge`, but it must restore the user's normal `.libPaths()` before
+  handing control to the interactive REPL.
 - R Markdown / Quarto fenced chunks work for completion and diagnostics, and
   inline `` `r ...` `` expressions complete as R code.
 - Blink integration stays on the normal `lsp` source, with Ark-specific provider

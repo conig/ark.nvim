@@ -426,9 +426,10 @@ local({
     }, add = TRUE)
 
     .bootstrap_lib <- Sys.getenv("ARK_R_LIB", unset = "$BOOTSTRAP_LIB_R")
+    .user_lib_paths <- .libPaths()
     if (nzchar(.bootstrap_lib)) {
       dir.create(.bootstrap_lib, recursive = TRUE, showWarnings = FALSE)
-      .libPaths(unique(c(.bootstrap_lib, .libPaths())))
+      .libPaths(unique(c(.bootstrap_lib, .user_lib_paths)))
     }
     .auth_token <- Sys.getenv("ARK_IPC_AUTH_TOKEN", unset = "")
     if (!nzchar(.auth_token)) {
@@ -452,6 +453,10 @@ local({
     }
 
     if (.has_runtime(.bootstrap_lib)) {
+      if (nzchar(.bootstrap_lib)) {
+        .libPaths(.user_lib_paths)
+      }
+
       .pane_id <- suppressWarnings(as.integer(gsub("[^0-9]", "", .pane)))
       if (is.na(.pane_id)) {
         .pane_id <- as.integer(Sys.getpid() %% 1000L)
