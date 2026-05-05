@@ -1720,6 +1720,112 @@ local function targets_request(bufnr, label, request)
   return result
 end
 
+local function target_records(payload, key)
+  if type(payload) ~= "table" then
+    return {}
+  end
+  local value = payload[key]
+  if type(value) ~= "table" then
+    return {}
+  end
+  return value
+end
+
+local function target_scalar(value)
+  if value == nil or value == vim.NIL then
+    return ""
+  end
+  if type(value) == "table" then
+    return vim.inspect(value)
+  end
+  return tostring(value)
+end
+
+local function target_project_label(payload)
+  local project = type(payload) == "table" and payload.project or nil
+  if type(project) == "table" and type(project.root) == "string" and project.root ~= "" then
+    return project.root
+  end
+  return vim.loop.cwd()
+end
+
+local function open_targets_text(title, lines)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].filetype = "markdown"
+  vim.api.nvim_buf_set_name(buf, string.format("%s #%d", title, buf))
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].readonly = true
+
+  vim.cmd("botright split")
+  vim.api.nvim_win_set_buf(0, buf)
+  vim.keymap.set("n", "q", "<cmd>close<cr>", { buffer = buf, nowait = true, silent = true })
+
+  return { bufnr = buf, lines = lines }
+end
+
+local function render_targets_graph(payload)
+  local lines = {
+    "# Ark Target Graph",
+    "",
+    "Project: " .. target_project_label(payload),
+    "Source: " .. target_scalar(payload and payload.source),
+    "",
+  }
+
+  local edges = target_records(payload, "edges")
+  if #edges == 0 then
+    lines[#lines + 1] = "(no graph edges)"
+    return lines
+  end
+
+  lines[#lines + 1] = "From -> To"
+  lines[#lines + 1] = "---------"
+  for _, edge in ipairs(edges) do
+    local from = target_scalar(edge.from)
+    local to = target_scalar(edge.to)
+    if from ~= "" or to ~= "" then
+      lines[#lines + 1] = from .. " -> " .. to
+    end
+  end
+  return lines
+end
+
+local function render_targets_status(payload, title)
+  local lines = {
+    "# " .. title,
+    "",
+    "Project: " .. target_project_label(payload),
+    "",
+  }
+
+  local meta = target_records(payload, "meta")
+  if #meta == 0 then
+    lines[#lines + 1] = "(no target metadata)"
+    return lines
+  end
+
+  for _, row in ipairs(meta) do
+    local name = target_scalar(row.name)
+    if name == "" then
+      name = "(unnamed target)"
+    end
+    lines[#lines + 1] = "## " .. name
+    for _, key in ipairs({ "progress", "time", "seconds", "bytes", "format", "error", "warning", "path" }) do
+      local value = target_scalar(row[key])
+      if value ~= "" then
+        lines[#lines + 1] = "- " .. key .. ": " .. value
+      end
+    end
+    lines[#lines + 1] = ""
+  end
+
+  return lines
+end
+
 function M.targets_project_info(bufnr)
   return targets_request(bufnr, "ark.nvim target project info", function(project, target_bufnr)
     return lsp.targets_project_info(options, target_bufnr, project)
@@ -1738,11 +1844,35 @@ function M.targets_network(bufnr)
   end)
 end
 
+function M.targets_graph(bufnr)
+  local payload, err = M.targets_network(bufnr)
+  if not payload then
+    return nil, err
+  end
+  return open_targets_text("Ark Target Graph", render_targets_graph(payload))
+end
+
 function M.targets_meta(names, bufnr)
   names = normalize_target_names(names)
   return targets_request(bufnr, "ark.nvim target metadata", function(project, target_bufnr)
     return lsp.targets_meta(options, target_bufnr, project, names)
   end)
+end
+
+function M.targets_status(names, bufnr)
+  local payload, err = M.targets_meta(names, bufnr)
+  if not payload then
+    return nil, err
+  end
+  return open_targets_text("Ark Target Status", render_targets_status(payload, "Ark Target Status"))
+end
+
+function M.targets_log(names, bufnr)
+  local payload, err = M.targets_meta(names, bufnr)
+  if not payload then
+    return nil, err
+  end
+  return open_targets_text("Ark Target Log", render_targets_status(payload, "Ark Target Log"))
 end
 
 function M.targets_object_meta(name, bufnr)

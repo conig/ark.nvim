@@ -15,9 +15,21 @@ package.loaded["ark"] = {
     calls[#calls + 1] = { name = "network", bufnr = bufnr }
     return { status = "ok" }
   end,
+  targets_graph = function(bufnr)
+    calls[#calls + 1] = { name = "graph", bufnr = bufnr }
+    return { bufnr = 7 }
+  end,
   targets_meta = function(names, bufnr)
     calls[#calls + 1] = { name = "meta", names = names, bufnr = bufnr }
     return { status = "ok" }
+  end,
+  targets_status = function(names, bufnr)
+    calls[#calls + 1] = { name = "status", names = names, bufnr = bufnr }
+    return { bufnr = 8 }
+  end,
+  targets_log = function(names, bufnr)
+    calls[#calls + 1] = { name = "log", names = names, bufnr = bufnr }
+    return { bufnr = 9 }
   end,
   targets_object_meta = function(name, bufnr)
     calls[#calls + 1] = { name = "object_meta", target = name, bufnr = bufnr }
@@ -62,9 +74,9 @@ local expected = {
   { name = "info", bufnr = 0 },
   { name = "manifest", bufnr = 0 },
   { name = "manifest", bufnr = 0 },
-  { name = "network", bufnr = 0 },
-  { name = "network", bufnr = 0 },
-  { name = "meta", names = "clean_data", bufnr = 0 },
+  { name = "graph", bufnr = 0 },
+  { name = "graph", bufnr = 0 },
+  { name = "status", names = "clean_data", bufnr = 0 },
   { name = "meta", names = "clean_data", bufnr = 0 },
   { name = "object_meta", target = "clean_data", bufnr = 0 },
   { name = "action", action = "make", names = "clean_data", bufnr = 0 },
@@ -72,13 +84,13 @@ local expected = {
   { name = "action", action = "make", names = "clean_data", bufnr = 0 },
   { name = "action", action = "invalidate", names = "clean_data", bufnr = 0 },
   { name = "action", action = "load", names = "clean_data", bufnr = 0 },
-  { name = "meta", names = "clean_data", bufnr = 0 },
+  { name = "log", names = "clean_data", bufnr = 0 },
   { name = "action", action = "make", names = "clean_data", bufnr = 42 },
   { name = "action", action = "make_downstream", names = "clean_data", bufnr = 42 },
-  { name = "meta", names = "clean_data", bufnr = 42 },
-  { name = "meta", names = "clean_data", bufnr = 42 },
+  { name = "status", names = "clean_data", bufnr = 42 },
+  { name = "log", names = "clean_data", bufnr = 42 },
   { name = "object_meta", target = "clean_data", bufnr = 42 },
-  { name = "network", bufnr = 42 },
+  { name = "graph", bufnr = 42 },
 }
 
 if not vim.deep_equal(calls, expected) then

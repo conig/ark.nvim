@@ -11,13 +11,13 @@ vim.lsp.commands["ark.targetAction"] = function(command, ctx)
   elseif action == "makeDownstream" then
     vim.print(ark.targets_action("make_downstream", name, bufnr))
   elseif action == "status" then
-    vim.print(ark.targets_meta(name, bufnr))
+    ark.targets_status(name, bufnr)
   elseif action == "log" then
-    vim.print(ark.targets_meta(name, bufnr))
+    ark.targets_log(name, bufnr)
   elseif action == "objectMeta" then
     vim.print(ark.targets_object_meta(name, bufnr))
   elseif action == "graph" then
-    vim.print(ark.targets_network(bufnr))
+    ark.targets_graph(bufnr)
   else
     vim.notify("Unknown ark.nvim target action: " .. tostring(action), vim.log.levels.WARN, {
       title = "ark.nvim",
@@ -105,17 +105,17 @@ vim.api.nvim_create_user_command("ArkTargetsManifest", function()
 end, { desc = "Print the target manifest for the current buffer" })
 
 vim.api.nvim_create_user_command("ArkTargetGraph", function()
-  vim.print(require("ark").targets_network(0))
-end, { desc = "Print the target graph for the current buffer" })
+  require("ark").targets_graph(0)
+end, { desc = "Open the target graph for the current buffer" })
 
 vim.api.nvim_create_user_command("ArkTargetsNetwork", function()
-  vim.print(require("ark").targets_network(0))
-end, { desc = "Print the target graph for the current buffer" })
+  require("ark").targets_graph(0)
+end, { desc = "Open the target graph for the current buffer" })
 
 vim.api.nvim_create_user_command("ArkTargetStatus", function(args)
-  vim.print(require("ark").targets_meta(args.args, 0))
+  require("ark").targets_status(args.args, 0)
 end, {
-  desc = "Print target status metadata; accepts optional target names",
+  desc = "Open target status metadata; accepts optional target names",
   nargs = "?",
 })
 
@@ -169,9 +169,9 @@ end, {
 })
 
 vim.api.nvim_create_user_command("ArkTargetLog", function(args)
-  vim.print(require("ark").targets_meta(args.args, 0))
+  require("ark").targets_log(args.args, 0)
 end, {
-  desc = "Print target log/status metadata; accepts optional target names",
+  desc = "Open target log/status metadata; accepts optional target names",
   nargs = "?",
 })
 
