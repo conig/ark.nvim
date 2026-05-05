@@ -44,6 +44,16 @@ vim.cmd("ArkTargetMake clean_data")
 vim.cmd("ArkTargetInvalidate clean_data")
 vim.cmd("ArkTargetLoad clean_data")
 
+local command = vim.lsp.commands["ark.targetAction"]
+if type(command) ~= "function" then
+  error("ark.targetAction LSP command was not registered", 0)
+end
+
+command({ arguments = { { action = "make", name = "clean_data" } } }, { bufnr = 42 })
+command({ arguments = { { action = "status", name = "clean_data" } } }, { bufnr = 42 })
+command({ arguments = { { action = "objectMeta", name = "clean_data" } } }, { bufnr = 42 })
+command({ arguments = { { action = "graph", name = vim.NIL } } }, { bufnr = 42 })
+
 local expected = {
   { name = "info", bufnr = 0 },
   { name = "manifest", bufnr = 0 },
@@ -57,6 +67,10 @@ local expected = {
   { name = "action", action = "make", names = "clean_data", bufnr = 0 },
   { name = "action", action = "invalidate", names = "clean_data", bufnr = 0 },
   { name = "action", action = "load", names = "clean_data", bufnr = 0 },
+  { name = "action", action = "make", names = "clean_data", bufnr = 42 },
+  { name = "meta", names = "clean_data", bufnr = 42 },
+  { name = "object_meta", target = "clean_data", bufnr = 42 },
+  { name = "network", bufnr = 42 },
 }
 
 if not vim.deep_equal(calls, expected) then

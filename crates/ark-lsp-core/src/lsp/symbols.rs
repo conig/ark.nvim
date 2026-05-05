@@ -492,10 +492,15 @@ fn collect_call(
         return Ok(());
     };
 
-    if callee.is_identifier() {
-        let fun_symbol = callee.node_as_str(&doc.contents)?;
+    if let Ok(fun_symbol) = callee.node_as_str(&doc.contents) {
         if fun_symbol == "test_that" {
             return collect_call_test_that(ctx, node, doc, symbols);
+        }
+        if matches!(
+            fun_symbol,
+            "tar_target" | "targets::tar_target" | "targets:::tar_target"
+        ) {
+            return collect_call_tar_target(node, doc, symbols);
         }
     }
 
@@ -616,6 +621,48 @@ fn collect_call_test_that(
     let end = doc.lsp_position_from_tree_sitter_point(node.end_position())?;
 
     let symbol = new_symbol_node(name, SymbolKind::FUNCTION, Range { start, end }, children);
+    symbols.push(symbol);
+
+    Ok(())
+}
+
+fn collect_call_tar_target(
+    node: &Node,
+    doc: &Document,
+    symbols: &mut Vec<DocumentSymbol>,
+) -> anyhow::Result<()> {
+    let target_node =
+        node.arguments().into_iter().find_map(
+            |(name, value)| {
+                if name.is_none() {
+                    value
+                } else {
+                    None
+                }
+            },
+        );
+    let Some(target_node) = target_node else {
+        return Ok(());
+    };
+    if !target_node.is_identifier_or_string() {
+        return Ok(());
+    }
+
+    let name = target_node
+        .get_identifier_or_string_text(&doc.contents)?
+        .to_string();
+    let range = Range {
+        start: doc.lsp_position_from_tree_sitter_point(node.start_position())?,
+        end: doc.lsp_position_from_tree_sitter_point(node.end_position())?,
+    };
+    let selection_range = Range {
+        start: doc.lsp_position_from_tree_sitter_point(target_node.start_position())?,
+        end: doc.lsp_position_from_tree_sitter_point(target_node.end_position())?,
+    };
+
+    let mut symbol = new_symbol_node(name, SymbolKind::OBJECT, range, Vec::new());
+    symbol.detail = Some(String::from("targets target"));
+    symbol.selection_range = selection_range;
     symbols.push(symbol);
 
     Ok(())
@@ -1026,6 +1073,27 @@ test_that('bar', {
 })
 "
         ));
+    }
+
+    #[test]
+    fn test_symbol_call_tar_target() {
+        let symbols = test_symbol(
+            r#"
+list(
+  tar_target(clean_data, raw_data + 1),
+  targets::tar_target("report", clean_data)
+)
+"#,
+        );
+
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "clean_data");
+        assert_eq!(symbols[0].kind, SymbolKind::OBJECT);
+        assert_eq!(symbols[0].detail, Some(String::from("targets target")));
+        assert_eq!(symbols[0].selection_range.start.line, 2);
+        assert_eq!(symbols[0].selection_range.start.character, 13);
+        assert_eq!(symbols[1].name, "report");
+        assert_eq!(symbols[1].kind, SymbolKind::OBJECT);
     }
 
     #[test]

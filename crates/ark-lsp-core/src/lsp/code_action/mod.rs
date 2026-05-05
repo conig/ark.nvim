@@ -15,9 +15,12 @@ use url::Url;
 
 use crate::lsp::capabilities::Capabilities;
 use crate::lsp::code_action::roxygen::roxygen_documentation;
+use crate::lsp::code_action::targets::target_actions;
 use crate::lsp::document::Document;
+use crate::lsp::state::WorldState;
 
 mod roxygen;
+mod targets;
 
 /// A small wrapper around [CodeActionResponse] that make a few things more ergonomic
 pub(crate) struct CodeActions {
@@ -29,10 +32,12 @@ pub(crate) fn code_actions(
     document: &Document,
     range: Range,
     capabilities: &Capabilities,
+    state: &WorldState,
 ) -> lsp_types::CodeActionResponse {
     let mut actions = CodeActions::new();
 
     roxygen_documentation(&mut actions, uri, document, range, capabilities);
+    target_actions(&mut actions, uri, document, range, capabilities, state);
 
     actions.into_response()
 }

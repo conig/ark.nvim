@@ -1,3 +1,26 @@
+vim.lsp.commands["ark.targetAction"] = function(command, ctx)
+  local args = command.arguments or {}
+  local payload = args[1] or {}
+  local action = payload.action
+  local name = payload.name or ""
+  local bufnr = (ctx and ctx.bufnr) or vim.api.nvim_get_current_buf()
+  local ark = require("ark")
+
+  if action == "make" or action == "load" or action == "invalidate" then
+    vim.print(ark.targets_action(action, name, bufnr))
+  elseif action == "status" then
+    vim.print(ark.targets_meta(name, bufnr))
+  elseif action == "objectMeta" then
+    vim.print(ark.targets_object_meta(name, bufnr))
+  elseif action == "graph" then
+    vim.print(ark.targets_network(bufnr))
+  else
+    vim.notify("Unknown ark.nvim target action: " .. tostring(action), vim.log.levels.WARN, {
+      title = "ark.nvim",
+    })
+  end
+end
+
 vim.api.nvim_create_user_command("ArkPaneStart", function()
   require("ark").start_pane()
 end, { desc = "Start or reuse the managed ark.nvim R session" })

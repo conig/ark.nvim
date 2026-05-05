@@ -90,11 +90,12 @@ impl Capabilities {
             return None;
         }
 
-        // Currently we only support documentation generating code actions, which don't
-        // map to an existing kind. rust-analyzer maps them to `EMPTY`, so we follow suit.
+        // Roxygen documentation actions don't map to an existing kind, so they use
+        // `EMPTY`. Target Lens actions are executable contextual commands, so they use
+        // `QUICKFIX`.
         // Currently no code actions require delayed resolution.
         Some(CodeActionProviderCapability::Options(CodeActionOptions {
-            code_action_kinds: Some(vec![CodeActionKind::EMPTY]),
+            code_action_kinds: Some(vec![CodeActionKind::EMPTY, CodeActionKind::QUICKFIX]),
             work_done_progress_options: WorkDoneProgressOptions::default(),
             resolve_provider: Some(false),
         }))

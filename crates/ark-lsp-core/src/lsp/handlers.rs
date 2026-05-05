@@ -1246,7 +1246,7 @@ pub(crate) fn handle_code_action(
     let doc = state.get_document(&uri)?;
     let range = doc.tree_sitter_range_from_lsp_range(params.range)?;
 
-    let code_actions = code_actions(&uri, doc, range, &lsp_state.capabilities);
+    let code_actions = code_actions(&uri, doc, range, &lsp_state.capabilities, state);
 
     if code_actions.is_empty() {
         Ok(None)
