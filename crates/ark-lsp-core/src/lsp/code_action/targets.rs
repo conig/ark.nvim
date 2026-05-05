@@ -33,6 +33,11 @@ pub(crate) fn target_actions(
         Some(name.as_str()),
     ));
     actions.add_action(target_command_action(
+        format!("Ark: Build downstream of `{name}`"),
+        "makeDownstream",
+        Some(name.as_str()),
+    ));
+    actions.add_action(target_command_action(
         format!("Ark: Load target `{name}`"),
         "load",
         Some(name.as_str()),
@@ -50,6 +55,11 @@ pub(crate) fn target_actions(
     actions.add_action(target_command_action(
         format!("Ark: Show object metadata for `{name}`"),
         "objectMeta",
+        Some(name.as_str()),
+    ));
+    actions.add_action(target_command_action(
+        format!("Ark: Open target log for `{name}`"),
+        "log",
         Some(name.as_str()),
     ));
     actions.add_action(target_command_action(
@@ -180,10 +190,12 @@ list(
         let titles: Vec<_> = actions.iter().map(|action| action.title.as_str()).collect();
         assert_eq!(titles, vec![
             "Ark: Build target `clean_data`",
+            "Ark: Build downstream of `clean_data`",
             "Ark: Load target `clean_data`",
             "Ark: Invalidate target `clean_data`",
             "Ark: Show target status `clean_data`",
             "Ark: Show object metadata for `clean_data`",
+            "Ark: Open target log for `clean_data`",
             "Ark: Show target graph",
         ]);
 
@@ -210,8 +222,8 @@ list(
 "#,
         );
 
-        assert_eq!(actions.len(), 6);
-        assert_eq!(actions[3].title, "Ark: Show target status `clean_data`");
+        assert_eq!(actions.len(), 8);
+        assert_eq!(actions[4].title, "Ark: Show target status `clean_data`");
     }
 
     #[test]

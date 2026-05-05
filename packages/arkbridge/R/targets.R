@@ -185,6 +185,66 @@
   list()
 }
 
+.ark_targets_edge_records <- function(network) {
+  if (is.null(network)) {
+    return(list())
+  }
+
+  if (is.data.frame(network)) {
+    return(.ark_targets_as_records(network))
+  }
+
+  if (is.list(network) && !is.null(network$edges)) {
+    return(.ark_targets_as_records(network$edges))
+  }
+
+  list()
+}
+
+.ark_targets_downstream_names <- function(project, names) {
+  names <- unique(as.character(names %||% character()))
+  names <- names[nzchar(names)]
+  if (!length(names)) {
+    return(character())
+  }
+
+  network <- tryCatch(
+    .ark_targets_with_project(project, {
+      .ark_targets_call_export("tar_network", list(targets_only = TRUE, script = project$script))
+    }),
+    error = function(e) NULL
+  )
+  if (is.null(network)) {
+    network <- .ark_targets_static_network(project)
+  }
+
+  edges <- .ark_targets_edge_records(network)
+  if (!length(edges)) {
+    return(names)
+  }
+
+  selected <- names
+  repeat {
+    downstream <- unique(unlist(lapply(edges, function(edge) {
+      from <- as.character(edge$from %||% "")
+      to <- as.character(edge$to %||% "")
+      if (nzchar(from) && nzchar(to) && from %in% selected) {
+        to
+      } else {
+        character()
+      }
+    }), use.names = FALSE))
+    downstream <- downstream[nzchar(downstream)]
+    next_selected <- unique(c(selected, downstream))
+    if (length(next_selected) == length(selected)) {
+      break
+    }
+    selected <- next_selected
+  }
+
+  selected
+}
+
 .ark_targets_project_info_payload <- function(session, root = "", script = "", store = "") {
   .ark_targets_safe(session, {
     project <- .ark_targets_project(root, script, store)
@@ -319,11 +379,16 @@
     }
 
     project <- .ark_targets_project(root, script, store)
-    action <- match.arg(action, c("make", "invalidate", "load"))
+    action <- match.arg(action, c("make", "make_downstream", "invalidate", "load"))
 
     result <- .ark_targets_with_project(project, {
-      if (identical(action, "make")) {
-        .ark_targets_call_export("tar_make", list(names = names, script = project$script, store = project$store))
+      if (identical(action, "make") || identical(action, "make_downstream")) {
+        build_names <- if (identical(action, "make_downstream")) {
+          .ark_targets_downstream_names(project, names)
+        } else {
+          names
+        }
+        .ark_targets_call_export("tar_make", list(names = build_names, script = project$script, store = project$store))
       } else if (identical(action, "invalidate")) {
         .ark_targets_call_export("tar_invalidate", list(names = names, store = project$store))
       } else {

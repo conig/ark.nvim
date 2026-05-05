@@ -8,7 +8,11 @@ vim.lsp.commands["ark.targetAction"] = function(command, ctx)
 
   if action == "make" or action == "load" or action == "invalidate" then
     vim.print(ark.targets_action(action, name, bufnr))
+  elseif action == "makeDownstream" then
+    vim.print(ark.targets_action("make_downstream", name, bufnr))
   elseif action == "status" then
+    vim.print(ark.targets_meta(name, bufnr))
+  elseif action == "log" then
     vim.print(ark.targets_meta(name, bufnr))
   elseif action == "objectMeta" then
     vim.print(ark.targets_object_meta(name, bufnr))
@@ -136,6 +140,13 @@ end, {
   nargs = "?",
 })
 
+vim.api.nvim_create_user_command("ArkTargetBuildDownstream", function(args)
+  vim.print(require("ark").targets_action("make_downstream", args.args, 0))
+end, {
+  desc = "Run targets::tar_make() for a target and its downstream dependents",
+  nargs = "?",
+})
+
 vim.api.nvim_create_user_command("ArkTargetMake", function(args)
   vim.print(require("ark").targets_action("make", args.args, 0))
 end, {
@@ -154,6 +165,13 @@ vim.api.nvim_create_user_command("ArkTargetLoad", function(args)
   vim.print(require("ark").targets_action("load", args.args, 0))
 end, {
   desc = "Run targets::tar_load() for optional target names",
+  nargs = "?",
+})
+
+vim.api.nvim_create_user_command("ArkTargetLog", function(args)
+  vim.print(require("ark").targets_meta(args.args, 0))
+end, {
+  desc = "Print target log/status metadata; accepts optional target names",
   nargs = "?",
 })
 
