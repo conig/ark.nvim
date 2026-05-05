@@ -92,6 +92,8 @@ type WorkspaceIndex = Arc<Mutex<HashMap<FileId, DocumentSymbolIndex>>>;
 static WORKSPACE_INDEX: LazyLock<WorkspaceIndex> = LazyLock::new(Default::default);
 static SOURCED_TARGET_PIPELINE_URIS: LazyLock<Mutex<HashSet<Url>>> =
     LazyLock::new(Default::default);
+#[cfg(test)]
+pub(crate) static INDEXER_TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(Default::default);
 pub static RE_COMMENT_SECTION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(#+)\s*(.*?)\s*[#=-]{4,}\s*$").unwrap());
 
@@ -235,6 +237,11 @@ pub(crate) fn indexer_clear() {
     let mut index = WORKSPACE_INDEX.lock().unwrap();
     index.clear();
     SOURCED_TARGET_PIPELINE_URIS.lock().unwrap().clear();
+}
+
+#[cfg(test)]
+pub(crate) fn indexer_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    INDEXER_TEST_MUTEX.lock().unwrap()
 }
 
 /// RAII guard that clears `WORKSPACE_INDEX` when dropped.
@@ -1079,6 +1086,7 @@ list(
 
     #[test]
     fn test_index_targets_script_sources_pipeline_files() {
+        let _lock = indexer_test_lock();
         let _guard = ResetIndexerGuard;
         let tempdir = tempfile::tempdir().expect("expected tempdir");
         let targets_path = tempdir.path().join("_targets.R");
@@ -1117,6 +1125,7 @@ list(
 
     #[test]
     fn test_index_targets_script_ignores_non_path_source_string_arguments() {
+        let _lock = indexer_test_lock();
         let _guard = ResetIndexerGuard;
         let tempdir = tempfile::tempdir().expect("expected tempdir");
         let targets_path = tempdir.path().join("_targets.R");

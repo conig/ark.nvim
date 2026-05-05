@@ -22,6 +22,7 @@ use walkdir::WalkDir;
 
 use crate::lsp;
 use crate::lsp::document::Document;
+use crate::lsp::indexer;
 use crate::lsp::indexer::filter_entry;
 use crate::lsp::state::with_document;
 use crate::lsp::state::WorldState;
@@ -71,6 +72,7 @@ fn node_reference_kind(x: &Node) -> ReferenceKind {
 struct Context {
     kind: ReferenceKind,
     symbol: String,
+    target: bool,
 }
 
 fn add_reference(
@@ -91,13 +93,21 @@ fn add_reference(
 }
 
 fn found_match(node: &Node, contents: &str, context: &Context) -> bool {
-    if !node.is_identifier() {
+    let symbol = if node.is_identifier() {
+        node.node_to_string(contents).unwrap()
+    } else if context.target && node.is_string() {
+        node.get_identifier_or_string_text(contents)
+            .unwrap()
+            .to_string()
+    } else {
+        return false;
+    };
+    if symbol != context.symbol {
         return false;
     }
 
-    let symbol = node.node_to_string(contents).unwrap();
-    if symbol != context.symbol {
-        return false;
+    if node.is_string() {
+        return context.kind == ReferenceKind::Symbol;
     }
 
     context.kind == node_reference_kind(node)
@@ -126,7 +136,7 @@ fn build_context(uri: &Url, position: Position, state: &WorldState) -> anyhow::R
         // can't just subtract 1 from the position column since that would then fail to
         // resolve the correct identifier when the cursor is located at the start of the
         // identifier.
-        if !node.is_identifier() && point.column > 0 {
+        if !node.is_identifier_or_string() && point.column > 0 {
             let point = Point::new(point.row, point.column - 1);
             node = ast
                 .root_node()
@@ -134,22 +144,50 @@ fn build_context(uri: &Url, position: Position, state: &WorldState) -> anyhow::R
                 .into_result()?;
         }
 
-        // double check that we found an identifier
-        if !node.is_identifier() {
+        // double check that we found an identifier or string
+        if !node.is_identifier_or_string() {
             return Err(anyhow!(
-                "couldn't find an identifier associated with point {point:?}",
+                "couldn't find an identifier or string associated with point {point:?}",
             ));
         }
 
-        let kind = node_reference_kind(&node);
+        let kind = if node.is_identifier() {
+            node_reference_kind(&node)
+        } else {
+            ReferenceKind::Symbol
+        };
 
         // return identifier text contents
-        let symbol = node.node_to_string(contents)?;
+        let symbol = node.get_identifier_or_string_text(contents)?.to_string();
+        let target = is_static_target(&symbol, uri, document, state);
 
-        Ok(Context { kind, symbol })
+        Ok(Context {
+            kind,
+            symbol,
+            target,
+        })
     });
 
     context
+}
+
+fn is_static_target(symbol: &str, uri: &Url, document: &Document, state: &WorldState) -> bool {
+    if indexer::find_in_document(symbol, uri, document)
+        .is_some_and(|(_, entry)| matches!(entry.data, indexer::IndexEntryData::Target { .. }))
+    {
+        return true;
+    }
+
+    for (open_uri, open_document) in &state.documents {
+        if indexer::find_in_document(symbol, open_uri, open_document)
+            .is_some_and(|(_, entry)| matches!(entry.data, indexer::IndexEntryData::Target { .. }))
+        {
+            return true;
+        }
+    }
+
+    indexer::find(symbol)
+        .is_some_and(|(_, entry)| matches!(entry.data, indexer::IndexEntryData::Target { .. }))
 }
 
 fn find_references_in_folder(
@@ -227,4 +265,76 @@ pub(crate) fn find_references(
     }
 
     Ok(locations)
+}
+
+#[cfg(test)]
+mod tests {
+    use tower_lsp::lsp_types::ReferenceContext;
+    use tower_lsp::lsp_types::TextDocumentIdentifier;
+    use tower_lsp::lsp_types::TextDocumentPositionParams;
+    use tower_lsp::lsp_types::WorkDoneProgressParams;
+
+    use super::*;
+    use crate::lsp::indexer::indexer_test_lock;
+    use crate::lsp::indexer::ResetIndexerGuard;
+    use crate::lsp::state::Workspace;
+
+    #[test]
+    fn test_target_references_include_string_and_bare_usages() {
+        let _lock = indexer_test_lock();
+        let _guard = ResetIndexerGuard;
+        let tempdir = tempfile::tempdir().expect("expected tempdir");
+        let targets_path = tempdir.path().join("_targets.R");
+        let analysis_path = tempdir.path().join("analysis.R");
+
+        std::fs::write(&targets_path, "list(tar_target(clean_data, 1))\n")
+            .expect("expected targets file");
+        std::fs::write(
+            &analysis_path,
+            "x <- targets::tar_read(\"clean_data\")\ny <- clean_data\n",
+        )
+        .expect("expected analysis file");
+
+        let targets_uri = Url::from_file_path(&targets_path).expect("expected targets uri");
+        let analysis_uri = Url::from_file_path(&analysis_path).expect("expected analysis uri");
+        indexer::create(&targets_uri).expect("expected targets indexing");
+
+        let state = WorldState {
+            workspace: Workspace {
+                folders: vec![
+                    Url::from_directory_path(tempdir.path()).expect("expected workspace uri")
+                ],
+            },
+            ..Default::default()
+        };
+
+        let locations = find_references(
+            ReferenceParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: analysis_uri },
+                    position: Position::new(1, 5),
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: Default::default(),
+                context: ReferenceContext {
+                    include_declaration: true,
+                },
+            },
+            &state,
+        )
+        .expect("expected target references");
+
+        assert!(
+            locations.iter().any(|location| location.uri == targets_uri),
+            "expected target declaration reference: {locations:?}"
+        );
+        assert!(
+            locations
+                .iter()
+                .filter(|location| location.uri.as_str().ends_with("analysis.R"))
+                .count() >=
+                2,
+            "expected string and bare target references in analysis file: {locations:?}"
+        );
+    }
 }
