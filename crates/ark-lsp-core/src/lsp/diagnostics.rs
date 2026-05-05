@@ -57,6 +57,9 @@ pub struct DiagnosticContext<'a> {
     /// The symbols defined in the workspace.
     pub workspace_symbols: HashSet<String>,
 
+    /// Target names defined in the workspace.
+    pub target_symbols: HashSet<String>,
+
     // The set of packages that are currently installed.
     pub installed_packages: HashSet<String>,
 
@@ -90,6 +93,7 @@ impl<'a> DiagnosticContext<'a> {
             document_symbols: Vec::new(),
             session_symbols: HashSet::new(),
             workspace_symbols: HashSet::new(),
+            target_symbols: HashSet::new(),
             installed_packages: HashSet::new(),
             root,
             library,
@@ -165,6 +169,7 @@ pub(crate) fn generate_diagnostics(
         },
         indexer::IndexEntryData::Target { name } => {
             context.workspace_symbols.insert(name.to_string());
+            context.target_symbols.insert(name.to_string());
         },
         indexer::IndexEntryData::PackageImport { package } => {
             if let Err(err) = handle_targets_package_import(package, &mut context) {
@@ -866,6 +871,12 @@ fn recurse_call(
     // things like 'local({ ... })'.
     let fun = callee.node_as_str(&context.doc.contents)?;
 
+    if target_reference_callee(fun) {
+        if let Err(err) = handle_target_reference_call(node, context, diagnostics) {
+            lsp::log_warn!("Can't handle target reference call: {err:?}");
+        }
+    }
+
     match fun {
         "library" | "require" => {
             // Track symbols exported by `library()` or `require()` calls
@@ -1038,6 +1049,127 @@ fn handle_targets_load_call(node: Node, context: &mut DiagnosticContext) -> anyh
     }
 
     Ok(())
+}
+
+fn target_reference_callee(fun: &str) -> bool {
+    matches!(
+        fun,
+        "tar_read" |
+            "targets::tar_read" |
+            "targets:::tar_read" |
+            "tar_load" |
+            "targets::tar_load" |
+            "targets:::tar_load" |
+            "tar_make" |
+            "targets::tar_make" |
+            "targets:::tar_make" |
+            "tar_invalidate" |
+            "targets::tar_invalidate" |
+            "targets:::tar_invalidate" |
+            "tar_render" |
+            "tarchetypes::tar_render" |
+            "tarchetypes:::tar_render"
+    )
+}
+
+fn handle_target_reference_call(
+    node: Node,
+    context: &mut DiagnosticContext,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> anyhow::Result<()> {
+    if context.target_symbols.is_empty() {
+        return Ok(());
+    }
+
+    for value in target_reference_nodes(node, &context.doc.contents)? {
+        if !value.is_identifier_or_string() {
+            continue;
+        }
+
+        let name = value.get_identifier_or_string_text(&context.doc.contents)?;
+        if context.target_symbols.contains(name) {
+            continue;
+        }
+
+        let range = context
+            .doc
+            .lsp_range_from_tree_sitter_range(value.range())?;
+        let message = format!("No targets target named '{}'.", name);
+        let mut diagnostic = Diagnostic::new_simple(range, message);
+        diagnostic.severity = Some(DiagnosticSeverity::WARNING);
+        diagnostics.push(diagnostic);
+    }
+
+    Ok(())
+}
+
+fn target_reference_nodes<'a>(node: Node<'a>, contents: &str) -> anyhow::Result<Vec<Node<'a>>> {
+    let Some(callee) = node.child_by_field_name("function") else {
+        return Ok(Vec::new());
+    };
+    let callee = callee.node_as_str(contents)?;
+    let callee = target_unqualified_callee(callee);
+    let mut values = Vec::new();
+    let mut first_unnamed = None;
+
+    for (name, value) in node.arguments() {
+        let Some(value) = value else {
+            continue;
+        };
+
+        if let Some(name) = name {
+            let name = name.node_as_str(contents)?;
+            if matches!(name, "name" | "names") {
+                collect_target_reference_values(value, contents, &mut values)?;
+            }
+            continue;
+        }
+
+        if first_unnamed.is_none() {
+            first_unnamed = Some(value);
+        }
+    }
+
+    if values.is_empty() && matches!(callee, "tar_read" | "tar_load" | "tar_render") {
+        if let Some(first_unnamed) = first_unnamed {
+            collect_target_reference_values(first_unnamed, contents, &mut values)?;
+        }
+    }
+
+    Ok(values)
+}
+
+fn collect_target_reference_values<'a>(
+    value: Node<'a>,
+    contents: &str,
+    values: &mut Vec<Node<'a>>,
+) -> anyhow::Result<()> {
+    if value.is_identifier_or_string() {
+        values.push(value);
+        return Ok(());
+    }
+
+    if value.is_call() {
+        if let Some(callee) = value.child_by_field_name("function") {
+            if callee.node_as_str(contents)? == "c" {
+                for (_name, value) in value.arguments() {
+                    if let Some(value) = value {
+                        collect_target_reference_values(value, contents, values)?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn target_unqualified_callee(callee: &str) -> &str {
+    callee
+        .rsplit_once(":::")
+        .or_else(|| callee.rsplit_once("::"))
+        .map(|(_, name)| name)
+        .unwrap_or(callee)
 }
 
 fn insert_package_exports(
@@ -2259,6 +2391,49 @@ clean_data
                 .unwrap()
                 .contains("No symbol named 'clean_data' in scope."));
         });
+    }
+
+    #[test]
+    fn test_unknown_target_reference_diagnostic() {
+        let _lock = indexer::indexer_test_lock();
+        let _guard = indexer::ResetIndexerGuard;
+        let targets_uri = Url::parse("file:///tmp/ark-target-diag/_targets.R").unwrap();
+        let targets_document = Document::new("list(tar_target(clean_data, 1))", None);
+        indexer::update(&targets_document, &targets_uri).unwrap();
+
+        let document = Document::new(
+            r#"
+tar_read("missing_data")
+tar_make(names = c("clean_data", "missing_report"))
+"#,
+            None,
+        );
+
+        let state = WorldState {
+            console_scopes: vec![vec![String::from("tar_read"), String::from("tar_make")]],
+            ..Default::default()
+        };
+        let diagnostics = generate_diagnostics(document, state);
+        let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("No targets target named 'missing_data'.")),
+            "unexpected diagnostics: {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("No targets target named 'missing_report'.")),
+            "unexpected diagnostics: {messages:?}"
+        );
+        assert!(
+            !messages
+                .iter()
+                .any(|message| message.contains("No targets target named 'clean_data'.")),
+            "unexpected diagnostics: {messages:?}"
+        );
     }
 
     #[test]
