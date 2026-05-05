@@ -2438,6 +2438,18 @@ fn completion_request_from_comparison_string(
     };
     let prefix = line.chars().take(context.point.column).collect::<String>();
 
+    if let Some((expr, value_prefix)) = comparison_string_target_read_expr(prefix.as_str()) {
+        return Ok(Some(CompletionRequest {
+            expr,
+            flavor: CompletionFlavor::ComparisonString,
+            prefix: Some(value_prefix),
+            accessor: None,
+            close_string: false,
+            quote_insert: false,
+            subset_kind: None,
+        }));
+    }
+
     if let Some((expr, value_prefix)) = comparison_string_data_table_expr(prefix.as_str()) {
         return Ok(Some(CompletionRequest {
             expr,
@@ -3625,6 +3637,51 @@ fn captured_quoted_prefix<'a>(captures: &'a regex::Captures<'a>) -> Option<&'a s
         .name("prefix_double")
         .or_else(|| captures.name("prefix_single"))
         .map(|capture| capture.as_str())
+}
+
+fn comparison_string_target_read_expr(line_prefix: &str) -> Option<(String, String)> {
+    static TARGET_READ_COMPARISON_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?x)
+            (?:(?:[A-Za-z.][A-Za-z0-9._]*)(?:::|::))?tar_read\s*
+            \(\s*(?:name\s*=\s*)?
+            (?:
+                "(?P<target_double>[^"]+)"
+                |
+                '(?P<target_single>[^']+)'
+                |
+                (?P<target_bare>[A-Za-z.][A-Za-z0-9._]*)
+            )
+            \s*\)
+            \s*\$\s*(?P<column>[A-Za-z.][A-Za-z0-9._]*)\s*(?:==|!=)\s*
+            (?:
+                "(?P<prefix_double>[^"]*)
+                |
+                '(?P<prefix_single>[^']*)
+            )$
+            "#,
+        )
+        .unwrap()
+    });
+
+    let captures = TARGET_READ_COMPARISON_RE.captures(line_prefix)?;
+    let target_name = captures
+        .name("target_double")
+        .or_else(|| captures.name("target_single"))
+        .or_else(|| captures.name("target_bare"))?
+        .as_str();
+    let column = captures.name("column")?.as_str();
+    let value_prefix = captured_quoted_prefix(&captures)?;
+    let expr = format!(
+        "({})[[\"{}\"]]",
+        target_read_object_expr(target_name),
+        escape_r_string(column)
+    );
+
+    Some((
+        comparison_values_completion_expr(expr.as_str()),
+        String::from(value_prefix),
+    ))
 }
 
 fn comparison_string_expr(line_prefix: &str) -> Option<(String, String)> {
@@ -4818,6 +4875,23 @@ mod tests {
         assert!(matches!(request.flavor, CompletionFlavor::Target));
         assert_eq!(request.prefix, Some(String::from("clean_")));
         assert!(request.expr.contains("targets::tar_manifest()"));
+    }
+
+    #[test]
+    fn test_comparison_string_request_canonicalizes_tar_read_extractor_object() {
+        let (text, point) = point_from_cursor("tar_read(clean_data)$indigenous == \"y@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("\"")));
+
+        let request = completion_request_from_comparison_string(&context)
+            .unwrap()
+            .expect("expected target comparison string completion request");
+
+        assert!(request.expr.contains(".ark_targets_read_for_completion"));
+        assert!(request.expr.contains("clean_data"));
+        assert!(request.expr.contains("[[\"indigenous\"]]"));
+        assert_eq!(request.prefix, Some(String::from("y")));
+        assert!(matches!(request.flavor, CompletionFlavor::ComparisonString));
     }
 
     #[test]

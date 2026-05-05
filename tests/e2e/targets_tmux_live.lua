@@ -38,7 +38,7 @@ rebuild_bridge_runtime()
 vim.fn.writefile({
   "targets::tar_config_set(store = 'cache/targets')",
   "list(",
-  "  targets::tar_target(raw_data, data.frame(id = 1:3, value = c('a', 'b', 'c'))),",
+  "  targets::tar_target(raw_data, data.frame(id = 1:3, value = c('a', 'b', 'c'), indigenous = c('yes', 'no', 'yes'))),",
   "  targets::tar_target(clean_data, raw_data),",
   "  targets::tar_target(dt_data, data.table::data.table(dt_id = 1:3, dt_value = c('x', 'y', 'z'))),",
   "  targets::tar_target(list_data, list(alpha = 1, beta = 'two')),",
@@ -54,6 +54,7 @@ local pane_id, client = ark_test.setup_managed_buffer(test_file, {
   "targets::tar_read(list_data)$",
   "clean_data <- tar_read(clean_data)",
   'clean_data[["',
+  'tar_read(clean_data)$indigenous == "',
 })
 
 local ark = require("ark")
@@ -133,6 +134,15 @@ end
 local meta = ark.targets_meta("clean_data, dt_data, list_data", 0)
 if type(meta) ~= "table" or meta.status ~= "ok" or type(meta.meta) ~= "table" or #meta.meta < 3 then
   ark_test.fail("expected target metadata payload, got " .. vim.inspect(meta))
+end
+
+local comparison_items = completion_at(7, '"')
+local yes_item = ark_test.find_item(comparison_items, "yes")
+if not yes_item then
+  ark_test.fail('tar_read(clean_data)$indigenous == " completion missing yes: ' .. vim.inspect(ark_test.item_labels(comparison_items)))
+end
+if ark_test.insert_text(yes_item) ~= "yes" then
+  ark_test.fail('tar_read(clean_data)$indigenous == " completion inserted unexpected text: ' .. vim.inspect(yes_item))
 end
 
 local object = ark.targets_object_meta("clean_data", 0)
