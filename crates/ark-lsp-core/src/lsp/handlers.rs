@@ -5,10 +5,13 @@
 //
 //
 
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use anyhow::anyhow;
+use regex::Regex;
 use serde_json::Value;
 use stdext::result::ResultExt;
 use stdext::unwrap;
@@ -996,13 +999,51 @@ fn target_project_paths(
         .or_else(|| find_open_targets_root(state))
         .or_else(|| path.parent().map(Path::to_path_buf))?;
     let script = root.join("_targets.R");
-    let store = root.join("_targets");
+    let store = target_store_path(root.as_path(), state).unwrap_or_else(|| root.join("_targets"));
 
     Some((
         root.to_string_lossy().to_string(),
         script.to_string_lossy().to_string(),
         store.to_string_lossy().to_string(),
     ))
+}
+
+fn target_store_path(root: &Path, state: &WorldState) -> Option<PathBuf> {
+    let script = root.join("_targets.R");
+    let contents = open_targets_script_contents(script.as_path(), state)
+        .or_else(|| fs::read_to_string(script.as_path()).ok())?;
+    let store = PathBuf::from(target_store_config(contents.as_str())?);
+
+    if store.is_absolute() {
+        Some(store)
+    } else {
+        Some(root.join(store))
+    }
+}
+
+fn open_targets_script_contents(script: &Path, state: &WorldState) -> Option<String> {
+    state.documents.iter().find_map(|(uri, document)| {
+        let path = uri.to_file_path().ok()?;
+        if path == script {
+            Some(document.source_contents.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn target_store_config(contents: &str) -> Option<String> {
+    static STORE_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?s)(?:[A-Za-z.][A-Za-z0-9._]*(?:::|::))?tar_config_set\s*\([^)]*?\bstore\s*=\s*["'](?P<store>[^"']+)["']"#,
+        )
+        .unwrap()
+    });
+
+    STORE_RE
+        .captures(contents)
+        .and_then(|captures| captures.name("store"))
+        .map(|capture| capture.as_str().to_string())
 }
 
 fn find_targets_root_for_path(path: &Path) -> Option<PathBuf> {
@@ -1632,6 +1673,36 @@ mod tests {
         assert!(markup.value.contains("Manifest-only"));
         assert!(markup.value.contains("factory()"));
         assert!(markup.value.contains("No static source location"));
+    }
+
+    #[test]
+    fn test_target_project_paths_uses_open_tar_config_store() {
+        let tempdir = tempdir().expect("expected tempdir");
+        let targets_uri =
+            Url::from_file_path(tempdir.path().join("_targets.R")).expect("expected targets uri");
+        let analysis_uri =
+            Url::from_file_path(tempdir.path().join("analysis.R")).expect("expected analysis uri");
+        let mut state = WorldState::default();
+        state.documents.insert(
+            targets_uri,
+            Document::new(
+                r#"
+targets::tar_config_set(
+  store = "cache/targets"
+)
+list()
+"#,
+                None,
+            ),
+        );
+
+        let (_, _, store) =
+            target_project_paths(&analysis_uri, &state).expect("expected target project paths");
+
+        assert_eq!(
+            PathBuf::from(store),
+            tempdir.path().join("cache").join("targets")
+        );
     }
 
     #[test]
