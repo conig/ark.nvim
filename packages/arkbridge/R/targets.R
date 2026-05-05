@@ -60,15 +60,18 @@
   }
 
   head <- call[[1L]]
-  if (is.symbol(head) && identical(as.character(head), "tar_target")) {
+  if (is.symbol(head) && as.character(head) %in% c("tar_target", "tar_render")) {
     return(TRUE)
   }
 
-  is.call(head) &&
-    length(head) == 3L &&
-    identical(as.character(head[[1L]]), "::") &&
-    identical(as.character(head[[2L]]), "targets") &&
-    identical(as.character(head[[3L]]), "tar_target")
+  if (!is.call(head) || length(head) != 3L || !identical(as.character(head[[1L]]), "::")) {
+    return(FALSE)
+  }
+
+  namespace <- as.character(head[[2L]])
+  name <- as.character(head[[3L]])
+  (identical(namespace, "targets") && identical(name, "tar_target")) ||
+    (identical(namespace, "tarchetypes") && identical(name, "tar_render"))
 }
 
 .ark_targets_call_arg <- function(call, name) {
