@@ -2156,7 +2156,10 @@ fn completion_request_from_extractor(
         return Ok(None);
     };
 
-    let expr = lhs.node_to_string(context.document.contents.as_str())?;
+    let expr = match target_read_object_expr_from_node(&lhs, context.document.contents.as_str())? {
+        Some(expr) => expr,
+        None => lhs.node_to_string(context.document.contents.as_str())?,
+    };
     let prefix = operator
         .child_by_field_name("rhs")
         .map(|rhs| rhs.node_to_string(context.document.contents.as_str()))
@@ -2287,7 +2290,13 @@ fn completion_request_from_string_subset(
         return Ok(completion_request_from_string_subset_text(context));
     };
 
-    let expr = object_node.node_to_string(context.document.contents.as_str())?;
+    let expr = match target_read_object_expr_from_node(
+        &object_node,
+        context.document.contents.as_str(),
+    )? {
+        Some(expr) => expr,
+        None => object_node.node_to_string(context.document.contents.as_str())?,
+    };
 
     Ok(Some(CompletionRequest {
         expr,
@@ -2312,7 +2321,13 @@ fn completion_request_from_subset(
         return Ok(None);
     };
 
-    let expr = object_node.node_to_string(context.document.contents.as_str())?;
+    let expr = match target_read_object_expr_from_node(
+        &object_node,
+        context.document.contents.as_str(),
+    )? {
+        Some(expr) => expr,
+        None => object_node.node_to_string(context.document.contents.as_str())?,
+    };
     let request = CompletionRequest {
         expr,
         flavor: CompletionFlavor::Subset,
@@ -2637,6 +2652,69 @@ fn unqualified_callee(callee: &str) -> &str {
         .or_else(|| callee.rsplit_once("::"))
         .map(|(_, name)| name)
         .unwrap_or(callee)
+}
+
+fn target_read_object_expr_from_node(
+    node: &Node,
+    contents: &str,
+) -> anyhow::Result<Option<String>> {
+    if !node.is_call() {
+        return Ok(None);
+    }
+
+    let Some(callee) = node.child_by_field_name("function") else {
+        return Ok(None);
+    };
+    let callee = callee.node_to_string(contents)?;
+    if unqualified_callee(callee.as_str()) != "tar_read" {
+        return Ok(None);
+    }
+
+    let Some(name) = target_call_name_arg(node, contents)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(format!(
+        "local({{ if (!requireNamespace(\"targets\", quietly = TRUE)) NULL else targets::tar_read(name = \"{}\") }})",
+        escape_r_string(name.as_str())
+    )))
+}
+
+fn target_call_name_arg(node: &Node, contents: &str) -> anyhow::Result<Option<String>> {
+    let mut first_unnamed = None;
+
+    for (name, value) in node.arguments() {
+        let Some(value) = value else {
+            continue;
+        };
+
+        if let Some(name) = name {
+            if name.node_as_str(contents)? == "name" {
+                return target_call_name_value(&value, contents);
+            }
+            continue;
+        }
+
+        if first_unnamed.is_none() {
+            first_unnamed = Some(value);
+        }
+    }
+
+    let Some(value) = first_unnamed else {
+        return Ok(None);
+    };
+
+    target_call_name_value(&value, contents)
+}
+
+fn target_call_name_value(value: &Node, contents: &str) -> anyhow::Result<Option<String>> {
+    if !value.is_identifier_or_string() {
+        return Ok(None);
+    }
+
+    Ok(Some(
+        value.get_identifier_or_string_text(contents)?.to_string(),
+    ))
 }
 
 fn target_name_call_target(
@@ -3978,6 +4056,24 @@ mod tests {
     }
 
     #[test]
+    fn test_subset_completion_request_canonicalizes_namespaced_tar_read_object() {
+        let (text, point) = point_from_cursor("targets::tar_read(table1)[[\"@\"]]");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("\"")));
+
+        let request = completion_request_from_string_subset(&context)
+            .unwrap()
+            .expect("expected string subset completion request");
+
+        assert!(request.expr.contains("targets::tar_read"));
+        assert!(request.expr.contains("table1"));
+        assert_eq!(
+            request.subset_kind,
+            Some(SubsetCompletionKind::StringSubset2)
+        );
+    }
+
+    #[test]
     fn test_extractor_completion_request_supports_empty_rhs_at_point() {
         let (text, point) = point_from_cursor("mtcars$@");
         let document = Document::new(text.as_str(), None);
@@ -3988,6 +4084,22 @@ mod tests {
             .expect("expected extractor completion request");
 
         assert_eq!(request.expr, "mtcars");
+        assert_eq!(request.accessor, Some(String::from("$")));
+        assert_eq!(request.prefix, None);
+    }
+
+    #[test]
+    fn test_extractor_completion_request_canonicalizes_tar_read_object() {
+        let (text, point) = point_from_cursor("tar_read(clean_data)$@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("$")));
+
+        let request = completion_request_from_extractor(&context)
+            .unwrap()
+            .expect("expected extractor completion request");
+
+        assert!(request.expr.contains("targets::tar_read"));
+        assert!(request.expr.contains("clean_data"));
         assert_eq!(request.accessor, Some(String::from("$")));
         assert_eq!(request.prefix, None);
     }
