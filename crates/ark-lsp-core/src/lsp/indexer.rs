@@ -600,7 +600,10 @@ fn collect_targets_source_call_paths(
             "base:::source" |
             "tar_source" |
             "targets::tar_source" |
-            "targets:::tar_source"
+            "targets:::tar_source" |
+            "source_R" |
+            "snipe::source_R" |
+            "snipe:::source_R"
     ) {
         return Ok(());
     }
@@ -1126,6 +1129,48 @@ list(
         assert_matches!(
             entry.data,
             IndexEntryData::Target { ref name } if name == "sourced_target"
+        );
+    }
+
+    #[test]
+    fn test_index_targets_script_sources_snipe_pipeline_files() {
+        let _lock = indexer_test_lock();
+        let _guard = ResetIndexerGuard;
+        let tempdir = tempfile::tempdir().expect("expected tempdir");
+        let targets_path = tempdir.path().join("_targets.R");
+        let pipeline_dir = tempdir.path().join("_target_pipelines");
+        let pipeline_path = pipeline_dir.join("analysis.R");
+
+        std::fs::create_dir_all(&pipeline_dir).expect("expected pipeline dir");
+        std::fs::write(
+            &targets_path,
+            r#"
+scripts <- snipe::source_R("_target_pipelines")
+for (script in scripts) {
+    source(script)
+}
+"#,
+        )
+        .expect("expected targets script");
+        std::fs::write(
+            &pipeline_path,
+            r#"
+analysis_targets <- list(
+    tar_target(snipe_sourced_target, 1)
+)
+"#,
+        )
+        .expect("expected pipeline script");
+
+        let targets_uri = Url::from_file_path(&targets_path).expect("expected targets uri");
+        let pipeline_uri = Url::from_file_path(&pipeline_path).expect("expected pipeline uri");
+        create(&targets_uri).expect("expected targets script indexing");
+
+        let (_, entry) = find_in_file("snipe_sourced_target", &pipeline_uri)
+            .expect("expected snipe-sourced target definition");
+        assert_matches!(
+            entry.data,
+            IndexEntryData::Target { ref name } if name == "snipe_sourced_target"
         );
     }
 
