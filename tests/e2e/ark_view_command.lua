@@ -383,7 +383,7 @@ local ok, err = pcall(function()
   end
 
   vim.ui.input = function(opts, on_confirm)
-    if not opts.prompt:find("Filter cyl", 1, true) then
+    if not opts.prompt:find("Text filter cyl", 1, true) then
       error("unexpected filter prompt: " .. vim.inspect(opts), 0)
     end
     on_confirm("4")
@@ -507,7 +507,14 @@ local ok, err = pcall(function()
 
   local help_buf = vim.api.nvim_win_get_buf(help_win)
   local help_lines = vim.api.nvim_buf_get_lines(help_buf, 0, -1, false)
-  if help_lines[1] ~= "Navigation" or not table.concat(help_lines, "\n"):find("Esc/q  close this help", 1, true) then
+  local help_text = table.concat(help_lines, "\n")
+  if
+    help_lines[1] ~= "Navigation"
+    or not help_text:find("d/p    describe selected column", 1, true)
+    or not help_text:find("/      set literal text filter; empty clears", 1, true)
+    or not help_text:find("C      clear all filters and sort", 1, true)
+    or not help_text:find("Esc/q  close this help", 1, true)
+  then
     error("unexpected ArkView help contents: " .. vim.inspect(help_lines), 0)
   end
 
@@ -649,23 +656,23 @@ local ok, err = pcall(function()
   assert_winbar_contains(grid_win, "Rows 1-1/1")
   assert_winbar_contains(grid_win, "Filter cyl")
 
-  press("p")
+  press("d")
   if profile_calls[1] ~= 2 then
-    error("expected profile request for selected column, got " .. vim.inspect(profile_calls), 0)
+    error("expected describe request for selected column, got " .. vim.inspect(profile_calls), 0)
   end
 
   local profile_win = vim.api.nvim_get_current_win()
   local profile_config = vim.api.nvim_win_get_config(profile_win)
   if profile_config.relative ~= "editor" then
-    error("expected column profile to open in a floating window, got " .. vim.inspect(profile_config), 0)
+    error("expected column description to open in a floating window, got " .. vim.inspect(profile_config), 0)
   end
   if profile_config.width < 64 or profile_config.height < 10 then
-    error("expected column profile float to be roomy, got " .. vim.inspect(profile_config), 0)
+    error("expected column description float to be roomy, got " .. vim.inspect(profile_config), 0)
   end
 
   local profile_buf = vim.api.nvim_win_get_buf(profile_win)
   local profile_lines = vim.api.nvim_buf_get_lines(profile_buf, 0, -1, false)
-  if profile_lines[1] ~= "Column Profile" or profile_lines[3] ~= "# cyl" then
+  if profile_lines[1] ~= "Column Description" or profile_lines[3] ~= "# cyl" then
     error("unexpected floating profile contents: " .. vim.inspect(profile_lines), 0)
   end
   if not has_highlight(profile_buf, "ArkViewProfileTitle", 0, 0) then
@@ -685,15 +692,15 @@ local ok, err = pcall(function()
 
   press("<Esc>")
   if vim.api.nvim_win_is_valid(profile_win) then
-    error("expected <Esc> to close the column profile float", 0)
+    error("expected <Esc> to close the column description float", 0)
   end
   if vim.api.nvim_get_current_win() ~= grid_win then
-    error("expected closing column profile to return focus to the grid", 0)
+    error("expected closing column description to return focus to the grid", 0)
   end
 
   wins = vim.api.nvim_tabpage_list_wins(current_tab)
   if #wins ~= 2 then
-    error("expected column profile to avoid opening a details split, got " .. tostring(#wins), 0)
+    error("expected column description to avoid opening a details split, got " .. tostring(#wins), 0)
   end
 
   move_cursor(grid_win, 2, header_column(grid_lines, "cyl"))
@@ -768,6 +775,45 @@ local ok, err = pcall(function()
   details_lines = vim.api.nvim_buf_get_lines(details_buf, 0, -1, false)
   if details_lines[1] ~= "Cell" or details_lines[3] ~= "cell[1,2]=4" then
     error("unexpected details after cell inspect: " .. vim.inspect(details_lines), 0)
+  end
+
+  press("C")
+  if not vim.deep_equal(filter_calls[2], {
+    column_index = 2,
+    query = "",
+  }) then
+    error("expected clear-all to clear selected filter, got " .. vim.inspect(filter_calls), 0)
+  end
+  if not vim.deep_equal(sort_calls[2], {
+    column_index = 2,
+    direction = "",
+  }) then
+    error("expected clear-all to clear sort, got " .. vim.inspect(sort_calls), 0)
+  end
+
+  updated_sidebar = vim.api.nvim_buf_get_lines(sidebar_buf, 0, -1, false)
+  if updated_sidebar[4]:find("%[") then
+    error("expected clear-all to remove sort and filter badges, got " .. vim.inspect(updated_sidebar), 0)
+  end
+
+  grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
+  if
+    #grid_lines ~= 4
+    or not (grid_lines[2] or ""):find("21.0", 1, true)
+    or not (grid_lines[3] or ""):find("22.8", 1, true)
+    or not (grid_lines[4] or ""):find("18.7", 1, true)
+  then
+    error("expected clear-all to restore unfiltered unsorted rows, got " .. vim.inspect(grid_lines), 0)
+  end
+
+  local winbar = vim.wo[grid_win].winbar
+  if
+    winbar:find("Sort cyl", 1, true)
+    or winbar:find("Filter cyl", 1, true)
+    or not winbar:find("Filters 0", 1, true)
+    or not winbar:find("Sort none", 1, true)
+  then
+    error("expected clear-all to restore neutral winbar sort/filter summary, got " .. vim.inspect(winbar), 0)
   end
 
   press("q")

@@ -1390,10 +1390,9 @@ fn static_target_command_node<'a>(
     call: &'a tree_sitter::Node,
     _contents: &str,
 ) -> Option<tree_sitter::Node<'a>> {
-    let mut unnamed_values =
-        call.arguments()
-            .into_iter()
-            .filter_map(|(name, value)| if name.is_none() { value } else { None });
+    let mut unnamed_values = call
+        .arguments()
+        .filter_map(|(name, value)| if name.is_none() { value } else { None });
 
     unnamed_values.next()?;
     unnamed_values.next()

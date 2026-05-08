@@ -172,7 +172,7 @@ pub fn update(document: &Document, uri: &Url) -> anyhow::Result<()> {
     if !ExtUrl::is_indexable(uri) {
         return Ok(());
     }
-    delete(uri)?;
+    clear_file_index(uri)?;
     index_document(document, uri);
     index_targets_sourced_pipeline_files(document, uri);
     Ok(())
@@ -206,6 +206,13 @@ fn index_insert(index: &mut HashMap<String, IndexEntry>, entry: IndexEntry) {
 
 #[tracing::instrument(level = "trace")]
 pub(crate) fn delete(uri: &Url) -> anyhow::Result<()> {
+    clear_file_index(uri)?;
+    SOURCED_TARGET_PIPELINE_URIS.lock().unwrap().remove(uri);
+
+    Ok(())
+}
+
+fn clear_file_index(uri: &Url) -> anyhow::Result<()> {
     let file_id = FileId::from_uri(uri.clone());
     let mut index = WORKSPACE_INDEX.lock().unwrap();
 
@@ -213,7 +220,6 @@ pub(crate) fn delete(uri: &Url) -> anyhow::Result<()> {
     index.entry(file_id).and_modify(|index| {
         index.clear();
     });
-    SOURCED_TARGET_PIPELINE_URIS.lock().unwrap().remove(uri);
 
     Ok(())
 }
@@ -294,6 +300,8 @@ pub(crate) fn create(uri: &Url) -> anyhow::Result<()> {
     if ext != "r" && ext != "R" {
         return Ok(());
     }
+
+    clear_file_index(uri)?;
 
     // TODO: Handle document encodings here.
     // TODO: Check if there's an up-to-date buffer to be used.
@@ -608,7 +616,7 @@ fn collect_targets_source_call_paths(
         return Ok(());
     }
 
-    for (index, (name, value)) in node.arguments().into_iter().enumerate() {
+    for (index, (name, value)) in node.arguments().enumerate() {
         if !is_targets_source_path_argument(doc, index, name.as_ref())? {
             continue;
         }

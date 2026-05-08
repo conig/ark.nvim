@@ -14,10 +14,12 @@ use tower_lsp::lsp_types::CreateFilesParams;
 use tower_lsp::lsp_types::DeleteFilesParams;
 use tower_lsp::lsp_types::DidChangeConfigurationParams;
 use tower_lsp::lsp_types::DidChangeTextDocumentParams;
+use tower_lsp::lsp_types::DidChangeWatchedFilesParams;
 use tower_lsp::lsp_types::DidCloseTextDocumentParams;
 use tower_lsp::lsp_types::DidOpenTextDocumentParams;
 use tower_lsp::lsp_types::DocumentOnTypeFormattingOptions;
 use tower_lsp::lsp_types::ExecuteCommandOptions;
+use tower_lsp::lsp_types::FileChangeType;
 use tower_lsp::lsp_types::FileOperationFilter;
 use tower_lsp::lsp_types::FileOperationPattern;
 use tower_lsp::lsp_types::FileOperationPatternKind;
@@ -504,6 +506,37 @@ pub(crate) fn did_change(
         .log_err();
 
     Ok(hydration)
+}
+
+#[tracing::instrument(level = "info", skip_all)]
+pub(crate) fn did_change_watched_files(
+    params: DidChangeWatchedFilesParams,
+    state: &WorldState,
+) -> anyhow::Result<()> {
+    let mut changed_or_created = Vec::new();
+    let mut deleted = Vec::new();
+
+    for event in params.changes {
+        match event.typ {
+            FileChangeType::CREATED | FileChangeType::CHANGED => {
+                changed_or_created.push(event.uri);
+            },
+            FileChangeType::DELETED => {
+                deleted.push(event.uri);
+            },
+            _ => {},
+        }
+    }
+
+    if !changed_or_created.is_empty() {
+        lsp::main_loop::index_create(changed_or_created, state.clone());
+    }
+
+    if !deleted.is_empty() {
+        lsp::main_loop::index_delete(deleted, state.clone());
+    }
+
+    Ok(())
 }
 
 #[tracing::instrument(level = "info", skip_all)]

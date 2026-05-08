@@ -311,9 +311,8 @@ impl GlobalState {
                         LspNotification::DidChangeConfiguration(params) => {
                             state_handlers::did_change_configuration(params, &self.client, &mut self.world).await
                         },
-                        LspNotification::DidChangeWatchedFiles(_params) => {
-                            // TODO: Re-index the changed files.
-                            Ok(())
+                        LspNotification::DidChangeWatchedFiles(params) => {
+                            state_handlers::did_change_watched_files(params, &self.world)
                         },
                         LspNotification::DidOpenTextDocument(params) => {
                             let hydration =
@@ -995,9 +994,17 @@ pub(crate) fn index_create(uris: Vec<Url>, state: WorldState) {
 pub(crate) fn index_update(uris: Vec<Url>, state: WorldState) {
     store_latest_world_state(&state);
 
+    let mut related_disk_uris = Vec::new();
+
     for uri in uris {
         if !ExtUrl::is_indexable(&uri) {
             continue;
+        }
+
+        if let Some(targets_uri) = related_targets_script_uri(&uri) {
+            if targets_uri != uri && !related_disk_uris.contains(&targets_uri) {
+                related_disk_uris.push(targets_uri);
+            }
         }
 
         let document = match state.get_document(&uri) {
@@ -1016,9 +1023,31 @@ pub(crate) fn index_update(uris: Vec<Url>, state: WorldState) {
             .unwrap_or_else(|err| lsp::log_error!("Failed to queue index update: {err}"));
     }
 
+    for uri in related_disk_uris {
+        INDEXER_QUEUE
+            .send(IndexerQueueTask::Indexer(IndexerTask::Create { uri }))
+            .unwrap_or_else(|err| crate::lsp::log_error!("Failed to queue index create: {err}"));
+    }
+
     // Refresh all diagnostics since the indexer results for one file may affect
     // other files
     diagnostics_refresh_all_latest();
+}
+
+fn related_targets_script_uri(uri: &Url) -> Option<Url> {
+    let Ok(path) = uri.to_file_path() else {
+        return None;
+    };
+
+    let start = path.parent()?;
+    for ancestor in start.ancestors() {
+        let candidate = ancestor.join("_targets.R");
+        if candidate.exists() {
+            return Url::from_file_path(candidate).ok();
+        }
+    }
+
+    None
 }
 
 pub(crate) fn index_delete(uris: Vec<Url>, state: WorldState) {

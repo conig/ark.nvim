@@ -10,6 +10,7 @@ local menu_patched = false
 local signature_float_patched = false
 local target_items_patched = false
 local active_signature_help_win = nil
+local active_hover_win = nil
 
 local ark_filetypes = { "r", "rmd", "qmd", "quarto" }
 
@@ -73,28 +74,35 @@ local function close_blink_docs()
   end
 end
 
-local function current_signature_help_win()
-  if type(active_signature_help_win) ~= "number" or active_signature_help_win == 0 then
-    active_signature_help_win = nil
+local function current_tracked_float_win(win)
+  if type(win) ~= "number" or win == 0 then
     return nil
   end
 
-  if not vim.api.nvim_win_is_valid(active_signature_help_win) then
-    active_signature_help_win = nil
+  if not vim.api.nvim_win_is_valid(win) then
     return nil
   end
 
-  local config = vim.api.nvim_win_get_config(active_signature_help_win)
+  local config = vim.api.nvim_win_get_config(win)
   if type(config) ~= "table" or type(config.relative) ~= "string" or config.relative == "" then
-    active_signature_help_win = nil
     return nil
   end
 
+  return win
+end
+
+local function current_signature_help_win()
+  active_signature_help_win = current_tracked_float_win(active_signature_help_win)
   return active_signature_help_win
 end
 
-local function signature_help_visible()
-  return current_signature_help_win() ~= nil
+local function current_hover_win()
+  active_hover_win = current_tracked_float_win(active_hover_win)
+  return active_hover_win
+end
+
+local function lsp_documentation_visible()
+  return current_signature_help_win() ~= nil or current_hover_win() ~= nil
 end
 
 local function blink_menu_win()
@@ -566,9 +574,13 @@ function M.patch_blink_menu_for_signature_help()
     local result = base_update_position(...)
     local bufnr = vim.api.nvim_get_current_buf()
     local signature_win = current_signature_help_win()
-    if signature_win ~= nil and in_ark_filetype(bufnr) then
+    local hover_win = current_hover_win()
+    if in_ark_filetype(bufnr) and (signature_win ~= nil or hover_win ~= nil) then
       vim.schedule(function()
         resolve_signature_help_menu_collision(signature_win)
+        if hover_win ~= signature_win then
+          resolve_signature_help_menu_collision(hover_win)
+        end
       end)
     end
     return result
@@ -593,10 +605,15 @@ function M.patch_signature_help_float()
     local is_signature_help = type(opts) == "table"
       and opts.focus_id == "textDocument/signatureHelp"
       and in_ark_filetype(bufnr)
+    local is_hover = type(opts) == "table" and opts.focus_id == "textDocument/hover" and in_ark_filetype(bufnr)
 
     local fbuf, fwin = base_open_floating_preview(contents, syntax, opts, ...)
-    if is_signature_help and type(fwin) == "number" and fwin ~= 0 then
-      active_signature_help_win = fwin
+    if (is_signature_help or is_hover) and type(fwin) == "number" and fwin ~= 0 then
+      if is_signature_help then
+        active_signature_help_win = fwin
+      elseif is_hover then
+        active_hover_win = fwin
+      end
       vim.schedule(function()
         close_blink_docs()
         resolve_signature_help_menu_collision(fwin)
@@ -621,7 +638,7 @@ function M.patch_blink_docs_for_signature_help()
   local base_auto_show_item = type(docs.auto_show_item) == "function" and docs.auto_show_item or nil
   if base_auto_show_item ~= nil then
     docs.auto_show_item = function(context, item)
-      if signature_help_visible() and in_ark_filetype(vim.api.nvim_get_current_buf()) then
+      if lsp_documentation_visible() and in_ark_filetype(vim.api.nvim_get_current_buf()) then
         close_blink_docs()
         return
       end
@@ -633,7 +650,7 @@ function M.patch_blink_docs_for_signature_help()
   local base_show_item = type(docs.show_item) == "function" and docs.show_item or nil
   if base_show_item ~= nil then
     docs.show_item = function(context, item)
-      if signature_help_visible() and in_ark_filetype(vim.api.nvim_get_current_buf()) then
+      if lsp_documentation_visible() and in_ark_filetype(vim.api.nvim_get_current_buf()) then
         close_blink_docs()
         return
       end

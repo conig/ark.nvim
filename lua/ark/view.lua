@@ -504,8 +504,9 @@ local function show_help_window(state)
     "Columns",
     "  S      search columns",
     "  s      toggle sort on selected column",
-    "  /      set text filter on selected column",
-    "  p      show column profile",
+    "  /      set literal text filter; empty clears",
+    "  C      clear all filters and sort",
+    "  d/p    describe selected column",
     "",
     "Data",
     "  c      show generated code",
@@ -525,14 +526,14 @@ local function show_help_window(state)
 end
 
 local function show_profile_window(state, text)
-  local lines = { "Column Profile", "" }
+  local lines = { "Column Description", "" }
   if type(text) == "string" and text ~= "" then
     vim.list_extend(lines, vim.split(text, "\n", { plain = true, trimempty = false }))
   else
     lines[#lines + 1] = "No details."
   end
 
-  local _, buf = open_float_window(state, "Column Profile", lines, {
+  local _, buf = open_float_window(state, "Column Description", lines, {
     min_width = 64,
     min_height = 10,
     width_fraction = 0.66,
@@ -919,7 +920,7 @@ local function setup_keymaps(state)
       return
     end
     vim.ui.input({
-      prompt = "Filter " .. (item.name or "column") .. ": ",
+      prompt = "Text filter " .. (item.name or "column") .. " (empty clears): ",
       default = current_filter(state, column_index),
     }, function(input)
       if input == nil then
@@ -936,6 +937,41 @@ local function setup_keymaps(state)
     end)
   end)
 
+  map("C", function()
+    local changed = false
+
+    for _, item in ipairs(vim.deepcopy(state.filters or {})) do
+      local column_index = tonumber(item.column_index)
+      if column_index and type(item.query) == "string" and item.query ~= "" then
+        local updated = request_or_error(state, "ArkView Error", state.lsp.view_filter, state.session_id, column_index, "")
+        if not updated then
+          return
+        end
+        state.sort = updated.sort or state.sort
+        state.filters = updated.filters or {}
+        state.total_rows = tonumber(updated.total_rows) or state.total_rows
+        changed = true
+      end
+    end
+
+    local sort = state.sort or {}
+    local sort_column = tonumber(sort.column_index)
+    if sort_column and sort_column > 0 and sort.direction ~= nil and sort.direction ~= "" then
+      local updated = request_or_error(state, "ArkView Error", state.lsp.view_sort, state.session_id, sort_column, "")
+      if not updated then
+        return
+      end
+      state.sort = updated.sort or {}
+      state.filters = updated.filters or state.filters
+      state.total_rows = tonumber(updated.total_rows) or state.total_rows
+      changed = true
+    end
+
+    if changed then
+      refresh_page(state, 0)
+    end
+  end)
+
   map("S", function()
     open_schema_picker(state)
   end)
@@ -944,7 +980,7 @@ local function setup_keymaps(state)
     toggle_grid_sidebar_focus(state)
   end)
 
-  map("p", function()
+  local function describe_column()
     local column_index = tonumber(state.selected_column)
     if not column_index then
       return
@@ -954,7 +990,10 @@ local function setup_keymaps(state)
       return
     end
     show_profile_window(state, profile.text or "")
-  end)
+  end
+
+  map("d", describe_column)
+  map("p", describe_column)
 
   map("c", function()
     local code = request_or_error(state, "ArkView Error", state.lsp.view_code, state.session_id)
