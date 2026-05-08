@@ -69,6 +69,9 @@ Responsibilities:
 - manage one visible Ark tmux pane plus parked Ark tabs on the tmux backend
 - manage one visible Ark terminal split on the terminal backend
 - configure `vim-slime` / `nvim-slimetree` targeting at the backend seam
+- optionally attach a conservative R-family keymap preset for the recommended
+  pane, send, help, ArkView, snippets, and tab workflows
+- send text to the active managed R session through the configured backend
 - start detached `ark-lsp`
 - relay session metadata through `ark/updateSession`
 - expose commands such as `ArkPaneStart`, `ArkTab*`, `ArkHelp`, and `ArkStatus`
@@ -379,11 +382,20 @@ pipeline runner UI.
 Expected commands:
 
 - `:ArkTargets`
+- `:ArkTargetPick`
+- `:ArkTargetAcquire`
+- `:ArkTargetActive`
 - `:ArkTargetGraph`
 - `:ArkTargetBuild`
+- `:ArkTargetBuildPick`
+- `:ArkTargetBuildActive`
 - `:ArkTargetBuildDownstream`
+- `:ArkTargetBuildDownstreamPick`
 - `:ArkTargetInvalidate`
+- `:ArkTargetInvalidatePick`
 - `:ArkTargetLoad`
+- `:ArkTargetLoadPick`
+- `:ArkTargetLoadActive`
 - `:ArkTargetLog`
 - `:ArkTargetStatus`
 
@@ -598,7 +610,10 @@ layer:
 - clean-room user smoke: the Docker harness under
   [docker/readme-minimal/](/home/marine/repos/ark.nvim/docker/readme-minimal)
   must wrap the same [testing/readme-minimal/](/home/marine/repos/ark.nvim/testing/readme-minimal)
-  config rather than maintaining a second minimal setup
+  config rather than maintaining a second minimal setup; the
+  [scripts/docker-readme-test.sh](/home/marine/repos/ark.nvim/scripts/docker-readme-test.sh)
+  wrapper should keep an auto mode that rebuilds stale images before launching
+  the harness
 - ambient user-config smoke remains optional via `--init ~/.config/nvim/init.lua`
 
 High-value smoke coverage for the current product boundary includes:

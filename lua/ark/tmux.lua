@@ -1265,7 +1265,17 @@ function M.send_text(text)
     return nil, "ark.nvim send_text() requires non-empty text"
   end
 
-  local _, err = run_tmux({ "send-keys", "-t", session.tmux_pane, text, "Enter" })
+  if text:sub(-1) ~= "\n" then
+    text = text .. "\n"
+  end
+
+  local buffer_name = "ark.nvim-send-" .. tostring(monotonic_ms())
+  local _, set_err = run_tmux({ "set-buffer", "-b", buffer_name, text })
+  if set_err then
+    return nil, set_err
+  end
+
+  local _, err = run_tmux({ "paste-buffer", "-d", "-b", buffer_name, "-t", session.tmux_pane })
   if err then
     return nil, err
   end

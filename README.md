@@ -151,6 +151,31 @@ parser(s) installed. `<C-c><C-c>` is the simpler current-line send.
 This recommended config uses `nvim-slimetree` as the send layer and `vim-slime`
 as the transport into the managed tmux pane.
 
+If you want ark.nvim to install the same basic R workflow mappings for
+R-family buffers, enable the optional keymap preset:
+
+```lua
+require("ark").setup({
+  keymaps = true,
+})
+```
+
+That preset includes:
+
+- Normal `<CR>` to send the current R form
+- Normal `<leader><CR>` to send the current R form without moving the cursor
+- Normal `<C-c><C-c>` to send the current line
+- Visual `<CR>` to send the selected region
+- `<leader>rp` to start or restart the managed R pane
+- `<leader>rw` to send the expression under cursor or the selection
+- `<leader>rh` / `<leader>rs` to run `head()` / `summary()` on that expression
+- `<leader>rV`, `<leader>r?`, and `<leader>as` for ArkView, help, and snippets
+- `<leader>r=`, `<leader>r[`, `<leader>r]`, and `<leader>r-` for Ark R tabs
+- `<leader>tta` and `<leader>ttn` to pick and show the active Ark target
+
+The preset is off by default so existing Neovim keymaps are not changed unless
+you explicitly opt in.
+
 If you are not already starting Tree-sitter for these buffers elsewhere in your
 config, add the minimal startup glue before the plugin spec:
 
@@ -312,7 +337,31 @@ The plugin defines:
 - `:ArkView`
 - `:ArkViewRefresh`
 - `:ArkViewClose`
+- `:ArkTargetsInfo`
+- `:ArkTargets`
+- `:ArkTargetsManifest`
+- `:ArkTargetPick`
+- `:ArkTargetAcquire`
+- `:ArkTargetActive`
+- `:ArkTargetGraph`
+- `:ArkTargetsNetwork`
+- `:ArkTargetStatus`
+- `:ArkTargetsMeta`
+- `:ArkTargetObjectMeta`
+- `:ArkTargetBuild`
+- `:ArkTargetBuildPick`
+- `:ArkTargetBuildActive`
+- `:ArkTargetBuildDownstream`
+- `:ArkTargetBuildDownstreamPick`
+- `:ArkTargetMake`
+- `:ArkTargetInvalidate`
+- `:ArkTargetInvalidatePick`
+- `:ArkTargetLoad`
+- `:ArkTargetLoadPick`
+- `:ArkTargetLoadActive`
+- `:ArkTargetLog`
 - `:ArkSnippets`
+- `:ArkSend`
 - `:ArkRefresh`
 - `:ArkStatus`
 - `:ArkPaneCommand`
@@ -325,7 +374,11 @@ Useful ones in practice:
 - `:ArkRefresh` restarts the current buffer's LSP client using current session metadata
 - `:ArkHelp` opens a read-only floating help page for the symbol under cursor
 - `:ArkView` opens the live data explorer for an expression or the symbol under cursor
+- `:ArkTargetPick` selects and remembers an active `{targets}` target
+- `:ArkTargetLoadPick` / `:ArkTargetBuildPick` pick a target and run the exact Ark target action
+- `:ArkTargetLoadActive` / `:ArkTargetBuildActive` run the action for the remembered active target
 - `:ArkSnippets` opens the explicit Ark snippets picker
+- `:ArkSend` sends text to the active managed Ark R session
 - `:ArkPaneCommand` prints the exact launcher command used for the managed pane
 - `:checkhealth ark` reports install/runtime prerequisites without starting a session
 
@@ -364,11 +417,20 @@ For a headless smoke run of that same config, use:
 That harness lives under `testing/readme-minimal/` and uses the same Blink +
 `nvim-slimetree` + `vim-slime` + `ark.nvim` stack documented above.
 
-For a disposable Docker version of that same harness, build and run:
+For a disposable Docker version of that same harness, use the wrapper:
 
 ```sh
-docker build -f docker/readme-minimal/Dockerfile -t ark-readme-test .
-docker run --rm -it ark-readme-test
+./scripts/docker-readme-test.sh
+```
+
+By default the wrapper runs auto mode: it builds the image when it is missing,
+rebuilds it when the repo context has changed, and otherwise drops directly into
+the README-minimal Neovim session.
+
+For a noninteractive smoke run in the container:
+
+```sh
+./scripts/docker-readme-test.sh auto smoke
 ```
 
 That image prebuilds `ark-lsp`, installs the README-minimal plugins, installs
@@ -376,18 +438,14 @@ the Debian `r-cran-tidyverse` bundle (which includes `jsonlite`), and bakes in
 the Tree-sitter `r` and `markdown` parsers needed by the isolated config. It
 currently pins Neovim `v0.12.1`, matching the repo's supported baseline.
 
-For a noninteractive smoke run in the container:
-
-```sh
-docker run --rm ark-readme-test smoke
-```
-
-If you want a small wrapper around those Docker commands, use:
+The explicit Docker wrapper subcommands are:
 
 ```sh
 ./scripts/docker-readme-test.sh build
+./scripts/docker-readme-test.sh update
 ./scripts/docker-readme-test.sh run
 ./scripts/docker-readme-test.sh smoke
+./scripts/docker-readme-test.sh shell
 ```
 
 ## Defaults
@@ -401,6 +459,12 @@ require("ark").setup({
   async_startup = false,
   configure_slime = true,
   filetypes = { "r", "rmd", "qmd", "quarto" },
+  keymaps = {
+    enabled = false,
+    prefix = "<leader>r",
+    target_prefix = "<leader>t",
+    snippets = "<leader>as",
+  },
   tmux = {
     pane_layout = "auto",
     stacked_max_width = 100,

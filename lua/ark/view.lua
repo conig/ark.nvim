@@ -143,24 +143,28 @@ local function highlight_pipe_separators(buf, row, line)
   end
 end
 
-local function apply_grid_highlights(state, lines, row_width)
-  if not valid_buf(state.grid_buf) then
+local function apply_table_highlights(buf, lines, row_width)
+  if not valid_buf(buf) then
     return
   end
 
   ensure_highlights()
-  vim.api.nvim_buf_clear_namespace(state.grid_buf, highlight_namespace, 0, -1)
+  vim.api.nvim_buf_clear_namespace(buf, highlight_namespace, 0, -1)
 
   for index, line in ipairs(lines) do
     local row = index - 1
     if row == 0 then
-      set_highlight(state.grid_buf, "ArkViewHeader", row, 0, #line, 100)
-      set_highlight(state.grid_buf, "ArkViewRowNumber", row, 0, math.min(row_width, #line), 110)
+      set_highlight(buf, "ArkViewHeader", row, 0, #line, 100)
+      set_highlight(buf, "ArkViewRowNumber", row, 0, math.min(row_width, #line), 110)
     elseif line ~= "(no rows)" then
-      set_highlight(state.grid_buf, "ArkViewRowNumber", row, 0, math.min(row_width, #line), 110)
+      set_highlight(buf, "ArkViewRowNumber", row, 0, math.min(row_width, #line), 110)
     end
-    highlight_pipe_separators(state.grid_buf, row, line)
+    highlight_pipe_separators(buf, row, line)
   end
+end
+
+local function apply_grid_highlights(state, lines, row_width)
+  apply_table_highlights(state.grid_buf, lines, row_width)
 end
 
 local function apply_sidebar_highlights(state, lines)
@@ -280,6 +284,14 @@ local function sort_summary(state)
   return "Sort " .. column_label(state, column_index) .. " " .. direction
 end
 
+local function pin_summary(state)
+  local column_index = tonumber(state.pinned_column)
+  if not column_index then
+    return "Pin none"
+  end
+  return "Pin " .. column_label(state, column_index)
+end
+
 local function update_grid_summary(state)
   if not valid_win(state.grid_win) then
     return
@@ -293,6 +305,7 @@ local function update_grid_summary(state)
     statusline_escape(string.format("Columns %d", tonumber(state.total_columns or 0) or 0)),
     statusline_escape(filter_summary(state)),
     statusline_escape(sort_summary(state)),
+    statusline_escape(pin_summary(state)),
   }
   local separator = "%#ArkViewSeparator# | %#ArkViewSummary#"
   pcall(function()
@@ -322,10 +335,14 @@ local function current_row_offset(state)
 end
 
 local function current_row_index(state)
-  if not valid_win(state.grid_win) then
+  local win = vim.api.nvim_get_current_win()
+  if win ~= state.pinned_win then
+    win = state.grid_win
+  end
+  if not valid_win(win) then
     return nil
   end
-  local line = vim.api.nvim_win_get_cursor(state.grid_win)[1]
+  local line = vim.api.nvim_win_get_cursor(win)[1]
   if line < 2 then
     return nil
   end
@@ -394,6 +411,9 @@ local function render_sidebar(state)
     end
     if filter_text ~= "" then
       badges[#badges + 1] = "filter"
+    end
+    if index == tonumber(state.pinned_column) then
+      badges[#badges + 1] = "pin"
     end
     local suffix = (#badges > 0) and (" [" .. table.concat(badges, ",") .. "]") or ""
     lines[#lines + 1] = string.format("%s %2d %-18s %s%s", prefix, index, item.name or "", item.class or item.type or "", suffix)
@@ -498,6 +518,7 @@ local function show_help_window(state)
     "Navigation",
     "  <Tab>  toggle grid/columns focus",
     "  <CR>   inspect current grid cell or jump from columns to grid",
+    "  zz     center cursor in the current view",
     "  ]p     next page",
     "  [p     previous page",
     "",
@@ -506,7 +527,8 @@ local function show_help_window(state)
     "  s      toggle sort on selected column",
     "  /      set literal text filter; empty clears",
     "  C      clear all filters and sort",
-    "  d/p    describe selected column",
+    "  d      describe selected column",
+    "  p      pin/unpin selected column",
     "",
     "Data",
     "  c      show generated code",
@@ -571,6 +593,106 @@ local function show_details(state, title, text)
   render_details(state, title, text)
 end
 
+local function column_width_for_rows(state, column_index)
+  local item = schema_by_index(state, column_index)
+  local width = math.max(8, math.min(24, display_width(item and item.name or "")))
+  for _, row in ipairs(state.rows or {}) do
+    width = math.max(width, math.min(24, display_width((row or {})[column_index])))
+  end
+  return width
+end
+
+local function close_pinned_window(state)
+  if not state then
+    return
+  end
+  if valid_win(state.pinned_win) then
+    pcall(vim.api.nvim_win_close, state.pinned_win, true)
+  end
+  state.pinned_win = nil
+  if valid_win(state.grid_win) then
+    pcall(function()
+      vim.wo[state.grid_win].scrollbind = false
+    end)
+  end
+end
+
+local function ensure_pinned_window(state)
+  if valid_win(state.pinned_win) then
+    return state.pinned_win
+  end
+  if not valid_win(state.grid_win) or not valid_buf(state.pinned_buf) then
+    return nil
+  end
+
+  local created = with_tab(state.tabpage, function()
+    local previous_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_set_current_win(state.grid_win)
+    vim.cmd("leftabove vertical 16split")
+    local win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_buf(win, state.pinned_buf)
+    vim.wo[win].wrap = false
+    vim.wo[win].number = false
+    vim.wo[win].relativenumber = false
+    vim.wo[win].cursorline = true
+    vim.wo[win].cursorlineopt = "line"
+    vim.wo[win].winfixwidth = true
+    vim.wo[win].scrollbind = true
+    vim.wo[state.grid_win].scrollbind = true
+    if valid_win(previous_win) and previous_win ~= win then
+      vim.api.nvim_set_current_win(previous_win)
+    else
+      vim.api.nvim_set_current_win(state.grid_win)
+    end
+    return win
+  end)
+
+  state.pinned_win = created
+  return created
+end
+
+local function render_pinned_column(state, row_width)
+  local column_index = tonumber(state.pinned_column)
+  if not column_index then
+    close_pinned_window(state)
+    if valid_buf(state.pinned_buf) then
+      set_buffer_lines(state.pinned_buf, {})
+    end
+    return
+  end
+
+  local item = schema_by_index(state, column_index)
+  if not item then
+    state.pinned_column = nil
+    close_pinned_window(state)
+    return
+  end
+
+  local win = ensure_pinned_window(state)
+  local width = column_width_for_rows(state, column_index)
+  local lines = { table.concat({ pad_text("#", row_width), pad_text(item.name or ("V" .. tostring(column_index)), width) }, " | ") }
+  for row_index, row in ipairs(state.rows or {}) do
+    local number = state.row_numbers and state.row_numbers[row_index] or (current_row_offset(state) + row_index)
+    lines[#lines + 1] = table.concat({ pad_text(number, row_width), pad_text((row or {})[column_index], width) }, " | ")
+  end
+  if #lines == 1 then
+    lines[#lines + 1] = "(no rows)"
+  end
+
+  set_buffer_lines(state.pinned_buf, lines)
+  apply_table_highlights(state.pinned_buf, lines, row_width)
+
+  if valid_win(win) then
+    local target_width = math.min(40, math.max(12, display_width(lines[1] or "") + 1))
+    pcall(vim.api.nvim_win_set_width, win, target_width)
+    if valid_win(state.grid_win) then
+      local cursor = vim.api.nvim_win_get_cursor(state.grid_win)
+      local row = math.min(cursor[1], math.max(1, vim.api.nvim_buf_line_count(state.pinned_buf)))
+      pcall(vim.api.nvim_win_set_cursor, win, { row, 0 })
+    end
+  end
+end
+
 local function move_grid_cursor_to_selected_column(state)
   if not valid_win(state.grid_win) then
     return
@@ -601,6 +723,28 @@ local function focus_selected_column_in_grid(state)
 
   vim.api.nvim_set_current_win(state.grid_win)
   move_grid_cursor_to_selected_column(state)
+end
+
+local function center_current_view()
+  local win = vim.api.nvim_get_current_win()
+  if not valid_win(win) then
+    return
+  end
+
+  local buf = vim.api.nvim_win_get_buf(win)
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local height = math.max(1, vim.api.nvim_win_get_height(win))
+  local width = math.max(1, vim.api.nvim_win_get_width(win))
+  local line_count = math.max(1, vim.api.nvim_buf_line_count(buf))
+  local max_topline = math.max(1, line_count - height + 1)
+  local topline = math.max(1, math.min(cursor[1] - math.floor(height / 2), max_topline))
+  local leftcol = math.max(0, cursor[2] - math.floor(width / 2))
+  local view = vim.fn.winsaveview()
+
+  view.topline = topline
+  view.leftcol = leftcol
+  view.skipcol = 0
+  vim.fn.winrestview(view)
 end
 
 local function render_grid(state)
@@ -650,6 +794,7 @@ local function render_grid(state)
   state.column_spans = column_spans
   set_buffer_lines(state.grid_buf, lines)
   apply_grid_highlights(state, lines, row_width)
+  render_pinned_column(state, row_width)
   update_grid_summary(state)
   if valid_win(state.grid_win) then
     move_grid_cursor_to_selected_column(state)
@@ -675,6 +820,12 @@ local function sync_selected_column(state)
     if item then
       state.selected_column = tonumber(item.index) or state.selected_column
     end
+  elseif win == state.pinned_win then
+    state.selected_column = tonumber(state.pinned_column) or state.selected_column
+    local page_row = current_row_index(state)
+    if page_row then
+      state.selected_row = page_row
+    end
   end
 
   if tonumber(state.selected_column) ~= previous_column then
@@ -682,6 +833,12 @@ local function sync_selected_column(state)
     if win == state.sidebar_win then
       move_grid_cursor_to_selected_column(state)
     end
+  end
+
+  if win == state.grid_win and valid_win(state.pinned_win) then
+    local cursor = vim.api.nvim_win_get_cursor(state.grid_win)
+    local row = math.min(cursor[1], math.max(1, vim.api.nvim_buf_line_count(state.pinned_buf)))
+    pcall(vim.api.nvim_win_set_cursor, state.pinned_win, { row, 0 })
   end
 end
 
@@ -718,6 +875,7 @@ local function teardown_state(state)
   end
   state.closing = true
   close_float_window(state)
+  close_pinned_window(state)
   safe_close_session(state)
   states[state.tabpage] = nil
   if state.augroup then
@@ -857,8 +1015,33 @@ local function open_schema_picker(state)
   }, choose)
 end
 
+local function toggle_pinned_column(state)
+  if not state then
+    return
+  end
+
+  sync_selected_column(state)
+
+  local column_index = tonumber(state.selected_column)
+  if vim.api.nvim_get_current_win() == state.pinned_win then
+    column_index = tonumber(state.pinned_column)
+  end
+  if not column_index then
+    return
+  end
+
+  if tonumber(state.pinned_column) == column_index then
+    state.pinned_column = nil
+  else
+    state.pinned_column = column_index
+  end
+
+  render_grid(state)
+  render_sidebar(state)
+end
+
 local function setup_keymaps(state)
-  local buffers = { state.grid_buf, state.sidebar_buf, state.details_buf }
+  local buffers = { state.grid_buf, state.pinned_buf, state.sidebar_buf, state.details_buf }
   local function map(lhs, rhs, target_buffers)
     for _, buf in ipairs(target_buffers or buffers) do
       vim.keymap.set("n", lhs, rhs, { buffer = buf, nowait = true, silent = true })
@@ -980,6 +1163,10 @@ local function setup_keymaps(state)
     toggle_grid_sidebar_focus(state)
   end)
 
+  map("zz", function()
+    center_current_view()
+  end)
+
   local function describe_column()
     local column_index = tonumber(state.selected_column)
     if not column_index then
@@ -993,7 +1180,10 @@ local function setup_keymaps(state)
   end
 
   map("d", describe_column)
-  map("p", describe_column)
+
+  map("p", function()
+    toggle_pinned_column(state)
+  end)
 
   map("c", function()
     local code = request_or_error(state, "ArkView Error", state.lsp.view_code, state.session_id)
@@ -1072,6 +1262,7 @@ function M.open(opts)
 
   local source_tab = vim.api.nvim_get_current_tabpage()
   local grid_buf = new_scratch_buffer("")
+  local pinned_buf = new_scratch_buffer("")
   local sidebar_buf = new_scratch_buffer("")
   local details_buf = new_scratch_buffer("markdown")
 
@@ -1115,10 +1306,13 @@ function M.open(opts)
     page_limit = tonumber(page.limit or opts.page_limit or 200) or 200,
     selected_column = opened.schema and opened.schema[1] and tonumber(opened.schema[1].index) or 1,
     selected_row = 1,
+    pinned_column = nil,
     grid_buf = grid_buf,
+    pinned_buf = pinned_buf,
     sidebar_buf = sidebar_buf,
     details_buf = details_buf,
     grid_win = grid_win,
+    pinned_win = nil,
     sidebar_win = sidebar_win,
     details_win = nil,
     float_buf = nil,
@@ -1136,6 +1330,13 @@ function M.open(opts)
   vim.api.nvim_create_autocmd("CursorMoved", {
     group = group,
     buffer = grid_buf,
+    callback = function()
+      sync_selected_column(state)
+    end,
+  })
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    group = group,
+    buffer = pinned_buf,
     callback = function()
       sync_selected_column(state)
     end,

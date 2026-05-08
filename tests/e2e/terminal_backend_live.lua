@@ -108,5 +108,16 @@ ark_test.wait_for("terminal send output", 10000, function()
   return table.concat(lines, "\n"):find("ark%-terminal%-send%-ok") ~= nil
 end)
 
+local ark_send_ok, ark_send_err = ark.send([[cat("ark-send-api-ok\n"); flush.console()]])
+if not ark_send_ok then
+  stop_watchdog()
+  ark_test.fail("failed to send text through ark.send(): " .. tostring(ark_send_err))
+end
+
+ark_test.wait_for("ark.send output", 10000, function()
+  local lines = vim.api.nvim_buf_get_lines(status.terminal_bufnr, 0, -1, false)
+  return table.concat(lines, "\n"):find("ark%-send%-api%-ok") ~= nil
+end)
+
 ark.stop_pane()
 stop_watchdog()

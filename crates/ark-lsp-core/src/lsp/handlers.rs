@@ -62,6 +62,7 @@ use crate::lsp::completions::provide_detached_post_bridge_completions;
 use crate::lsp::completions::provide_detached_pre_bridge_completions;
 use crate::lsp::completions::provide_detached_static_completions;
 use crate::lsp::completions::resolve_completion;
+use crate::lsp::definitions::find_target_definition;
 use crate::lsp::definitions::goto_definition;
 use crate::lsp::document_context::DocumentContext;
 use crate::lsp::folding_range::folding_range;
@@ -89,6 +90,7 @@ use crate::lsp::statement_range::statement_range;
 use crate::lsp::statement_range::StatementRangeParams;
 use crate::lsp::statement_range::StatementRangeResponse;
 use crate::lsp::symbols;
+use crate::lsp::target_context::target_reference_context;
 use crate::lsp::traits::node::NodeExt;
 use crate::r_task;
 use crate::treesitter::NodeTypeExt;
@@ -844,7 +846,7 @@ fn static_target_hover(
         .get_identifier_or_string_text(context.document.contents.as_str())?
         .to_string();
     let Some((definition_uri, definition)) =
-        find_static_target_definition(name.as_str(), uri, context.document, state)
+        find_target_definition(name.as_str(), uri, context.document, state)
     else {
         if target_reference_hover_context(&node, context.document.contents.as_str()) {
             return Ok(manifest_only_target_hover(name.as_str(), uri, state));
@@ -919,42 +921,6 @@ fn manifest_only_target_hover(
     })
 }
 
-fn find_static_target_definition(
-    name: &str,
-    uri: &tower_lsp::lsp_types::Url,
-    document: &crate::lsp::document::Document,
-    state: &WorldState,
-) -> Option<(indexer::FileId, indexer::IndexEntry)> {
-    if let Some(info) = indexer::find_in_document(name, uri, document) {
-        if matches!(info.1.data, indexer::IndexEntryData::Target { .. }) {
-            return Some(info);
-        }
-    }
-
-    let mut open_uris: Vec<_> = state
-        .documents
-        .keys()
-        .filter(|open_uri| *open_uri != uri)
-        .collect();
-    open_uris.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-
-    for open_uri in open_uris {
-        let Some(open_document) = state.documents.get(open_uri) else {
-            continue;
-        };
-        let Some(info) = indexer::find_in_document(name, open_uri, open_document) else {
-            continue;
-        };
-        if matches!(info.1.data, indexer::IndexEntryData::Target { .. }) {
-            return Some(info);
-        }
-    }
-
-    indexer::find_in_file(name, uri)
-        .or_else(|| indexer::find(name))
-        .filter(|(_, entry)| matches!(entry.data, indexer::IndexEntryData::Target { .. }))
-}
-
 fn target_hover_source_label(uri: &tower_lsp::lsp_types::Url) -> String {
     if uri.scheme() == "file" {
         if let Ok(path) = uri.to_file_path() {
@@ -966,34 +932,7 @@ fn target_hover_source_label(uri: &tower_lsp::lsp_types::Url) -> String {
 }
 
 fn target_reference_hover_context(node: &tree_sitter::Node, contents: &str) -> bool {
-    node.ancestors()
-        .any(|ancestor| target_reference_call(&ancestor, contents))
-}
-
-fn target_reference_call(node: &tree_sitter::Node, contents: &str) -> bool {
-    if !node.is_call() {
-        return false;
-    }
-
-    let Some(function) = node.child_by_field_name("function") else {
-        return false;
-    };
-    let Ok(callee) = function.node_to_string(contents) else {
-        return false;
-    };
-
-    matches!(
-        target_reference_unqualified_callee(callee.as_str()),
-        "tar_read" | "tar_load" | "tar_make" | "tar_invalidate" | "tar_render"
-    )
-}
-
-fn target_reference_unqualified_callee(callee: &str) -> &str {
-    callee
-        .rsplit_once(":::")
-        .or_else(|| callee.rsplit_once("::"))
-        .map(|(_, name)| name)
-        .unwrap_or(callee)
+    target_reference_context(node, contents)
 }
 
 fn static_target_command(

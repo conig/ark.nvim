@@ -65,6 +65,8 @@ pub mod state_handlers;
 pub mod statement_range;
 #[path = "../../ark-lsp-core/src/lsp/symbols.rs"]
 pub mod symbols;
+#[path = "../../ark-lsp-core/src/lsp/target_context.rs"]
+pub mod target_context;
 #[path = "../../ark-lsp-core/src/lsp/util.rs"]
 pub mod util;
 pub use ark_lsp_support::events;

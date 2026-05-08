@@ -200,6 +200,7 @@ local ark = {
       auto_start_lsp = true,
       async_startup = true,
       configure_slime = true,
+      keymaps = true,
     })
   end,
 }

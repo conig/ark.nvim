@@ -14,6 +14,7 @@ use tower_lsp::lsp_types::Range;
 use crate::lsp::document::Document;
 use crate::lsp::indexer;
 use crate::lsp::state::WorldState;
+use crate::lsp::target_context::target_reference_context;
 use crate::lsp::traits::node::NodeExt;
 use crate::treesitter::NodeTypeExt;
 
@@ -29,14 +30,10 @@ pub(crate) fn goto_definition(
     let position = params.text_document_position_params.position;
     let point = document.tree_sitter_point_from_lsp_position(position)?;
 
-    let Some(node) = ast.root_node().find_closest_node_to_point(point) else {
+    let Some(node) = definition_node_at_point(ast.root_node(), point) else {
         log::warn!("Failed to find the closest node to point {point}.");
         return Ok(None);
     };
-    let node = node
-        .ancestors()
-        .find(|node| node.is_identifier_or_string())
-        .unwrap_or(node);
 
     let start = document.lsp_position_from_tree_sitter_point(node.start_position())?;
     let end = document.lsp_position_from_tree_sitter_point(node.end_position())?;
@@ -47,7 +44,7 @@ pub(crate) fn goto_definition(
         let symbol = node.get_identifier_or_string_text(&document.contents)?;
 
         let uri = &params.text_document_position_params.text_document.uri;
-        let info = if node.is_string() {
+        let info = if node.is_string() || target_reference_context(&node, &document.contents) {
             find_target_definition(symbol, uri, document, state)
         } else {
             find_symbol_definition(symbol, uri, document, state)
@@ -85,6 +82,30 @@ pub(crate) fn goto_definition(
     Ok(Some(response))
 }
 
+fn definition_node_at_point<'tree>(
+    root: tree_sitter::Node<'tree>,
+    point: tree_sitter::Point,
+) -> Option<tree_sitter::Node<'tree>> {
+    let node = root.find_closest_node_to_point(point)?;
+
+    if let Some(node) = node.ancestors().find(|node| node.is_identifier_or_string()) {
+        return Some(node);
+    }
+
+    let Some(next) = node.next_leaf() else {
+        return Some(node);
+    };
+    if next.start_position() != point {
+        return Some(node);
+    }
+
+    let node = next
+        .ancestors()
+        .find(|node| node.is_identifier_or_string())
+        .or(Some(next));
+    node
+}
+
 fn find_symbol_definition(
     symbol: &str,
     uri: &tower_lsp::lsp_types::Url,
@@ -116,13 +137,39 @@ fn find_symbol_definition(
     indexer::find_in_file(symbol, uri).or_else(|| indexer::find(symbol))
 }
 
-fn find_target_definition(
+pub(crate) fn find_target_definition(
     symbol: &str,
     uri: &tower_lsp::lsp_types::Url,
     document: &Document,
     state: &WorldState,
 ) -> Option<(indexer::FileId, indexer::IndexEntry)> {
-    find_symbol_definition(symbol, uri, document, state)
+    if let Some(info) = indexer::find_in_document(symbol, uri, document) {
+        if matches!(info.1.data, indexer::IndexEntryData::Target { .. }) {
+            return Some(info);
+        }
+    }
+
+    let mut open_uris: Vec<_> = state
+        .documents
+        .keys()
+        .filter(|open_uri| *open_uri != uri)
+        .collect();
+    open_uris.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+
+    for open_uri in open_uris {
+        let Some(open_document) = state.documents.get(open_uri) else {
+            continue;
+        };
+        let Some(info) = indexer::find_in_document(symbol, open_uri, open_document) else {
+            continue;
+        };
+        if matches!(info.1.data, indexer::IndexEntryData::Target { .. }) {
+            return Some(info);
+        }
+    }
+
+    indexer::find_in_file(symbol, uri)
+        .or_else(|| indexer::find(symbol))
         .filter(|(_, entry)| matches!(entry.data, indexer::IndexEntryData::Target { .. }))
 }
 
@@ -356,6 +403,46 @@ list(
                     lsp_types::Range {
                         start: lsp_types::Position::new(2, 13),
                         end: lsp_types::Position::new(2, 23),
+                    }
+                );
+            }
+        );
+    }
+
+    #[test]
+    fn test_goto_definition_target_bare_reference_beats_local_assignment() {
+        let targets_uri = test_path("_targets.R");
+        let analysis_uri = test_path("analysis.R");
+        let (code, params) = params_from_cursor(
+            r#"
+brief_intervention_summary <- tar_read(@brief_intervention_summary)
+brief_intervention_summary
+"#,
+            analysis_uri.clone(),
+        );
+        let analysis_doc = Document::new(&code, None);
+        let targets_doc = Document::new(
+            r#"
+list(
+  tar_target(brief_intervention_summary, raw_data + 1)
+)
+"#,
+            None,
+        );
+        let state = state_with_documents(vec![
+            (targets_uri.clone(), targets_doc),
+            (analysis_uri, analysis_doc.clone()),
+        ]);
+
+        assert_matches!(
+            goto_definition(&analysis_doc, params, &state).unwrap(),
+            Some(GotoDefinitionResponse::Link(ref links)) => {
+                assert_eq!(links[0].target_uri, targets_uri);
+                assert_eq!(
+                    links[0].target_range,
+                    lsp_types::Range {
+                        start: lsp_types::Position::new(2, 13),
+                        end: lsp_types::Position::new(2, 39),
                     }
                 );
             }

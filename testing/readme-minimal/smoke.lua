@@ -109,6 +109,10 @@ if type(blink.is_visible) ~= "function" then
   fail("blink.cmp did not finish setup")
 end
 
+if vim.fn.maparg("<leader>rw", "n") == "" or vim.fn.maparg("<leader>rV", "n") == "" then
+  fail("README test config did not attach Ark recommended keymaps")
+end
+
 local st = require("nvim-slimetree")
 
 wait_for("managed pane", 30000, function()

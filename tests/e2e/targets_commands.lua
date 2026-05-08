@@ -11,6 +11,14 @@ package.loaded["ark"] = {
     calls[#calls + 1] = { name = "manifest", bufnr = bufnr }
     return { status = "ok" }
   end,
+  targets_pick = function(bufnr)
+    calls[#calls + 1] = { name = "pick", bufnr = bufnr }
+    return true
+  end,
+  targets_active = function(bufnr)
+    calls[#calls + 1] = { name = "active", bufnr = bufnr }
+    return "clean_data"
+  end,
   targets_network = function(bufnr)
     calls[#calls + 1] = { name = "network", bufnr = bufnr }
     return { status = "ok" }
@@ -39,6 +47,14 @@ package.loaded["ark"] = {
     calls[#calls + 1] = { name = "action", action = action, names = names, bufnr = bufnr }
     return { status = "ok" }
   end,
+  targets_action_pick = function(action, bufnr)
+    calls[#calls + 1] = { name = "action_pick", action = action, bufnr = bufnr }
+    return true
+  end,
+  targets_action_active = function(action, bufnr)
+    calls[#calls + 1] = { name = "action_active", action = action, bufnr = bufnr }
+    return { status = "ok" }
+  end,
 }
 
 vim.cmd("runtime plugin/ark.lua")
@@ -46,16 +62,25 @@ vim.cmd("runtime plugin/ark.lua")
 vim.cmd("ArkTargetsInfo")
 vim.cmd("ArkTargets")
 vim.cmd("ArkTargetsManifest")
+vim.cmd("ArkTargetPick")
+vim.cmd("ArkTargetAcquire")
+vim.cmd("ArkTargetActive")
 vim.cmd("ArkTargetGraph")
 vim.cmd("ArkTargetsNetwork")
 vim.cmd("ArkTargetStatus clean_data")
 vim.cmd("ArkTargetsMeta clean_data")
 vim.cmd("ArkTargetObjectMeta clean_data")
 vim.cmd("ArkTargetBuild clean_data")
+vim.cmd("ArkTargetBuildPick")
+vim.cmd("ArkTargetBuildActive")
 vim.cmd("ArkTargetBuildDownstream clean_data")
+vim.cmd("ArkTargetBuildDownstreamPick")
 vim.cmd("ArkTargetMake clean_data")
 vim.cmd("ArkTargetInvalidate clean_data")
+vim.cmd("ArkTargetInvalidatePick")
 vim.cmd("ArkTargetLoad clean_data")
+vim.cmd("ArkTargetLoadPick")
+vim.cmd("ArkTargetLoadActive")
 vim.cmd("ArkTargetLog clean_data")
 
 local command = vim.lsp.commands["ark.targetAction"]
@@ -74,16 +99,25 @@ local expected = {
   { name = "info", bufnr = 0 },
   { name = "manifest", bufnr = 0 },
   { name = "manifest", bufnr = 0 },
+  { name = "pick", bufnr = 0 },
+  { name = "pick", bufnr = 0 },
+  { name = "active", bufnr = 0 },
   { name = "graph", bufnr = 0 },
   { name = "graph", bufnr = 0 },
   { name = "status", names = "clean_data", bufnr = 0 },
   { name = "meta", names = "clean_data", bufnr = 0 },
   { name = "object_meta", target = "clean_data", bufnr = 0 },
   { name = "action", action = "make", names = "clean_data", bufnr = 0 },
+  { name = "action_pick", action = "make", bufnr = 0 },
+  { name = "action_active", action = "make", bufnr = 0 },
   { name = "action", action = "make_downstream", names = "clean_data", bufnr = 0 },
+  { name = "action_pick", action = "make_downstream", bufnr = 0 },
   { name = "action", action = "make", names = "clean_data", bufnr = 0 },
   { name = "action", action = "invalidate", names = "clean_data", bufnr = 0 },
+  { name = "action_pick", action = "invalidate", bufnr = 0 },
   { name = "action", action = "load", names = "clean_data", bufnr = 0 },
+  { name = "action_pick", action = "load", bufnr = 0 },
+  { name = "action_active", action = "load", bufnr = 0 },
   { name = "log", names = "clean_data", bufnr = 0 },
   { name = "action", action = "make", names = "clean_data", bufnr = 42 },
   { name = "action", action = "make_downstream", names = "clean_data", bufnr = 42 },

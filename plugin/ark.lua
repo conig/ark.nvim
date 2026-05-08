@@ -104,6 +104,23 @@ vim.api.nvim_create_user_command("ArkTargetsManifest", function()
   vim.print(require("ark").targets_manifest(0))
 end, { desc = "Print the target manifest for the current buffer" })
 
+vim.api.nvim_create_user_command("ArkTargetPick", function()
+  require("ark").targets_pick(0)
+end, { desc = "Pick and remember the active target for the current project" })
+
+vim.api.nvim_create_user_command("ArkTargetAcquire", function()
+  require("ark").targets_pick(0)
+end, { desc = "Pick and remember the active target for the current project" })
+
+vim.api.nvim_create_user_command("ArkTargetActive", function()
+  local name, err = require("ark").targets_active(0)
+  if name then
+    vim.notify("Active target: " .. name, vim.log.levels.INFO, { title = "ark.nvim" })
+  else
+    vim.notify(err or "No active target set.", vim.log.levels.WARN, { title = "ark.nvim" })
+  end
+end, { desc = "Show the active target for the current project" })
+
 vim.api.nvim_create_user_command("ArkTargetGraph", function()
   require("ark").targets_graph(0)
 end, { desc = "Open the target graph for the current buffer" })
@@ -140,12 +157,24 @@ end, {
   nargs = "?",
 })
 
+vim.api.nvim_create_user_command("ArkTargetBuildPick", function()
+  require("ark").targets_action_pick("make", 0)
+end, { desc = "Pick a target and run targets::tar_make() for it" })
+
+vim.api.nvim_create_user_command("ArkTargetBuildActive", function()
+  vim.print(require("ark").targets_action_active("make", 0))
+end, { desc = "Run targets::tar_make() for the active target" })
+
 vim.api.nvim_create_user_command("ArkTargetBuildDownstream", function(args)
   vim.print(require("ark").targets_action("make_downstream", args.args, 0))
 end, {
   desc = "Run targets::tar_make() for a target and its downstream dependents",
   nargs = "?",
 })
+
+vim.api.nvim_create_user_command("ArkTargetBuildDownstreamPick", function()
+  require("ark").targets_action_pick("make_downstream", 0)
+end, { desc = "Pick a target and run targets::tar_make() for it and downstream dependents" })
 
 vim.api.nvim_create_user_command("ArkTargetMake", function(args)
   vim.print(require("ark").targets_action("make", args.args, 0))
@@ -161,12 +190,24 @@ end, {
   nargs = "?",
 })
 
+vim.api.nvim_create_user_command("ArkTargetInvalidatePick", function()
+  require("ark").targets_action_pick("invalidate", 0)
+end, { desc = "Pick a target and run targets::tar_invalidate() for it" })
+
 vim.api.nvim_create_user_command("ArkTargetLoad", function(args)
   vim.print(require("ark").targets_action("load", args.args, 0))
 end, {
   desc = "Run targets::tar_load() for optional target names",
   nargs = "?",
 })
+
+vim.api.nvim_create_user_command("ArkTargetLoadPick", function()
+  require("ark").targets_action_pick("load", 0)
+end, { desc = "Pick a target and run targets::tar_load() for it" })
+
+vim.api.nvim_create_user_command("ArkTargetLoadActive", function()
+  vim.print(require("ark").targets_action_active("load", 0))
+end, { desc = "Run targets::tar_load() for the active target" })
 
 vim.api.nvim_create_user_command("ArkTargetLog", function(args)
   require("ark").targets_log(args.args, 0)
@@ -178,6 +219,13 @@ end, {
 vim.api.nvim_create_user_command("ArkSnippets", function()
   require("ark").snippets(0)
 end, { desc = "Open the Ark snippets picker for the current R-family buffer" })
+
+vim.api.nvim_create_user_command("ArkSend", function(args)
+  require("ark").send(args.args)
+end, {
+  desc = "Send text to the active managed ark.nvim R session",
+  nargs = "+",
+})
 
 vim.api.nvim_create_user_command("ArkRefresh", function()
   require("ark").refresh(0)

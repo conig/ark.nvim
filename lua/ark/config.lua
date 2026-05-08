@@ -65,6 +65,12 @@ function M.defaults()
     async_startup = false,
     configure_slime = true,
     filetypes = { "r", "rmd", "qmd", "quarto" },
+    keymaps = {
+      enabled = false,
+      prefix = "<leader>r",
+      target_prefix = "<leader>t",
+      snippets = "<leader>as",
+    },
     lsp = {
       name = "ark_lsp",
       cmd = { lsp_bin, "--runtime-mode", "detached" },

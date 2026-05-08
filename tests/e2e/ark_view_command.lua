@@ -510,7 +510,9 @@ local ok, err = pcall(function()
   local help_text = table.concat(help_lines, "\n")
   if
     help_lines[1] ~= "Navigation"
-    or not help_text:find("d/p    describe selected column", 1, true)
+    or not help_text:find("zz     center cursor in the current view", 1, true)
+    or not help_text:find("d      describe selected column", 1, true)
+    or not help_text:find("p      pin/unpin selected column", 1, true)
     or not help_text:find("/      set literal text filter; empty clears", 1, true)
     or not help_text:find("C      clear all filters and sort", 1, true)
     or not help_text:find("Esc/q  close this help", 1, true)
@@ -543,6 +545,50 @@ local ok, err = pcall(function()
   if not updated_sidebar[4]:find("cyl", 1, true) then
     error("expected grid cursor move to select cyl column, got " .. vim.inspect(updated_sidebar), 0)
   end
+
+  press("p")
+  wins = vim.api.nvim_tabpage_list_wins(current_tab)
+  if #wins ~= 3 then
+    error("expected pinning a column to open a pinned pane, got " .. tostring(#wins), 0)
+  end
+
+  local pinned_win = nil
+  local pinned_buf = nil
+  for _, win in ipairs(wins) do
+    local candidate = vim.api.nvim_win_get_buf(win)
+    if candidate ~= grid_buf and candidate ~= sidebar_buf then
+      pinned_win = win
+      pinned_buf = candidate
+      break
+    end
+  end
+  if not pinned_win or not pinned_buf then
+    error("expected pinned column buffer after pressing p", 0)
+  end
+
+  local pinned_lines = vim.api.nvim_buf_get_lines(pinned_buf, 0, -1, false)
+  if not (pinned_lines[1] or ""):find("cyl", 1, true) or not (pinned_lines[2] or ""):find("6", 1, true) then
+    error("expected pinned pane to render the cyl column, got " .. vim.inspect(pinned_lines), 0)
+  end
+  if not has_highlight(pinned_buf, "ArkViewHeader", 0, header_column(pinned_lines, "cyl")) then
+    error("expected pinned pane header highlight", 0)
+  end
+  updated_sidebar = vim.api.nvim_buf_get_lines(sidebar_buf, 0, -1, false)
+  if not updated_sidebar[4]:find("%[pin%]") then
+    error("expected sidebar to mark pinned cyl column, got " .. vim.inspect(updated_sidebar), 0)
+  end
+  assert_winbar_contains(grid_win, "Pin cyl")
+
+  press("p")
+  wins = vim.api.nvim_tabpage_list_wins(current_tab)
+  if #wins ~= 2 or vim.api.nvim_win_is_valid(pinned_win) then
+    error("expected pressing p again to close the pinned pane, windows=" .. tostring(#wins), 0)
+  end
+  updated_sidebar = vim.api.nvim_buf_get_lines(sidebar_buf, 0, -1, false)
+  if updated_sidebar[4]:find("%[pin%]") then
+    error("expected unpin to clear the sidebar pin badge, got " .. vim.inspect(updated_sidebar), 0)
+  end
+  assert_winbar_contains(grid_win, "Pin none")
 
   -- Regression: moving between rows within the same grid column should not
   -- redraw or recenter the sidebar, which causes visible flicker in the UI.
@@ -814,6 +860,37 @@ local ok, err = pcall(function()
     or not winbar:find("Sort none", 1, true)
   then
     error("expected clear-all to restore neutral winbar sort/filter summary, got " .. vim.inspect(winbar), 0)
+  end
+
+  vim.api.nvim_set_current_win(grid_win)
+  local wide_lines = {}
+  for index = 1, 60 do
+    wide_lines[index] = string.rep(tostring(index % 10), 120)
+  end
+  vim.bo[grid_buf].modifiable = true
+  vim.bo[grid_buf].readonly = false
+  vim.api.nvim_buf_set_lines(grid_buf, 0, -1, false, wide_lines)
+  vim.bo[grid_buf].modifiable = false
+  vim.bo[grid_buf].readonly = true
+  vim.api.nvim_win_set_cursor(grid_win, { 40, 80 })
+
+  press("zz")
+
+  local centered_view = vim.fn.winsaveview()
+  local height = vim.api.nvim_win_get_height(grid_win)
+  local width = vim.api.nvim_win_get_width(grid_win)
+  local expected_topline = math.max(1, math.min(40 - math.floor(height / 2), #wide_lines - height + 1))
+  local expected_leftcol = math.max(0, 80 - math.floor(width / 2))
+  if centered_view.topline ~= expected_topline or centered_view.leftcol ~= expected_leftcol then
+    error(
+      "expected ArkView zz to center vertically and horizontally, expected topline="
+        .. tostring(expected_topline)
+        .. " leftcol="
+        .. tostring(expected_leftcol)
+        .. " got "
+        .. vim.inspect(centered_view),
+      0
+    )
   end
 
   press("q")

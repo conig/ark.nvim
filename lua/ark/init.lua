@@ -2,6 +2,7 @@ local blink = require("ark.blink")
 local bridge = require("ark.bridge")
 local config = require("ark.config")
 local dev = require("ark.dev")
+local keymaps = require("ark.keymaps")
 local lsp = require("ark.lsp")
 local session_backend = require("ark.session")
 local snippets = require("ark.snippets")
@@ -1255,6 +1256,8 @@ function M.setup(opts)
   end
 
   local group = vim.api.nvim_create_augroup("ArkNvim", { clear = true })
+  keymaps.setup(options)
+
   vim.api.nvim_create_autocmd("FileType", {
     group = group,
     pattern = options.filetypes,
@@ -1511,6 +1514,41 @@ function M.snippets(bufnr)
   })
 end
 
+function M.send(text)
+  ensure_setup()
+
+  if type(text) ~= "string" or text == "" then
+    local err = "ark.nvim send() requires non-empty text"
+    notify(err, vim.log.levels.WARN)
+    return nil, err
+  end
+
+  local bridge_ok, bridge_err = ensure_bridge_runtime({
+    user_initiated = true,
+    wait_on_pending = true,
+  })
+  if not bridge_ok then
+    notify(bridge_err, vim.log.levels.ERROR)
+    return nil, bridge_err
+  end
+
+  local pane_id, pane_err = session_backend.start(options)
+  if not pane_id then
+    notify(pane_err, vim.log.levels.ERROR)
+    return nil, pane_err
+  end
+
+  sync_sessions_soon()
+
+  local ok, send_err = session_backend.send_text(options, text)
+  if not ok then
+    notify(send_err, vim.log.levels.ERROR)
+    return nil, send_err
+  end
+
+  return true, nil
+end
+
 local function show_help_page(bufnr, topic)
   bufnr = resolve_bufnr(bufnr)
 
@@ -1759,6 +1797,8 @@ local function targets_request(bufnr, label, request)
   return nil, err
 end
 
+local target_scalar
+
 local function target_records(payload, key)
   if type(payload) ~= "table" then
     return {}
@@ -1770,7 +1810,14 @@ local function target_records(payload, key)
   return value
 end
 
-local function target_scalar(value)
+local function target_name(record)
+  if type(record) ~= "table" then
+    return ""
+  end
+  return target_scalar(record.name)
+end
+
+target_scalar = function(value)
   if value == nil or value == vim.NIL then
     return ""
   end
@@ -1778,6 +1825,36 @@ local function target_scalar(value)
     return vim.inspect(value)
   end
   return tostring(value)
+end
+
+local target_active_by_root = {}
+
+local function target_active_path(project)
+  local root = type(project) == "table" and project.root or vim.loop.cwd()
+  local key = vim.fn.sha256(vim.fs.normalize(root or ""))
+  return vim.fs.normalize(vim.fn.stdpath("data") .. "/ark/targets/" .. key .. "/active_target.txt")
+end
+
+local function write_active_target(project, name)
+  local path = target_active_path(project)
+  vim.fn.mkdir(vim.fs.dirname(path), "p")
+  return pcall(vim.fn.writefile, { name }, path)
+end
+
+local function read_active_target(project)
+  local path = target_active_path(project)
+  if vim.fn.filereadable(path) ~= 1 then
+    return nil
+  end
+  local ok, lines = pcall(vim.fn.readfile, path, "", 1)
+  if not ok or type(lines) ~= "table" then
+    return nil
+  end
+  local name = lines[1]
+  if type(name) ~= "string" or name == "" then
+    return nil
+  end
+  return name
 end
 
 local function target_project_label(payload)
@@ -1877,6 +1954,87 @@ function M.targets_manifest(bufnr)
   end)
 end
 
+function M.targets_set_active(name, bufnr)
+  ensure_setup()
+  bufnr = resolve_bufnr(bufnr)
+
+  if type(name) ~= "string" or name == "" then
+    local err = "missing target name"
+    notify(err, vim.log.levels.WARN)
+    return nil, err
+  end
+
+  local project = targets_project(bufnr)
+  target_active_by_root[project.root] = name
+  local ok, write_err = write_active_target(project, name)
+  if not ok then
+    notify(write_err or "failed to persist active target", vim.log.levels.WARN)
+  end
+  return name
+end
+
+function M.targets_active(bufnr)
+  ensure_setup()
+  bufnr = resolve_bufnr(bufnr)
+
+  local project = targets_project(bufnr)
+  local name = target_active_by_root[project.root] or read_active_target(project)
+  if type(name) ~= "string" or name == "" then
+    return nil, "no active target set"
+  end
+  target_active_by_root[project.root] = name
+  return name
+end
+
+function M.targets_pick(bufnr, callback)
+  bufnr = resolve_bufnr(bufnr)
+  local payload, err = M.targets_manifest(bufnr)
+  if not payload then
+    return nil, err
+  end
+
+  local records = vim.tbl_filter(function(record)
+    return target_name(record) ~= ""
+  end, target_records(payload, "targets"))
+  table.sort(records, function(left, right)
+    return target_name(left) < target_name(right)
+  end)
+
+  if #records == 0 then
+    local pick_err = "target manifest is empty"
+    notify(pick_err, vim.log.levels.WARN)
+    return nil, pick_err
+  end
+
+  vim.ui.select(records, {
+    prompt = "Ark target",
+    format_item = function(record)
+      local name = target_name(record)
+      local command = target_scalar(record.command)
+      if command ~= "" then
+        return name .. "  " .. command:gsub("%s+", " ")
+      end
+      return name
+    end,
+  }, function(record)
+    if not record then
+      return
+    end
+    local name = target_name(record)
+    if name == "" then
+      return
+    end
+    M.targets_set_active(name, bufnr)
+    if type(callback) == "function" then
+      callback(name, record)
+    else
+      notify("Active target: " .. name, vim.log.levels.INFO)
+    end
+  end)
+
+  return true
+end
+
 function M.targets_network(bufnr)
   return targets_request(bufnr, "ark.nvim target network", function(project, target_bufnr)
     return lsp.targets_network(options, target_bufnr, project)
@@ -1925,6 +2083,21 @@ function M.targets_action(action, names, bufnr)
   return targets_request(bufnr, "ark.nvim target action", function(project, target_bufnr)
     return lsp.targets_action(options, target_bufnr, project, action, names)
   end)
+end
+
+function M.targets_action_pick(action, bufnr)
+  return M.targets_pick(bufnr, function(name)
+    vim.print(M.targets_action(action, name, bufnr))
+  end)
+end
+
+function M.targets_action_active(action, bufnr)
+  local name, err = M.targets_active(bufnr)
+  if not name then
+    notify(err or "no active target set", vim.log.levels.WARN)
+    return nil, err
+  end
+  return M.targets_action(action, name, bufnr)
 end
 
 function M.refresh(bufnr)
