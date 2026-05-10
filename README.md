@@ -1,167 +1,105 @@
 ark.nvim
 ========
 
-`ark.nvim` turns Ark's R analysis engine into a Neovim-native R
-environment. It is built around three pieces:
+`ark.nvim` is a Neovim R workstation built around a real interactive `R`
+session. It gives Neovim a fast Rust LSP, manages one local R session for you,
+and lets editor features use that live session when static analysis is not
+enough.
 
-- `ark-lsp`, a native Rust language server for R
-- a Neovim plugin that starts or reuses one managed interactive `R` session,
-  with tmux as the primary backend and a narrower built-in terminal backend
-- a local bridge that lets language features ask the live R session questions
-  without moving the REPL into the LSP process
+It is designed for the workflow many R users already like:
 
-The goal is not to recreate Positron or Jupyter inside Neovim. The goal is a
-fast local R workflow where editing, static analysis, the interactive REPL,
-object inspection, help, and `{targets}` iteration all meet inside the editor
-while preserving the terminal-shaped workflow that R users already trust.
+- keep an R REPL visible in tmux or a Neovim terminal split
+- send code with `nvim-slimetree` and `vim-slime`
+- get LSP completion, diagnostics, hover, signature help, symbols, references,
+  folding, and selection ranges in `R`, `Rmd`, `Qmd`, and Quarto buffers
+- inspect live objects with `:ArkView`
+- open help with `:ArkHelp`
+- work with `{targets}` projects through completions, navigation, target
+  metadata, and local build/load/invalidate actions
 
-This repo started as upstream Ark, so it still contains kernel, Positron, DAP,
-and other migration-era code. That is not the product surface anymore. The
-active product is a local, Neovim-only workflow where:
+The result should feel like a local R development environment, not a notebook
+runtime. Your REPL remains a normal R process, your editor remains Neovim, and
+Ark connects the two where language features need runtime knowledge.
 
-- Neovim talks to `ark-lsp` over stdio.
-- The live R session stays in one configured managed backend.
-- Runtime-aware features cross that boundary through the managed bridge.
-- REPL execution stays with `nvim-slimetree` and `vim-slime`.
-- Ark-specific UI lives in Neovim commands such as `:ArkHelp`, `:ArkView`, and
-  the `:ArkTarget*` command family.
+## What It Feels Like
 
-The legacy `ark` kernel binary is retained only as an opt-in extraction artifact.
-Default builds and the supported runtime path target `ark-lsp`.
+Open an R-family buffer and Ark starts or reuses one managed R session. Static
+language features appear first, then live-session features hydrate as soon as R
+is ready.
 
-## User Experience
+In practice that means Ark can help with:
 
-The intended daily loop is:
+- package names and installed-package lookups
+- `$`, `@`, `[[`, subset, and comparison-string completions
+- function signatures and help pages
+- `browser()` frame locals
+- R Markdown and Quarto fenced chunks
+- inline `` `r ...` `` expressions
+- live data-frame inspection through `:ArkView`
+- `{targets}` target names, definitions, cached object members, metadata, graph
+  views, and target actions
 
-1. Open an `r`, `rmd`, `qmd`, or `quarto` buffer.
-2. `ark.nvim` starts or reuses one managed R session.
-3. Static LSP features become available immediately.
-4. Once the managed R session is ready, completion, hover, signature help,
-   diagnostics, help, and object inspection can use live session state.
-5. Code execution still goes through `nvim-slimetree` and `vim-slime`, so
-   statement, chunk, line, and region sends continue to behave like a normal
-   REPL workflow.
-6. For `{targets}` projects, Ark can surface target names, target definitions,
-   cache metadata, build/load/invalidate commands, and target-object member
-   completion without making `{targets}` itself part of the editor.
+If the R session is not ready, Ark keeps working in static-only mode rather
+than blocking the editor.
 
-This means Ark can complete things like package names, `$` members, `[[` names,
-comparison-string values, `browser()` frame locals, R Markdown inline code, and
-cached target object columns while keeping the REPL visible and under user
-control.
+## Main Workflows
 
-## Upstream Difference
+### Edit and Send Code
 
-Upstream Ark is an R kernel for Jupyter applications and Positron. It presents
-the LSP and DAP as pieces of that frontend/kernel stack.
+`ark.nvim` manages the R session and points your send-code tools at it. It does
+not replace `vim-slime` or `nvim-slimetree`.
 
-`ark.nvim` keeps the reusable R analysis pieces but changes the product
-boundary:
+The common split is:
 
-| Area | Upstream Ark | `ark.nvim` |
-| --- | --- | --- |
-| Primary frontend | Positron and Jupyter clients | Neovim |
-| Main binary | `ark` kernel | `ark-lsp` stdio LSP |
-| Execution model | Kernel owns evaluation | User sends code to a managed interactive `R` REPL |
-| Runtime intelligence | Lives with the kernel/session | Crosses a local bridge into the managed REPL |
-| Editor UI | Positron/Jupyter surfaces | Neovim commands, LSP, Blink, `vim-slime`, and `nvim-slimetree` |
-| Data inspection | Upstream notebook/IDE data explorer paths | `:ArkView` live tabular object explorer |
-| Pipeline work | Not the user-facing upstream README story | `{targets}` completions, metadata, graph/status views, and target actions |
-| Debugging | Upstream DAP code exists | Out of scope for the Neovim product |
-| Notebook runtime | Core upstream use case | Out of scope |
+- `ark.nvim`: session lifecycle, bridge bootstrap, LSP startup, status
+- `vim-slime`: transport into the active R backend
+- `nvim-slimetree`: R-aware sends for forms, lines, chunks, and selections
 
-The result is a fork with a different user promise: a Neovim R workstation, not
-a Jupyter kernel distribution.
+### Complete and Navigate R Code
 
-## Scope
+Ark uses Neovim's normal LSP client. With Blink, keep using Blink's built-in
+`lsp` source. There is no separate Ark completion source to install.
 
-`ark.nvim` is for:
+Supported editor features include diagnostics, completion, completion resolve,
+hover, signature help, definitions, references, implementations, document
+symbols, workspace symbols, folding ranges, selection ranges, limited code
+actions, and newline-triggered indentation.
 
-- Neovim R development.
-- One managed tmux R pane per Neovim instance.
-- One managed Neovim terminal R split per Neovim instance when the terminal
-  backend is selected.
-- Standard LSP features such as diagnostics, completion, hover, signature help,
-  definitions, references, implementations, symbols, folding ranges, selection
-  ranges, and limited code actions.
-- Live-session completion, hover, signature help, help text, and ArkView
-  workflows when the managed R session is available.
-- R Markdown and Quarto editing, including fenced R chunks and inline
-  `` `r ...` `` expressions.
-- `{targets}` project navigation, completion, metadata, and approved local
-  actions when the `targets` package is installed.
+### Inspect Data
 
-`ark.nvim` is not for:
+`:ArkView` opens a live table explorer for the expression under cursor or an
+explicit expression. It can page, sort, filter, inspect cells, show column
+profiles, export the current view, and display the R code behind the active
+view.
 
-- Positron
-- Jupyter kernels
-- notebook execution
-- DAP
-- replacing `vim-slime` or `nvim-slimetree`
-- remote or multi-host tmux workflows
+### Work With `{targets}`
 
-## Architecture
+In projects with `_targets.R`, Ark can complete target names, jump to target
+declarations, show references, inspect target metadata, complete cached target
+object members, and run approved local target actions.
 
-The intended workflow is:
+## What It Is Not
 
-1. Open an `r`, `rmd`, `qmd`, or `quarto` buffer in Neovim.
-2. `ark.nvim` creates or reuses one managed backend running `R`.
-3. `nvim-slimetree` and `vim-slime` send code to that session.
-4. `ark-lsp` provides static language features through Neovim's built-in LSP client.
-5. When the managed R session is ready, `ark-lsp` augments static analysis with live-session intelligence through the bridge runtime.
+`ark.nvim` intentionally does not try to be:
 
-The important boundary is that the REPL does not live inside the LSP process.
-`ark.nvim` manages the session backend, the launcher bootstraps the bridge
-runtime, and the LSP consumes that session metadata when it starts in detached
-mode. tmux remains the primary UX, and the built-in terminal backend is
-additive rather than a new least-common-denominator abstraction.
+- a Jupyter kernel
+- a notebook execution environment
+- a Positron frontend
+- a DAP/debugger integration
+- a replacement for `vim-slime` or `nvim-slimetree`
+- a remote or multi-host tmux orchestration layer
 
-## Ark LSP Feature Matrix
+## How It Works
 
-The table below reflects the current `ark-lsp` surface in this repository,
-including Ark-specific custom methods used by the Neovim plugin.
+There are three moving parts:
 
-| Surface | Status | Notes |
-| --- | --- | --- |
-| Diagnostics | Supported | Syntax diagnostics are available immediately; semantic diagnostics hydrate after detached session state is ready. |
-| Completion | Supported | Static and live-session completion; includes package/library, extractor, subset/comparison string, browser-frame, target-object, and Rmd/Qmd support. |
-| Completion item resolve | Supported | Completion docs/detail resolution is implemented. |
-| Hover | Supported | Static hover works detached; runtime-aware hover is added when the managed session is available. |
-| Signature help | Supported | Static plus runtime-aware signature help. |
-| Definition | Supported | Workspace-aware static definition lookup. |
-| Implementation | Supported | Advertised and handled by the LSP server. |
-| References | Supported | Workspace-aware static reference lookup. |
-| `{targets}` target definition | Supported | Static target references can jump to declarations in `_targets.R` and sourced target pipeline files. |
-| `{targets}` completions/actions | Supported | Target names, cached target object members, cache metadata, graph/status views, and build/load/invalidate actions are exposed through Ark requests and commands. |
-| Document symbols | Supported | Per-document symbol outline is implemented. |
-| Workspace symbols | Supported | Workspace-wide symbol search is implemented. |
-| Folding ranges | Supported | Standard folding range support is advertised. |
-| Selection ranges | Supported | Standard selection range support is advertised. |
-| Code actions | Limited | Exposed only when the client supports code-action literals; current support is intentionally narrow. |
-| On-type formatting | Limited | Newline-triggered indentation support only. |
-| Workspace folders | Supported | Workspace folder support and change notifications are advertised. |
-| File create/delete/rename notifications | Supported | Watches `*.R` file operations for workspace updates. |
-| R Markdown / Quarto fenced chunks | Supported | Completion and diagnostics work in fenced R chunks. |
-| R Markdown / Quarto inline `` `r ...` `` | Supported | Inline R completion is implemented. |
-| `ark/textDocument/helpTopic` | Supported | Ark-native help-topic request used by the plugin help UI. |
-| `ark/textDocument/statementRange` | Supported | Ark-native statement-range request. |
-| `ark/inputBoundaries` | Supported | Ark-native input-boundaries request. |
-| `ark/internal/bootstrapSession` | Supported, internal | Plugin-only detached-session bootstrap path. |
-| `ark/updateSession` | Supported, internal | Plugin notification used to refresh detached session metadata. |
-| `ark/internal/status` | Supported, internal | Plugin status/debug request. |
-| `ark/internal/helpText` | Supported, internal | Plugin request for full help-page text. |
-| `ark/internal/virtualDocument` | Supported, internal | Plugin/internal virtual-document request. |
-| `ark/internal/view*` data explorer RPCs | Supported, internal | Back the `ArkView` live data explorer workflow. |
-| `ark/internal/targets*` target RPCs | Supported, internal | Back the `{targets}` command and completion workflows. |
-| Rename | Not supported | No rename provider is advertised. |
-| Type definition | Not supported | `typeDefinitionProvider` is currently `None`. |
-| Declaration | Not supported | No declaration provider is advertised. |
-| Document formatting / range formatting | Not supported | Only on-type formatting is implemented. |
-| Semantic tokens | Not supported | No semantic tokens provider is advertised. |
-| Inlay hints | Not supported | No inlay hint provider is advertised. |
-| Call hierarchy | Not supported | No call hierarchy provider is advertised. |
-| Code lens | Not supported | No code lens provider is advertised. |
-| Public execute commands | Not supported | The server advertises an empty execute-command list. |
+- `ark-lsp`, a native Rust language server that Neovim starts over stdio
+- the Neovim plugin, which starts or reuses one managed R session
+- a local bridge that lets `ark-lsp` ask that R session for runtime-aware facts
+
+The R session does not live inside the LSP process. tmux is the primary session
+backend, and a narrower built-in Neovim terminal backend is available when you
+do not want to run Neovim inside tmux.
 
 ## Prerequisites
 
@@ -210,9 +148,12 @@ The minimal recommended `lazy.nvim` setup keeps:
 - `nvim-slimetree` plus `vim-slime` as the send path from buffer to REPL
 - `ark.nvim` as the pane/LSP/session layer
 
-The simplest version is to let the plugin build `ark-lsp` inside its own checkout, then let `ark.nvim` find `target/debug/ark-lsp` automatically.
+The simplest version is to let the plugin build `ark-lsp` inside its own
+checkout, then let `ark.nvim` find `target/debug/ark-lsp` automatically.
 
-If you already run another R LSP such as `r_language_server`, disable it for `r`, `rmd`, `qmd`, and `quarto` first. `ark.nvim` is meant to be the only R LSP client for those buffers.
+If you already run another R LSP such as `r_language_server`, disable it for
+`r`, `rmd`, `qmd`, and `quarto` first. `ark.nvim` is meant to be the only R LSP
+client for those buffers.
 
 This recommended setup also includes the basic send-code mappings through
 `nvim-slimetree`:
@@ -378,7 +319,10 @@ return {
 
 ### Local checkout
 
-If you are developing from a local clone instead of GitHub, use `dir = "~/repos/ark.nvim"` in the `lazy.nvim` spec. The same build command works and `ark.nvim` will still auto-detect the freshly built `target/debug/ark-lsp`.
+If you are developing from a local clone instead of GitHub, use
+`dir = "~/repos/ark.nvim"` in the `lazy.nvim` spec. The same build command
+works and `ark.nvim` will still auto-detect the freshly built
+`target/debug/ark-lsp`.
 
 ## REPL Workflow
 
@@ -397,7 +341,8 @@ That means the split of responsibility is:
 - `vim-slime`: transport into the active backend
 - `nvim-slimetree`: R-aware send motions and textobject-style execution
 
-If you use Blink, keep using its normal `lsp` source. `ark.nvim` is designed to work through standard LSP completion rather than a custom completion source.
+If you use Blink, keep using its normal `lsp` source. `ark.nvim` is designed to
+work through standard LSP completion rather than a custom completion source.
 
 ## Live Intelligence
 
@@ -456,67 +401,33 @@ object facts when those facts require `{targets}` itself.
 
 ## Commands
 
-The plugin defines:
-
-- `:ArkPaneStart`
-- `:ArkPaneRestart`
-- `:ArkPaneStop`
-- `:ArkTabNew`
-- `:ArkTabNext`
-- `:ArkTabPrev`
-- `:ArkTabClose`
-- `:ArkTabList`
-- `:ArkTabGo`
-- `:ArkLspStart`
-- `:ArkHelp`
-- `:ArkHelpPane`
-- `:ArkView`
-- `:ArkViewRefresh`
-- `:ArkViewClose`
-- `:ArkTargetsInfo`
-- `:ArkTargets`
-- `:ArkTargetsManifest`
-- `:ArkTargetPick`
-- `:ArkTargetAcquire`
-- `:ArkTargetActive`
-- `:ArkTargetGraph`
-- `:ArkTargetsNetwork`
-- `:ArkTargetStatus`
-- `:ArkTargetsMeta`
-- `:ArkTargetObjectMeta`
-- `:ArkTargetBuild`
-- `:ArkTargetBuildPick`
-- `:ArkTargetBuildActive`
-- `:ArkTargetBuildDownstream`
-- `:ArkTargetBuildDownstreamPick`
-- `:ArkTargetMake`
-- `:ArkTargetInvalidate`
-- `:ArkTargetInvalidatePick`
-- `:ArkTargetLoad`
-- `:ArkTargetLoadPick`
-- `:ArkTargetLoadActive`
-- `:ArkTargetLog`
-- `:ArkSnippets`
-- `:ArkSend`
-- `:ArkRefresh`
-- `:ArkStatus`
-- `:ArkPaneCommand`
-- `:ArkBuildLsp`
-- `:ArkBuildBridge`
-
-Useful ones in practice:
+The commands you will usually reach for are:
 
 - `:ArkStatus` prints the current pane, launcher, and bridge state
 - `:ArkRefresh` restarts the current buffer's LSP client using current session metadata
 - `:ArkHelp` opens a read-only floating help page for the symbol under cursor
 - `:ArkView` opens the live data explorer for an expression or the symbol under cursor
+- `:ArkSend` sends text to the active managed Ark R session
+- `:ArkSnippets` opens the explicit Ark snippets picker
+- `:ArkPaneStart`, `:ArkPaneRestart`, and `:ArkPaneStop` manage the R session
+- `:ArkPaneCommand` prints the exact launcher command used for the managed pane
+- `:checkhealth ark` reports install/runtime prerequisites without starting a session
+
+For `{targets}` projects:
+
+- `:ArkTargetsInfo`, `:ArkTargets`, and `:ArkTargetsManifest` show project and
+  manifest state
+- `:ArkTargetGraph`, `:ArkTargetsNetwork`, `:ArkTargetStatus`,
+  `:ArkTargetsMeta`, and `:ArkTargetLog` open target views
 - `:ArkTargetPick` selects and remembers an active `{targets}` target
 - `:ArkTargetLoadPick` / `:ArkTargetBuildPick` pick a target and run the exact Ark target action
 - `:ArkTargetLoadActive` / `:ArkTargetBuildActive` run the action for the remembered active target
-- `:ArkSnippets` opens the explicit Ark snippets picker
-- `:ArkSend` sends text to the active managed Ark R session
-- `:ArkPaneCommand` prints the exact launcher command used for the managed pane
-- `:checkhealth ark` reports install/runtime prerequisites without starting a session
+- `:ArkTargetBuildDownstream`, `:ArkTargetInvalidate`, and related `*Pick`
+  variants run the matching local target action
+
+The plugin also defines lower-level tab, view, build, and internal helper
+commands for the workflows above. Use Neovim completion on `:Ark` to discover
+the full command set available in your current build.
 
 ## Verification
 
@@ -721,16 +632,21 @@ nvim --headless -u NONE \
   -c "qa!"
 ```
 
-## Repo Status
+## Project Notes
 
-The direction is settled even though retained upstream code still exists in-tree:
+This repository started as a fork of upstream Ark, whose primary product is an
+R kernel and language stack for Positron and Jupyter clients. `ark.nvim` keeps
+the reusable R analysis work, but the supported user-facing product here is the
+Neovim workflow described above:
 
-- `ark.nvim` is the Neovim plugin surface
+- `ark.nvim` is the plugin surface
 - `ark-lsp` is the stdio server Neovim should run
-- tmux is the canonical home of the interactive R session
+- one managed local R session provides runtime context
 - `nvim-slimetree` plus `vim-slime` remain the execution layer
 
-The old upstream Ark kernel and Positron code still exists in-tree as extraction material, not as the intended user-facing product.
+Some upstream kernel, Positron, and DAP-oriented code still exists in-tree while
+the Neovim product boundary continues to settle. It is not the default runtime
+path for users installing this plugin.
 
 ## See Also
 
