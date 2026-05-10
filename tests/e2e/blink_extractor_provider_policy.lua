@@ -73,6 +73,12 @@ if type(added.ark_lsp.transform_items) ~= "function" then
   error("ark_lsp target item transform missing")
 end
 
+-- Blink validates provider configuration strictly. Ark must not persist private
+-- bookkeeping keys on the provider table it passes to blink.add_source_provider().
+if added.ark_lsp.__ark_target_item_transform ~= nil then
+  error("ark_lsp provider leaked private target-transform sentinel into Blink config")
+end
+
 local transformed_items = added.ark_lsp.transform_items({}, {
   {
     client_name = "ark_lsp",

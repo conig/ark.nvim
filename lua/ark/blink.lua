@@ -9,6 +9,7 @@ local show_patched = false
 local menu_patched = false
 local signature_float_patched = false
 local target_items_patched = false
+local target_item_transform_wrapped = setmetatable({}, { __mode = "k" })
 local active_signature_help_win = nil
 local active_hover_win = nil
 
@@ -299,7 +300,7 @@ local function annotate_ark_target_items(items)
 end
 
 local function wrap_target_item_transform(provider)
-  if type(provider) ~= "table" or provider.__ark_target_item_transform then
+  if type(provider) ~= "table" or target_item_transform_wrapped[provider] then
     return
   end
 
@@ -310,7 +311,7 @@ local function wrap_target_item_transform(provider)
     end
     return annotate_ark_target_items(items)
   end
-  provider.__ark_target_item_transform = true
+  target_item_transform_wrapped[provider] = true
 end
 
 local function ark_auto_keyword_min_length(context)
