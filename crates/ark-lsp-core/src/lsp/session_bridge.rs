@@ -329,6 +329,26 @@ struct HelpTextResponse {
     references: Vec<HelpReference>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+struct PackageInfoResponse {
+    #[serde(default)]
+    found: bool,
+    #[serde(default)]
+    package: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    license: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    lib_path: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct BridgeCommandRequest<T>
 where
@@ -766,6 +786,22 @@ impl SessionBridge {
         }))
     }
 
+    fn package_info(&self, package: &str) -> anyhow::Result<Option<PackageInfoResponse>> {
+        let payload = self.bridge_command(
+            "package_info",
+            serde_json::json!({
+                "package": package,
+            }),
+        )?;
+        let payload: PackageInfoResponse = serde_json::from_value(payload)?;
+
+        if !payload.found || payload.package.trim().is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(payload))
+    }
+
     pub(crate) fn view_open(&self, expr: &str) -> anyhow::Result<Value> {
         self.bridge_command("view_open", serde_json::json!({ "expr": expr }))
     }
@@ -1005,6 +1041,14 @@ impl SessionBridge {
         let Ok(data) = serde_json::from_value::<BridgeCompletionData>(data) else {
             return Ok(item);
         };
+
+        if data.kind == "session_bridge_package" {
+            if let Some(package_info) = self.package_info(data.expr.as_str())? {
+                apply_package_completion_docs(&mut item, &package_info);
+            }
+
+            return Ok(item);
+        }
 
         if data.kind != "session_bridge_inspect" {
             return Ok(item);
@@ -1987,12 +2031,17 @@ fn completion_item(
 
     let mut item = CompletionItem {
         label: member.name_display.clone(),
-        detail: if member.r#type.is_empty() || member.r#type == "unknown" {
+        detail: if member.r#type.is_empty() ||
+            member.r#type == "unknown" ||
+            matches!(request.flavor, CompletionFlavor::Package) && member.r#type == "NULL"
+        {
             None
         } else {
             Some(member.r#type.clone())
         },
-        documentation: if member.summary.is_empty() {
+        documentation: if member.summary.is_empty() ||
+            matches!(request.flavor, CompletionFlavor::Package) && member.summary == "NULL"
+        {
             None
         } else {
             Some(Documentation::MarkupContent(MarkupContent {
@@ -2095,7 +2144,13 @@ fn completion_item_data(
             accessor: Some(String::from("$")),
             member_name: Some(member.name_raw.clone()),
         }),
-        CompletionFlavor::Namespace | CompletionFlavor::Package | CompletionFlavor::Target => None,
+        CompletionFlavor::Package => Some(BridgeCompletionData {
+            kind: String::from("session_bridge_package"),
+            expr: member.name_raw.clone(),
+            accessor: None,
+            member_name: None,
+        }),
+        CompletionFlavor::Namespace | CompletionFlavor::Target => None,
     }
 }
 
@@ -2138,6 +2193,45 @@ fn apply_object_completion_docs(item: &mut CompletionItem, object_meta: &ObjectM
     }
     if object_meta.length > 0 {
         details.push(format!("Length: `{}`", object_meta.length));
+    }
+    if !details.is_empty() {
+        sections.push(details.join("\n"));
+    }
+
+    item.documentation = Some(Documentation::MarkupContent(MarkupContent {
+        kind: MarkupKind::Markdown,
+        value: sections.join("\n\n"),
+    }));
+}
+
+fn apply_package_completion_docs(item: &mut CompletionItem, package_info: &PackageInfoResponse) {
+    item.detail = if package_info.version.is_empty() {
+        Some(String::from("R package"))
+    } else {
+        Some(format!("R package {}", package_info.version))
+    };
+
+    let mut sections = vec![format!("Package: `{}`", package_info.package)];
+
+    if !package_info.title.is_empty() {
+        sections.push(package_info.title.clone());
+    }
+    if !package_info.description.is_empty() {
+        sections.push(package_info.description.clone());
+    }
+
+    let mut details = Vec::new();
+    if !package_info.version.is_empty() {
+        details.push(format!("Version: `{}`", package_info.version));
+    }
+    if !package_info.license.is_empty() {
+        details.push(format!("License: `{}`", package_info.license));
+    }
+    if !package_info.url.is_empty() {
+        details.push(format!("URL: {}", package_info.url));
+    }
+    if !package_info.lib_path.is_empty() {
+        details.push(format!("Library: `{}`", package_info.lib_path));
     }
     if !details.is_empty() {
         sections.push(details.join("\n"));

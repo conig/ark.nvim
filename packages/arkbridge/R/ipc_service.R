@@ -179,6 +179,14 @@
     return(.ark_help_text_payload(session, topic))
   }
 
+  if (identical(req$command %||% "", "package_info")) {
+    package <- req$package %||% ""
+    if (!is.character(package) || length(package) != 1L || !nzchar(package)) {
+      return(.emit_json(.new_error_payload("E_IPC_REQUEST", "missing package", "ipc_request", session)))
+    }
+    return(.ark_package_info_payload(session, package))
+  }
+
   if (identical(req$command %||% "", "view_open")) {
     expr <- req$expr %||% ""
     if (!is.character(expr) || length(expr) != 1L || !nzchar(expr)) {

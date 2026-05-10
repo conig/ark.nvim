@@ -2272,7 +2272,7 @@ mtcars$mp";
                     ..Default::default()
                 },
                 Namespace {
-                    exports: vec![String::from("data.table")],
+                    exports: SortedVec::from_vec(vec![String::from("data.table")]),
                     ..Default::default()
                 },
             );
@@ -2284,7 +2284,7 @@ mtcars$mp";
                     ..Default::default()
                 },
                 Namespace {
-                    exports: vec![String::from("mutate")],
+                    exports: SortedVec::from_vec(vec![String::from("mutate")]),
                     ..Default::default()
                 },
             );
