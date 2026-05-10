@@ -109,8 +109,11 @@ local function notify_missing_send_parser(bufnr)
   end)
 end
 
+local blink_lib = plugin_spec("Saghen/blink.lib", "blink.lib")
+
 local blink = plugin_spec("Saghen/blink.cmp", "blink.cmp")
 blink.ft = filetypes
+blink.dependencies = { "blink.lib" }
 blink.config = function()
   require("blink.cmp").setup({
     fuzzy = {
@@ -206,6 +209,7 @@ local ark = {
 }
 
 require("lazy").setup({
+  blink_lib,
   blink,
   autopairs,
   slime,

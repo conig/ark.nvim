@@ -287,6 +287,7 @@ return {
   {
     "Saghen/blink.cmp",
     ft = { "r", "rmd", "qmd", "quarto" },
+    dependencies = { "Saghen/blink.lib" },
     config = function()
       require("blink.cmp").setup({
         fuzzy = {

@@ -6,6 +6,7 @@ local-checkout setup recommended in the repo `README.md`.
 Use it to validate that the documented plugin combination still works:
 
 - `blink.cmp`
+- `blink.lib`
 - `nvim-autopairs`
 - `vim-slime`
 - `nvim-slimetree`

@@ -1,6 +1,13 @@
 local repo_root = vim.fs.normalize(vim.env.ARK_REPO_ROOT or vim.fn.getcwd())
 vim.opt.runtimepath:prepend(repo_root)
 
+local blink_lib_root = vim.fs.normalize(vim.fn.stdpath("data") .. "/lazy/blink.lib")
+if vim.fn.isdirectory(blink_lib_root) ~= 1 then
+  error("blink.lib is required for Blink-backed E2Es: missing " .. blink_lib_root, 0)
+end
+
+vim.opt.runtimepath:prepend(blink_lib_root)
+
 local blink_root = vim.fs.normalize(vim.fn.stdpath("data") .. "/lazy/blink.cmp")
 if vim.fn.isdirectory(blink_root) ~= 1 then
   error("blink.cmp is required for Blink-backed E2Es: missing " .. blink_root, 0)
