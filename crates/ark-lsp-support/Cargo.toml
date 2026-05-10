@@ -1,6 +1,6 @@
 [package]
 name = "ark-lsp-support"
-version = "0.1.250"
+version = "0.1.251"
 description = "Shared helper types for ark.nvim LSP implementations."
 
 authors.workspace = true

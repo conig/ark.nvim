@@ -14,6 +14,8 @@ use anyhow::bail;
 use anyhow::Result;
 use harp::syntax::is_valid_symbol;
 use harp::syntax::sym_quote_invalid;
+use oak_index::library::Library;
+use oak_index::package::Package;
 use stdext::*;
 use tower_lsp::lsp_types::Diagnostic;
 use tower_lsp::lsp_types::DiagnosticSeverity;
@@ -26,8 +28,6 @@ use crate::lsp::declarations::top_level_declare;
 use crate::lsp::diagnostics_syntax::syntax_diagnostics;
 use crate::lsp::document::Document;
 use crate::lsp::indexer;
-use crate::lsp::inputs::library::Library;
-use crate::lsp::inputs::package::Package;
 use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::state::WorldState;
 use crate::lsp::traits::node::NodeExt;
@@ -182,14 +182,14 @@ pub(crate) fn generate_diagnostics(
     // If this is a package, add imported symbols to workspace
     if let Some(SourceRoot::Package(root)) = &state.root {
         // Add symbols from `importFrom()` directives
-        for import in &root.namespace.imports {
-            context.workspace_symbols.insert(import.clone());
+        for import in &root.namespace().imports {
+            context.workspace_symbols.insert(import.name.clone());
         }
 
         // Add symbols from `import()` directives
-        for package_import in &root.namespace.package_imports {
+        for package_import in &root.namespace().package_imports {
             if let Some(pkg) = state.library.get(package_import) {
-                for export in &pkg.namespace.exports {
+                for export in &pkg.namespace().exports {
                     context.workspace_symbols.insert(export.clone());
                 }
             }
@@ -206,7 +206,7 @@ pub(crate) fn generate_diagnostics(
     // test files setup.
     if testthat {
         if let Some(pkg) = state.library.get("testthat") {
-            for export in &pkg.namespace.exports {
+            for export in &pkg.namespace().exports {
                 context.workspace_symbols.insert(export.clone());
             }
         }
@@ -235,7 +235,7 @@ pub(crate) fn generate_diagnostics(
     if let Some(datasets) = state.library.get("datasets") {
         context
             .session_symbols
-            .extend(datasets.exported_symbols.iter().cloned());
+            .extend(datasets.exported_symbols().iter().cloned());
     }
 
     for pkg in state.installed_packages.iter() {
@@ -975,17 +975,17 @@ fn insert_attached_package_exports(
         .library_symbols
         .entry(attach_pos)
         .or_default()
-        .extend(package.exported_symbols.iter().cloned());
+        .extend(package.exported_symbols().iter().cloned());
 
-    // Also attach packages from `Depends` field
-    for package_name in package.description.depends.clone() {
-        insert_package_exports(&package_name, attach_pos, context)?;
+    // Also attach packages from `Depends` field.
+    for package_name in package.description().depends.iter() {
+        insert_package_exports(package_name, attach_pos, context)?;
     }
 
     // Special handling for the tidyverse and tidymodels packages. Hard-coded
     // for now but in the future, this should probably be expressed as a
     // `DESCRIPTION` field like `Config/Needs/attach`.
-    let attach_field = match package.description.name.as_str() {
+    let attach_field = match package.description().name.as_str() {
         // https://github.com/tidyverse/tidyverse/blob/0231aafb/R/attach.R#L1
         "tidyverse" => {
             vec![
@@ -1187,7 +1187,7 @@ fn insert_package_exports(
         .library_symbols
         .entry(attach_pos)
         .or_default()
-        .extend(package.exported_symbols.iter().cloned());
+        .extend(package.exported_symbols().clone().into_vec());
 
     Ok(package)
 }
@@ -1371,7 +1371,14 @@ mod tests {
     use std::path::PathBuf;
 
     use harp::eval::RParseEvalOptions;
+    use oak_index::library::Library;
+    use oak_index::package::Package;
+    use oak_package_metadata::dcf::Dcf;
+    use oak_package_metadata::description::Description;
+    use oak_package_metadata::index::Index;
+    use oak_package_metadata::namespace::Namespace;
     use once_cell::sync::Lazy;
+    use stdext::SortedVec;
     use tempfile::TempDir;
     use tower_lsp::lsp_types;
     use tower_lsp::lsp_types::Position;
@@ -1381,12 +1388,6 @@ mod tests {
     use crate::lsp::document::Document;
     use crate::lsp::document::DocumentKind;
     use crate::lsp::indexer;
-    use crate::lsp::inputs::library::Library;
-    use crate::lsp::inputs::package::Package;
-    use crate::lsp::inputs::package_description::Dcf;
-    use crate::lsp::inputs::package_description::Description;
-    use crate::lsp::inputs::package_index::Index;
-    use crate::lsp::inputs::package_namespace::Namespace;
     use crate::lsp::state::WorldState;
     use crate::r_task;
 
@@ -1505,7 +1506,7 @@ mtcars$mp";
                 },
             );
             let state = WorldState {
-                library: Library::new(vec![]).insert("datasets", datasets),
+                library: Library::new(vec![], None).insert("datasets", datasets),
                 ..Default::default()
             };
 
@@ -1545,10 +1546,13 @@ mtcars$mp";
             let (corx_library, _) = create_temp_library_package("corx", "export(corx)\n");
 
             let state = WorldState {
-                library: Library::new(vec![
-                    base_library.path().to_path_buf(),
-                    corx_library.path().to_path_buf(),
-                ]),
+                library: Library::new(
+                    vec![
+                        base_library.path().to_path_buf(),
+                        corx_library.path().to_path_buf(),
+                    ],
+                    None,
+                ),
                 ..Default::default()
             };
 
@@ -1602,7 +1606,7 @@ mtcars$mp";
 
             let state = WorldState {
                 console_scopes: vec![vec![String::from("library"), String::from("require")]],
-                library: Library::new(vec![corx_library.path().to_path_buf()]),
+                library: Library::new(vec![corx_library.path().to_path_buf()], None),
                 ..Default::default()
             };
 
@@ -2043,7 +2047,7 @@ mtcars$mp";
         r_task(|| {
             // `mockpkg` exports `foo` and `bar`
             let namespace = Namespace {
-                exports: vec!["foo".to_string(), "bar".to_string()],
+                exports: SortedVec::from_vec(vec!["foo".to_string(), "bar".to_string()]),
                 imports: vec![],
                 package_imports: vec![],
             };
@@ -2051,12 +2055,14 @@ mtcars$mp";
                 name: "mockpkg".to_string(),
                 version: "1.0.0".to_string(),
                 depends: vec![],
+                repository: None,
+                priority: None,
                 fields: Dcf::new(),
             };
             let package = Package::from_parts(PathBuf::from("/mock/path"), description, namespace);
 
             // Create a library with `mockpkg` installed
-            let library = Library::new(vec![]).insert("mockpkg", package);
+            let library = Library::new(vec![], None).insert("mockpkg", package);
 
             // Simulate a search path with `library` in scope
             let console_scopes = vec![vec!["library".to_string()]];
@@ -2139,7 +2145,7 @@ mtcars$mp";
         r_task(|| {
             // pkg1 exports `foo` and `bar`
             let namespace1 = Namespace {
-                exports: vec!["foo".to_string(), "bar".to_string()],
+                exports: SortedVec::from_vec(vec!["foo".to_string(), "bar".to_string()]),
                 imports: vec![],
                 package_imports: vec![],
             };
@@ -2147,6 +2153,8 @@ mtcars$mp";
                 name: "pkg1".to_string(),
                 version: "1.0.0".to_string(),
                 depends: vec![],
+                repository: None,
+                priority: None,
                 fields: Dcf::new(),
             };
             let package1 =
@@ -2154,7 +2162,7 @@ mtcars$mp";
 
             // pkg2 exports `bar` and `baz`
             let namespace2 = Namespace {
-                exports: vec!["bar".to_string(), "baz".to_string()],
+                exports: SortedVec::from_vec(vec!["bar".to_string(), "baz".to_string()]),
                 imports: vec![],
                 package_imports: vec![],
             };
@@ -2162,12 +2170,14 @@ mtcars$mp";
                 name: "pkg2".to_string(),
                 version: "1.0.0".to_string(),
                 depends: vec![],
+                repository: None,
+                priority: None,
                 fields: Dcf::new(),
             };
             let package2 =
                 Package::from_parts(PathBuf::from("/mock/path2"), description2, namespace2);
 
-            let library = Library::new(vec![])
+            let library = Library::new(vec![], None)
                 .insert("pkg1", package1)
                 .insert("pkg2", package2);
 
@@ -2211,7 +2221,7 @@ mtcars$mp";
         r_task(|| {
             // `pkg` exports `foo` and `bar`
             let namespace = Namespace {
-                exports: vec!["foo".to_string(), "bar".to_string()],
+                exports: SortedVec::from_vec(vec!["foo".to_string(), "bar".to_string()]),
                 imports: vec![],
                 package_imports: vec![],
             };
@@ -2219,11 +2229,13 @@ mtcars$mp";
                 name: "pkg".to_string(),
                 version: "1.0.0".to_string(),
                 depends: vec![],
+                repository: None,
+                priority: None,
                 fields: Dcf::new(),
             };
             let package = Package::from_parts(PathBuf::from("/mock/path"), description, namespace);
 
-            let library = Library::new(vec![]).insert("pkg", package);
+            let library = Library::new(vec![], None).insert("pkg", package);
 
             let console_scopes = vec![vec!["require".to_string()]];
             let state = WorldState {
@@ -2276,7 +2288,7 @@ mtcars$mp";
                     ..Default::default()
                 },
             );
-            let library = Library::new(vec![])
+            let library = Library::new(vec![], None)
                 .insert("data.table", data_table)
                 .insert("dplyr", dplyr);
 
@@ -2439,11 +2451,11 @@ tar_make(names = c("clean_data", "missing_report"))
     #[test]
     fn test_penguins_symbol_no_diagnostic() {
         r_task(|| {
-            let palmerpenguins_dir = crate::lsp::inputs::package::temp_palmerpenguin();
+            let palmerpenguins_dir = oak_index::package::temp_palmerpenguin();
             let palmerpenguins_pkg = Package::load_from_folder(palmerpenguins_dir.path())
                 .unwrap()
                 .unwrap();
-            let library = Library::new(vec![]).insert("penguins", palmerpenguins_pkg);
+            let library = Library::new(vec![], None).insert("penguins", palmerpenguins_pkg);
 
             // Simulate a world state with the penguins package installed and attached
             let mut state = DEFAULT_STATE.clone();

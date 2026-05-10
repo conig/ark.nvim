@@ -2,10 +2,14 @@ use std::ops::Range;
 
 use aether_syntax::RSyntaxNode;
 use biome_rowan::TextRange;
+use biome_rowan::TextSize;
+use oak_core::range::Ranged;
+use oak_index_vec::define_index;
+use oak_index_vec::IndexVec;
 use rustc_hash::FxHashMap;
 
-use crate::index_vec::define_index;
-use crate::index_vec::IndexVec;
+use crate::use_def_map::Bindings;
+use crate::use_def_map::UseDefMap;
 
 // File-local scope identifier
 define_index!(ScopeId);
@@ -18,6 +22,9 @@ define_index!(DefinitionId);
 
 // Scope-local use site identifier
 define_index!(UseId);
+
+// Scope-local enclosing snapshot identifier
+define_index!(EnclosingSnapshotId);
 
 // One `SemanticIndex` per R source file. This reflects the physical reality of
 // a single file. Cross-file resolution (e.g. package namespaces, sourced
@@ -48,11 +55,22 @@ pub struct SemanticIndex {
     // (a per-scope map from AST node positions to `ScopedUseId`). When we
     // introduce salsa, these lists may be restructured to match.
     //
-    // Use-def maps will layer on top of these lists, not replace them. A
-    // use-def map tracks which definitions reach each use through control flow,
-    // referencing `DefinitionId` and `UseId` indices into these arenas.
+    // Use-def maps layer on top of these lists. A use-def map tracks which
+    // definitions reach each use through control flow, referencing
+    // `DefinitionId` and `UseId` indices into these arenas.
     definitions: IndexVec<ScopeId, IndexVec<DefinitionId, Definition>>,
     uses: IndexVec<ScopeId, IndexVec<UseId, Use>>,
+
+    // Per-scope flow-sensitive map from each use site to the set of definitions
+    // that can reach it. Built alongside the other arrays during the tree walk.
+    use_def_maps: IndexVec<ScopeId, UseDefMap>,
+
+    // For each free variable in a nested scope, maps to the enclosing scope and
+    // snapshot where that symbol is bound.
+    enclosing_snapshots: FxHashMap<EnclosingSnapshotKey, (ScopeId, EnclosingSnapshotId)>,
+
+    // Scope-chain directives called at top-level, such as `library()` or `require()`.
+    directives: Vec<Directive>,
 }
 
 impl SemanticIndex {
@@ -61,12 +79,18 @@ impl SemanticIndex {
         symbol_tables: IndexVec<ScopeId, SymbolTable>,
         definitions: IndexVec<ScopeId, IndexVec<DefinitionId, Definition>>,
         uses: IndexVec<ScopeId, IndexVec<UseId, Use>>,
+        use_def_maps: IndexVec<ScopeId, UseDefMap>,
+        enclosing_snapshots: FxHashMap<EnclosingSnapshotKey, (ScopeId, EnclosingSnapshotId)>,
+        directives: Vec<Directive>,
     ) -> Self {
         Self {
             scopes,
             symbol_tables,
             definitions,
             uses,
+            use_def_maps,
+            enclosing_snapshots,
+            directives,
         }
     }
 
@@ -86,8 +110,30 @@ impl SemanticIndex {
         &self.uses[scope]
     }
 
+    pub fn use_def_map(&self, scope: ScopeId) -> &UseDefMap {
+        &self.use_def_maps[scope]
+    }
+
+    /// Top-level definitions exported by this file (definitions in the file scope).
+    pub fn file_exports(&self) -> Vec<(&str, TextRange)> {
+        let file_scope = ScopeId::from(0);
+        let symbols = &self.symbol_tables[file_scope];
+        self.definitions[file_scope]
+            .iter()
+            .map(|(_id, def)| {
+                let name = symbols.symbol(def.symbol()).name();
+                (name, def.range())
+            })
+            .collect()
+    }
+
+    /// File-level directives (e.g. `library()` calls) recorded during indexing.
+    pub fn file_directives(&self) -> &[Directive] {
+        &self.directives
+    }
+
     /// Find the innermost scope containing `offset`.
-    pub fn scope_at(&self, offset: biome_rowan::TextSize) -> ScopeId {
+    pub fn scope_at(&self, offset: biome_rowan::TextSize) -> (ScopeId, &Scope) {
         // Start at the file scope
         let mut current = ScopeId::from(0);
         'outer: loop {
@@ -97,7 +143,7 @@ impl SemanticIndex {
                     continue 'outer;
                 }
             }
-            return current;
+            return (current, &self.scopes[current]);
         }
     }
 
@@ -126,7 +172,7 @@ impl SemanticIndex {
             if let Some(id) = self.symbol_tables[ancestor].id(name) {
                 if self.symbol_tables[ancestor]
                     .symbol(id)
-                    .flags
+                    .flags()
                     .contains(SymbolFlags::IS_BOUND)
                 {
                     return Some((ancestor, id));
@@ -135,6 +181,47 @@ impl SemanticIndex {
         }
         None
     }
+
+    /// Resolve a free variable's bindings from the enclosing scope.
+    ///
+    /// When a use in `scope` may be unbound (`may_be_unbound: true`), some
+    /// control-flow paths fall through to an enclosing scope. This looks up
+    /// the enclosing snapshot that was registered during the build and
+    /// returns the ancestor scope and its bindings. This covers both purely
+    /// free variables (no local definitions) and conditionally defined
+    /// variables (local definitions exist but don't cover all paths).
+    ///
+    /// Returns `None` if no enclosing snapshot was registered (e.g. the
+    /// variable is truly global or from the search path) and needs
+    /// cross-file resolution.
+    pub fn enclosing_bindings(
+        &self,
+        scope: ScopeId,
+        symbol: SymbolId,
+    ) -> Option<(ScopeId, &Bindings)> {
+        let key = EnclosingSnapshotKey {
+            nested_scope: scope,
+            nested_symbol: symbol,
+        };
+        let &(enclosing_scope, snapshot_id) = self.enclosing_snapshots.get(&key)?;
+        let bindings = self.use_def_maps[enclosing_scope].enclosing_snapshot(snapshot_id);
+        Some((enclosing_scope, bindings))
+    }
+}
+
+/// Key for looking up an enclosing snapshot. Keyed by the nested scope and the
+/// symbol's `SymbolId` in the nested scope's symbol table (not the enclosing
+/// scope's), so consumers can do an O(1) lookup directly from a `UseId` without
+/// re-walking the ancestor chain.
+///
+/// When we implement NSE, we will add a `laziness: ScopeLaziness` field to
+/// distinguish lazy snapshots (functions, accumulated union via watchers) from
+/// eager snapshots (NSE scopes like `local()`, point-in-time capture at the
+/// call site). Currently all nested scopes are lazy, so the field is omitted.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EnclosingSnapshotKey {
+    pub nested_scope: ScopeId,
+    pub nested_symbol: SymbolId,
 }
 
 // --- Scope ---
@@ -178,6 +265,12 @@ impl Scope {
 
     pub fn range(&self) -> TextRange {
         self.range
+    }
+}
+
+impl Ranged for Scope {
+    fn range(&self) -> TextRange {
+        self.range()
     }
 }
 
@@ -296,8 +389,8 @@ impl Symbol {
 // bound somewhere in this scope" but can't answer "which definition of x
 // reaches this point?" or "is x defined before this use?". Use-def maps
 // provide that precision. The flags remain useful for scope-level queries
-// like `resolve_symbol` and `resolve_super_target` (which walk the scope
-// chain checking `IS_BOUND`). They can also be useful as filters for
+// like `resolve_symbol` (which walks the scope chain checking
+// `IS_BOUND`). They can also be useful as filters for
 // short-circuiting unneeded expensive operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SymbolFlags(u8);
@@ -395,6 +488,12 @@ impl Definition {
     }
 }
 
+impl Ranged for Definition {
+    fn range(&self) -> TextRange {
+        self.range()
+    }
+}
+
 // A site where a symbol is referenced by name. In ty, use sites are tracked
 // via `ScopedUseId` indices in a per-scope `AstIds` structure (mapping AST
 // node positions to use IDs). Our flat list serves the same purpose: the
@@ -413,6 +512,36 @@ impl Use {
 
     pub fn range(&self) -> TextRange {
         self.range
+    }
+}
+
+impl Ranged for Use {
+    fn range(&self) -> TextRange {
+        self.range()
+    }
+}
+
+/// A file-level directive that affects the scope chain (e.g. `library()` calls).
+#[derive(Debug, Clone)]
+pub struct Directive {
+    pub(crate) kind: DirectiveKind,
+    pub(crate) offset: TextSize,
+}
+
+// TODO: `Source()` directives
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectiveKind {
+    /// `library(pkg)` or `require(pkg)`: attaches a package to the search path.
+    Attach(String),
+}
+
+impl Directive {
+    pub fn kind(&self) -> &DirectiveKind {
+        &self.kind
+    }
+
+    pub fn offset(&self) -> TextSize {
+        self.offset
     }
 }
 

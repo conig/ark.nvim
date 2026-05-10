@@ -1,32 +1,27 @@
-//
-// package.rs
-//
-// Copyright (C) 2025 by Posit Software, PBC
-//
-//
-
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 
-use crate::lsp::inputs::package_description::Description;
-use crate::lsp::inputs::package_index::Index;
-use crate::lsp::inputs::package_namespace::Namespace;
+use oak_package_metadata::description::Description;
+use oak_package_metadata::index::Index;
+use oak_package_metadata::namespace::Namespace;
+use stdext::SortedVec;
 
 /// Represents an R package and its metadata relevant for static analysis.
 #[derive(Clone, Debug)]
 pub struct Package {
-    /// Path to the directory that contains `DESCRIPTION``. Can
+    /// Path to the directory that contains `DESCRIPTION`. Can
     /// be an installed package or a package source.
-    pub path: PathBuf,
+    path: PathBuf,
 
-    pub description: Description,
-    pub namespace: Namespace,
+    description: Description,
+    namespace: Namespace,
 
     // List of symbols exported via NAMESPACE `export()` directives and via
     // documented symbols listed in INDEX. The latter is a stopgap to ensure we
     // support exported datasets and prevent spurious diagnostics (we accept
     // false negatives to avoid annoying false positives).
-    pub exported_symbols: Vec<String>,
+    exported_symbols: SortedVec<String>,
 }
 
 impl Package {
@@ -37,14 +32,12 @@ impl Package {
         index: Index,
     ) -> Self {
         // Compute exported symbols. Start from explicit NAMESPACE exports.
-        let mut exported_symbols = namespace.exports.clone();
+        let mut symbols = namespace.exports.clone().to_vec();
 
         // Add all documented symbols. This should cover documented datasets.
-        exported_symbols.extend(index.names.iter().cloned());
+        symbols.extend(index.names.clone());
 
-        // Sort and deduplicate (we expect lots of duplicates)
-        exported_symbols.sort();
-        exported_symbols.dedup();
+        let exported_symbols = SortedVec::from_vec(symbols);
 
         Self {
             path,
@@ -54,7 +47,7 @@ impl Package {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn from_parts(path: PathBuf, description: Description, namespace: Namespace) -> Self {
         Self::new(path, description, namespace, Index::default())
     }
@@ -78,7 +71,7 @@ impl Package {
             let namespace_contents = fs::read_to_string(&namespace_path)?;
             Namespace::parse(&namespace_contents)?
         } else {
-            tracing::info!(
+            log::info!(
                 "Package `{name}` doesn't contain a NAMESPACE file, using defaults",
                 name = description.name
             );
@@ -88,7 +81,7 @@ impl Package {
         let index = match Index::load_from_folder(package_path) {
             Ok(index) => index,
             Err(err) => {
-                tracing::warn!(
+                log::warn!(
                     "Can't load INDEX file from `{path}`: {err:?}",
                     path = package_path.to_string_lossy()
                 );
@@ -125,10 +118,26 @@ impl Package {
             Ok(None)
         }
     }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn description(&self) -> &Description {
+        &self.description
+    }
+
+    pub fn namespace(&self) -> &Namespace {
+        &self.namespace
+    }
+
+    pub fn exported_symbols(&self) -> &SortedVec<String> {
+        &self.exported_symbols
+    }
 }
 
-#[cfg(test)]
-pub(crate) fn temp_palmerpenguin() -> tempfile::TempDir {
+#[cfg(any(test, feature = "testing"))]
+pub fn temp_palmerpenguin() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
 
     // Write DESCRIPTION
@@ -162,10 +171,11 @@ penguins_raw            Penguin size, clutch, and blood isotope data
 
 #[cfg(test)]
 mod tests {
+    use oak_package_metadata::description::Description;
+    use oak_package_metadata::index::Index;
+    use oak_package_metadata::namespace::Namespace;
+
     use super::*;
-    use crate::lsp::inputs::package_description::Description;
-    use crate::lsp::inputs::package_index::Index;
-    use crate::lsp::inputs::package_namespace::Namespace;
 
     fn new_package(name: &str, ns: Namespace, index: Index) -> Package {
         Package::new(
@@ -182,7 +192,7 @@ mod tests {
     #[test]
     fn exported_symbols_are_sorted_and_unique() {
         let ns = Namespace {
-            exports: vec!["b".to_string(), "a".to_string(), "a".to_string()],
+            exports: SortedVec::from_vec(vec!["b".to_string(), "a".to_string(), "a".to_string()]),
             ..Default::default()
         };
 
@@ -191,7 +201,7 @@ mod tests {
         };
 
         let pkg = new_package("foo", ns, index);
-        assert_eq!(pkg.exported_symbols, vec!["a", "b", "c"]);
+        assert_eq!(&*pkg.exported_symbols, &["a", "b", "c"]);
     }
 
     #[test]
@@ -209,7 +219,7 @@ mod tests {
         let pkg = Package::load_from_folder(dir.path()).unwrap().unwrap();
 
         // Should include all exports and all index names, sorted and deduped
-        assert_eq!(pkg.exported_symbols, vec![
+        assert_eq!(&*pkg.exported_symbols, &[
             "path_to_file",
             "penguins",
             "penguins_raw"

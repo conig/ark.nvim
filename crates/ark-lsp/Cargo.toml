@@ -1,6 +1,6 @@
 [package]
 name = "ark-lsp"
-version = "0.1.250"
+version = "0.1.251"
 description = "Detached stdio LSP binary for ark.nvim."
 
 authors.workspace = true
@@ -36,7 +36,6 @@ ego-tree.workspace = true
 futures.workspace = true
 harp.workspace = true
 home.workspace = true
-http.workspace = true
 itertools.workspace = true
 libc.workspace = true
 libr.workspace = true
@@ -44,6 +43,7 @@ log.workspace = true
 mime_guess.workspace = true
 nix.workspace = true
 notify.workspace = true
+oak_index.workspace = true
 once_cell.workspace = true
 regex.workspace = true
 reqwest.workspace = true
@@ -70,11 +70,13 @@ url.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
 winsafe.workspace = true
-yaml-rust.workspace = true
+yaml-rust2.workspace = true
 
 [dev-dependencies]
 assert_matches.workspace = true
 insta.workspace = true
+oak_index = { workspace = true, features = ["testing"] }
+oak_package_metadata.workspace = true
 stdext = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 

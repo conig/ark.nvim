@@ -5,13 +5,11 @@
  *
  */
 
-use generic_array::GenericArray;
 use hmac::Hmac;
 use log::trace;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::json;
 use serde_json::value::Value;
 use sha2::Sha256;
 
@@ -163,7 +161,7 @@ impl WireMessage {
             hmac_validator.update(buf);
         }
         // Verify the signature
-        if let Err(err) = hmac_validator.verify(GenericArray::from_slice(&decoded)) {
+        if let Err(err) = hmac_validator.verify_slice(&decoded) {
             return Err(Error::BadSignature(decoded, err));
         }
 
@@ -347,6 +345,7 @@ impl<T: ProtocolMessage + DeserializeOwned> TryFrom<&WireMessage> for JupyterMes
             zmq_identities: msg.zmq_identities.clone(),
             header: msg.header.clone(),
             parent_header: msg.parent_header.clone(),
+            metadata: msg.metadata.clone(),
             content,
         })
     }
@@ -371,7 +370,7 @@ impl<T: ProtocolMessage> TryFrom<&JupyterMessage<T>> for WireMessage {
             zmq_identities: msg.zmq_identities.clone(),
             header: msg.header.clone(),
             parent_header: msg.parent_header.clone(),
-            metadata: json!({}),
+            metadata: msg.metadata.clone(),
             content,
         })
     }

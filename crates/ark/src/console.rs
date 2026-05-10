@@ -16,6 +16,7 @@ use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::ffi::*;
 use std::os::raw::c_uchar;
+use std::path::PathBuf;
 use std::result::Result::Ok;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -55,12 +56,10 @@ use crossbeam::channel::bounded;
 use crossbeam::channel::Receiver;
 use crossbeam::channel::Sender;
 use harp::command::r_command;
-use harp::command::r_home_setup;
 use harp::environment::r_ns_env;
 use harp::environment::Environment;
 use harp::environment::R_ENVS;
 use harp::exec::exec_with_cleanup;
-use harp::exec::r_check_stack;
 use harp::exec::r_peek_error_buffer;
 use harp::exec::r_sandbox;
 use harp::exec::with_calling_error_handler;
@@ -116,6 +115,7 @@ use console_filter::strip_step_lines;
 use console_filter::ConsoleFilter;
 pub(crate) use console_repl::console_inputs;
 pub(crate) use console_repl::r_busy;
+#[cfg(unix)]
 pub(crate) use console_repl::r_polled_events;
 pub(crate) use console_repl::r_read_console;
 pub(crate) use console_repl::r_show_message;
@@ -178,6 +178,8 @@ thread_local! {
 }
 
 pub(crate) struct Console {
+    r_home: PathBuf,
+
     pub(crate) positron_ns: Option<RObject>,
 
     kernel_request_rx: Receiver<KernelRequest>,

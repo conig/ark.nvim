@@ -4,13 +4,13 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::anyhow;
+use oak_index::library::Library;
 use stdext::result::ResultExt;
 use url::Url;
 
 use crate::lsp::config::LspConfig;
 use crate::lsp::document::Document;
 use crate::lsp::document::DocumentKind;
-use crate::lsp::inputs::library::Library;
 use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::session_bridge::SessionBridge;
 use crate::lsp::session_bridge::SessionBridgeConfig;
@@ -119,6 +119,13 @@ pub(crate) struct Workspace {
 }
 
 impl WorldState {
+    pub(crate) fn new(library: Library) -> Self {
+        Self {
+            library,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn detached() -> Self {
         Self {
             runtime_mode: RuntimeMode::Detached,

@@ -19,3 +19,7 @@ clippy:
 # Run the full verification suite
 verify *ARGS:
   ./scripts/run-full-suite.sh {{ARGS}}
+
+# Reformat source files
+format:
+  cargo +nightly fmt --all

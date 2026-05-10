@@ -16,12 +16,20 @@ use biome_rowan::AstSeparatedList;
 use biome_rowan::SyntaxNodeCast;
 use biome_rowan::TextRange;
 use biome_rowan::WalkEvent;
+use oak_core::syntax_ext::RIdentifierExt;
+use oak_core::syntax_ext::RStringValueExt;
+use oak_index_vec::Idx;
+use oak_index_vec::IndexVec;
+use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
 
-use crate::index_vec::Idx;
-use crate::index_vec::IndexVec;
 use crate::semantic_index::Definition;
 use crate::semantic_index::DefinitionId;
 use crate::semantic_index::DefinitionKind;
+use crate::semantic_index::Directive;
+use crate::semantic_index::DirectiveKind;
+use crate::semantic_index::EnclosingSnapshotId;
+use crate::semantic_index::EnclosingSnapshotKey;
 use crate::semantic_index::Scope;
 use crate::semantic_index::ScopeId;
 use crate::semantic_index::ScopeKind;
@@ -30,11 +38,13 @@ use crate::semantic_index::SymbolFlags;
 use crate::semantic_index::SymbolTableBuilder;
 use crate::semantic_index::Use;
 use crate::semantic_index::UseId;
+use crate::use_def_map::UseDefMapBuilder;
 
 /// Build a [`SemanticIndex`] from a parsed R file.
-pub fn build(root: &RRoot) -> SemanticIndex {
+pub fn semantic_index(root: &RRoot) -> SemanticIndex {
     let range = root.syntax().text_trimmed_range();
     let mut builder = SemanticIndexBuilder::new(range);
+    builder.pre_scan_scope(root.syntax());
     builder.collect_expression_list(&root.expressions());
     builder.finish()
 }
@@ -47,7 +57,11 @@ struct SemanticIndexBuilder {
     symbol_tables: IndexVec<ScopeId, SymbolTableBuilder>,
     definitions: IndexVec<ScopeId, IndexVec<DefinitionId, Definition>>,
     uses: IndexVec<ScopeId, IndexVec<UseId, Use>>,
+    use_def_maps: IndexVec<ScopeId, UseDefMapBuilder>,
     current_scope: ScopeId,
+    pre_scans: IndexVec<ScopeId, PreScanScope>,
+    enclosing_snapshots: FxHashMap<EnclosingSnapshotKey, (ScopeId, EnclosingSnapshotId)>,
+    directives: Vec<Directive>,
 }
 
 impl SemanticIndexBuilder {
@@ -56,6 +70,8 @@ impl SemanticIndexBuilder {
         let mut symbol_tables = IndexVec::new();
         let mut definitions = IndexVec::new();
         let mut uses = IndexVec::new();
+        let mut use_def_maps = IndexVec::new();
+        let mut pre_scans = IndexVec::new();
 
         // The descendants range starts empty (`n+1..n+1`). `pop_scope` later
         // fills in `descendants.end` with the current arena length. Everything
@@ -67,16 +83,25 @@ impl SemanticIndexBuilder {
             descendants: ScopeId::from(1)..ScopeId::from(1),
         });
 
+        // All `ScopeId`-indexed vecs must be pushed in lockstep so they stay
+        // the same length. The `push_scope()` method is in charge of
+        // guaranteeing that invariant after construction.
         symbol_tables.push(SymbolTableBuilder::new());
         definitions.push(IndexVec::new());
         uses.push(IndexVec::new());
+        use_def_maps.push(UseDefMapBuilder::new());
+        pre_scans.push(PreScanScope::new());
 
         Self {
             scopes,
             symbol_tables,
             definitions,
             uses,
+            use_def_maps,
             current_scope: file,
+            pre_scans,
+            enclosing_snapshots: FxHashMap::default(),
+            directives: Vec::new(),
         }
     }
 
@@ -99,6 +124,8 @@ impl SemanticIndexBuilder {
         self.symbol_tables.push(SymbolTableBuilder::new());
         self.definitions.push(IndexVec::new());
         self.uses.push(IndexVec::new());
+        self.use_def_maps.push(UseDefMapBuilder::new());
+        self.pre_scans.push(PreScanScope::new());
 
         id
     }
@@ -120,17 +147,137 @@ impl SemanticIndexBuilder {
         kind: DefinitionKind,
         range: TextRange,
     ) {
-        let symbol = self.symbol_tables[self.current_scope].intern(name, flags);
-        self.definitions[self.current_scope].push(Definition {
-            symbol,
+        let symbol_id = self.symbol_tables[self.current_scope].intern(name, flags);
+        let def_id = self.definitions[self.current_scope].push(Definition {
+            symbol: symbol_id,
             kind,
             range,
         });
+        self.use_def_maps[self.current_scope].ensure_symbol(symbol_id);
+        self.use_def_maps[self.current_scope].record_definition(symbol_id, def_id);
+    }
+
+    // Super-assignment is lexically in the current scope but binds in an
+    // ancestor. We record the definition in the current scope and append
+    // it to the target scope's use-def map (without shadowing prior
+    // definitions).
+    //
+    // R's `<<-` walks up the environment chain from the parent, targeting
+    // the first scope where the symbol is already bound. If no binding is
+    // found, it assigns in the global (file) scope.
+    fn add_super_definition(&mut self, name: &str, kind: DefinitionKind, range: TextRange) {
+        let symbol_id =
+            self.symbol_tables[self.current_scope].intern(name, SymbolFlags::IS_SUPER_BOUND);
+        self.definitions[self.current_scope].push(Definition {
+            symbol: symbol_id,
+            kind: kind.clone(),
+            range,
+        });
+
+        let target_scope = self.resolve_super_target(name);
+
+        let target_symbol = self.symbol_tables[target_scope].intern(name, SymbolFlags::IS_BOUND);
+        let target_def_id = self.definitions[target_scope].push(Definition {
+            symbol: target_symbol,
+            kind,
+            range,
+        });
+        self.use_def_maps[target_scope].ensure_symbol(target_symbol);
+        self.use_def_maps[target_scope].record_deferred_definition(target_symbol, target_def_id);
+    }
+
+    // Walk up from the parent scope looking for a scope where `name` already
+    // has `IS_BOUND`. Returns that scope, or the file scope if no binding is
+    // found (mirroring R's assignment to the global environment).
+    fn resolve_super_target(&self, name: &str) -> ScopeId {
+        let file_scope = ScopeId::from(0);
+        let Some(mut scope) = self.scopes[self.current_scope].parent else {
+            return file_scope;
+        };
+
+        loop {
+            if let Some(id) = self.symbol_tables[scope].id(name) {
+                if self.symbol_tables[scope]
+                    .symbol(id)
+                    .flags()
+                    .contains(SymbolFlags::IS_BOUND)
+                {
+                    return scope;
+                }
+            }
+            let Some(parent) = self.scopes[scope].parent else {
+                return file_scope;
+            };
+            scope = parent;
+        }
     }
 
     fn add_use(&mut self, name: &str, range: TextRange) {
-        let symbol = self.symbol_tables[self.current_scope].intern(name, SymbolFlags::IS_USED);
-        self.uses[self.current_scope].push(Use { symbol, range });
+        let symbol_id = self.symbol_tables[self.current_scope].intern(name, SymbolFlags::IS_USED);
+        let use_id = self.uses[self.current_scope].push(Use {
+            symbol: symbol_id,
+            range,
+        });
+        self.use_def_maps[self.current_scope].ensure_symbol(symbol_id);
+        self.use_def_maps[self.current_scope].record_use(symbol_id, use_id);
+
+        // Associate free variables with the enclosing snapshot where the
+        // variable is defined
+        if self.use_def_maps[self.current_scope].is_may_be_unbound(symbol_id) {
+            let use_key = EnclosingSnapshotKey {
+                nested_scope: self.current_scope,
+                nested_symbol: symbol_id,
+            };
+            self.register_enclosing_snapshot(name, use_key);
+        }
+    }
+
+    fn register_enclosing_snapshot(&mut self, name: &str, use_key: EnclosingSnapshotKey) {
+        // We're looking for a parent definition for this scope's free variable
+        // so start from parent
+        let Some(mut current_scope) = self.scopes[self.current_scope].parent else {
+            return;
+        };
+
+        loop {
+            let found_by_flag = self.symbol_tables[current_scope]
+                .id(name)
+                .is_some_and(|sym_id| {
+                    self.symbol_tables[current_scope]
+                        .symbol(sym_id)
+                        .flags()
+                        .contains(SymbolFlags::IS_BOUND)
+                });
+
+            let found_by_prescan = self.pre_scans[current_scope].has_name(name);
+
+            if found_by_flag || found_by_prescan {
+                // Intern with empty flags: we just need a stable `SymbolId` for
+                // the lookup key. If found via `found_by_flag`, the symbol
+                // already exists with `IS_BOUND`. If found via pre-scan only,
+                // the later `add_definition` call during the full walk will set
+                // `IS_BOUND`.
+                let enclosing_symbol_id =
+                    self.symbol_tables[current_scope].intern(name, SymbolFlags::empty());
+
+                if self.enclosing_snapshots.contains_key(&use_key) {
+                    return;
+                }
+
+                self.use_def_maps[current_scope].ensure_symbol(enclosing_symbol_id);
+                let snapshot_id = self.use_def_maps[current_scope]
+                    .register_enclosing_snapshot(enclosing_symbol_id);
+                self.enclosing_snapshots
+                    .insert(use_key, (current_scope, snapshot_id));
+
+                return;
+            }
+
+            let Some(parent) = self.scopes[current_scope].parent else {
+                return;
+            };
+            current_scope = parent;
+        }
     }
 
     // --- Recursive descent ---
@@ -144,7 +291,7 @@ impl SemanticIndexBuilder {
     fn collect_expression(&mut self, expr: &AnyRExpression) {
         match expr {
             AnyRExpression::RIdentifier(ident) => {
-                let name = identifier_text(ident);
+                let name = ident.name_text();
                 let range = ident.syntax().text_trimmed_range();
                 self.add_use(&name, range);
             },
@@ -193,6 +340,13 @@ impl SemanticIndexBuilder {
                 if let Ok(args) = call.arguments() {
                     self.collect_arguments(&args.items());
                 }
+                // TODO: When eager NSE scopes land (e.g. `local()`) we should
+                // also consider nested scopes as long as they're not lazy (e.g.
+                // function definitions or NSE calls that don't evaluate
+                // immediately.
+                if self.current_scope == ScopeId::from(0) {
+                    self.collect_directive(call);
+                }
             },
             AnyRExpression::RSubset(subset) => {
                 if let Ok(object) = subset.function() {
@@ -224,9 +378,13 @@ impl SemanticIndexBuilder {
             },
 
             AnyRExpression::RForStatement(stmt) => {
+                // The for variable is always bound (R sets it to NULL for
+                // empty sequences), so its binding is recorded before the
+                // snapshot. Assignments inside the body are conditional
+                // (body may not execute for empty sequences).
                 if let Ok(variable) = stmt.variable() {
                     self.add_definition(
-                        &identifier_text(&variable),
+                        &variable.name_text(),
                         SymbolFlags::IS_BOUND,
                         DefinitionKind::ForVariable(stmt.syntax().clone()),
                         variable.syntax().text_trimmed_range(),
@@ -235,8 +393,82 @@ impl SemanticIndexBuilder {
                 if let Ok(sequence) = stmt.sequence() {
                     self.collect_expression(&sequence);
                 }
+
+                let pre_loop = self.use_def_maps[self.current_scope].snapshot();
+
                 if let Ok(body) = stmt.body() {
+                    let first_use = self.uses[self.current_scope].next_id();
                     self.collect_expression(&body);
+                    self.use_def_maps[self.current_scope].finish_loop_defs(
+                        &pre_loop,
+                        first_use,
+                        &self.uses[self.current_scope],
+                    );
+                }
+
+                self.use_def_maps[self.current_scope].merge(pre_loop);
+            },
+
+            AnyRExpression::RIfStatement(stmt) => {
+                // Condition is always evaluated
+                if let Ok(condition) = stmt.condition() {
+                    self.collect_expression(&condition);
+                }
+
+                let pre_if = self.use_def_maps[self.current_scope].snapshot();
+
+                // If-body (consequence)
+                if let Ok(consequence) = stmt.consequence() {
+                    self.collect_expression(&consequence);
+                }
+
+                let post_if = self.use_def_maps[self.current_scope].snapshot();
+                self.use_def_maps[self.current_scope].restore(pre_if);
+
+                // Else-body (alternative), if present. If absent, the
+                // "else path" is just the pre-if state we restored to.
+                if let Some(else_clause) = stmt.else_clause() {
+                    if let Ok(alternative) = else_clause.alternative() {
+                        self.collect_expression(&alternative);
+                    }
+                }
+
+                // After: definitions from both branches are live
+                self.use_def_maps[self.current_scope].merge(post_if);
+            },
+
+            AnyRExpression::RWhileStatement(stmt) => {
+                if let Ok(condition) = stmt.condition() {
+                    self.collect_expression(&condition);
+                }
+
+                let pre_loop = self.use_def_maps[self.current_scope].snapshot();
+
+                if let Ok(body) = stmt.body() {
+                    let first_use = self.uses[self.current_scope].next_id();
+                    self.collect_expression(&body);
+                    self.use_def_maps[self.current_scope].finish_loop_defs(
+                        &pre_loop,
+                        first_use,
+                        &self.uses[self.current_scope],
+                    );
+                }
+
+                // Body may not execute
+                self.use_def_maps[self.current_scope].merge(pre_loop);
+            },
+
+            AnyRExpression::RRepeatStatement(stmt) => {
+                // Body always executes at least once, so no merge with pre-loop state.
+                if let Ok(body) = stmt.body() {
+                    let pre_loop = self.use_def_maps[self.current_scope].snapshot();
+                    let first_use = self.uses[self.current_scope].next_id();
+                    self.collect_expression(&body);
+                    self.use_def_maps[self.current_scope].finish_loop_defs(
+                        &pre_loop,
+                        first_use,
+                        &self.uses[self.current_scope],
+                    );
                 }
             },
 
@@ -244,8 +476,7 @@ impl SemanticIndexBuilder {
 
             // Generic fallback: walk over descendant nodes and collect their
             // `AnyRExpression` children, letting `collect_expression`
-            // handle their contents. This covers `RIfStatement`,
-            // `RWhileStatement`, `RRepeatStatement`, `RUnaryExpression`,
+            // handle their contents. This covers `RUnaryExpression`,
             // `RParenthesizedExpression`, `RReturnExpression`, literals, and
             // any future expression types without needing explicit arms.
             //
@@ -287,10 +518,56 @@ impl SemanticIndexBuilder {
             self.collect_parameters(&params);
         }
         if let Ok(body) = fun.body() {
+            self.pre_scan_scope(body.syntax());
             self.collect_expression(&body);
         }
 
         self.pop_scope(scope);
+    }
+
+    /// Pre-scan a scope to collect all definition names (skipping nested
+    /// function bodies). Runs before the full walk so that enclosing
+    /// snapshot registration can find where free variables are bound,
+    /// even when the walk in the parent scope hasn't reached the
+    /// definition yet. Must stay in sync with the full walk's definition
+    /// handling: any construct that calls `add_definition` should have a
+    /// corresponding entry here.
+    fn pre_scan_scope(&mut self, node: &RSyntaxNode) {
+        let mut preorder = node.preorder();
+        while let Some(event) = preorder.next() {
+            let WalkEvent::Enter(node) = event else {
+                continue;
+            };
+            let Some(expr) = AnyRExpression::cast(node) else {
+                continue;
+            };
+            match &expr {
+                // NSE scopes (e.g. `local({...})`) will also need to
+                // be skipped here once recognized, since their
+                // definitions belong to a child scope.
+                AnyRExpression::RFunctionDefinition(_) => {
+                    preorder.skip_subtree();
+                },
+                AnyRExpression::RBinaryExpression(bin) if is_assignment(bin) => {
+                    if !is_super_assignment(bin) {
+                        let right = is_right_assignment(bin);
+                        let target = if right { bin.right() } else { bin.left() };
+                        if let Ok(target) = target {
+                            if let Some((name, range)) = assignment_target_name(&target) {
+                                self.pre_scans[self.current_scope].add(name, range);
+                            }
+                        }
+                    }
+                },
+                AnyRExpression::RForStatement(stmt) => {
+                    if let Ok(variable) = stmt.variable() {
+                        self.pre_scans[self.current_scope]
+                            .add(variable.name_text(), variable.syntax().text_trimmed_range());
+                    }
+                },
+                _ => {},
+            }
+        }
     }
 
     fn collect_parameters(&mut self, params: &RParameters) {
@@ -307,7 +584,7 @@ impl SemanticIndexBuilder {
             match &name {
                 AnyRParameterName::RIdentifier(ident) => {
                     self.add_definition(
-                        &identifier_text(ident),
+                        &ident.name_text(),
                         flags,
                         DefinitionKind::Parameter(param.syntax().clone()),
                         ident.syntax().text_trimmed_range(),
@@ -354,34 +631,16 @@ impl SemanticIndexBuilder {
         let target = if right { op.right() } else { op.left() };
         let Ok(target) = target else { return };
 
-        let (name, range) = match &target {
-            AnyRExpression::RIdentifier(ident) => {
-                let name = identifier_text(ident);
-                let range = ident.syntax().text_trimmed_range();
-                (name, range)
-            },
-
-            // `"x" <- 1` is equivalent to `x <- 1` in R
-            AnyRExpression::AnyRValue(AnyRValue::RStringValue(s)) => {
-                let Some(name) = string_value_text(s) else {
-                    return;
-                };
-                let range = s.syntax().text_trimmed_range();
-                (name, range)
-            },
-
+        let Some((name, range)) = assignment_target_name(&target) else {
             // Complex target (`x$foo <- rhs`, `x[1] <- rhs`, etc.) does
             // not represent a binding. We recurse for uses.
-            other => {
-                self.collect_expression(other);
-                return;
-            },
+            self.collect_expression(&target);
+            return;
         };
 
         if super_assign {
-            self.add_definition(
+            self.add_super_definition(
                 &name,
-                SymbolFlags::IS_SUPER_BOUND,
                 DefinitionKind::SuperAssignment(op.syntax().clone()),
                 range,
             );
@@ -404,10 +663,120 @@ impl SemanticIndexBuilder {
         }
     }
 
+    /// Detect directives like `library(pkg)` and `require(pkg)` at the
+    /// file-level scope.
+    fn collect_directive(&mut self, call: &aether_syntax::RCall) {
+        let Ok(AnyRExpression::RIdentifier(ident)) = call.function() else {
+            return;
+        };
+
+        let fn_name = ident.name_text();
+        if fn_name != "library" && fn_name != "require" {
+            return;
+        }
+
+        let Ok(args) = call.arguments() else {
+            return;
+        };
+        let mut items = args.items().iter();
+
+        // For now, only recognise exactly one unnamed argument. We'll do
+        // argument matching later (`character.only` unquoting is another
+        // complication).
+        let Some(Ok(first_arg)) = items.next() else {
+            return;
+        };
+        if first_arg.name_clause().is_some() || items.next().is_some() {
+            return;
+        }
+        let Some(value) = first_arg.value() else {
+            return;
+        };
+
+        // Extract the package name from identifier or string literal
+        let pkg_name = match &value {
+            AnyRExpression::RIdentifier(ident) => Some(ident.name_text()),
+            AnyRExpression::AnyRValue(AnyRValue::RStringValue(s)) => s.string_text(),
+            _ => None,
+        };
+        let Some(pkg_name) = pkg_name else {
+            return;
+        };
+
+        self.directives.push(Directive {
+            kind: DirectiveKind::Attach(pkg_name),
+            offset: call.syntax().text_trimmed_range().start(),
+        });
+    }
+
     fn finish(mut self) -> SemanticIndex {
         self.scopes[ScopeId::from(0)].descendants.end = self.scopes.next_id();
+
         let symbol_tables = self.symbol_tables.into_iter().map(|b| b.build()).collect();
-        SemanticIndex::new(self.scopes, symbol_tables, self.definitions, self.uses)
+        let use_def_maps: IndexVec<ScopeId, _> = self
+            .use_def_maps
+            .into_iter()
+            .zip(self.uses.iter())
+            .map(|(b, (_, uses))| b.finish(uses))
+            .collect();
+
+        SemanticIndex::new(
+            self.scopes,
+            symbol_tables,
+            self.definitions,
+            self.uses,
+            use_def_maps,
+            self.enclosing_snapshots,
+            self.directives,
+        )
+    }
+}
+
+/// All definitions in a scope, collected before the full walk. Skips nested
+/// function bodies (those belong to child scopes). Two consumers:
+///
+/// - Enclosing snapshots: `has_name()` checks whether a symbol will be
+///   defined in an ancestor scope (even when the ancestor's walk hasn't reached
+///   that definition yet), so that `register_enclosing_snapshot()` can find the
+///   right ancestor for free variables.
+/// - NSE resolution: With NSE, each function call potentially pushes a scope
+///   (which can be lazy or eager). We need to resolve the called function's
+///   semantic during the walk. Inside lazy scopes (e.g. function bodies),
+///   `by_name` provides the complete set of parent definitions so that the
+///   function can be resolved against all the parent scope's definitions (if NSE
+///   semantics don't match across definitions, we pick one and lint). Intra-scope
+///   resolution is linear and uses the current `symbol_states` directly instead.
+struct PreScanScope {
+    _defs: Vec<PreScanDef>,
+    by_name: FxHashMap<String, SmallVec<[usize; 2]>>,
+}
+
+/// A single definition site found during the pre-scan. Fields are not
+/// read yet but will be used for NSE lookup.
+struct PreScanDef {
+    _name: String,
+    _range: TextRange,
+}
+
+impl PreScanScope {
+    fn new() -> Self {
+        Self {
+            _defs: Vec::new(),
+            by_name: FxHashMap::default(),
+        }
+    }
+
+    fn add(&mut self, name: String, range: TextRange) {
+        let idx = self._defs.len();
+        self.by_name.entry(name.clone()).or_default().push(idx);
+        self._defs.push(PreScanDef {
+            _name: name,
+            _range: range,
+        });
+    }
+
+    fn has_name(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
     }
 }
 
@@ -435,29 +804,24 @@ fn is_right_assignment(bin: &RBinaryExpression) -> bool {
     )
 }
 
-/// Extract the name of an `RIdentifier`, stripping backticks if present.
-///
-/// Backtick-quoted identifiers like `` `my var` `` are parsed as `RIdentifier`
-/// nodes whose `text_trimmed()` includes the backticks. The backticks are a
-/// quoting mechanism, not part of the symbol name.
-fn identifier_text(ident: &aether_syntax::RIdentifier) -> String {
-    let text = ident.syntax().text_trimmed().to_string();
-    match text.strip_prefix('`').and_then(|s| s.strip_suffix('`')) {
-        Some(inner) => inner.to_string(),
-        None => text,
+/// Extract the binding name and range from an assignment target expression.
+/// Returns `None` for complex targets (`x$foo`, `x[1]`, etc.) that don't
+/// represent simple name bindings.
+fn assignment_target_name(target: &AnyRExpression) -> Option<(String, TextRange)> {
+    match target {
+        AnyRExpression::RIdentifier(ident) => {
+            let name = ident.name_text();
+            let range = ident.syntax().text_trimmed_range();
+            Some((name, range))
+        },
+        // `"x" <- 1` is equivalent to `x <- 1` in R
+        AnyRExpression::AnyRValue(AnyRValue::RStringValue(s)) => {
+            let name = s.string_text()?;
+            let range = s.syntax().text_trimmed_range();
+            Some((name, range))
+        },
+        _ => None,
     }
-}
-
-/// Extract the unquoted text of an `RStringValue`.
-///
-/// Note: `RStringValue::inner_string_text()` from aether_syntax would be the
-/// idiomatic API for this, but it delegates to the free `inner_string_text()`
-/// which checks for node kind `R_STRING_VALUE` instead of token kind
-/// `R_STRING_LITERAL`, so it never actually strips the delimiters.
-fn string_value_text(s: &aether_syntax::RStringValue) -> Option<String> {
-    let token = s.value_token().ok()?;
-    let text = token.text_trimmed();
-    Some(text[1..text.len() - 1].to_string())
 }
 
 fn is_super_assignment(bin: &RBinaryExpression) -> bool {

@@ -10,10 +10,14 @@
 //! This module contains `impl Console` with methods and functions related to
 //! ReadConsole, WriteConsole, and R frontend callbacks.
 
+use std::path::Path;
+
 use super::*;
+use crate::dap::dap_notebook;
 use crate::data_explorer::r_data_explorer::POSITRON_DATA_EXPLORER_MIME;
 use crate::r_task::QueuedRTask;
 use crate::r_task::RTask;
+use crate::request::DebugRequest;
 
 static RE_DEBUG_PROMPT: Lazy<Regex> = Lazy::new(|| Regex::new(r"Browse\[\d+\]").unwrap());
 
@@ -33,7 +37,7 @@ const DEBUG_COMMANDS_CONTINUE: &[&str] = &["n", "f", "c", "cont", "Q"];
 static R_INIT: once_cell::sync::OnceCell<()> = once_cell::sync::OnceCell::new();
 
 /// An enum representing the different modes in which the R session can run.
-#[derive(PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum SessionMode {
     /// A session with an interactive console (REPL), such as in Positron.
     Console,
@@ -190,6 +194,7 @@ pub(crate) struct KernelInfo {
     pub(crate) banner: String,
     pub(crate) input_prompt: Option<String>,
     pub(crate) continuation_prompt: Option<String>,
+    pub(crate) session_mode: SessionMode,
 }
 
 /// The kind of prompt we're handling in the REPL.
@@ -330,6 +335,7 @@ impl Console {
     /// and starts R. Does not return!
     /// SAFETY: Must be called only once. Enforced with a panic.
     pub(crate) fn start(
+        r_home: PathBuf,
         r_args: Vec<String>,
         startup_file: Option<String>,
         comm_event_tx: Sender<CommEvent>,
@@ -358,6 +364,7 @@ impl Console {
         let (tasks_interrupt_rx, tasks_idle_rx, tasks_idle_any_rx) = r_task::take_receivers();
 
         CONSOLE.set(UnsafeCell::new(Console::new(
+            r_home,
             tasks_interrupt_rx,
             tasks_idle_rx,
             tasks_idle_any_rx,
@@ -388,11 +395,6 @@ impl Console {
         if !ignore_user_r_profile {
             startup::push_ignore_user_r_profile(&mut r_args);
         }
-
-        let r_home = match r_home_setup() {
-            Ok(r_home) => r_home,
-            Err(err) => panic!("Can't set up `R_HOME`: {err}"),
-        };
 
         // `R_HOME` is now defined no matter what and will be used by
         // `r_command()`. Let's discover the other important environment
@@ -426,7 +428,7 @@ impl Console {
             Err(err) => log::error!("Failed to discover R envvars: {err}"),
         };
 
-        let libraries = RLibraries::from_r_home_path(&r_home);
+        let libraries = RLibraries::from_r_home_path(console.r_home());
         libraries.initialize_pre_setup_r();
 
         crate::sys::console::setup_r(&r_args);
@@ -483,7 +485,7 @@ impl Console {
         log::info!(
             "R has started and ark handlers have been registered, completing initialization."
         );
-        Self::complete_initialization(console.banner.take(), kernel_init_tx);
+        Self::complete_initialization(console.banner.take(), console.session_mode, kernel_init_tx);
 
         // Spawn handler loop for async messages from other components (e.g., LSP).
         // Note that we do it after init is complete to avoid deadlocking
@@ -512,7 +514,7 @@ impl Console {
         // Now that R has started and libr and ark have fully initialized, run site and user
         // level R profiles, in that order
         if !ignore_site_r_profile {
-            startup::source_site_r_profile(&r_home);
+            startup::source_site_r_profile(console.r_home());
         }
         if !ignore_user_r_profile {
             startup::source_user_r_profile();
@@ -574,7 +576,11 @@ impl Console {
     /// # Safety
     ///
     /// Can only be called from the R thread, and only once.
-    fn complete_initialization(banner: Option<String>, mut kernel_init_tx: Bus<KernelInfo>) {
+    fn complete_initialization(
+        banner: Option<String>,
+        session_mode: SessionMode,
+        mut kernel_init_tx: Bus<KernelInfo>,
+    ) {
         let version = unsafe {
             let version = Rf_findVarInFrame(R_BaseNamespace, r_symbol!("R.version.string"));
             RObject::new(version).to::<String>().unwrap()
@@ -589,6 +595,7 @@ impl Console {
             banner: banner.unwrap_or_default(),
             input_prompt: Some(input_prompt),
             continuation_prompt: Some(continuation_prompt),
+            session_mode,
         };
 
         // Set `R_INIT` before broadcasting so that threads unblocked by the
@@ -600,6 +607,7 @@ impl Console {
     }
 
     fn new(
+        r_home: PathBuf,
         tasks_interrupt_rx: Receiver<QueuedRTask>,
         tasks_idle_rx: Receiver<QueuedRTask>,
         tasks_idle_any_rx: Receiver<QueuedRTask>,
@@ -613,6 +621,7 @@ impl Console {
         session_mode: SessionMode,
     ) -> Self {
         Self {
+            r_home,
             r_request_rx,
             comm_event_tx,
             stdin_request_tx,
@@ -699,6 +708,10 @@ impl Console {
     pub(crate) fn on_main_thread() -> bool {
         let thread = std::thread::current();
         thread.id() == unsafe { CONSOLE_THREAD_ID.unwrap() }
+    }
+
+    pub(crate) fn r_home(&self) -> &Path {
+        self.r_home.as_path()
     }
 
     pub(crate) fn iopub_tx(&self) -> &Sender<IOPubMessage> {
@@ -868,9 +881,21 @@ impl Console {
                 return result;
             }
 
-            // Similarly, if we have pending inputs, we're about to immediately
-            // continue with the next expression. Don't emit debug notifications
-            // for these intermediate browser prompts.
+            // In notebook mode, `browser()` or `debug()` calls causing a
+            // browser prompt outside of an active debugging session are routed
+            // to stdin so the user can type debug commands in an input box.
+            if self.session_mode == SessionMode::Notebook &&
+                !self.debug_dap.lock().unwrap().is_connected
+            {
+                self.debug_dap.lock().unwrap().is_debugging_stdin = true;
+                let result = self.handle_input_request(&info, buf, buflen);
+                self.debug_dap.lock().unwrap().is_debugging_stdin = false;
+                return result;
+            }
+
+            // As with auto-stepping above, if we have pending inputs we're
+            // about to immediately continue with the next expression. Don't
+            // emit debug notifications for these intermediate browser prompts.
             let has_pending = self.pending_inputs.as_ref().is_some_and(|p| !p.is_empty());
 
             // Only now that we know we're stopping for real, set state and
@@ -886,6 +911,11 @@ impl Console {
                 self.debug_start(self.debug_transient_eval, reason);
             }
         }
+
+        // In notebook mode, don't complete the request while debugging.
+        // The kernel must stay busy until the debug session ends.
+        let can_complete_active_request =
+            !(self.session_mode == SessionMode::Notebook && self.debug_is_debugging);
 
         if let Some(exception) = self.take_exception() {
             // We might get an input request if `readline()` or `menu()` is
@@ -906,18 +936,20 @@ impl Console {
             self.pending_inputs = None;
 
             // Reply to active request with error, then fall through to event loop
-            self.handle_active_request(
-                &info.input_prompt,
-                &continuation_prompt,
-                ConsoleValue::Error(exception),
-            );
+            if can_complete_active_request {
+                self.handle_active_request(
+                    &info.input_prompt,
+                    &continuation_prompt,
+                    ConsoleValue::Error(exception),
+                );
+            }
         } else if matches!(info.kind, PromptKind::InputRequest) {
             // Request input from the frontend and return it to R
             return self.handle_input_request(&info, buf, buflen);
         } else if let Some(input) = self.pop_pending() {
             // Evaluate pending expression if there is any remaining
             return self.handle_pending_input(input, buf, buflen);
-        } else {
+        } else if can_complete_active_request {
             // Otherwise reply to active request with accumulated result, then
             // fall through to event loop
             let result = self.take_result();
@@ -974,12 +1006,17 @@ impl Console {
         // package. 50ms seems to be more in line with RStudio (posit-dev/positron#7235).
         let polled_events_rx = crossbeam::channel::tick(Duration::from_millis(50));
 
-        // This is the main kind of message from the frontend that we are expecting.
-        // We either wait for `input_reply` messages on StdIn, or for
-        // `execute_request` on Shell.
-        let (r_request_index, stdin_reply_index) = match wait_for {
-            WaitFor::ExecuteRequest => (Some(select.recv(&r_request_rx)), None),
-            WaitFor::InputReply => (None, Some(select.recv(&stdin_reply_rx))),
+        // This is the main kind of message from the frontend that we are
+        // expecting. We either wait for `input_reply` messages on StdIn, or for
+        // `execute_request` on Shell. We also listen for R requests, including
+        // while waiting on StdIn. Such requests are only expected in Notebook
+        // mode when debugging via StdIn. The interrupt handler may send us a
+        // Quit command to terminate the debugging session. For simplicity we
+        // listen for these requests unconditionally, including in Console sessions.
+        let r_request_index = select.recv(&r_request_rx);
+        let stdin_reply_index = match wait_for {
+            WaitFor::ExecuteRequest => None,
+            WaitFor::InputReply => Some(select.recv(&stdin_reply_rx)),
         };
 
         let kernel_request_index = select.recv(&kernel_request_rx);
@@ -1003,15 +1040,15 @@ impl Console {
             };
 
         loop {
-            // If an interrupt was signaled and we are in a user
-            // request prompt, e.g. `readline()`, we need to propagate
-            // the interrupt to the R stack. This needs to happen before
-            // `process_idle_events()`, particularly on Windows, because it
-            // calls `R_ProcessEvents()`, which checks and resets
-            // `UserBreak`, but won't actually fire the interrupt b/c
-            // we have them disabled, so it would end up swallowing the
-            // user interrupt request.
-            if matches!(info.kind, PromptKind::InputRequest) && interrupts_pending() {
+            // If an interrupt was signaled and we are waiting for user
+            // input (readline, or browser-as-stdin in notebook mode), we
+            // need to propagate the interrupt to the R stack. This needs
+            // to happen before `process_idle_events()`, particularly on
+            // Windows, because it calls `R_ProcessEvents()`, which checks
+            // and resets `UserBreak`, but won't actually fire the
+            // interrupt b/c we have them disabled, so it would end up
+            // swallowing the user interrupt request.
+            if matches!(wait_for, WaitFor::InputReply) && interrupts_pending() {
                 return ConsoleResult::Interrupt;
             }
 
@@ -1043,12 +1080,25 @@ impl Console {
 
             match oper.index() {
                 // We've got an execute request from the frontend
-                i if Some(i) == r_request_index => {
+                i if i == r_request_index => {
                     let req = oper.recv(&r_request_rx);
                     let Ok(req) = req else {
                         // The channel is disconnected and empty
                         return ConsoleResult::Disconnected;
                     };
+
+                    // When debugging via StdIn in notebook mode, waiting for
+                    // input at a browser prompt, the interrupt handler may send
+                    // a Quit command to exit the browser cleanly.
+                    if matches!(wait_for, WaitFor::InputReply) {
+                        if let RRequest::DebugCommand(DebugRequest::Quit) = req {
+                            let input = String::from("Q");
+                            Self::on_console_input(buf, buflen, input).unwrap();
+                            return ConsoleResult::NewInput;
+                        }
+                        log::warn!("Unexpected R request while waiting for stdin input: {req:?}");
+                        continue;
+                    }
 
                     if let Some(input) = self.handle_execute_request(req, info, buf, buflen) {
                         return input;
@@ -1313,8 +1363,16 @@ impl Console {
             panic!("Unexpected `execute_request` while waiting for `input_reply`.");
         }
 
+        let mut cell_id = None;
+
         let input = match req {
             RRequest::ExecuteCode(exec_req, originator, reply_tx) => {
+                cell_id = originator
+                    .metadata
+                    .get("cellId")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
                 // Extract input from request
                 let (input, exec_count) = { self.init_execute_request(&exec_req) };
 
@@ -1367,6 +1425,23 @@ impl Console {
                 let mut dap_guard = self.debug_dap.lock().unwrap();
 
                 let uri_id = loc.as_ref().map(UrlId::from_code_location);
+
+                // For notebook cells (`cellId` present in metadata), synthesize
+                // a `CodeLocation` pointing to the temp file that `dumpCell`
+                // wrote. This gives `annotate_input()` the file URI it needs
+                // for the `#line` directive and breakpoint injection.
+                let (uri_id, loc) = if cell_id.is_some() {
+                    match dap_notebook::notebook_code_location(&code) {
+                        Some(notebook_loc) => {
+                            let id = UrlId::from_url(notebook_loc.uri.clone());
+                            (Some(id), Some(notebook_loc))
+                        },
+                        None => (uri_id, loc),
+                    }
+                } else {
+                    (uri_id, loc)
+                };
+
                 let breakpoints = uri_id
                     .as_ref()
                     .and_then(|uri_id| dap_guard.breakpoints.get_mut(uri_id))
@@ -2284,6 +2359,7 @@ impl Console {
     }
 
     /// Invoked by the R event loop
+    #[cfg(unix)]
     fn polled_events(&mut self) {
         // Don't process tasks until R is fully initialized
         if !Self::is_initialized() {
@@ -2296,7 +2372,7 @@ impl Console {
         // Skip running tasks if we don't have 128KB of stack space available.
         // This is 1/8th of the typical Windows stack space (1MB, whereas macOS
         // and Linux have 8MB).
-        if r_check_stack(Some(128 * 1024)).is_err() {
+        if harp::exec::r_check_stack(Some(128 * 1024)).is_err() {
             return;
         }
 
@@ -2714,6 +2790,7 @@ pub extern "C-unwind" fn r_suicide(buf: *const c_char) {
     panic!("Suicide: {}", msg.to_str().unwrap());
 }
 
+#[cfg(unix)]
 #[cfg_attr(not(test), no_mangle)]
 pub unsafe extern "C-unwind" fn r_polled_events() {
     if let Err(err) = r_sandbox(|| Console::get_mut().polled_events()) {

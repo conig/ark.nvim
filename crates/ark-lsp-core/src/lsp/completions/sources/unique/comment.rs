@@ -12,20 +12,20 @@ use std::sync::Mutex;
 use anyhow::anyhow;
 use harp::exec::RFunction;
 use harp::exec::RFunctionExt;
+use oak_index::library::Library;
 use regex::Regex;
 use tower_lsp::lsp_types::CompletionItem;
 use tower_lsp::lsp_types::Documentation;
 use tower_lsp::lsp_types::InsertTextFormat;
 use tower_lsp::lsp_types::MarkupContent;
 use tower_lsp::lsp_types::MarkupKind;
-use yaml_rust::YamlLoader;
+use yaml_rust2::YamlLoader;
 
 use crate::lsp::completions::completion_context::CompletionContext;
 use crate::lsp::completions::completion_item::completion_item;
 use crate::lsp::completions::sources::CompletionSource;
 use crate::lsp::completions::types::CompletionData;
 use crate::lsp::document_context::DocumentContext;
-use crate::lsp::inputs::library::Library;
 use crate::lsp::state::WorldState;
 use crate::lsp::traits::node::NodeExt;
 use crate::treesitter::NodeTypeExt;
@@ -143,7 +143,7 @@ fn roxygen_tag_path(state: &WorldState) -> anyhow::Result<Option<PathBuf>> {
 
 fn roxygen_tag_path_from_library(library: &Library) -> Option<PathBuf> {
     let package = library.get("roxygen2")?;
-    let path = package.path.join("roxygen2-tags.yml");
+    let path = package.path().join("roxygen2-tags.yml");
 
     if path.exists() {
         Some(path)
@@ -267,7 +267,7 @@ fn temp_roxygen2_library() -> (tempfile::TempDir, WorldState) {
     .unwrap();
 
     let state = WorldState {
-        library: Library::new(vec![library_dir.path().to_path_buf()]),
+        library: Library::new(vec![library_dir.path().to_path_buf()], None),
         ..WorldState::default()
     };
 

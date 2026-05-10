@@ -7,6 +7,7 @@
 
 #![allow(deprecated)]
 
+use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -838,6 +839,7 @@ impl Backend {
 }
 
 pub(crate) fn start_lsp(
+    r_home: PathBuf,
     runtime: Arc<Runtime>,
     server_start: ServerStartMessage,
     server_started_tx: Sender<ServerStartedMessage>,
@@ -879,6 +881,7 @@ pub(crate) fn start_lsp(
             let notification_barrier = Arc::new(NotificationBarrier::default());
             let state = GlobalState::new_with_runtime_mode(
                 client,
+                r_home,
                 console_notification_tx,
                 RuntimeMode::Attached,
                 notification_barrier.clone(),
@@ -989,6 +992,7 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         let notification_barrier = Arc::new(NotificationBarrier::default());
         let state = GlobalState::new_with_runtime_mode(
             client,
+            PathBuf::new(),
             console_notification_tx.clone(),
             runtime_mode,
             notification_barrier.clone(),

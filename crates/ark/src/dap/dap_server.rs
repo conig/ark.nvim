@@ -38,10 +38,10 @@ use super::dap_state::Breakpoint;
 use super::dap_state::BreakpointState;
 use super::dap_state::Dap;
 use super::dap_state::DapBackendEvent;
+use super::dap_state::THREAD_ID;
 use crate::console::Console;
 use crate::console::FrameInfo;
 use crate::console::FrameSource;
-use crate::dap::dap_state::DapExceptionEvent;
 use crate::dap::dap_variables::object_variables;
 use crate::dap::dap_variables::RVariable;
 use crate::r_task;
@@ -51,332 +51,127 @@ use crate::request::DebugRequest;
 use crate::request::RRequest;
 use crate::url::UrlId;
 
-const THREAD_ID: i64 = -1;
-
 /// Sentinel expression sent by the frontend to notify the kernel that the user
 /// selected a different stack frame in the debugger UI. Subsequent console
 /// evaluations will run in that frame's environment.
 const SELECTED_FRAME_EXPRESSION: &str = ".positron_selected_frame";
 
-// TODO: Handle comm close to shut down the DAP server thread.
-//
-// The DAP comm is allowed to persist across TCP sessions. This supports session
-// switching on the frontend. Ideally the frontend would be allowed to close the
-// DAP comm in addition to the DAP TCP connection, which would shut down the DAP
-// server. To achive this, the DAP server, once disconnected should wait for both
-// the connection becoming ready and a channel event signalling comm close. If
-// the latter fires, shut the server down.
-
-pub fn start_dap(
-    state: Arc<Mutex<Dap>>,
-    server_start: ServerStartMessage,
-    server_started_tx: Sender<ServerStartedMessage>,
-    r_request_tx: Sender<RRequest>,
-    comm_tx: CommOutgoingTx,
-) {
-    let ip_address = server_start.ip_address();
-
-    // Binding to port `0` to allow the OS to allocate a port for us to bind to
-    let listener = TcpListener::bind(format!("{ip_address}:0",)).unwrap();
-
-    let address = match listener.local_addr() {
-        Ok(address) => address,
-        Err(error) => {
-            log::error!("DAP: Failed to bind to {ip_address}:0: {error}");
-            return;
-        },
-    };
-
-    // Get the OS allocated port
-    let port = address.port();
-
-    log::trace!("DAP: Thread starting at address {ip_address}:{port}.");
-
-    // Send the port back to `Shell` and eventually out to the frontend so it can connect
-    server_started_tx
-        .send(ServerStartedMessage::new(port))
-        .log_err();
-
-    loop {
-        log::trace!("DAP: Waiting for client");
-
-        let stream = match listener.accept() {
-            Ok((stream, addr)) => {
-                log::info!("DAP: Connected to client {addr:?}");
-
-                let mut state = state.lock().unwrap();
-                state.is_connected = true;
-
-                stream
-            },
-            Err(e) => {
-                log::error!("DAP: Can't get client: {e:?}");
-                continue;
-            },
-        };
-
-        let reader = BufReader::new(&stream);
-        let writer = BufWriter::new(&stream);
-        let (responses_tx, responses_rx) = unbounded::<Response>();
-
-        let mut server = DapServer::new(
-            reader,
-            writer,
-            state.clone(),
-            r_request_tx.clone(),
-            comm_tx.clone(),
-            responses_tx,
-        );
-
-        let (backend_events_tx, backend_events_rx) = unbounded::<DapBackendEvent>();
-        let (done_tx, done_rx) = bounded::<bool>(0);
-        let output_clone = server.output.clone();
-
-        // We need a scope to let the borrow checker know that
-        // `output_clone` drops before the next iteration (it gets tangled
-        // to the stack variable `stream` through `server`)
-        let _ = crossbeam::thread::scope(|scope| {
-            spawn!(scope, "ark-dap-events", {
-                move |_| listen_dap_events(output_clone, backend_events_rx, responses_rx, done_rx)
-            });
-
-            // Connect the backend to the events thread
-            state.lock().unwrap().backend_events_tx = Some(backend_events_tx);
-
-            loop {
-                // If disconnected, break and accept a new connection to create a new server
-                if !server.serve() {
-                    log::trace!("DAP: Disconnected from client");
-                    let mut state = state.lock().unwrap();
-                    state.is_connected = false;
-                    break;
-                }
-            }
-
-            // Terminate the events thread
-            let _ = done_tx.send(true);
-        });
-    }
+/// Events for the Console requested by a DAP handler. Either delivered by a
+/// round-trip through the frontend (so users see the command) or directly to
+/// the Console.
+pub enum DapConsoleEvent {
+    /// Send a debug step/quit command to R via the frontend.
+    DebugCommand(DebugRequest),
+    /// Interrupt R for a pause. No frontend round-trip.
+    Interrupt,
+    /// Request a session restart via the frontend.
+    Restart,
 }
 
-// Thread that listens for events sent by the backend, usually the
-// `ReadConsole()` method. These are forwarded to the DAP client.
-fn listen_dap_events<W: Write>(
-    output: Arc<Mutex<ServerOutput<W>>>,
-    backend_events_rx: Receiver<DapBackendEvent>,
-    responses_rx: Receiver<Response>,
-    done_rx: Receiver<bool>,
-) {
-    loop {
-        select!(
-            recv(backend_events_rx) -> event => {
-                let event = match event {
-                    Ok(event) => event,
-                    Err(err) => {
-                        // Channel closed, sender dropped
-                        log::info!("DAP: Event channel closed: {err:?}");
-                        return;
-                    },
-                };
-
-                log::trace!("DAP: Got event from backend: {:?}", event);
-
-                let event = match event {
-                    DapBackendEvent::Continued => {
-                        Event::Continued(ContinuedEventBody {
-                            thread_id: THREAD_ID,
-                            all_threads_continued: Some(true)
-                        })
-                    },
-
-                    DapBackendEvent::Stopped => {
-                        Event::Stopped(StoppedEventBody {
-                            reason: StoppedEventReason::Step,
-                            description: None,
-                            thread_id: Some(THREAD_ID),
-                            preserve_focus_hint: Some(false),
-                            text: None,
-                            all_threads_stopped: Some(true),
-                            hit_breakpoint_ids: None,
-                        })
-                    },
-
-                    DapBackendEvent::Exception(DapExceptionEvent { class, message }) => {
-                        let text = format!("<{class}>\n{message}");
-                        Event::Stopped(StoppedEventBody {
-                            reason: StoppedEventReason::Exception,
-                            description: Some(message),
-                            thread_id: Some(THREAD_ID),
-                            preserve_focus_hint: Some(false),
-                            text: Some(text),
-                            all_threads_stopped: Some(true),
-                            hit_breakpoint_ids: None,
-                        })
-                    },
-
-                    DapBackendEvent::Invalidated => {
-                        Event::Invalidated(InvalidatedEventBody {
-                            areas: Some(vec![types::InvalidatedAreas::Variables]),
-                            thread_id: Some(THREAD_ID),
-                            stack_frame_id: None,
-                        })
-                    },
-
-                    DapBackendEvent::Terminated => {
-                        Event::Terminated(None)
-                    },
-
-                    DapBackendEvent::BreakpointState { id, line, verified, message } => {
-                        Event::Breakpoint(BreakpointEventBody {
-                            reason: BreakpointEventReason::Changed,
-                            breakpoint: dap::types::Breakpoint {
-                                id: Some(id),
-                                line: Some(Breakpoint::to_dap_line(line)),
-                                verified,
-                                message,
-                                ..Default::default()
-                            },
-                        })
-                    },
-                };
-
-                let mut output = output.lock().unwrap();
-                if let Err(err) = output.send_event(event) {
-                    log::warn!("DAP: Failed to send event, closing: {err:?}");
-                    return;
-                }
-            },
-
-            recv(responses_rx) -> response => {
-                let response = match response {
-                    Ok(response) => response,
-                    Err(err) => {
-                        log::info!("DAP: Responses channel closed: {err:?}");
-                        return;
-                    },
-                };
-
-                log::trace!("DAP: Sending async response: {:?}", response);
-
-                let mut output = output.lock().unwrap();
-                if let Err(err) = output.send(Sendable::Response(response)) {
-                    log::warn!("DAP: Failed to send response, closing: {err:?}");
-                    return;
-                }
-            },
-
-            // Break the loop and terminate the thread
-            recv(done_rx) -> _ => { return; },
-        )
-    }
+/// The result of handling a single DAP request. The transport layer (TCP or
+/// Jupyter) is responsible for delivering the response, DAP events, and console
+/// events through the appropriate channel.
+pub struct DapOutput {
+    pub response: Response,
+    pub dap_events: Vec<Event>,
+    pub console_events: Vec<DapConsoleEvent>,
 }
 
-pub struct DapServer<R: Read, W: Write> {
-    server: Server<R, W>,
-    pub output: Arc<Mutex<ServerOutput<W>>>,
-    state: Arc<Mutex<Dap>>,
-    r_request_tx: Sender<RRequest>,
-    comm_tx: Option<CommOutgoingTx>,
-    responses_tx: Sender<Response>,
-}
-
-impl<R: Read, W: Write> DapServer<R, W> {
-    pub fn new(
-        reader: BufReader<R>,
-        writer: BufWriter<W>,
-        state: Arc<Mutex<Dap>>,
-        r_request_tx: Sender<RRequest>,
-        comm_tx: CommOutgoingTx,
-        responses_tx: Sender<Response>,
-    ) -> Self {
-        let server = Server::new(reader, writer);
-        let output = server.output.clone();
+impl DapOutput {
+    pub(crate) fn success(req: Request, output: DapHandlerOutput) -> Self {
         Self {
-            server,
-            output,
-            state,
-            r_request_tx,
-            comm_tx: Some(comm_tx),
-            responses_tx,
+            response: req.success(output.body),
+            dap_events: output.dap_events,
+            console_events: output.console_events,
         }
     }
 
-    pub fn serve(&mut self) -> bool {
-        log::trace!("DAP: Polling");
-        let req = match self.server.poll_request() {
-            Ok(Some(req)) => req,
-            Ok(None) => return false,
-            Err(err) => {
-                log::warn!("DAP: Connection closed: {err:?}");
-                return false;
-            },
-        };
-        log::trace!("DAP: Got request: {:#?}", req);
+    pub fn error(req: Request, message: &str) -> Self {
+        Self {
+            response: req.error(message),
+            dap_events: vec![],
+            console_events: vec![],
+        }
+    }
+}
 
+/// The result of a handler method. Contains a `ResponseBody` (not a full
+/// `Response`) plus any events. The dispatcher wraps the body with
+/// `req.success()` or `req.error()` to produce a transport-ready `DapOutput`.
+pub(crate) struct DapHandlerOutput {
+    pub body: ResponseBody,
+    pub dap_events: Vec<Event>,
+    pub console_events: Vec<DapConsoleEvent>,
+}
+
+/// Transport-agnostic handler for DAP requests. Translates each request
+/// into a [`DapOutput`] containing the protocol response, any DAP events,
+/// and console events that the transport layer is responsible for delivering.
+pub struct DapHandler {
+    pub(crate) state: Arc<Mutex<Dap>>,
+    pub(crate) r_request_tx: Sender<RRequest>,
+}
+
+impl DapHandler {
+    pub fn new(state: Arc<Mutex<Dap>>, r_request_tx: Sender<RRequest>) -> Self {
+        Self {
+            state,
+            r_request_tx,
+        }
+    }
+
+    /// Dispatch a parsed DAP request to the appropriate handler.
+    ///
+    /// `Evaluate` is intentionally not handled here because it requires
+    /// transport-specific async response delivery.
+    pub fn dispatch(&self, req: Request) -> DapOutput {
         let cmd = req.command.clone();
 
         let result = match cmd {
-            Command::Initialize(args) => self.handle_initialize(req, args),
-            Command::Attach(args) => self.handle_attach(req, args),
-            Command::Disconnect(args) => self.handle_disconnect(req, args),
-            Command::Restart(args) => self.handle_restart(req, args),
-            Command::Threads => self.handle_threads(req),
-            Command::SetBreakpoints(args) => self.handle_set_breakpoints(req, args),
-            Command::SetExceptionBreakpoints(args) => {
-                self.handle_set_exception_breakpoints(req, args)
-            },
-            Command::StackTrace(args) => self.handle_stacktrace(req, args),
-            Command::Source(args) => self.handle_source(req, args),
-            Command::Scopes(args) => self.handle_scopes(req, args),
-            Command::Variables(args) => self.handle_variables(req, args),
-            Command::Evaluate(args) => self.handle_evaluate(req, args),
+            Command::Initialize(args) => self.handle_initialize(args),
+            Command::Attach(args) => self.handle_attach(args),
+            Command::Disconnect(args) => self.handle_disconnect(args),
+            Command::Restart(args) => self.handle_restart(args),
+            Command::Threads => self.handle_threads(),
+            Command::SetBreakpoints(args) => self.handle_set_breakpoints(args),
+            Command::SetExceptionBreakpoints(args) => self.handle_set_exception_breakpoints(args),
+            Command::StackTrace(args) => self.handle_stacktrace(args),
+            Command::Source(args) => self.handle_source(args),
+            Command::Scopes(args) => self.handle_scopes(args),
+            Command::Variables(args) => self.handle_variables(args),
             Command::Continue(args) => {
                 let resp = ResponseBody::Continue(ContinueResponse {
                     all_threads_continued: Some(true),
                 });
-                self.handle_step(req, args, DebugRequest::Continue, resp)
+                self.handle_step(args, DebugRequest::Continue, resp)
             },
-            Command::Next(args) => {
-                self.handle_step(req, args, DebugRequest::Next, ResponseBody::Next)
-            },
+            Command::Next(args) => self.handle_step(args, DebugRequest::Next, ResponseBody::Next),
             Command::StepIn(args) => {
-                self.handle_step(req, args, DebugRequest::StepIn, ResponseBody::StepIn)
+                self.handle_step(args, DebugRequest::StepIn, ResponseBody::StepIn)
             },
             Command::StepOut(args) => {
-                self.handle_step(req, args, DebugRequest::StepOut, ResponseBody::StepOut)
+                self.handle_step(args, DebugRequest::StepOut, ResponseBody::StepOut)
             },
-            Command::Pause(args) => self.handle_pause(req, args),
+            Command::Pause(args) => self.handle_pause(args),
+            Command::ConfigurationDone => Ok(DapHandlerOutput {
+                body: ResponseBody::ConfigurationDone,
+                dap_events: vec![],
+                console_events: vec![],
+            }),
             _ => {
-                log::warn!("DAP: Unknown request");
-                let rsp = req.error("Ark DAP: Unknown request");
-                self.respond(rsp)
+                log::warn!("DAP: Unknown request: {cmd:?}");
+                return DapOutput::error(req, "Ark DAP: Unknown request");
             },
         };
 
-        if let Err(err) = result {
-            log::warn!("DAP: Handler failed, closing connection: {err:?}");
-            return false;
+        match result {
+            Ok(output) => DapOutput::success(req, output),
+            Err(err) => DapOutput::error(req, &format!("{err}")),
         }
-
-        true
     }
 
-    fn respond(&mut self, rsp: Response) -> Result<(), ServerError> {
-        log::trace!("DAP: Responding to request: {rsp:#?}");
-        self.server.respond(rsp)
-    }
-
-    fn send_event(&mut self, event: Event) -> Result<(), ServerError> {
-        log::trace!("DAP: Sending event: {event:#?}");
-        self.server.send_event(event)
-    }
-
-    fn handle_initialize(
-        &mut self,
-        req: Request,
-        _args: InitializeArguments,
-    ) -> Result<(), ServerError> {
-        let rsp = req.success(ResponseBody::Initialize(types::Capabilities {
+    fn handle_initialize(&self, _args: InitializeArguments) -> anyhow::Result<DapHandlerOutput> {
+        let body = ResponseBody::Initialize(types::Capabilities {
             supports_restart_request: Some(true),
             supports_exception_info_request: Some(false),
             exception_breakpoint_filters: Some(vec![
@@ -409,10 +204,14 @@ impl<R: Read, W: Write> DapServer<R, W> {
             supports_conditional_breakpoints: Some(true),
             supports_hit_conditional_breakpoints: Some(true),
             supports_log_points: Some(true),
+            supports_configuration_done_request: Some(true),
             ..Default::default()
-        }));
-        self.respond(rsp)?;
-        self.send_event(Event::Initialized)
+        });
+        Ok(DapHandlerOutput {
+            body,
+            dap_events: vec![Event::Initialized],
+            console_events: vec![],
+        })
     }
 
     // Handle SetBreakpoints requests from the frontend.
@@ -431,14 +230,11 @@ impl<R: Read, W: Write> DapServer<R, W> {
     //   from the request). We preserve verified breakpoints as Disabled so we
     //   can restore their state when re-enabled without requiring re-sourcing.
     fn handle_set_breakpoints(
-        &mut self,
-        req: Request,
+        &self,
         args: SetBreakpointsArguments,
-    ) -> Result<(), ServerError> {
+    ) -> anyhow::Result<DapHandlerOutput> {
         let Some(path) = args.source.path.as_ref() else {
-            // We don't currently have virtual documents managed via source references
-            log::warn!("Missing a path to set breakpoints for.");
-            return self.respond(req.error("Missing a path to set breakpoints for"));
+            return Err(anyhow::anyhow!("Missing a path to set breakpoints for"));
         };
 
         // We currently only support "path" URIs as Positron never sends URIs.
@@ -448,10 +244,13 @@ impl<R: Read, W: Write> DapServer<R, W> {
             Ok(uri) => uri,
             Err(err) => {
                 log::warn!("Can't set breakpoints for non-file path: '{path}': {err}");
-                let rsp = req.success(ResponseBody::SetBreakpoints(SetBreakpointsResponse {
-                    breakpoints: vec![],
-                }));
-                return self.respond(rsp);
+                return Ok(DapHandlerOutput {
+                    body: ResponseBody::SetBreakpoints(SetBreakpointsResponse {
+                        breakpoints: vec![],
+                    }),
+                    dap_events: vec![],
+                    console_events: vec![],
+                });
             },
         };
 
@@ -477,10 +276,11 @@ impl<R: Read, W: Write> DapServer<R, W> {
                     })
                     .collect();
 
-                let rsp = req.success(ResponseBody::SetBreakpoints(SetBreakpointsResponse {
-                    breakpoints,
-                }));
-                return self.respond(rsp);
+                return Ok(DapHandlerOutput {
+                    body: ResponseBody::SetBreakpoints(SetBreakpointsResponse { breakpoints }),
+                    dap_events: vec![],
+                    console_events: vec![],
+                });
             },
         };
 
@@ -630,91 +430,91 @@ impl<R: Read, W: Write> DapServer<R, W> {
 
         drop(state);
 
-        let rsp = req.success(ResponseBody::SetBreakpoints(SetBreakpointsResponse {
-            breakpoints: response_breakpoints,
-        }));
-
-        self.respond(rsp)
+        Ok(DapHandlerOutput {
+            body: ResponseBody::SetBreakpoints(SetBreakpointsResponse {
+                breakpoints: response_breakpoints,
+            }),
+            dap_events: vec![],
+            console_events: vec![],
+        })
     }
 
-    fn handle_attach(
-        &mut self,
-        req: Request,
-        _args: AttachRequestArguments,
-    ) -> Result<(), ServerError> {
-        let rsp = req.success(ResponseBody::Attach);
-        self.respond(rsp)?;
+    fn handle_attach(&self, _args: AttachRequestArguments) -> anyhow::Result<DapHandlerOutput> {
+        self.state.lock().unwrap().is_connected = true;
 
-        self.send_event(Event::Thread(ThreadEventBody {
-            reason: ThreadEventReason::Started,
-            thread_id: THREAD_ID,
-        }))
+        Ok(DapHandlerOutput {
+            body: ResponseBody::Attach,
+            dap_events: vec![Event::Thread(ThreadEventBody {
+                reason: ThreadEventReason::Started,
+                thread_id: THREAD_ID,
+            })],
+            console_events: vec![],
+        })
     }
 
-    fn handle_disconnect(
-        &mut self,
-        req: Request,
-        _args: DisconnectArguments,
-    ) -> Result<(), ServerError> {
-        // Only send `Q` if currently in a debugging session.
-        let is_debugging = { self.state.lock().unwrap().is_debugging };
-        if is_debugging {
-            self.send_command(DebugRequest::Quit);
-        }
+    fn handle_disconnect(&self, _args: DisconnectArguments) -> anyhow::Result<DapHandlerOutput> {
+        let mut state = self.state.lock().unwrap();
+        let is_debugging = state.is_debugging;
+        state.is_connected = false;
+        drop(state);
 
-        let rsp = req.success(ResponseBody::Disconnect);
-        self.respond(rsp)
+        let console_events = if is_debugging {
+            vec![DapConsoleEvent::DebugCommand(DebugRequest::Quit)]
+        } else {
+            vec![]
+        };
+
+        Ok(DapHandlerOutput {
+            body: ResponseBody::Disconnect,
+            dap_events: vec![],
+            console_events,
+        })
     }
 
-    fn handle_restart<T>(&mut self, req: Request, _args: T) -> Result<(), ServerError> {
-        // If connected to Positron, forward the restart command to the
-        // frontend. Otherwise ignore it.
-        if let Some(tx) = &self.comm_tx {
-            let msg = amalthea::comm_rpc_message!("restart");
-            tx.send(msg).log_err();
-        }
-
-        let rsp = req.success(ResponseBody::Restart);
-        self.respond(rsp)
+    fn handle_restart<T>(&self, _args: T) -> anyhow::Result<DapHandlerOutput> {
+        Ok(DapHandlerOutput {
+            body: ResponseBody::Restart,
+            dap_events: vec![],
+            console_events: vec![DapConsoleEvent::Restart],
+        })
     }
 
     // All servers must respond to `Threads` requests, possibly with
     // a dummy thread as is the case here
-    fn handle_threads(&mut self, req: Request) -> Result<(), ServerError> {
-        let rsp = req.success(ResponseBody::Threads(ThreadsResponse {
-            threads: vec![Thread {
-                id: THREAD_ID,
-                name: String::from("R console"),
-            }],
-        }));
-        self.respond(rsp)
+    fn handle_threads(&self) -> anyhow::Result<DapHandlerOutput> {
+        Ok(DapHandlerOutput {
+            body: ResponseBody::Threads(ThreadsResponse {
+                threads: vec![Thread {
+                    id: THREAD_ID,
+                    name: String::from("R console"),
+                }],
+            }),
+            dap_events: vec![],
+            console_events: vec![],
+        })
     }
 
     fn handle_set_exception_breakpoints(
-        &mut self,
-        req: Request,
+        &self,
         args: SetExceptionBreakpointsArguments,
-    ) -> Result<(), ServerError> {
+    ) -> anyhow::Result<DapHandlerOutput> {
         {
             let mut state = self.state.lock().unwrap();
             state.exception_breakpoint_filters = args.filters;
         }
-        let rsp = req.success(ResponseBody::SetExceptionBreakpoints(
-            SetExceptionBreakpointsResponse {
+        Ok(DapHandlerOutput {
+            body: ResponseBody::SetExceptionBreakpoints(SetExceptionBreakpointsResponse {
                 // This field is only useful for reporting problems with
                 // individual filters. Since we always accept all filters,
                 // `None` is fine here.
                 breakpoints: None,
-            },
-        ));
-        self.respond(rsp)
+            }),
+            dap_events: vec![],
+            console_events: vec![],
+        })
     }
 
-    fn handle_stacktrace(
-        &mut self,
-        req: Request,
-        args: StackTraceArguments,
-    ) -> Result<(), ServerError> {
+    fn handle_stacktrace(&self, args: StackTraceArguments) -> anyhow::Result<DapHandlerOutput> {
         let stack = {
             let state = self.state.lock().unwrap();
             let fallback_sources = &state.fallback_sources;
@@ -732,15 +532,13 @@ impl<R: Read, W: Write> DapServer<R, W> {
 
         let start_frame = args.start_frame.unwrap_or(0);
         let Ok(start) = usize::try_from(start_frame) else {
-            let rsp = req.error(&format!("Invalid start_frame: {start_frame}"));
-            return self.respond(rsp);
+            return Err(anyhow::anyhow!("Invalid start_frame: {start_frame}"));
         };
         let start = std::cmp::min(start, n_usize);
 
         let end = if let Some(levels) = args.levels {
             let Ok(levels) = usize::try_from(levels) else {
-                let rsp = req.error(&format!("Invalid levels: {levels}"));
-                return self.respond(rsp);
+                return Err(anyhow::anyhow!("Invalid levels: {levels}"));
             };
             std::cmp::min(start.saturating_add(levels), n_usize)
         } else {
@@ -748,27 +546,27 @@ impl<R: Read, W: Write> DapServer<R, W> {
         };
 
         let Ok(total_frames) = i64::try_from(n_usize) else {
-            let rsp = req.error(&format!("Stack frame count overflows i64: {n_usize}"));
-            return self.respond(rsp);
+            return Err(anyhow::anyhow!(
+                "Stack frame count overflows i64: {n_usize}"
+            ));
         };
         let stack = stack[start..end].to_vec();
 
-        let rsp = req.success(ResponseBody::StackTrace(StackTraceResponse {
-            stack_frames: stack,
-            total_frames: Some(total_frames),
-        }));
-
-        self.respond(rsp)
+        Ok(DapHandlerOutput {
+            body: ResponseBody::StackTrace(StackTraceResponse {
+                stack_frames: stack,
+                total_frames: Some(total_frames),
+            }),
+            dap_events: vec![],
+            console_events: vec![],
+        })
     }
 
-    fn handle_source(&mut self, req: Request, _args: SourceArguments) -> Result<(), ServerError> {
-        let message = "Unsupported `source` request: {req:?}";
-        log::error!("{message}");
-        let rsp = req.error(message);
-        self.respond(rsp)
+    fn handle_source(&self, _args: SourceArguments) -> anyhow::Result<DapHandlerOutput> {
+        Err(anyhow::anyhow!("Unsupported `source` request"))
     }
 
-    fn handle_scopes(&mut self, req: Request, args: ScopesArguments) -> Result<(), ServerError> {
+    fn handle_scopes(&self, args: ScopesArguments) -> anyhow::Result<DapHandlerOutput> {
         let state = self.state.lock().unwrap();
         let frame_id_to_variables_reference = &state.frame_id_to_variables_reference;
 
@@ -795,24 +593,356 @@ impl<R: Read, W: Write> DapServer<R, W> {
             end_column: None,
         }];
 
-        let rsp = req.success(ResponseBody::Scopes(ScopesResponse { scopes }));
-
         drop(state);
-        self.respond(rsp)
+        Ok(DapHandlerOutput {
+            body: ResponseBody::Scopes(ScopesResponse { scopes }),
+            dap_events: vec![],
+            console_events: vec![],
+        })
     }
 
-    fn handle_variables(
-        &mut self,
-        req: Request,
-        args: VariablesArguments,
-    ) -> Result<(), ServerError> {
+    fn handle_variables(&self, args: VariablesArguments) -> anyhow::Result<DapHandlerOutput> {
         let variables_reference = args.variables_reference;
         let variables = self.collect_r_variables(variables_reference);
         let variables = self.make_variables(variables);
-        let rsp = req.success(ResponseBody::Variables(VariablesResponse { variables }));
-        self.respond(rsp)
+        Ok(DapHandlerOutput {
+            body: ResponseBody::Variables(VariablesResponse { variables }),
+            dap_events: vec![],
+            console_events: vec![],
+        })
     }
 
+    fn collect_r_variables(&self, variables_reference: i64) -> Vec<RVariable> {
+        // Wait until we're in the `r_task()` to lock
+        // See https://github.com/posit-dev/positron/issues/5024
+        let state = self.state.clone();
+
+        let variables = r_task(move || {
+            let state = state.lock().unwrap();
+            let variables_reference_to_r_object = &state.variables_reference_to_r_object;
+
+            let Some(object) = variables_reference_to_r_object.get(&variables_reference) else {
+                log::error!(
+                    "Failed to locate R object for `variables_reference` {variables_reference}."
+                );
+                return Vec::new();
+            };
+
+            let object = object.get();
+            object_variables(object.sexp)
+        });
+
+        variables
+    }
+
+    // `make_variables()` doesn't require R, so locking outside of an
+    // `r_task()` is fine here, unlike in `collect_r_variables()`.
+    fn make_variables(&self, variables: Vec<RVariable>) -> Vec<Variable> {
+        self.state.lock().unwrap().make_variables(variables)
+    }
+
+    fn handle_step<A>(
+        &self,
+        _args: A,
+        cmd: DebugRequest,
+        resp: ResponseBody,
+    ) -> anyhow::Result<DapHandlerOutput> {
+        Ok(DapHandlerOutput {
+            body: resp,
+            dap_events: vec![],
+            console_events: vec![DapConsoleEvent::DebugCommand(cmd)],
+        })
+    }
+
+    fn handle_pause(&self, _args: PauseArguments) -> anyhow::Result<DapHandlerOutput> {
+        self.state.lock().unwrap().is_interrupting_for_debugger = true;
+
+        log::info!("DAP: Received request to pause R, sending interrupt");
+
+        Ok(DapHandlerOutput {
+            body: ResponseBody::Pause,
+            dap_events: vec![],
+            console_events: vec![DapConsoleEvent::Interrupt],
+        })
+    }
+}
+
+// TODO: Handle comm close to shut down the DAP server thread.
+//
+// The DAP comm is allowed to persist across TCP sessions. This supports session
+// switching on the frontend. Ideally the frontend would be allowed to close the
+// DAP comm in addition to the DAP TCP connection, which would shut down the DAP
+// server. To achive this, the DAP server, once disconnected should wait for both
+// the connection becoming ready and a channel event signalling comm close. If
+// the latter fires, shut the server down.
+
+pub fn start_dap(
+    state: Arc<Mutex<Dap>>,
+    server_start: ServerStartMessage,
+    server_started_tx: Sender<ServerStartedMessage>,
+    r_request_tx: Sender<RRequest>,
+    comm_tx: CommOutgoingTx,
+) {
+    let ip_address = server_start.ip_address();
+
+    // Binding to port `0` to allow the OS to allocate a port for us to bind to
+    let listener = TcpListener::bind(format!("{ip_address}:0",)).unwrap();
+
+    let address = match listener.local_addr() {
+        Ok(address) => address,
+        Err(error) => {
+            log::error!("DAP: Failed to bind to {ip_address}:0: {error}");
+            return;
+        },
+    };
+
+    // Get the OS allocated port
+    let port = address.port();
+
+    log::trace!("DAP: Thread starting at address {ip_address}:{port}.");
+
+    // Send the port back to `Shell` and eventually out to the frontend so it can connect
+    server_started_tx
+        .send(ServerStartedMessage::new(port))
+        .log_err();
+
+    loop {
+        log::trace!("DAP: Waiting for client");
+
+        let stream = match listener.accept() {
+            Ok((stream, addr)) => {
+                log::info!("DAP: Connected to client {addr:?}");
+
+                let mut state = state.lock().unwrap();
+                state.is_connected = true;
+
+                stream
+            },
+            Err(e) => {
+                log::error!("DAP: Can't get client: {e:?}");
+                continue;
+            },
+        };
+
+        let reader = BufReader::new(&stream);
+        let writer = BufWriter::new(&stream);
+        let (responses_tx, responses_rx) = unbounded::<Response>();
+
+        let mut server = DapServer::new(
+            reader,
+            writer,
+            state.clone(),
+            r_request_tx.clone(),
+            comm_tx.clone(),
+            responses_tx,
+        );
+
+        let (backend_events_tx, backend_events_rx) = unbounded::<DapBackendEvent>();
+        let (done_tx, done_rx) = bounded::<bool>(0);
+        let output_clone = server.output.clone();
+
+        // We need a scope to let the borrow checker know that
+        // `output_clone` drops before the next iteration (it gets tangled
+        // to the stack variable `stream` through `server`)
+        let _ = crossbeam::thread::scope(|scope| {
+            spawn!(scope, "ark-dap-events", {
+                move |_| listen_dap_events(output_clone, backend_events_rx, responses_rx, done_rx)
+            });
+
+            // Connect the backend to the events thread
+            state.lock().unwrap().backend_events_tx = Some(backend_events_tx);
+
+            loop {
+                // If disconnected, break and accept a new connection to create a new server
+                if !server.serve() {
+                    log::trace!("DAP: Disconnected from client");
+                    let mut state = state.lock().unwrap();
+                    state.is_connected = false;
+                    break;
+                }
+            }
+
+            // Terminate the events thread
+            let _ = done_tx.send(true);
+        });
+    }
+}
+
+// Thread that listens for events sent by the backend, usually the
+// `ReadConsole()` method. These are forwarded to the DAP client.
+fn listen_dap_events<W: Write>(
+    output: Arc<Mutex<ServerOutput<W>>>,
+    backend_events_rx: Receiver<DapBackendEvent>,
+    responses_rx: Receiver<Response>,
+    done_rx: Receiver<bool>,
+) {
+    loop {
+        select!(
+            recv(backend_events_rx) -> event => {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(err) => {
+                        // Channel closed, sender dropped
+                        log::info!("DAP: Event channel closed: {err:?}");
+                        return;
+                    },
+                };
+
+                log::trace!("DAP: Got event from backend: {:?}", event);
+
+                let event = event.into_dap_event();
+
+                let mut output = output.lock().unwrap();
+                if let Err(err) = output.send_event(event) {
+                    log::warn!("DAP: Failed to send event, closing: {err:?}");
+                    return;
+                }
+            },
+
+            recv(responses_rx) -> response => {
+                let response = match response {
+                    Ok(response) => response,
+                    Err(err) => {
+                        log::info!("DAP: Responses channel closed: {err:?}");
+                        return;
+                    },
+                };
+
+                log::trace!("DAP: Sending async response: {:?}", response);
+
+                let mut output = output.lock().unwrap();
+                if let Err(err) = output.send(Sendable::Response(response)) {
+                    log::warn!("DAP: Failed to send response, closing: {err:?}");
+                    return;
+                }
+            },
+
+            // Break the loop and terminate the thread
+            recv(done_rx) -> _ => { return; },
+        )
+    }
+}
+
+pub struct DapServer<R: Read, W: Write> {
+    server: Server<R, W>,
+    pub output: Arc<Mutex<ServerOutput<W>>>,
+    pub(crate) handler: DapHandler,
+    comm_tx: Option<CommOutgoingTx>,
+    responses_tx: Sender<Response>,
+}
+
+impl<R: Read, W: Write> DapServer<R, W> {
+    pub fn new(
+        reader: BufReader<R>,
+        writer: BufWriter<W>,
+        state: Arc<Mutex<Dap>>,
+        r_request_tx: Sender<RRequest>,
+        comm_tx: CommOutgoingTx,
+        responses_tx: Sender<Response>,
+    ) -> Self {
+        let server = Server::new(reader, writer);
+        let output = server.output.clone();
+        let handler = DapHandler::new(state, r_request_tx);
+        Self {
+            server,
+            output,
+            handler,
+            comm_tx: Some(comm_tx),
+            responses_tx,
+        }
+    }
+
+    pub fn serve(&mut self) -> bool {
+        log::trace!("DAP: Polling");
+        let req = match self.server.poll_request() {
+            Ok(Some(req)) => req,
+            Ok(None) => return false,
+            Err(err) => {
+                log::warn!("DAP: Connection closed: {err:?}");
+                return false;
+            },
+        };
+        log::trace!("DAP: Got request: {:#?}", req);
+
+        // Evaluate is async: the response is sent later via `responses_tx`.
+        // It is the only command that needs transport-specific handling.
+        if let Command::Evaluate(args) = &req.command {
+            let args = args.clone();
+            if let Err(err) = self.handle_evaluate(req, args) {
+                log::warn!("DAP: Handler failed, closing connection: {err:?}");
+                return false;
+            }
+            return true;
+        }
+
+        let output = self.handler.dispatch(req);
+        self.deliver(output)
+    }
+
+    fn deliver(&mut self, output: DapOutput) -> bool {
+        for event in output.console_events {
+            self.handle_console_event(event);
+        }
+
+        if self.respond(output.response).log_err().is_none() {
+            return false;
+        }
+
+        for event in output.dap_events {
+            if self.send_event(event).log_err().is_none() {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn handle_console_event(&mut self, event: DapConsoleEvent) {
+        match event {
+            DapConsoleEvent::DebugCommand(cmd) => {
+                if let Some(tx) = &self.comm_tx {
+                    // If we have a comm channel (always the case as of this
+                    // writing) we are connected to Positron or similar. Send
+                    // control events so that the IDE can execute these as if they
+                    // were sent by the user. This ensures prompts are updated.
+                    let msg = amalthea::comm_rpc_message!(
+                        "execute",
+                        command = debug_request_command(cmd)
+                    );
+                    tx.send(msg).log_err();
+                } else {
+                    self.handler
+                        .r_request_tx
+                        .send(RRequest::DebugCommand(cmd))
+                        .log_err();
+                }
+            },
+            DapConsoleEvent::Interrupt => {
+                crate::sys::control::handle_interrupt_request();
+            },
+            DapConsoleEvent::Restart => {
+                // If connected to Positron, forward the restart command to
+                // the frontend. Otherwise ignore it.
+                if let Some(tx) = &self.comm_tx {
+                    let msg = amalthea::comm_rpc_message!("restart");
+                    tx.send(msg).log_err();
+                }
+            },
+        }
+    }
+
+    fn respond(&mut self, rsp: Response) -> Result<(), ServerError> {
+        log::trace!("DAP: Sending response: {rsp:#?}");
+        self.server.respond(rsp)
+    }
+
+    fn send_event(&mut self, event: Event) -> Result<(), ServerError> {
+        log::trace!("DAP: Sending event: {event:#?}");
+        self.server.send_event(event)
+    }
+
+    // Tied to the TCP transport for now. For Jupyter we need to figure out how
+    // to do async responses with Jupyter's Control channel.
     fn handle_evaluate(
         &mut self,
         req: Request,
@@ -820,7 +950,7 @@ impl<R: Read, W: Write> DapServer<R, W> {
     ) -> Result<(), ServerError> {
         let expression = args.expression;
         let frame_id = args.frame_id;
-        let state = self.state.clone();
+        let state = self.handler.state.clone();
         let responses_tx = self.responses_tx.clone();
 
         log::trace!("DAP: Spawning idle task for evaluate");
@@ -863,70 +993,6 @@ impl<R: Read, W: Write> DapServer<R, W> {
         }));
 
         Ok(())
-    }
-
-    fn collect_r_variables(&self, variables_reference: i64) -> Vec<RVariable> {
-        // Wait until we're in the `r_task()` to lock
-        // See https://github.com/posit-dev/positron/issues/5024
-        let state = self.state.clone();
-
-        let variables = r_task(move || {
-            let state = state.lock().unwrap();
-            let variables_reference_to_r_object = &state.variables_reference_to_r_object;
-
-            let Some(object) = variables_reference_to_r_object.get(&variables_reference) else {
-                log::error!(
-                    "Failed to locate R object for `variables_reference` {variables_reference}."
-                );
-                return Vec::new();
-            };
-
-            let object = object.get();
-            object_variables(object.sexp)
-        });
-
-        variables
-    }
-
-    fn make_variables(&self, variables: Vec<RVariable>) -> Vec<Variable> {
-        self.state.lock().unwrap().make_variables(variables)
-    }
-
-    fn handle_step<A>(
-        &mut self,
-        req: Request,
-        _args: A,
-        cmd: DebugRequest,
-        resp: ResponseBody,
-    ) -> Result<(), ServerError> {
-        self.send_command(cmd);
-        let rsp = req.success(resp);
-        self.respond(rsp)
-    }
-
-    fn handle_pause(&mut self, req: Request, _args: PauseArguments) -> Result<(), ServerError> {
-        self.state.lock().unwrap().is_interrupting_for_debugger = true;
-
-        log::info!("DAP: Received request to pause R, sending interrupt");
-        crate::sys::control::handle_interrupt_request();
-
-        let rsp = req.success(ResponseBody::Pause);
-        self.respond(rsp)
-    }
-
-    fn send_command(&mut self, cmd: DebugRequest) {
-        if let Some(tx) = &self.comm_tx {
-            // If we have a comm channel (always the case as of this
-            // writing) we are connected to Positron or similar. Send
-            // control events so that the IDE can execute these as if they
-            // were sent by the user. This ensures prompts are updated.
-            let msg = amalthea::comm_rpc_message!("execute", command = debug_request_command(cmd));
-
-            tx.send(msg).log_err();
-        } else {
-            // Otherwise, send command to R's `ReadConsole()` frontend method
-            self.r_request_tx.send(RRequest::DebugCommand(cmd)).unwrap();
-        }
     }
 }
 

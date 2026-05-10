@@ -19,6 +19,9 @@ use std::sync::RwLock;
 use anyhow::anyhow;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use oak_index::library::Library;
+use oak_sources::PackageCache;
+use stdext::result::ResultExt;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::unbounded_channel as tokio_unbounded_channel;
 use tokio::task;
@@ -43,7 +46,6 @@ use crate::lsp::diagnostics::generate_diagnostics;
 use crate::lsp::document::Document;
 use crate::lsp::handlers;
 use crate::lsp::indexer;
-use crate::lsp::inputs::library::Library;
 pub(crate) use crate::lsp::notifications::DidCloseVirtualDocumentParams;
 pub(crate) use crate::lsp::notifications::DidOpenVirtualDocumentParams;
 pub(crate) use crate::lsp::notifications::KernelNotification;
@@ -177,6 +179,7 @@ impl GlobalState {
     ///   and auxiliary loop.
     pub(crate) fn new_with_runtime_mode(
         client: Client,
+        r_home: PathBuf,
         console_notification_tx: TokioUnboundedSender<ConsoleNotification>,
         runtime_mode: RuntimeMode,
         notification_barrier: Arc<NotificationBarrier>,
@@ -191,41 +194,51 @@ impl GlobalState {
             console_notification_tx,
         };
 
-        let mut state = Self {
-            world: match runtime_mode {
-                RuntimeMode::Attached => WorldState::default(),
-                RuntimeMode::Detached => WorldState::detached(),
+        // FIXME: We shouldn't call R code in the kernel to figure this out
+        let world = match runtime_mode {
+            RuntimeMode::Attached => {
+                let library_paths = crate::r_task(|| -> anyhow::Result<Vec<String>> {
+                    Ok(harp::RFunction::new("base", ".libPaths")
+                        .call()?
+                        .try_into()?)
+                });
+
+                let library_paths = match library_paths {
+                    Ok(library_paths) => library_paths,
+                    Err(err) => {
+                        log::error!("Can't evaluate `libPaths()`: {err:?}");
+                        Vec::new()
+                    },
+                };
+
+                let library_paths: Vec<PathBuf> =
+                    library_paths.into_iter().map(PathBuf::from).collect();
+
+                log::info!("Using library paths: {library_paths:#?}");
+
+                let r = harp::command::r_executable(&r_home);
+                let package_sources = r
+                    .and_then(|r| PackageCache::new(r, library_paths.clone()).log_err())
+                    .map(|cache| Arc::new(cache) as Arc<dyn oak_sources::PackageSources>);
+
+                WorldState::new(Library::new(library_paths, package_sources))
             },
+            RuntimeMode::Detached => {
+                // Detached session hydration is driven by `ark/updateSession`
+                // notifications and document events. Avoid blocking startup on
+                // an opportunistic bridge bootstrap here.
+                WorldState::detached()
+            },
+        };
+
+        let state = Self {
+            world,
             lsp_state,
             client,
             events_tx,
             events_rx,
             notification_barrier,
         };
-
-        match runtime_mode {
-            RuntimeMode::Attached => {
-                // FIXME: We shouldn't call R code in the kernel to figure this out
-                if let Err(err) = crate::r_task(|| -> anyhow::Result<()> {
-                    let paths: Vec<String> = harp::RFunction::new("base", ".libPaths")
-                        .call()?
-                        .try_into()?;
-
-                    log::info!("Using library paths: {paths:#?}");
-                    let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-                    state.world.library = Library::new(paths);
-
-                    Ok(())
-                }) {
-                    log::error!("Can't evaluate `libPaths()`: {err:?}");
-                };
-            },
-            RuntimeMode::Detached => {
-                // Detached session hydration is driven by `ark/updateSession`
-                // notifications and document events. Avoid blocking startup on
-                // an opportunistic bridge bootstrap here.
-            },
-        }
 
         store_latest_world_state(&state.world);
 

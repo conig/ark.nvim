@@ -6,6 +6,8 @@
 //
 
 use anyhow::anyhow;
+use oak_index::library::Library;
+use oak_index::package::Package;
 use stdext::result::ResultExt;
 use tower_lsp::lsp_types;
 use tower_lsp::lsp_types::CompletionOptions;
@@ -56,8 +58,6 @@ use crate::lsp::document::Document;
 use crate::lsp::document::DocumentKind;
 use crate::lsp::handlers::SessionBootstrapResponse;
 use crate::lsp::handlers::SessionUpdateParams;
-use crate::lsp::inputs::library::Library;
-use crate::lsp::inputs::package::Package;
 use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::main_loop::DidCloseVirtualDocumentParams;
 use crate::lsp::main_loop::DidOpenVirtualDocumentParams;
@@ -233,7 +233,7 @@ pub(crate) fn finish_detached_session_hydration(
             );
             state.console_scopes = vec![bootstrap.search_path_symbols];
             state.installed_packages = bootstrap.installed_packages;
-            state.library = Library::new(bootstrap.library_paths);
+            state.library = Library::new(bootstrap.library_paths, None);
             state.detached_session_status.last_bootstrap_success_ms = Some(now_ms());
             state.detached_session_status.last_bootstrap_duration_ms =
                 Some(bootstrap.timings.total_ms);
@@ -318,7 +318,7 @@ pub(crate) fn initialize(
                         Ok(Some(pkg)) => {
                             log::info!(
                                 "Root: Loaded package `{pkg}` from {path} as project root",
-                                pkg = pkg.description.name,
+                                pkg = pkg.description().name,
                                 path = path.display()
                             );
                             state.root = Some(SourceRoot::Package(pkg));

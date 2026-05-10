@@ -1,0 +1,22 @@
+[package]
+name = "oak_core"
+version = "0.1.0"
+description = """
+Shared utilities and extension traits for oak crates.
+"""
+
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aether_syntax.workspace = true
+biome_rowan.workspace = true
+
+[dev-dependencies]
+aether_parser.workspace = true
+assert_matches.workspace = true
