@@ -1975,12 +1975,46 @@ local function target_action_names(result, fallback)
   return names
 end
 
+local function target_action_field_names(result, field)
+  local names = {}
+  local value = type(result) == "table" and result[field] or nil
+  if type(value) ~= "table" then
+    return names
+  end
+
+  for _, name in ipairs(value) do
+    local text = target_scalar(name)
+    if text ~= "" then
+      names[#names + 1] = text
+    end
+  end
+  return names
+end
+
+local function target_names_label(names)
+  return #names == 1 and "target" or "targets"
+end
+
 local function target_action_message(action, result, requested_names)
   local names = target_action_names(result, requested_names)
   local rendered_names = table.concat(names, ", ")
-  local noun = #names == 1 and "target" or "targets"
+  local noun = target_names_label(names)
 
   if action == "invalidate" then
+    local invalidated = target_action_field_names(result, "invalidated_names")
+    local already_invalidated = target_action_field_names(result, "already_invalidated_names")
+    if #invalidated > 0 and #already_invalidated > 0 then
+      return "Invalidated "
+        .. target_names_label(invalidated)
+        .. ": "
+        .. table.concat(invalidated, ", ")
+        .. "; already invalidated: "
+        .. table.concat(already_invalidated, ", ")
+    elseif #invalidated > 0 then
+      return "Invalidated " .. target_names_label(invalidated) .. ": " .. table.concat(invalidated, ", ")
+    elseif #already_invalidated > 0 then
+      return "Already invalidated " .. target_names_label(already_invalidated) .. ": " .. table.concat(already_invalidated, ", ")
+    end
     return #names > 0 and ("Invalidated " .. noun .. ": " .. rendered_names) or "Invalidated targets"
   elseif action == "load" then
     return #names > 0 and ("Loaded " .. noun .. ": " .. rendered_names) or "Loaded targets"

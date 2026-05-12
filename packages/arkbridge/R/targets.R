@@ -258,6 +258,47 @@
   list()
 }
 
+.ark_targets_manifest_names <- function(project) {
+  manifest <- NULL
+  if (.ark_targets_package_available()) {
+    manifest <- tryCatch(
+      suppressWarnings(suppressMessages(
+        .ark_targets_with_project(project, {
+          .ark_targets_call_export("tar_manifest", list(script = project$script))
+        })
+      )),
+      error = function(e) NULL
+    )
+  }
+
+  if (is.null(manifest)) {
+    manifest <- .ark_targets_static_manifest(project)
+  }
+
+  records <- .ark_targets_as_records(manifest)
+  unique(vapply(records, function(record) {
+    as.character(record$name %||% "")
+  }, character(1)))
+}
+
+.ark_targets_meta_names <- function(project) {
+  meta <- tryCatch(
+    suppressWarnings(suppressMessages(
+      .ark_targets_with_project(project, {
+        .ark_targets_call_export("tar_meta", list(store = project$store))
+      })
+    )),
+    error = function(e) NULL
+  )
+
+  if (is.null(meta) || is.null(meta$name)) {
+    return(character())
+  }
+
+  names <- as.character(meta$name)
+  unique(names[nzchar(names)])
+}
+
 .ark_targets_downstream_names <- function(project, names) {
   names <- unique(as.character(names %||% character()))
   names <- names[nzchar(names)]
@@ -452,12 +493,35 @@
     } else {
       names
     }
+    invalidated_names <- character()
+    already_invalidated_names <- character()
 
     result <- .ark_targets_with_project(project, {
       if (identical(action, "make") || identical(action, "make_downstream")) {
         .ark_targets_call_export("tar_make", list(names = resolved_names, script = project$script, store = project$store))
       } else if (identical(action, "invalidate")) {
-        .ark_targets_call_export("tar_invalidate", list(names = names, store = project$store))
+        meta_names <- .ark_targets_meta_names(project)
+        manifest_names <- .ark_targets_manifest_names(project)
+        invalidated_names <<- intersect(names, meta_names)
+        already_invalidated_names <<- setdiff(names, invalidated_names)
+        unknown_names <- setdiff(already_invalidated_names, manifest_names)
+
+        if (length(unknown_names)) {
+          stop(
+            sprintf(
+              "unknown target%s: %s",
+              if (length(unknown_names) == 1L) "" else "s",
+              paste(unknown_names, collapse = ", ")
+            ),
+            call. = FALSE
+          )
+        }
+
+        if (length(invalidated_names)) {
+          .ark_targets_call_export("tar_invalidate", list(names = invalidated_names, store = project$store))
+        } else {
+          invisible(NULL)
+        }
       } else {
         .ark_targets_call_export("tar_load", list(names = names, store = project$store))
       }
@@ -471,6 +535,8 @@
       action = action,
       names = names,
       resolved_names = resolved_names,
+      invalidated_names = invalidated_names,
+      already_invalidated_names = already_invalidated_names,
       log_path = .ark_targets_progress_path(project),
       result = result
     ))

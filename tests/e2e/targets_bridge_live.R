@@ -37,7 +37,8 @@ writeLines(c(
   "  targets::tar_target(clean_data, raw_data),",
   "  targets::tar_target(dt_data, data.table::data.table(dt_id = 1:3, dt_value = c('x', 'y', 'z'))),",
   "  targets::tar_target(list_data, list(alpha = 1, beta = 'two')),",
-  "  targets::tar_target(report, paste(clean_data$value, collapse = ','))",
+  "  targets::tar_target(report, paste(clean_data$value, collapse = ',')),",
+  "  targets::tar_target(manuscript, paste('manuscript', report))",
   ")"
 ), script)
 
@@ -50,7 +51,7 @@ expect_true(isTRUE(info$targets_available), "targets package should be available
 
 manifest <- decode_payload(.ark_targets_manifest_payload(session, root, script, store))
 expect_true(identical(manifest$status, "ok"), "manifest should be ok")
-expect_names(manifest$targets, c("raw_data", "clean_data", "dt_data", "list_data", "report"))
+expect_names(manifest$targets, c("raw_data", "clean_data", "dt_data", "list_data", "report", "manuscript"))
 
 network <- decode_payload(.ark_targets_network_payload(session, root, script, store))
 expect_true(identical(network$status, "ok"), "network should be ok")
@@ -108,6 +109,15 @@ downstream <- decode_payload(.ark_targets_action_payload(session, "make_downstre
 expect_true(identical(downstream$status, "ok"), "downstream make action should be ok")
 expect_true(all(c("raw_data", "clean_data", "report") %in% downstream$resolved_names), "downstream make should report resolved target identities")
 expect_true(is.character(downstream$log_path) && length(downstream$log_path) == 1L && nzchar(downstream$log_path), "target actions should expose a progress log path")
+
+manuscript_make <- decode_payload(.ark_targets_action_payload(session, "make", root, script, store, list("manuscript")))
+expect_true(identical(manuscript_make$status, "ok"), "manuscript make action should be ok")
+
+manuscript_invalidate <- decode_payload(.ark_targets_action_payload(session, "invalidate", root, script, store, list("manuscript")))
+expect_true(identical(manuscript_invalidate$status, "ok"), "first manuscript invalidate action should be ok")
+
+manuscript_reinvalidate <- decode_payload(.ark_targets_action_payload(session, "invalidate", root, script, store, list("manuscript")))
+expect_true(identical(manuscript_reinvalidate$status, "ok"), "second manuscript invalidate should be an idempotent ok")
 
 invalidate <- decode_payload(.ark_targets_action_payload(session, "invalidate", root, script, store, list("report")))
 expect_true(identical(invalidate$status, "ok"), "invalidate action should be ok")

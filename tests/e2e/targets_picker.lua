@@ -100,6 +100,9 @@ package.loaded["ark.lsp"] = {
       action = action,
       names = names,
     }
+    if action == "invalidate" then
+      return { action = action, names = names, already_invalidated_names = names }
+    end
     return { action = action, names = names }
   end,
 }
@@ -225,12 +228,12 @@ if #printed ~= 0 then
 end
 local saw_invalidate_notice = false
 for _, notification in ipairs(notifications) do
-  if notification.message:find("Invalidated target: clean_data", 1, true) then
+  if notification.message:find("Already invalidated target: clean_data", 1, true) then
     saw_invalidate_notice = true
   end
 end
 if not saw_invalidate_notice then
-  error("expected user-facing invalidate notification, got " .. vim.inspect(notifications), 0)
+  error("expected user-facing already-invalidated notification, got " .. vim.inspect(notifications), 0)
 end
 
 local active_action = ark.targets_action_active("make", source_buf)
