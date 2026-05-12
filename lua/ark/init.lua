@@ -633,6 +633,49 @@ local function ensure_help_highlights()
   })
 end
 
+local function best_contrast_color(background, candidates, fallback)
+  background = color_value(background)
+  local best = nil
+  local best_score = -1
+
+  for _, candidate in ipairs(candidates or {}) do
+    local color = color_value(candidate)
+    local score = color and color_distance(color, background) or -1
+    if score > best_score then
+      best = color
+      best_score = score
+    end
+  end
+
+  return best or color_value(fallback) or color_value("#e6e6e6")
+end
+
+local function ensure_target_picker_highlights()
+  local colors = {}
+  local ok, base46 = pcall(require, "base46")
+  if ok and type(base46) == "table" and type(base46.get_theme_tb) == "function" then
+    colors = base46.get_theme_tb("base_30") or {}
+  end
+
+  local background = first_color(get_hl_color("NormalFloat", "bg"), get_hl_color("Normal", "bg"), "#1f1f1f")
+  local fallback = first_color(get_hl_color("Identifier", "fg"), get_hl_color("Title", "fg"), get_hl_color("Normal", "fg"), "#e6e6e6")
+  local name_fg = best_contrast_color(background, {
+    colors.cyan,
+    colors.teal,
+    colors.blue,
+    colors.nord_blue,
+    colors.green,
+    colors.vibrant_green,
+    colors.yellow,
+    colors.sun,
+  }, fallback)
+
+  vim.api.nvim_set_hl(0, "ArkTargetName", {
+    fg = name_fg,
+    bold = true,
+  })
+end
+
 local function help_section_name(line)
   return line:match("^([A-Z][A-Za-z ]+):$")
 end
@@ -1962,13 +2005,13 @@ local function format_target_picker_item(item)
   local command = target_scalar(item.command)
   if command ~= "" then
     return {
-      { target_name(item), "Title" },
+      { target_name(item), "ArkTargetName" },
       { "  " },
       { command:gsub("%s+", " "), "Comment" },
     }
   end
   return {
-    { target_name(item), "Title" },
+    { target_name(item), "ArkTargetName" },
   }
 end
 
@@ -1991,6 +2034,8 @@ local function target_picker_items(records)
 end
 
 local function open_target_picker(records, on_choice)
+  ensure_target_picker_highlights()
+
   local ok, snacks = pcall(require, "snacks")
   if ok and type(snacks) == "table" and type(snacks.picker) == "table" and type(snacks.picker.pick) == "function" then
     snacks.picker.pick({
