@@ -1798,6 +1798,59 @@ local function targets_request(bufnr, label, request)
   return nil, err
 end
 
+local function targets_request_async(bufnr, label, request, callback)
+  ensure_setup()
+  bufnr = resolve_bufnr(bufnr)
+
+  local ok, runtime_err = ensure_runtime_ready(bufnr, label or "ark.nvim target lens")
+  if not ok then
+    notify(runtime_err, vim.log.levels.WARN)
+    if type(callback) == "function" then
+      callback(nil, runtime_err)
+    end
+    return nil, runtime_err
+  end
+
+  local project = targets_project(bufnr)
+  local attempt = 0
+  local request_once
+
+  local function handle_result(result, err)
+    if result then
+      if type(callback) == "function" then
+        callback(result, nil)
+      end
+      return
+    end
+
+    local err_text = tostring(err or "")
+    local transient = err_text:find("Resource temporarily unavailable", 1, true) ~= nil
+      or err_text:find("bridge connection failed", 1, true) ~= nil
+    if transient and attempt < 5 then
+      vim.defer_fn(function()
+        request_once()
+      end, 150 * attempt)
+      return
+    end
+
+    notify(err or "target request failed", vim.log.levels.WARN)
+    if type(callback) == "function" then
+      callback(nil, err)
+    end
+  end
+
+  request_once = function()
+    attempt = attempt + 1
+    local sent, send_err = request(project, bufnr, handle_result)
+    if not sent then
+      handle_result(nil, send_err)
+    end
+  end
+
+  request_once()
+  return true
+end
+
 local target_scalar
 
 local function target_records(payload, key)
@@ -2275,11 +2328,14 @@ function M.targets_action(action, names, bufnr)
 end
 
 function M.targets_action_user(action, names, bufnr)
-  local result, err = M.targets_action(action, names, bufnr)
-  if result then
-    notify(target_action_message(action, result, names), vim.log.levels.INFO)
-  end
-  return result, err
+  names = normalize_target_names(names)
+  return targets_request_async(bufnr, "ark.nvim target action", function(project, target_bufnr, callback)
+    return lsp.targets_action_async(options, target_bufnr, project, action, names, callback)
+  end, function(result)
+    if result then
+      notify(target_action_message(action, result, names), vim.log.levels.INFO)
+    end
+  end)
 end
 
 function M.targets_action_pick(action, bufnr)

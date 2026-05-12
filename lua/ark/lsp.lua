@@ -446,6 +446,60 @@ local function request_result(client, method, params, timeout_ms, bufnr)
   return response.result, nil
 end
 
+local function request_error_message(err)
+  if err == nil then
+    return nil
+  end
+  if type(err) == "string" then
+    return err
+  end
+  if type(err) == "table" and type(err.message) == "string" then
+    return err.message
+  end
+  return vim.inspect(err)
+end
+
+local function request_result_async(client, method, params, timeout_ms, bufnr, callback)
+  local completed = false
+  local request_id = nil
+
+  local function finish(result, err)
+    if completed then
+      return
+    end
+    completed = true
+    callback(result, err)
+  end
+
+  local ok, id = client:request(method, params or {}, function(err, result)
+    if err then
+      finish(nil, request_error_message(err))
+      return
+    end
+    finish(result, nil)
+  end, bufnr or 0)
+
+  if not ok then
+    finish(nil, "request failed")
+    return nil, "request failed"
+  end
+
+  request_id = id
+  if timeout_ms and timeout_ms > 0 then
+    vim.defer_fn(function()
+      if completed then
+        return
+      end
+      if request_id and type(client.cancel_request) == "function" then
+        client:cancel_request(request_id)
+      end
+      finish(nil, "timeout")
+    end, timeout_ms)
+  end
+
+  return true
+end
+
 local function cache_client_session(client, payload)
   if not client or type(client.id) ~= "number" then
     return
@@ -1504,6 +1558,17 @@ local function view_request(opts, bufnr, method, params, timeout_ms)
   return request_result(client, method, params or {}, timeout_ms or 5000, bufnr)
 end
 
+local function view_request_async(opts, bufnr, method, params, timeout_ms, callback)
+  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
+  local client = live_clients(opts, bufnr)[1]
+  if not live_client(client) then
+    callback(nil, "ark_lsp client unavailable")
+    return nil, "ark_lsp client unavailable"
+  end
+
+  return request_result_async(client, method, params or {}, timeout_ms or 5000, bufnr, callback)
+end
+
 function M.view_open(opts, bufnr, expr)
   return view_request(opts, bufnr, VIEW_OPEN_METHOD, {
     expr = expr,
@@ -1619,6 +1684,13 @@ function M.targets_action(opts, bufnr, project, action, names)
   payload.action = action or ""
   payload.names = names or {}
   return view_request(opts, bufnr, TARGETS_ACTION_METHOD, payload, 120000)
+end
+
+function M.targets_action_async(opts, bufnr, project, action, names, callback)
+  local payload = targets_project_payload(project)
+  payload.action = action or ""
+  payload.names = names or {}
+  return view_request_async(opts, bufnr, TARGETS_ACTION_METHOD, payload, 120000, callback)
 end
 
 return M

@@ -258,45 +258,15 @@
   list()
 }
 
-.ark_targets_manifest_names <- function(project) {
-  manifest <- NULL
-  if (.ark_targets_package_available()) {
-    manifest <- tryCatch(
-      suppressWarnings(suppressMessages(
-        .ark_targets_with_project(project, {
-          .ark_targets_call_export("tar_manifest", list(script = project$script))
-        })
-      )),
-      error = function(e) NULL
-    )
+.ark_targets_invalidate <- function(names, store) {
+  if (!.ark_targets_package_available()) {
+    stop("the targets package is not installed in the managed R session", call. = FALSE)
+  }
+  if (!requireNamespace("tidyselect", quietly = TRUE)) {
+    stop("the tidyselect package is not installed in the managed R session", call. = FALSE)
   }
 
-  if (is.null(manifest)) {
-    manifest <- .ark_targets_static_manifest(project)
-  }
-
-  records <- .ark_targets_as_records(manifest)
-  unique(vapply(records, function(record) {
-    as.character(record$name %||% "")
-  }, character(1)))
-}
-
-.ark_targets_meta_names <- function(project) {
-  meta <- tryCatch(
-    suppressWarnings(suppressMessages(
-      .ark_targets_with_project(project, {
-        .ark_targets_call_export("tar_meta", list(store = project$store))
-      })
-    )),
-    error = function(e) NULL
-  )
-
-  if (is.null(meta) || is.null(meta$name)) {
-    return(character())
-  }
-
-  names <- as.character(meta$name)
-  unique(names[nzchar(names)])
+  targets::tar_invalidate(tidyselect::any_of(names), store = store)
 }
 
 .ark_targets_downstream_names <- function(project, names) {
@@ -500,28 +470,8 @@
       if (identical(action, "make") || identical(action, "make_downstream")) {
         .ark_targets_call_export("tar_make", list(names = resolved_names, script = project$script, store = project$store))
       } else if (identical(action, "invalidate")) {
-        meta_names <- .ark_targets_meta_names(project)
-        manifest_names <- .ark_targets_manifest_names(project)
-        invalidated_names <<- intersect(names, meta_names)
-        already_invalidated_names <<- setdiff(names, invalidated_names)
-        unknown_names <- setdiff(already_invalidated_names, manifest_names)
-
-        if (length(unknown_names)) {
-          stop(
-            sprintf(
-              "unknown target%s: %s",
-              if (length(unknown_names) == 1L) "" else "s",
-              paste(unknown_names, collapse = ", ")
-            ),
-            call. = FALSE
-          )
-        }
-
-        if (length(invalidated_names)) {
-          .ark_targets_call_export("tar_invalidate", list(names = invalidated_names, store = project$store))
-        } else {
-          invisible(NULL)
-        }
+        invalidated_names <<- names
+        .ark_targets_invalidate(names, project$store)
       } else {
         .ark_targets_call_export("tar_load", list(names = names, store = project$store))
       }

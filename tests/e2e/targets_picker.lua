@@ -7,6 +7,7 @@ vim.env.XDG_DATA_HOME = tmp .. "/data"
 local picker_spec = nil
 local picker_closed = 0
 local action_calls = {}
+local async_action_started = 0
 local manifest_calls = 0
 local notifications = {}
 local printed = {}
@@ -95,6 +96,11 @@ package.loaded["ark.lsp"] = {
     }
   end,
   targets_action = function(_, _, project, action, names)
+    if action == "invalidate" then
+      vim.wait(1200, function()
+        return false
+      end, 1200, false)
+    end
     action_calls[#action_calls + 1] = {
       project = project,
       action = action,
@@ -104,6 +110,18 @@ package.loaded["ark.lsp"] = {
       return { action = action, names = names, already_invalidated_names = names }
     end
     return { action = action, names = names }
+  end,
+  targets_action_async = function(_, _, project, action, names, callback)
+    async_action_started = async_action_started + 1
+    vim.defer_fn(function()
+      action_calls[#action_calls + 1] = {
+        project = project,
+        action = action,
+        names = names,
+      }
+      callback({ action = action, names = names, already_invalidated_names = names })
+    end, 1200)
+    return true
   end,
 }
 
@@ -216,7 +234,21 @@ end
 picker_spec = nil
 notifications = {}
 printed = {}
+local action_started = vim.loop.hrtime()
 ark.targets_action_pick("invalidate", source_buf)
+local action_elapsed_ms = math.floor((vim.loop.hrtime() - action_started) / 1e6)
+if action_elapsed_ms >= 250 then
+  error("target action picker should return before slow invalidation completes; elapsed_ms=" .. action_elapsed_ms, 0)
+end
+if async_action_started ~= 1 then
+  error("expected target action picker to dispatch invalidate asynchronously, got " .. async_action_started, 0)
+end
+local action_completed = vim.wait(2500, function()
+  return #action_calls >= 1 and #notifications >= 1
+end, 20, false)
+if not action_completed then
+  error("timed out waiting for async target invalidation to finish; calls=" .. vim.inspect(action_calls), 0)
+end
 if not vim.deep_equal(action_calls[1].names, { "clean_data" }) or action_calls[1].action ~= "invalidate" then
   error("expected pick action to invalidate clean_data, got " .. vim.inspect(action_calls), 0)
 end

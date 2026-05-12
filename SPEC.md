@@ -406,6 +406,11 @@ for build, load, and invalidate must get their initial target list from local
 static declarations in under 1 second, then show a two-pane target list plus
 creation preview. Commands should use exact target identities supplied by Ark's
 static or dynamic target model rather than shelling out to fuzzy text matching.
+User-facing build, load, and invalidate commands should dispatch their bridge
+action asynchronously and notify on completion so Neovim remains responsive
+while the managed R session works. Target invalidation should call the
+idempotent tidyselect-safe invalidate path immediately, without doing metadata
+or manifest preflight before the invalidation request.
 
 ### Cache And Invalidation
 
