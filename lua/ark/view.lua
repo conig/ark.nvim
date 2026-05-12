@@ -976,6 +976,7 @@ local function open_schema_picker(state)
     state.selected_column = tonumber(item.index) or state.selected_column
     focus_selected_column_in_grid(state)
     render_sidebar(state)
+    center_current_view()
   end
 
   local ok, snacks = pcall(require, "snacks")

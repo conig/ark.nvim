@@ -16,6 +16,7 @@ local export_calls = 0
 local code_calls = 0
 local close_calls = 0
 local picker_spec = nil
+local picker_choice_index = 2
 
 local original_notify = vim.notify
 local original_input = vim.ui.input
@@ -30,7 +31,7 @@ package.loaded["snacks"] = {
       end
       spec.confirm({
         close = function() end,
-      }, (spec.items or {})[2])
+      }, (spec.items or {})[picker_choice_index])
     end,
   },
 }
@@ -860,6 +861,81 @@ local ok, err = pcall(function()
     or not winbar:find("Sort none", 1, true)
   then
     error("expected clear-all to restore neutral winbar sort/filter summary, got " .. vim.inspect(winbar), 0)
+  end
+
+  -- Regression: choosing a far column with S should leave the selected grid
+  -- cell centered, matching ArkView's local zz behavior.
+  backend.schema = {}
+  backend.base_rows = {}
+  backend.sort = {
+    column_index = 0,
+    direction = "",
+  }
+  backend.filters = {}
+  for column_index = 1, 24 do
+    backend.schema[column_index] = {
+      index = column_index,
+      name = string.format("wide_%02d", column_index),
+      class = "character",
+      type = "character",
+    }
+  end
+  for row_index = 1, 60 do
+    local row = {}
+    for column_index = 1, 24 do
+      row[column_index] = string.format("r%d_c%02d", row_index, column_index)
+    end
+    backend.base_rows[row_index] = row
+  end
+
+  picker_spec = nil
+  picker_choice_index = 16
+  press("r")
+
+  grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
+  move_cursor(grid_win, 40, header_column(grid_lines, "wide_01"))
+  vim.cmd("normal! zt")
+  local far_column = header_column(grid_lines, "wide_16")
+  vim.api.nvim_set_current_win(grid_win)
+  local before_pick_view = vim.fn.winsaveview()
+  before_pick_view.leftcol = 0
+  before_pick_view.skipcol = 0
+  vim.fn.winrestview(before_pick_view)
+
+  press("S")
+
+  if picker_spec == nil then
+    error("expected ArkView to open a Snacks picker for wide column search", 0)
+  end
+  local selected_cursor = vim.api.nvim_win_get_cursor(grid_win)
+  if selected_cursor[1] ~= 40 or selected_cursor[2] ~= far_column then
+    error(
+      "expected S picker to move to wide_16 at row 40 col "
+        .. tostring(far_column)
+        .. ", got "
+        .. vim.inspect(selected_cursor),
+      0
+    )
+  end
+  local selected_view = vim.fn.winsaveview()
+  local selected_height = vim.api.nvim_win_get_height(grid_win)
+  local selected_width = vim.api.nvim_win_get_width(grid_win)
+  local selected_line_count = vim.api.nvim_buf_line_count(grid_buf)
+  local expected_selected_topline = math.max(
+    1,
+    math.min(selected_cursor[1] - math.floor(selected_height / 2), selected_line_count - selected_height + 1)
+  )
+  local expected_selected_leftcol = math.max(0, far_column - math.floor(selected_width / 2))
+  if selected_view.topline ~= expected_selected_topline or selected_view.leftcol ~= expected_selected_leftcol then
+    error(
+      "expected S picker selection to center the chosen cell, expected topline="
+        .. tostring(expected_selected_topline)
+        .. " leftcol="
+        .. tostring(expected_selected_leftcol)
+        .. " got "
+        .. vim.inspect(selected_view),
+      0
+    )
   end
 
   vim.api.nvim_set_current_win(grid_win)
