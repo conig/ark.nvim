@@ -74,7 +74,8 @@ Responsibilities:
 - send text to the active managed R session through the configured backend
 - start detached `ark-lsp`
 - relay session metadata through `ark/updateSession`
-- expose commands such as `ArkPaneStart`, `ArkTab*`, `ArkHelp`, and `ArkStatus`
+- expose a lazy-load-friendly `:Ark` dispatcher plus compatibility commands such
+  as `ArkPaneStart`, `ArkTab*`, `ArkHelp`, and `ArkStatus`
 - expose a dedicated `ArkView` tabpage data explorer for live tabular objects
 - expose `:checkhealth ark` for install/runtime diagnostics
 
@@ -400,9 +401,11 @@ Expected commands:
 - `:ArkTargetStatus`
 
 The commands may use Snacks pickers when available, but the canonical operation
-should remain available through LSP code actions and direct commands. The
-commands should use exact target identities supplied by the LSP model rather
-than shelling out to fuzzy text matching.
+should remain available through LSP code actions and direct commands. Pickers
+for build, load, and invalidate must get their initial target list from local
+static declarations in under 1 second, then show a two-pane target list plus
+creation preview. Commands should use exact target identities supplied by Ark's
+static or dynamic target model rather than shelling out to fuzzy text matching.
 
 ### Cache And Invalidation
 

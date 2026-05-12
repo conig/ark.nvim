@@ -403,31 +403,37 @@ object facts when those facts require `{targets}` itself.
 
 The commands you will usually reach for are:
 
-- `:ArkStatus` prints the current pane, launcher, and bridge state
-- `:ArkRefresh` restarts the current buffer's LSP client using current session metadata
-- `:ArkHelp` opens a read-only floating help page for the symbol under cursor
-- `:ArkView` opens the live data explorer for an expression or the symbol under cursor
-- `:ArkSend` sends text to the active managed Ark R session
-- `:ArkSnippets` opens the explicit Ark snippets picker
-- `:ArkPaneStart`, `:ArkPaneRestart`, and `:ArkPaneStop` manage the R session
-- `:ArkPaneCommand` prints the exact launcher command used for the managed pane
+- `:Ark status` prints the current pane, launcher, and bridge state
+- `:Ark refresh` restarts the current buffer's LSP client using current session metadata
+- `:Ark help` opens a read-only floating help page for the symbol under cursor
+- `:Ark view` opens the live data explorer for an expression or the symbol under cursor
+- `:Ark send` sends text to the active managed Ark R session
+- `:Ark snippets` opens the explicit Ark snippets picker
+- `:Ark pane start`, `:Ark pane restart`, and `:Ark pane stop` manage the R session
+- `:Ark pane command` prints the exact launcher command used for the managed pane
 - `:checkhealth ark` reports install/runtime prerequisites without starting a session
 
 For `{targets}` projects:
 
-- `:ArkTargetsInfo`, `:ArkTargets`, and `:ArkTargetsManifest` show project and
+- `:Ark targets info` and `:Ark targets manifest` show project and
   manifest state
-- `:ArkTargetGraph`, `:ArkTargetsNetwork`, `:ArkTargetStatus`,
-  `:ArkTargetsMeta`, and `:ArkTargetLog` open target views
-- `:ArkTargetPick` selects and remembers an active `{targets}` target
-- `:ArkTargetLoadPick` / `:ArkTargetBuildPick` pick a target and run the exact Ark target action
-- `:ArkTargetLoadActive` / `:ArkTargetBuildActive` run the action for the remembered active target
-- `:ArkTargetBuildDownstream`, `:ArkTargetInvalidate`, and related `*Pick`
+- `:Ark targets graph`, `:Ark targets network`, `:Ark targets status`,
+  `:Ark targets meta`, and `:Ark targets log` open target views
+- `:Ark targets pick` selects and remembers an active `{targets}` target
+- `:Ark targets load-pick` / `:Ark targets build-pick` pick a target and run the exact Ark target action
+- `:Ark targets load-active` / `:Ark targets build-active` run the action for the remembered active target
+- `:Ark targets build-downstream`, `:Ark targets invalidate`, and related `*-pick`
   variants run the matching local target action
 
-The plugin also defines lower-level tab, view, build, and internal helper
-commands for the workflows above. Use Neovim completion on `:Ark` to discover
-the full command set available in your current build.
+Target pickers use local static declarations for the initial list, so opening
+the picker does not wait for `targets::tar_manifest()`. With Snacks available,
+the picker shows targets above a preview of the declaration that created the
+selected target.
+
+The plugin also defines legacy `:ArkStatus`, `:ArkPaneStart`, `:ArkTarget*`,
+and related commands for compatibility after it is loaded. Use Neovim completion
+on `:Ark` to discover the full dispatcher command set available in your current
+build.
 
 ## Verification
 

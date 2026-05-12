@@ -7,9 +7,17 @@ vim.lsp.commands["ark.targetAction"] = function(command, ctx)
   local ark = require("ark")
 
   if action == "make" or action == "load" or action == "invalidate" then
-    vim.print(ark.targets_action(action, name, bufnr))
+    if type(ark.targets_action_user) == "function" then
+      ark.targets_action_user(action, name, bufnr)
+    else
+      vim.print(ark.targets_action(action, name, bufnr))
+    end
   elseif action == "makeDownstream" then
-    vim.print(ark.targets_action("make_downstream", name, bufnr))
+    if type(ark.targets_action_user) == "function" then
+      ark.targets_action_user("make_downstream", name, bufnr)
+    else
+      vim.print(ark.targets_action("make_downstream", name, bufnr))
+    end
   elseif action == "status" then
     ark.targets_status(name, bufnr)
   elseif action == "log" then
@@ -24,6 +32,230 @@ vim.lsp.commands["ark.targetAction"] = function(command, ctx)
     })
   end
 end
+
+local function join_args(args, start)
+  return table.concat(vim.list_slice(args, start), " ")
+end
+
+local function print_result(value)
+  vim.print(value)
+end
+
+local function run_target_action(ark, action, names, bufnr)
+  if type(ark.targets_action_user) == "function" then
+    return ark.targets_action_user(action, names, bufnr)
+  end
+  return print_result(ark.targets_action(action, names, bufnr))
+end
+
+local function run_command(name)
+  if vim.fn.exists(":" .. name) ~= 2 then
+    vim.notify(":" .. name .. " is not available; has require('ark').setup() run?", vim.log.levels.ERROR, {
+      title = "ark.nvim",
+    })
+    return
+  end
+
+  vim.cmd(name)
+end
+
+local function unknown_ark_command(args)
+  local rendered = table.concat(args or {}, " ")
+  if rendered == "" then
+    rendered = "<empty>"
+  end
+  vim.notify("Unknown ark.nvim command: " .. rendered, vim.log.levels.WARN, {
+    title = "ark.nvim",
+  })
+end
+
+local ark_command_completions = {
+  "build-bridge",
+  "build-lsp",
+  "help",
+  "help pane",
+  "lsp start",
+  "pane command",
+  "pane restart",
+  "pane start",
+  "pane stop",
+  "refresh",
+  "send",
+  "snippets",
+  "status",
+  "tab close",
+  "tab go",
+  "tab list",
+  "tab new",
+  "tab next",
+  "tab prev",
+  "targets active",
+  "targets build",
+  "targets build-active",
+  "targets build-downstream",
+  "targets build-downstream-pick",
+  "targets build-pick",
+  "targets graph",
+  "targets info",
+  "targets invalidate",
+  "targets invalidate-pick",
+  "targets load",
+  "targets load-active",
+  "targets load-pick",
+  "targets log",
+  "targets make",
+  "targets manifest",
+  "targets meta",
+  "targets network",
+  "targets object-meta",
+  "targets pick",
+  "targets status",
+  "view",
+  "view close",
+  "view refresh",
+}
+
+local function complete_ark_command(_, cmdline)
+  local prefix = vim.trim((cmdline or ""):gsub("^%s*Ark!?", ""))
+  local matches = {}
+  for _, candidate in ipairs(ark_command_completions) do
+    if vim.startswith(candidate, prefix) then
+      matches[#matches + 1] = candidate
+    end
+  end
+  return matches
+end
+
+local function dispatch_targets_command(args)
+  local subcommand = args[2]
+  local names = join_args(args, 3)
+  local ark = require("ark")
+
+  if subcommand == "info" then
+    print_result(ark.targets_project_info(0))
+  elseif subcommand == "manifest" then
+    print_result(ark.targets_manifest(0))
+  elseif subcommand == "pick" then
+    ark.targets_pick(0)
+  elseif subcommand == "active" then
+    local name, err = ark.targets_active(0)
+    if name then
+      vim.notify("Active target: " .. name, vim.log.levels.INFO, { title = "ark.nvim" })
+    else
+      vim.notify(err or "No active target set.", vim.log.levels.WARN, { title = "ark.nvim" })
+    end
+  elseif subcommand == "graph" or subcommand == "network" then
+    ark.targets_graph(0)
+  elseif subcommand == "status" then
+    ark.targets_status(names, 0)
+  elseif subcommand == "meta" then
+    print_result(ark.targets_meta(names, 0))
+  elseif subcommand == "object-meta" then
+    print_result(ark.targets_object_meta(names, 0))
+  elseif subcommand == "build" or subcommand == "make" then
+    run_target_action(ark, "make", names, 0)
+  elseif subcommand == "build-pick" then
+    ark.targets_action_pick("make", 0)
+  elseif subcommand == "build-active" then
+    print_result(ark.targets_action_active("make", 0))
+  elseif subcommand == "build-downstream" then
+    run_target_action(ark, "make_downstream", names, 0)
+  elseif subcommand == "build-downstream-pick" then
+    ark.targets_action_pick("make_downstream", 0)
+  elseif subcommand == "invalidate" then
+    run_target_action(ark, "invalidate", names, 0)
+  elseif subcommand == "invalidate-pick" then
+    ark.targets_action_pick("invalidate", 0)
+  elseif subcommand == "load" then
+    run_target_action(ark, "load", names, 0)
+  elseif subcommand == "load-pick" then
+    ark.targets_action_pick("load", 0)
+  elseif subcommand == "load-active" then
+    print_result(ark.targets_action_active("load", 0))
+  elseif subcommand == "log" then
+    ark.targets_log(names, 0)
+  else
+    unknown_ark_command(args)
+  end
+end
+
+local function dispatch_ark_command(args)
+  local top = args[1]
+  local ark = require("ark")
+
+  if top == nil or top == "" or top == "status" then
+    print_result(ark.status({ include_lsp = true }))
+  elseif top == "refresh" then
+    ark.refresh(0)
+  elseif top == "snippets" then
+    ark.snippets(0)
+  elseif top == "send" then
+    ark.send(join_args(args, 2))
+  elseif top == "build-lsp" then
+    run_command("ArkBuildLsp")
+  elseif top == "build-bridge" then
+    run_command("ArkBuildBridge")
+  elseif top == "pane" then
+    local subcommand = args[2]
+    if subcommand == "start" then
+      ark.start_pane()
+    elseif subcommand == "restart" then
+      ark.restart_pane()
+    elseif subcommand == "stop" then
+      ark.stop_pane()
+    elseif subcommand == "command" then
+      print_result(ark.pane_command())
+    else
+      unknown_ark_command(args)
+    end
+  elseif top == "tab" then
+    local subcommand = args[2]
+    if subcommand == "new" then
+      ark.new_tab()
+    elseif subcommand == "next" then
+      ark.next_tab()
+    elseif subcommand == "prev" then
+      ark.prev_tab()
+    elseif subcommand == "close" then
+      ark.close_tab()
+    elseif subcommand == "list" then
+      print_result(ark.list_tabs())
+    elseif subcommand == "go" then
+      ark.go_tab(args[3] or "")
+    else
+      unknown_ark_command(args)
+    end
+  elseif top == "lsp" and args[2] == "start" then
+    ark.start_lsp(0)
+  elseif top == "help" then
+    if args[2] == "pane" then
+      ark.help_pane(0)
+    else
+      ark.help(0)
+    end
+  elseif top == "view" then
+    if args[2] == "refresh" then
+      ark.view_refresh()
+    elseif args[2] == "close" then
+      ark.view_close()
+    else
+      local expr = join_args(args, 2)
+      ark.view(expr ~= "" and expr or nil, 0)
+    end
+  elseif top == "targets" then
+    dispatch_targets_command(args)
+  else
+    unknown_ark_command(args)
+  end
+end
+
+vim.api.nvim_create_user_command("Ark", function(args)
+  dispatch_ark_command(args.fargs)
+end, {
+  complete = complete_ark_command,
+  desc = "Run an ark.nvim command",
+  nargs = "*",
+})
 
 vim.api.nvim_create_user_command("ArkPaneStart", function()
   require("ark").start_pane()
@@ -151,7 +383,8 @@ end, {
 })
 
 vim.api.nvim_create_user_command("ArkTargetBuild", function(args)
-  vim.print(require("ark").targets_action("make", args.args, 0))
+  local ark = require("ark")
+  run_target_action(ark, "make", args.args, 0)
 end, {
   desc = "Run targets::tar_make() for optional target names",
   nargs = "?",
@@ -166,7 +399,8 @@ vim.api.nvim_create_user_command("ArkTargetBuildActive", function()
 end, { desc = "Run targets::tar_make() for the active target" })
 
 vim.api.nvim_create_user_command("ArkTargetBuildDownstream", function(args)
-  vim.print(require("ark").targets_action("make_downstream", args.args, 0))
+  local ark = require("ark")
+  run_target_action(ark, "make_downstream", args.args, 0)
 end, {
   desc = "Run targets::tar_make() for a target and its downstream dependents",
   nargs = "?",
@@ -177,14 +411,16 @@ vim.api.nvim_create_user_command("ArkTargetBuildDownstreamPick", function()
 end, { desc = "Pick a target and run targets::tar_make() for it and downstream dependents" })
 
 vim.api.nvim_create_user_command("ArkTargetMake", function(args)
-  vim.print(require("ark").targets_action("make", args.args, 0))
+  local ark = require("ark")
+  run_target_action(ark, "make", args.args, 0)
 end, {
   desc = "Run targets::tar_make() for optional target names",
   nargs = "?",
 })
 
 vim.api.nvim_create_user_command("ArkTargetInvalidate", function(args)
-  vim.print(require("ark").targets_action("invalidate", args.args, 0))
+  local ark = require("ark")
+  run_target_action(ark, "invalidate", args.args, 0)
 end, {
   desc = "Run targets::tar_invalidate() for optional target names",
   nargs = "?",
@@ -195,7 +431,8 @@ vim.api.nvim_create_user_command("ArkTargetInvalidatePick", function()
 end, { desc = "Pick a target and run targets::tar_invalidate() for it" })
 
 vim.api.nvim_create_user_command("ArkTargetLoad", function(args)
-  vim.print(require("ark").targets_action("load", args.args, 0))
+  local ark = require("ark")
+  run_target_action(ark, "load", args.args, 0)
 end, {
   desc = "Run targets::tar_load() for optional target names",
   nargs = "?",

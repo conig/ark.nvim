@@ -6,6 +6,7 @@ local keymaps = require("ark.keymaps")
 local lsp = require("ark.lsp")
 local session_backend = require("ark.session")
 local snippets = require("ark.snippets")
+local target_tools = require("ark.targets")
 local view = require("ark.view")
 local uv = vim.uv or vim.loop
 
@@ -1827,6 +1828,172 @@ target_scalar = function(value)
   return tostring(value)
 end
 
+local function target_location(record)
+  local path = type(record) == "table" and target_scalar(record.path) or ""
+  local line = type(record) == "table" and tonumber(record.line) or nil
+  if path == "" then
+    return ""
+  end
+  if line and line > 0 then
+    return path .. ":" .. line
+  end
+  return path
+end
+
+local function target_preview_text(record)
+  local name = target_name(record)
+  if name == "" then
+    name = "(unnamed target)"
+  end
+
+  local location = target_location(record)
+  local call = type(record) == "table" and target_scalar(record.call) or ""
+  local command = type(record) == "table" and target_scalar(record.command) or ""
+  local lines = {
+    "# " .. name,
+    "",
+  }
+
+  if location ~= "" then
+    lines[#lines + 1] = "Created in: " .. location
+    lines[#lines + 1] = ""
+  end
+
+  if call ~= "" then
+    lines[#lines + 1] = "```r"
+    vim.list_extend(lines, vim.split(call, "\n", { plain = true }))
+    lines[#lines + 1] = "```"
+    lines[#lines + 1] = ""
+  end
+
+  if command ~= "" then
+    lines[#lines + 1] = "Command:"
+    lines[#lines + 1] = command
+  end
+
+  return table.concat(lines, "\n")
+end
+
+local function target_picker_layout()
+  return {
+    preset = "vertical",
+    layout = {
+      width = 0.72,
+      min_width = 64,
+      height = 0.68,
+      min_height = 18,
+      box = "vertical",
+      border = true,
+      title = "{title}",
+      title_pos = "center",
+      { win = "input", height = 1, border = "bottom" },
+      { win = "list", title = "Targets", height = 0.38, border = "none" },
+      { win = "preview", title = "Created By", height = 0.62, border = "top" },
+    },
+  }
+end
+
+local function format_target_picker_item(item)
+  local command = target_scalar(item.command)
+  if command ~= "" then
+    return {
+      { target_name(item), "Title" },
+      { "  " },
+      { command:gsub("%s+", " "), "Comment" },
+    }
+  end
+  return {
+    { target_name(item), "Title" },
+  }
+end
+
+local function target_picker_items(records)
+  local items = {}
+  for _, record in ipairs(records) do
+    local name = target_name(record)
+    local command = target_scalar(record.command)
+    local location = target_location(record)
+    items[#items + 1] = vim.tbl_extend("force", vim.deepcopy(record), {
+      text = table.concat({ name, command, location }, " "),
+      preview = {
+        text = target_preview_text(record),
+        ft = "markdown",
+        loc = false,
+      },
+    })
+  end
+  return items
+end
+
+local function open_target_picker(records, on_choice)
+  local ok, snacks = pcall(require, "snacks")
+  if ok and type(snacks) == "table" and type(snacks.picker) == "table" and type(snacks.picker.pick) == "function" then
+    snacks.picker.pick({
+      title = "Ark Targets",
+      items = target_picker_items(records),
+      format = format_target_picker_item,
+      preview = "preview",
+      layout = target_picker_layout(),
+      confirm = function(picker, item)
+        picker:close()
+        on_choice(item)
+      end,
+    })
+    return true
+  end
+
+  vim.ui.select(records, {
+    prompt = "Ark target",
+    format_item = function(record)
+      local name = target_name(record)
+      local command = target_scalar(record.command)
+      if command ~= "" then
+        return name .. "  " .. command:gsub("%s+", " ")
+      end
+      return name
+    end,
+  }, on_choice)
+
+  return true
+end
+
+local function target_action_names(result, fallback)
+  local value = type(result) == "table" and result.names or nil
+  if type(value) ~= "table" or vim.tbl_isempty(value) then
+    value = normalize_target_names(fallback)
+  end
+
+  local names = {}
+  if type(value) == "table" then
+    for _, name in ipairs(value) do
+      local text = target_scalar(name)
+      if text ~= "" then
+        names[#names + 1] = text
+      end
+    end
+  end
+  return names
+end
+
+local function target_action_message(action, result, requested_names)
+  local names = target_action_names(result, requested_names)
+  local rendered_names = table.concat(names, ", ")
+  local noun = #names == 1 and "target" or "targets"
+
+  if action == "invalidate" then
+    return #names > 0 and ("Invalidated " .. noun .. ": " .. rendered_names) or "Invalidated targets"
+  elseif action == "load" then
+    return #names > 0 and ("Loaded " .. noun .. ": " .. rendered_names) or "Loaded targets"
+  elseif action == "make_downstream" then
+    return #names > 0 and ("Built " .. noun .. " and downstream: " .. rendered_names)
+      or "Built target and downstream"
+  elseif action == "make" then
+    return #names > 0 and ("Built " .. noun .. ": " .. rendered_names) or "Built targets"
+  end
+
+  return "Target action finished"
+end
+
 local target_active_by_root = {}
 
 local function target_active_path(project)
@@ -1988,10 +2155,8 @@ end
 
 function M.targets_pick(bufnr, callback)
   bufnr = resolve_bufnr(bufnr)
-  local payload, err = M.targets_manifest(bufnr)
-  if not payload then
-    return nil, err
-  end
+  local project = targets_project(bufnr)
+  local payload = target_tools.static_manifest(project)
 
   local records = vim.tbl_filter(function(record)
     return target_name(record) ~= ""
@@ -2001,22 +2166,12 @@ function M.targets_pick(bufnr, callback)
   end)
 
   if #records == 0 then
-    local pick_err = "target manifest is empty"
+    local pick_err = "No static targets found in _targets.R or _target_pipelines."
     notify(pick_err, vim.log.levels.WARN)
     return nil, pick_err
   end
 
-  vim.ui.select(records, {
-    prompt = "Ark target",
-    format_item = function(record)
-      local name = target_name(record)
-      local command = target_scalar(record.command)
-      if command ~= "" then
-        return name .. "  " .. command:gsub("%s+", " ")
-      end
-      return name
-    end,
-  }, function(record)
+  open_target_picker(records, function(record)
     if not record then
       return
     end
@@ -2085,9 +2240,17 @@ function M.targets_action(action, names, bufnr)
   end)
 end
 
+function M.targets_action_user(action, names, bufnr)
+  local result, err = M.targets_action(action, names, bufnr)
+  if result then
+    notify(target_action_message(action, result, names), vim.log.levels.INFO)
+  end
+  return result, err
+end
+
 function M.targets_action_pick(action, bufnr)
   return M.targets_pick(bufnr, function(name)
-    vim.print(M.targets_action(action, name, bufnr))
+    M.targets_action_user(action, name, bufnr)
   end)
 end
 
