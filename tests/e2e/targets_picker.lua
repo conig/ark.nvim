@@ -135,17 +135,6 @@ package.loaded["ark.view"] = {
   close = function() end,
 }
 
-package.loaded["base46"] = {
-  get_theme_tb = function(name)
-    if name ~= "base_30" then
-      return {}
-    end
-    return {
-      cyan = "#7dd3fc",
-    }
-  end,
-}
-
 local original_select = vim.ui.select
 vim.ui.select = function(items, opts, on_choice)
   on_choice(items[1])
@@ -225,13 +214,8 @@ if type(picker_spec.layout) ~= "table" then
   error("expected target picker to define a Snacks layout", 0)
 end
 local formatted_item = picker_spec.format(picker_spec.items[1])
-if type(formatted_item) ~= "table" or not formatted_item[1] or formatted_item[1][2] ~= "ArkTargetName" then
-  error("expected target picker names to use ArkTargetName highlight, got " .. vim.inspect(formatted_item), 0)
-end
-local target_hl = vim.api.nvim_get_hl(0, { name = "ArkTargetName", link = false })
-local target_fg = target_hl and target_hl.fg and string.format("#%06x", target_hl.fg) or nil
-if target_fg ~= "#7dd3fc" then
-  error("expected ArkTargetName to use readable base46 cyan, got " .. vim.inspect(target_hl), 0)
+if type(formatted_item) ~= "table" or not formatted_item[1] or formatted_item[1][2] ~= "Identifier" then
+  error("expected target picker names to use Identifier highlight, got " .. vim.inspect(formatted_item), 0)
 end
 if type(picker_spec.items) ~= "table" or #picker_spec.items ~= 4 then
   error(
