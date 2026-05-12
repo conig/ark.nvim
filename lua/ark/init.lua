@@ -1902,10 +1902,22 @@ local function target_preview_text(record)
   local location = target_location(record)
   local call = type(record) == "table" and target_scalar(record.call) or ""
   local command = type(record) == "table" and target_scalar(record.command) or ""
+  local generator_name = type(record) == "table" and target_scalar(record.generator_name) or ""
+  local progress = type(record) == "table" and target_scalar(record.progress) or ""
   local lines = {
     "# " .. name,
     "",
   }
+
+  if generator_name ~= "" and generator_name ~= name then
+    lines[#lines + 1] = "Derived from: " .. generator_name
+    lines[#lines + 1] = ""
+  end
+
+  if progress ~= "" then
+    lines[#lines + 1] = "Progress: " .. progress
+    lines[#lines + 1] = ""
+  end
 
   if location ~= "" then
     lines[#lines + 1] = "Created in: " .. location

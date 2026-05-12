@@ -67,8 +67,17 @@ local function accepted_call(namespace, name)
   if name == "source" then
     return namespace == nil
   end
+  if name == "tar_source" then
+    return namespace == nil or namespace == "targets"
+  end
   if name == "tar_target" then
     return namespace == nil or namespace == "targets"
+  end
+  if name == "tar_target_raw" then
+    return namespace == nil or namespace == "targets"
+  end
+  if name == "tar_combine" then
+    return namespace == nil or namespace == "tarchetypes"
   end
   if name == "tar_render" then
     return namespace == nil or namespace == "tarchetypes"
@@ -272,6 +281,15 @@ local function unnamed_arg(value, accepted_name)
   return value
 end
 
+local function named_arg(value)
+  value = trim(value)
+  local name, rest = value:match("^([%a_][%w_.]*)%s*=%s*(.+)$")
+  if name then
+    return name, trim(rest)
+  end
+  return nil, value
+end
+
 local function parse_target_name(value)
   value = unnamed_arg(value, "name")
   if value == "" then
@@ -315,8 +333,7 @@ local function parse_string(value)
   return nil
 end
 
-local function parse_source_path(value)
-  value = unnamed_arg(value, "file")
+local function parse_path_expr(value)
   local direct = parse_string(value)
   if direct then
     return direct
@@ -343,10 +360,73 @@ local function parse_source_path(value)
   return joinpath(unpack(parts))
 end
 
+local function parse_path_values(value)
+  value = trim(value)
+  if value == "" then
+    return {}
+  end
+
+  local vector = value:match("^c%s*%((.*)%)%s*$")
+  if vector then
+    local paths = {}
+    for _, arg in ipairs(split_args(vector)) do
+      local path = parse_path_expr(arg)
+      if path then
+        paths[#paths + 1] = path
+      end
+    end
+    return paths
+  end
+
+  local path = parse_path_expr(value)
+  if not path then
+    return {}
+  end
+  return { path }
+end
+
+local function source_arg_paths(call_name, args)
+  local accepted_names = call_name == "tar_source" and { "files" } or { "file" }
+  local positional = nil
+
+  for _, arg in ipairs(args) do
+    local name, rest = named_arg(arg)
+    if name then
+      for _, accepted in ipairs(accepted_names) do
+        if name == accepted then
+          return parse_path_values(rest)
+        end
+      end
+    elseif positional == nil then
+      positional = rest
+    end
+  end
+
+  if positional then
+    return parse_path_values(positional)
+  end
+
+  if call_name == "tar_source" then
+    return { "R" }
+  end
+  return {}
+end
+
 local function line_for_offset(text, offset)
   local prefix = text:sub(1, math.max(0, offset - 1))
   local _, count = prefix:gsub("\n", "")
   return count + 1
+end
+
+local function file_mtime(path)
+  if type(path) ~= "string" or path == "" or not uv or type(uv.fs_stat) ~= "function" then
+    return nil
+  end
+  local stat = uv.fs_stat(path)
+  if type(stat) ~= "table" or type(stat.mtime) ~= "table" then
+    return nil
+  end
+  return (tonumber(stat.mtime.sec) or 0) + ((tonumber(stat.mtime.nsec) or 0) / 1e9)
 end
 
 local function read_text(path, opts)
@@ -361,6 +441,39 @@ local function read_text(path, opts)
     return nil
   end
   return table.concat(lines, "\n")
+end
+
+local function split_pipe(line)
+  local fields = {}
+  for field in (line .. "|"):gmatch("([^|]*)|") do
+    fields[#fields + 1] = field
+  end
+  return fields
+end
+
+local function read_pipe_table(path, opts)
+  local text = read_text(path, opts)
+  if not text or text == "" then
+    return {}
+  end
+
+  local lines = vim.split(text, "\n", { plain = true, trimempty = true })
+  if #lines < 2 then
+    return {}
+  end
+
+  local header = split_pipe(lines[1])
+  local records = {}
+  for index = 2, #lines do
+    local fields = split_pipe(lines[index])
+    local record = {}
+    for field_index, key in ipairs(header) do
+      record[key] = fields[field_index] or ""
+    end
+    records[#records + 1] = record
+  end
+
+  return records
 end
 
 local function add_file(files, seen, path, opts)
@@ -426,15 +539,16 @@ end
 local function source_paths(path, text)
   local paths = {}
   each_call(text, function(call)
-    if call.name ~= "source" then
+    if call.name ~= "source" and call.name ~= "tar_source" then
       return
     end
 
     local args = call_args(text, call)
-    local source = parse_source_path(args[1] or "")
-    local resolved = source and resolve_relative(path, source) or nil
-    if resolved then
-      paths[#paths + 1] = resolved
+    for _, source in ipairs(source_arg_paths(call.name, args)) do
+      local resolved = resolve_relative(path, source)
+      if resolved then
+        paths[#paths + 1] = resolved
+      end
     end
   end)
   return paths
@@ -461,7 +575,11 @@ local function collect_files(project, opts)
     local text = read_text(path, opts)
     if text then
       for _, source in ipairs(source_paths(path, text)) do
-        add_file(files, seen, source, opts)
+        if vim.fn.isdirectory(source) == 1 then
+          scan_dir(source, files, seen, opts)
+        else
+          add_file(files, seen, source, opts)
+        end
       end
     end
     index = index + 1
@@ -474,7 +592,12 @@ local function parse_targets(path, text)
   local records = {}
 
   each_call(text, function(call)
-    if call.name ~= "tar_target" and call.name ~= "tar_render" then
+    if
+      call.name ~= "tar_target"
+      and call.name ~= "tar_target_raw"
+      and call.name ~= "tar_combine"
+      and call.name ~= "tar_render"
+    then
       return
     end
 
@@ -484,11 +607,13 @@ local function parse_targets(path, text)
       return
     end
 
-    local command = call.name == "tar_target" and collapse_ws(args[2] or "") or collapse_ws(call.text)
+    local command = (call.name == "tar_target" or call.name == "tar_target_raw") and collapse_ws(args[2] or "")
+      or collapse_ws(call.text)
     records[#records + 1] = {
       name = name,
       command = command,
       source = "static",
+      declaration = call.name,
       path = path,
       line = line_for_offset(text, call.start),
       call = trim(call.text),
@@ -498,21 +623,138 @@ local function parse_targets(path, text)
   return records
 end
 
-function M.static_manifest(project, opts)
-  opts = opts or {}
-  local started = (uv and uv.hrtime and uv.hrtime()) or vim.loop.hrtime()
-  local targets = {}
-  local seen_names = {}
-  local files = collect_files(project or {}, opts)
-
+local function source_records(files, opts)
+  local records = {}
   for _, path in ipairs(files) do
     local text = read_text(path, opts)
     if text then
-      for _, record in ipairs(parse_targets(path, text)) do
-        if not seen_names[record.name] then
-          seen_names[record.name] = true
-          targets[#targets + 1] = record
-        end
+      vim.list_extend(records, parse_targets(path, text))
+    end
+  end
+  return records
+end
+
+local function source_newer_than(path, files)
+  local marker_mtime = file_mtime(path)
+  if not marker_mtime then
+    return true
+  end
+
+  for _, source in ipairs(files or {}) do
+    local source_mtime = file_mtime(source)
+    if source_mtime and source_mtime > marker_mtime then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function build_generator_index(records)
+  local by_name = {}
+  for _, record in ipairs(records or {}) do
+    local name = record.name
+    if type(name) == "string" and name ~= "" then
+      by_name[name] = by_name[name] or record
+    end
+  end
+  return by_name
+end
+
+local function find_generator(name, by_name)
+  if type(name) ~= "string" or name == "" then
+    return nil
+  end
+
+  local exact = by_name[name]
+  if exact then
+    return exact
+  end
+
+  local best = nil
+  local best_len = 0
+  for stem, record in pairs(by_name or {}) do
+    local prefix = stem .. "_"
+    if #stem > best_len and name:sub(1, #prefix) == prefix then
+      best = record
+      best_len = #stem
+    end
+  end
+  return best
+end
+
+local function progress_manifest(project, files, source_records_list, opts)
+  local store = normalize(project and project.store)
+  if not store then
+    return nil
+  end
+
+  local path = joinpath(store, "meta", "progress")
+  if vim.fn.filereadable(path) ~= 1 then
+    return nil
+  end
+  if source_newer_than(path, files) then
+    return nil
+  end
+
+  local rows = read_pipe_table(path, opts)
+  if #rows == 0 then
+    return nil
+  end
+
+  local by_name = build_generator_index(source_records_list)
+  local targets = {}
+  local seen = {}
+
+  for _, row in ipairs(rows) do
+    local name = row.name
+    if type(name) == "string" and name ~= "" and not seen[name] then
+      seen[name] = true
+      local generator = find_generator(name, by_name)
+      targets[#targets + 1] = {
+        name = name,
+        command = generator and generator.command or "",
+        source = "targets-cache",
+        cache_source = path,
+        path = generator and generator.path or path,
+        line = generator and generator.line or nil,
+        call = generator and generator.call or "",
+        declaration = generator and generator.declaration or "",
+        generator_name = generator and generator.name or nil,
+        target_type = row.type,
+        parent = row.parent,
+        branches = row.branches,
+        progress = row.progress,
+      }
+    end
+  end
+
+  if #targets == 0 then
+    return nil
+  end
+
+  return targets
+end
+
+function M.static_manifest(project, opts)
+  opts = opts or {}
+  local started = (uv and uv.hrtime and uv.hrtime()) or vim.loop.hrtime()
+  local targets = nil
+  local manifest_source = "static"
+  local seen_names = {}
+  local files = collect_files(project or {}, opts)
+  local parsed_sources = source_records(files, opts)
+
+  targets = progress_manifest(project or {}, files, parsed_sources, opts)
+
+  if targets then
+    manifest_source = "targets-cache"
+  else
+    targets = {}
+    for _, record in ipairs(parsed_sources) do
+      if not seen_names[record.name] then
+        seen_names[record.name] = true
+        targets[#targets + 1] = record
       end
     end
   end
@@ -522,7 +764,7 @@ function M.static_manifest(project, opts)
     schema_version = 1,
     status = "ok",
     project = project,
-    source = "static",
+    source = manifest_source,
     targets = targets,
     files = files,
     elapsed_ms = elapsed_ms,

@@ -154,14 +154,27 @@ end
 
 local project_root = tmp .. "/project"
 vim.fn.mkdir(project_root, "p")
+vim.fn.mkdir(project_root .. "/R", "p")
 vim.fn.mkdir(project_root .. "/_target_pipelines", "p")
 vim.fn.writefile({
-  "source('_target_pipelines/report.R')",
+  "targets::tar_source()",
+  "targets::tar_source(files = c('_target_pipelines'))",
   "targets::tar_target(clean_data, clean(raw_data))",
 }, project_root .. "/_targets.R")
 vim.fn.writefile({
+  "targets::tar_target(default_target, make_default())",
+}, project_root .. "/R/default.R")
+vim.fn.writefile({
   "tarchetypes::tar_render(report, 'report.Rmd')",
 }, project_root .. "/_target_pipelines/report.R")
+vim.fn.mkdir(project_root .. "/_targets/meta", "p")
+vim.fn.writefile({
+  "name|type|parent|branches|progress",
+  "clean_data|stem|||completed",
+  "clean_data_group_a|stem|||completed",
+  "default_target|stem|||completed",
+  "report|stem|||completed",
+}, project_root .. "/_targets/meta/progress")
 
 local source_buf = vim.api.nvim_create_buf(true, false)
 vim.api.nvim_set_current_buf(source_buf)
@@ -200,8 +213,12 @@ end
 if type(picker_spec.layout) ~= "table" then
   error("expected target picker to define a Snacks layout", 0)
 end
-if type(picker_spec.items) ~= "table" or #picker_spec.items ~= 2 then
-  error("expected target picker items for clean_data and report, got " .. vim.inspect(picker_spec.items), 0)
+if type(picker_spec.items) ~= "table" or #picker_spec.items ~= 4 then
+  error(
+    "expected target picker items for cached clean_data, clean_data_group_a, default_target, and report, got "
+      .. vim.inspect(picker_spec.items),
+    0
+  )
 end
 if type(picker_spec.items[1].preview) ~= "table" or type(picker_spec.items[1].preview.text) ~= "string" then
   error("expected target picker item to include creation preview text", 0)
@@ -209,8 +226,32 @@ end
 if not picker_spec.items[1].preview.text:find("targets::tar_target%(clean_data, clean%(raw_data%)%)") then
   error("expected preview to show how clean_data was created, got " .. vim.inspect(picker_spec.items[1].preview), 0)
 end
-if not picker_spec.items[2].preview.text:find("_target_pipelines/report%.R:1") then
-  error("expected preview to show sourced pipeline location, got " .. vim.inspect(picker_spec.items[2].preview), 0)
+local derived_item = nil
+local default_item = nil
+local report_item = nil
+for _, item in ipairs(picker_spec.items) do
+  if item.name == "clean_data_group_a" then
+    derived_item = item
+  elseif item.name == "default_target" then
+    default_item = item
+  elseif item.name == "report" then
+    report_item = item
+  end
+end
+if type(default_item) ~= "table" or not default_item.preview.text:find("/R/default%.R:1") then
+  error("expected preview to show default tar_source() location, got " .. vim.inspect(default_item and default_item.preview), 0)
+end
+if type(report_item) ~= "table" or not report_item.preview.text:find("_target_pipelines/report%.R:1") then
+  error("expected preview to show sourced pipeline location, got " .. vim.inspect(report_item and report_item.preview), 0)
+end
+if type(derived_item) ~= "table" then
+  error("expected target picker to include manifest-derived target clean_data_group_a", 0)
+end
+if not derived_item.preview.text:find("Derived from: clean_data", 1, true) then
+  error("expected derived target preview to show generator provenance, got " .. vim.inspect(derived_item.preview), 0)
+end
+if not derived_item.preview.text:find("Progress: completed", 1, true) then
+  error("expected derived target preview to show cached target progress, got " .. vim.inspect(derived_item.preview), 0)
 end
 local layout_children = picker_spec.layout.layout or {}
 local list_index = nil

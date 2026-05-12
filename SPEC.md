@@ -303,6 +303,14 @@ The dynamic tier must refine the static model, not block it. Opening a project
 must not wait for `targets::tar_manifest()` or cache inspection before normal R
 language features become usable.
 
+When a local `{targets}` store is already present, Ark may hydrate the picker
+from the store's manifest/progress metadata instead of recomputing the manifest
+in R. That cache path must stay generic: use `{targets}`-owned metadata, reject
+it when discovered target source files are newer, and keep source provenance as
+best-effort for dynamically generated targets. Generated or derived target names
+should still be selectable, but their preview should point back to the static
+generator declaration when Ark can identify one.
+
 ### Static Indexing Requirements
 
 The static indexer should recognize at least:
