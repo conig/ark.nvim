@@ -24,6 +24,7 @@ local build_state = {
   notify_id = nil,
   output = {},
   output_buf = nil,
+  output_closed = false,
   output_win = nil,
   running = false,
   background = false,
@@ -159,6 +160,14 @@ local function stop_spinner()
   end
 end
 
+local function close_output_window()
+  build_state.output_closed = true
+  if build_state.output_win and vim.api.nvim_win_is_valid(build_state.output_win) then
+    pcall(vim.api.nvim_win_close, build_state.output_win, true)
+  end
+  build_state.output_win = nil
+end
+
 local function current_binary_cmd(cmd, binary)
   local updated = vim.deepcopy(cmd)
   updated[1] = binary
@@ -202,32 +211,74 @@ local function ensure_output_buffer()
   end
 
   build_state.output_buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[build_state.output_buf].bufhidden = "wipe"
+  vim.bo[build_state.output_buf].bufhidden = "hide"
   vim.bo[build_state.output_buf].buftype = "nofile"
   vim.bo[build_state.output_buf].filetype = "log"
   vim.bo[build_state.output_buf].modifiable = true
+  vim.keymap.set("n", "q", close_output_window, {
+    buffer = build_state.output_buf,
+    desc = "Close ark-lsp build output",
+    nowait = true,
+    silent = true,
+  })
+  if #build_state.output > 0 then
+    vim.api.nvim_buf_set_lines(build_state.output_buf, 0, -1, false, build_state.output)
+  end
   return build_state.output_buf
 end
 
-local function ensure_output_window()
+local function sync_output_buffer()
+  if build_state.output_buf and vim.api.nvim_buf_is_valid(build_state.output_buf) then
+    vim.bo[build_state.output_buf].modifiable = true
+    vim.api.nvim_buf_set_lines(build_state.output_buf, 0, -1, false, build_state.output)
+  end
+end
+
+local function ensure_output_window(opts)
+  opts = opts or {}
+  if build_state.output_closed and opts.force ~= true then
+    return nil
+  end
+
   local buf = ensure_output_buffer()
+  if opts.sync ~= false then
+    sync_output_buffer()
+  end
   if build_state.output_win and vim.api.nvim_win_is_valid(build_state.output_win) then
     vim.api.nvim_win_set_buf(build_state.output_win, buf)
+    if opts.enter ~= false then
+      pcall(vim.api.nvim_set_current_win, build_state.output_win)
+    end
     return build_state.output_win
   end
 
-  local width = math.max(80, math.floor(vim.o.columns * 0.7))
-  local height = math.max(12, math.floor(vim.o.lines * 0.35))
-  build_state.output_win = vim.api.nvim_open_win(buf, false, {
+  local columns = math.max(20, tonumber(vim.o.columns) or 80)
+  local lines = math.max(8, tonumber(vim.o.lines) or 24)
+  local width = math.min(math.max(72, math.floor(columns * 0.72)), math.max(20, columns - 4))
+  local height = math.min(math.max(10, math.floor(lines * 0.4)), math.max(3, lines - 4))
+  build_state.output_win = vim.api.nvim_open_win(buf, opts.enter ~= false, {
     relative = "editor",
-    row = math.max(1, math.floor((vim.o.lines - height) / 2) - 1),
-    col = math.max(1, math.floor((vim.o.columns - width) / 2)),
-    width = math.min(width, vim.o.columns - 4),
-    height = math.min(height, vim.o.lines - 4),
+    row = math.max(1, math.floor((lines - height) / 2) - 1),
+    col = math.max(1, math.floor((columns - width) / 2)),
+    width = width,
+    height = height,
     border = "rounded",
     style = "minimal",
-    title = " ark-lsp build ",
+    title = " ark-lsp rebuild ",
     title_pos = "center",
+  })
+  local win = build_state.output_win
+  vim.api.nvim_create_autocmd("WinClosed", {
+    once = true,
+    callback = function(args)
+      if tonumber(args.match) ~= win then
+        return
+      end
+      if build_state.output_win == win then
+        build_state.output_win = nil
+        build_state.output_closed = true
+      end
+    end,
   })
 
   return build_state.output_win
@@ -235,13 +286,33 @@ end
 
 local function reset_output()
   build_state.output = {
+    "ark.nvim is rebuilding detached ark-lsp.",
+    "Press q to close this window. The build continues and Ark will attach when it is ready.",
+    "",
     "$ " .. table.concat(BUILD_CMD, " "),
     "",
   }
+  build_state.output_closed = false
 
-  if build_state.output_buf and vim.api.nvim_buf_is_valid(build_state.output_buf) then
-    vim.bo[build_state.output_buf].modifiable = true
-    vim.api.nvim_buf_set_lines(build_state.output_buf, 0, -1, false, build_state.output)
+  sync_output_buffer()
+end
+
+local function append_output_status(line)
+  if type(line) ~= "string" or line == "" then
+    return
+  end
+
+  build_state.output[#build_state.output + 1] = ""
+  build_state.output[#build_state.output + 1] = line
+
+  if not (build_state.output_buf and vim.api.nvim_buf_is_valid(build_state.output_buf)) then
+    return
+  end
+
+  sync_output_buffer()
+  if build_state.output_win and vim.api.nvim_win_is_valid(build_state.output_win) then
+    local last = vim.api.nvim_buf_line_count(build_state.output_buf)
+    vim.api.nvim_win_set_cursor(build_state.output_win, { last, 0 })
   end
 end
 
@@ -262,12 +333,14 @@ local function append_output(data)
 
   vim.list_extend(build_state.output, lines)
 
-  if build_state.show_output ~= true then
+  if build_state.show_output ~= true or build_state.output_closed == true then
     return
   end
 
   local buf = ensure_output_buffer()
-  ensure_output_window()
+  if not ensure_output_window({ enter = false, sync = false }) then
+    return
+  end
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, -1, -1, false, lines)
   if build_state.output_win and vim.api.nvim_win_is_valid(build_state.output_win) then
@@ -291,19 +364,22 @@ local function finish_build(result)
     source_scan_cache.checked_ms = 0
     local ms = elapsed_ms()
     local suffix = ms and string.format(" in %d ms", ms) or ""
+    append_output_status("detached ark-lsp rebuilt" .. suffix .. "; Ark will attach or restart the LSP for managed R buffers.")
     if not background or user_initiated then
       notify("detached ark-lsp rebuilt" .. suffix, vim.log.levels.INFO, {
         replace = build_state.notify_id,
       })
     end
   else
+    append_output_status("detached ark-lsp rebuild failed; see the cargo output above.")
     if background and not user_initiated then
       notify("background detached ark-lsp rebuild failed; continuing with current binary", vim.log.levels.WARN, {
         replace = build_state.notify_id,
       })
     else
       build_state.show_output = true
-      ensure_output_window()
+      build_state.output_closed = false
+      ensure_output_window({ force = true })
       notify("detached ark-lsp rebuild failed; cargo output opened in a floating window", vim.log.levels.ERROR, {
         replace = build_state.notify_id,
       })
@@ -340,11 +416,15 @@ local function start_build(opts)
     if opts and opts.user_initiated == true then
       build_state.user_initiated = true
     end
-    if opts and opts.show_output == true then
+    if opts and opts.show_output ~= false then
       build_state.show_output = true
-      ensure_output_window()
+      build_state.output_closed = false
+      ensure_output_window({
+        enter = opts.focus_output ~= false,
+        force = true,
+      })
     end
-    if not build_state.background and not build_state.spinner_timer then
+    if not build_state.background and build_state.show_output ~= true and not build_state.spinner_timer then
       start_spinner()
     end
     return true, nil
@@ -352,7 +432,7 @@ local function start_build(opts)
 
   build_state.running = true
   build_state.background = opts and opts.background == true or false
-  build_state.show_output = opts and opts.show_output == true or false
+  build_state.show_output = not (opts and opts.show_output == false)
   build_state.listeners = {}
   if opts and opts.on_complete then
     build_state.listeners[#build_state.listeners + 1] = opts.on_complete
@@ -362,9 +442,11 @@ local function start_build(opts)
   build_state.user_initiated = opts and opts.user_initiated == true or false
   reset_output()
   if build_state.show_output then
-    ensure_output_window()
+    ensure_output_window({
+      enter = not (opts and opts.focus_output == false),
+    })
   end
-  if not build_state.background then
+  if not build_state.background and build_state.show_output ~= true then
     start_spinner()
   end
 
@@ -444,7 +526,7 @@ local function maybe_schedule_freshness_probe(binary, opts)
         run_freshness_listeners(listeners, result)
       end,
       background = true,
-      show_output = opts and opts.show_build_output == true,
+      show_output = not (opts and opts.show_build_output == false),
       user_initiated = opts and opts.user_initiated == true,
     })
     if not ok then
@@ -501,7 +583,7 @@ local function maybe_schedule_freshness_probe(binary, opts)
         run_freshness_listeners(listeners, result)
       end,
       background = true,
-      show_output = opts and opts.show_build_output == true,
+      show_output = not (opts and opts.show_build_output == false),
       user_initiated = opts and opts.user_initiated == true,
     })
     if ok then
@@ -551,7 +633,7 @@ function M.ensure_current_detached_lsp_cmd(cmd, opts)
     local ok, build_err = start_build({
       on_complete = opts.on_build_complete,
       background = false,
-      show_output = opts.show_build_output == true,
+      show_output = opts.show_build_output ~= false,
       user_initiated = opts.user_initiated == true,
     })
     if not ok then

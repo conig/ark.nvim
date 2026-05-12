@@ -73,6 +73,9 @@ Responsibilities:
   pane, send, help, ArkView, snippets, and tab workflows
 - send text to the active managed R session through the configured backend
 - start detached `ark-lsp`
+- show visible detached `ark-lsp` rebuild progress in a floating log window,
+  including cargo output, with `q` closing only the window while the build and
+  follow-up LSP attach/restart continue
 - relay session metadata through `ark/updateSession`
 - expose a lazy-load-friendly `:Ark` dispatcher plus compatibility commands such
   as `ArkPaneStart`, `ArkTab*`, `ArkHelp`, and `ArkStatus`
@@ -162,6 +165,11 @@ part of the default supported path.
   before or alongside managed-pane startup rather than serializing "pane first,
   LSP later". That prewarm path should avoid background session notification
   ladders until the real managed-session bootstrap path takes over.
+- Any automatic detached `ark-lsp` rebuild should be visible to the user. Ark
+  should not silently compile while a buffer appears partly ready; it should
+  show the rebuild log, leave the log closable with `q`, and attach or restart
+  the LSP through the existing build-completion listeners when the binary is
+  ready.
 - Sync startup must hand off cleanly when Neovim has started `ark-lsp` but the
   client is still initializing: status should surface a pending client instead
   of reporting a false bootstrap failure.
