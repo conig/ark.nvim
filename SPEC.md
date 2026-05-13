@@ -381,7 +381,9 @@ Target intelligence should be exposed through normal LSP features where
 possible:
 
 - completion: target names, target-aware arguments, cached-object members
-- definition: target reference to declaration source range
+- definition: target reference to declaration source range, while ordinary R
+  symbols inside target commands, such as a function call in `tar_target()`,
+  still resolve as normal R definitions
 - references: target declaration/reference search
 - hover: merged static/dynamic target summary
 - document symbols: target nodes and pipeline sections

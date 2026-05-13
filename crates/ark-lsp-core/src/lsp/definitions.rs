@@ -16,6 +16,7 @@ use crate::lsp::indexer;
 use crate::lsp::state::WorldState;
 use crate::lsp::target_context::target_reference_context;
 use crate::lsp::traits::node::NodeExt;
+use crate::lsp::traits::point::PointExt;
 use crate::treesitter::NodeTypeExt;
 
 pub(crate) fn goto_definition(
@@ -88,13 +89,31 @@ fn definition_node_at_point<'tree>(
 ) -> Option<tree_sitter::Node<'tree>> {
     let node = root.find_closest_node_to_point(point)?;
 
-    if let Some(node) = node.ancestors().find(|node| node.is_identifier_or_string()) {
+    if let Some(node) = node
+        .ancestors()
+        .find(|node| node.is_identifier_or_string() && node_contains_point(node, point))
+    {
         return Some(node);
     }
 
     let Some(next) = node.next_leaf() else {
         return Some(node);
     };
+
+    if point.is_after_or_equal(node.end_position()) &&
+        next.start_position().row == point.row &&
+        point.is_before_or_equal(next.start_position())
+    {
+        return next
+            .ancestors()
+            .find(|node| node.is_identifier_or_string())
+            .or(Some(next));
+    }
+
+    if let Some(node) = node.ancestors().find(|node| node.is_identifier_or_string()) {
+        return Some(node);
+    }
+
     if next.start_position() != point {
         return Some(node);
     }
@@ -104,6 +123,10 @@ fn definition_node_at_point<'tree>(
         .find(|node| node.is_identifier_or_string())
         .or(Some(next));
     node
+}
+
+fn node_contains_point(node: &tree_sitter::Node, point: tree_sitter::Point) -> bool {
+    node.start_position().is_before_or_equal(point) && node.end_position().is_after_or_equal(point)
 }
 
 fn find_symbol_definition(
@@ -443,6 +466,59 @@ list(
                     lsp_types::Range {
                         start: lsp_types::Position::new(2, 13),
                         end: lsp_types::Position::new(2, 39),
+                    }
+                );
+            }
+        );
+    }
+
+    #[test]
+    fn test_goto_definition_tar_target_function_line_leading_whitespace_prefers_call_head() {
+        let targets_uri = test_path("_targets.R");
+        let helper_uri = test_path("helpers.R");
+        let targets_code = r#"
+list(
+  tar_target(
+    baseline_survey_fig,
+    make_baseline_survey_fig(baseline_survey_results)
+  )
+)
+"#;
+        let targets_doc = Document::new(targets_code, None);
+        let helper_doc = Document::new(
+            r#"
+make_baseline_survey_fig <- function(results) {
+  results
+}
+"#,
+            None,
+        );
+        let state = state_with_documents(vec![
+            (targets_uri.clone(), targets_doc.clone()),
+            (helper_uri.clone(), helper_doc),
+        ]);
+
+        // Match a normal-mode `gd` request from the leading indentation on the
+        // function-call line. This should resolve the call head on that line,
+        // not the target name on the previous argument line.
+        let params = GotoDefinitionParams {
+            text_document_position_params: lsp_types::TextDocumentPositionParams {
+                text_document: lsp_types::TextDocumentIdentifier { uri: targets_uri },
+                position: lsp_types::Position::new(4, 0),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        assert_matches!(
+            goto_definition(&targets_doc, params, &state).unwrap(),
+            Some(GotoDefinitionResponse::Link(ref links)) => {
+                assert_eq!(links[0].target_uri, helper_uri);
+                assert_eq!(
+                    links[0].target_range,
+                    lsp_types::Range {
+                        start: lsp_types::Position::new(1, 0),
+                        end: lsp_types::Position::new(1, 24),
                     }
                 );
             }

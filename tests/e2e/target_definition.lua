@@ -52,10 +52,15 @@ vim.fn.mkdir(root, "p")
 
 local targets_file = root .. "/_targets.R"
 local analysis_file = root .. "/analysis.R"
+local helper_file = root .. "/helpers.R"
 
 vim.fn.writefile({
   "list(",
-  "  tar_target(brief_intervention_summary, raw_data + 1)",
+  "  tar_target(brief_intervention_summary, raw_data + 1),",
+  "  tar_target(",
+  "    baseline_survey_fig,",
+  "    make_baseline_survey_fig(baseline_survey_results)",
+  "  )",
   ")",
 }, targets_file)
 
@@ -63,6 +68,15 @@ vim.fn.writefile({
   "brief_intervention_summary <- tar_read(brief_intervention_summary)",
   "brief_intervention_summary",
 }, analysis_file)
+
+vim.fn.writefile({
+  "make_baseline_survey_fig <- function(results) {",
+  "  results",
+  "}",
+}, helper_file)
+
+open_file(helper_file)
+start_lsp_for_current_buffer()
 
 open_file(targets_file)
 start_lsp_for_current_buffer()
@@ -93,4 +107,45 @@ end
 
 vim.print({
   definition = definition_uri,
+})
+
+open_file(targets_file)
+start_lsp_for_current_buffer()
+
+local target_lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+local make_line = nil
+for index, line in ipairs(target_lines) do
+  if line:find("make_baseline_survey_fig", 1, true) then
+    make_line = index - 1
+    break
+  end
+end
+
+if make_line == nil then
+  fail("failed to find make_baseline_survey_fig line")
+end
+
+-- Regression: when `gd` is invoked from leading whitespace on the function-call
+-- line inside a `tar_target()`, definition lookup should use the call head on
+-- that line, not the target name on the previous argument line.
+definition = request_current("textDocument/definition", {
+  textDocument = text_document_params(0),
+  position = {
+    line = make_line,
+    character = 0,
+  },
+})
+
+if type(definition) ~= "table" or vim.tbl_isempty(definition) then
+  fail("expected function definition result: " .. vim.inspect(definition))
+end
+
+definition_target = definition[1]
+definition_uri = definition_target.targetUri or definition_target.uri
+if vim.fs.normalize(vim.uri_to_fname(definition_uri)) ~= vim.fs.normalize(helper_file) then
+  fail("function definition resolved to unexpected file: " .. vim.inspect(definition))
+end
+
+vim.print({
+  function_definition = definition_uri,
 })
