@@ -93,6 +93,83 @@
   )
 }
 
+.ark_view_truncate_text <- function(txt, max_chars = 80L) {
+  max_chars <- suppressWarnings(as.integer(max_chars))
+  if (is.na(max_chars) || max_chars < 1L) {
+    max_chars <- 80L
+  }
+
+  txt <- as.character(txt %||% "")
+  if (nchar(txt, type = "bytes") <= max_chars) {
+    return(txt)
+  }
+
+  if (max_chars <= 3L) {
+    return(substr(txt, 1L, max_chars))
+  }
+
+  paste0(substr(txt, 1L, max_chars - 3L), "...")
+}
+
+.ark_view_visible_space <- function(count) {
+  paste(rep("\\x20", count), collapse = "")
+}
+
+.ark_view_visible_character <- function(ch) {
+  if (identical(ch, "\\")) {
+    return("\\\\")
+  }
+  if (identical(ch, "\r")) {
+    return("\\r")
+  }
+  if (identical(ch, "\n")) {
+    return("\\n")
+  }
+  if (identical(ch, "\t")) {
+    return("\\t")
+  }
+  ch
+}
+
+.ark_view_display_character_value <- function(value, max_chars = 80L) {
+  value <- as.character(value)[[1L]]
+  if (is.na(value)) {
+    return("NA")
+  }
+  if (!nzchar(value)) {
+    return("\"\"")
+  }
+
+  chars <- strsplit(value, "", fixed = TRUE, useBytes = FALSE)[[1L]]
+  if (!length(chars)) {
+    return("\"\"")
+  }
+
+  runs <- rle(chars == " ")
+  out <- character()
+  position <- 1L
+  for (index in seq_along(runs$lengths)) {
+    run_length <- runs$lengths[[index]]
+    run_end <- position + run_length - 1L
+    is_space <- runs$values[[index]]
+
+    if (is_space) {
+      at_boundary <- position == 1L || run_end == length(chars)
+      if (at_boundary || run_length > 1L) {
+        out <- c(out, .ark_view_visible_space(run_length))
+      } else {
+        out <- c(out, " ")
+      }
+    } else {
+      out <- c(out, vapply(chars[position:run_end], .ark_view_visible_character, character(1)))
+    }
+
+    position <- run_end + 1L
+  }
+
+  .ark_view_truncate_text(paste(out, collapse = ""), max_chars)
+}
+
 .ark_view_stringify_value <- function(value, max_chars = 80L) {
   if (is.null(value) || length(value) == 0L) {
     return("")
@@ -118,11 +195,23 @@
     txt <- paste(as.character(value), collapse = " ")
   }
 
-  if (nchar(txt, type = "bytes") > max_chars) {
-    paste0(substr(txt, 1L, max_chars - 3L), "...")
-  } else {
-    txt
+  .ark_view_truncate_text(txt, max_chars)
+}
+
+.ark_view_display_value <- function(value, max_chars = 80L) {
+  if (is.null(value) || length(value) == 0L) {
+    return("")
   }
+
+  if (is.list(value) && !is.object(value)) {
+    value <- value[[1L]]
+  }
+
+  if ((is.character(value) || is.factor(value)) && length(value) == 1L) {
+    return(.ark_view_display_character_value(value, max_chars))
+  }
+
+  .ark_view_stringify_value(value, max_chars)
 }
 
 .ark_view_schema <- function(data) {
@@ -267,9 +356,9 @@
 
     page_rows <- lapply(seq_len(nrow(page)), function(index) {
       row <- page[index, , drop = FALSE]
-      unname(vapply(seq_len(ncol(row)), function(column_index) {
-        .ark_view_stringify_value(row[[column_index]][[1L]])
-      }, character(1)))
+      unname(lapply(seq_len(ncol(row)), function(column_index) {
+        .ark_view_display_value(row[[column_index]][[1L]])
+      }))
     })
 
     .emit_json(list(
@@ -365,7 +454,7 @@
     if (length(value) == 1L && is.atomic(value) && is.na(value)) {
       return("<NA>")
     }
-    .ark_view_stringify_value(value, max_chars = 40L)
+    .ark_view_display_value(value, max_chars = 40L)
   }, character(1))
   non_missing_labels <- value_labels[value_labels != "<NA>"]
   unique_count <- length(unique(non_missing_labels))

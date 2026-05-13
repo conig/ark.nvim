@@ -62,6 +62,65 @@ local ok, err = pcall(function()
     error("expected first mpg cell from mtcars page, got " .. vim.inspect(page.rows[1]), 0)
   end
 
+  -- Regression: visually empty strings must be distinguishable in ArkView's
+  -- page payload before the Lua grid pads them into fixed-width cells.
+  local string_view = ark_test.request(client, "ark/internal/viewOpen", {
+    expr = [[data.frame(x = c("", " ", "   ", " a ", "a b", "a  b"), y = seq_len(6), stringsAsFactors = FALSE)]],
+  }, 10000)
+
+  local string_page = ark_test.request(client, "ark/internal/viewPage", {
+    sessionId = string_view.session_id,
+    offset = 0,
+    limit = 6,
+  }, 10000)
+
+  local string_values = {}
+  for index, row in ipairs(string_page.rows or {}) do
+    string_values[index] = (row or {})[1]
+  end
+
+  local expected_string_values = {
+    [[""]],
+    [[\x20]],
+    [[\x20\x20\x20]],
+    [[\x20a\x20]],
+    "a b",
+    [[a\x20\x20b]],
+  }
+  if not vim.deep_equal(string_values, expected_string_values) then
+    error(
+      "expected ArkView string display values to reveal empty and whitespace-only cells, got "
+        .. vim.inspect(string_values),
+      0
+    )
+  end
+
+  ark_test.request(client, "ark/internal/viewClose", {
+    sessionId = string_view.session_id,
+  }, 10000)
+
+  local one_column_string_view = ark_test.request(client, "ark/internal/viewOpen", {
+    expr = [[data.frame(x = c("", " "), stringsAsFactors = FALSE)]],
+  }, 10000)
+
+  local one_column_string_page = ark_test.request(client, "ark/internal/viewPage", {
+    sessionId = one_column_string_view.session_id,
+    offset = 0,
+    limit = 2,
+  }, 10000)
+
+  if
+    type((one_column_string_page.rows or {})[1]) ~= "table"
+    or (one_column_string_page.rows[1] or {})[1] ~= [[""]]
+    or (one_column_string_page.rows[2] or {})[1] ~= [[\x20]]
+  then
+    error("expected one-column ArkView rows to remain row arrays, got " .. vim.inspect(one_column_string_page), 0)
+  end
+
+  ark_test.request(client, "ark/internal/viewClose", {
+    sessionId = one_column_string_view.session_id,
+  }, 10000)
+
   local mpg_profile = ark_test.request(client, "ark/internal/viewProfile", {
     sessionId = opened.session_id,
     columnIndex = 1,

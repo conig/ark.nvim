@@ -132,6 +132,10 @@ Responsibilities:
   a separate trusted artifact
 - answer bridge requests for bootstrap, help text, and runtime inspection
 - answer bridge requests for live data-explorer sessions and table paging
+- format ArkView display-only string cells so empty strings, boundary spaces,
+  and repeated spaces remain visually distinguishable without changing raw
+  export, filter, sort, or cell-copy semantics
+- keep ArkView page rows encoded as row arrays even for one-column tables
 
 The active runtime contract is Ark-native. Legacy `rscope` compatibility is not
 part of the default supported path.
