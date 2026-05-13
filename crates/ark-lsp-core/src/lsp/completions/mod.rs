@@ -17,6 +17,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use provide::has_detached_static_path_completion_context;
 pub(crate) use provide::provide_completions;
 pub(crate) use provide::provide_detached_post_bridge_completions;
 pub(crate) use provide::provide_detached_pre_bridge_completions;

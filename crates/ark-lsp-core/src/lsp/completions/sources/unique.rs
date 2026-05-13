@@ -144,6 +144,10 @@ pub(crate) fn first_detached_static_source_plan(
     Ok(None)
 }
 
+pub(crate) fn string_path_preempts_bridge(completion_context: &CompletionContext) -> bool {
+    string::is_path_completion_context(completion_context.document_context)
+}
+
 /// Each unique source is tried in order until one returns completions
 #[cfg(test)]
 pub(crate) fn get_completions(

@@ -6,12 +6,15 @@
 //
 
 use tower_lsp::lsp_types::CompletionItem;
+use tree_sitter::Node;
 
 use super::file_path::completions_from_string_file_path;
+use super::file_path::string_token_looks_like_path;
 use crate::lsp::completions::completion_context::CompletionContext;
 use crate::lsp::completions::sources::unique::subset::completions_from_string_subset;
 use crate::lsp::completions::sources::CompletionSource;
 use crate::lsp::document_context::DocumentContext;
+use crate::lsp::traits::node::NodeExt;
 use crate::treesitter::node_find_string;
 
 pub(super) struct StringSource;
@@ -25,35 +28,29 @@ impl CompletionSource for StringSource {
         &self,
         completion_context: &CompletionContext,
     ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
-        completions_from_string(completion_context.document_context)
+        completions_from_string(completion_context)
     }
 }
 
 fn completions_from_string(
-    context: &DocumentContext,
+    completion_context: &CompletionContext,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
-    let node = context.node;
-
-    // Find actual `NodeType::String` node. Needed in case we are in its children.
-    let Some(node) = node_find_string(&node) else {
+    let context = completion_context.document_context;
+    let Some(node) = string_node_at_completion_point(context) else {
         return Ok(None);
     };
-
-    // Must actually be "inside" the string, so these places don't count, even
-    // though they are detected as part of the string nodes `|""|`
-    if node.start_position() == context.point || node.end_position() == context.point {
-        return Ok(None);
-    }
 
     // Even if we don't find any completions, we know we were inside a string so we
     // don't want to provide completions for anything else, so we always at
     // least return an empty `completions` vector from here on.
     let mut completions: Vec<CompletionItem> = vec![];
 
-    // Return empty set if we are here due to a trigger character like `$`.
+    // Return empty set if we are here due to a non-path trigger character like `$`.
     // See posit-dev/positron#1884.
-    if context.trigger.is_some() {
-        return Ok(Some(completions));
+    if let Some(trigger) = context.trigger.as_deref() {
+        if trigger != "/" {
+            return Ok(Some(completions));
+        }
     }
 
     // Check if we are doing string subsetting, like `x["<tab>"]`. This is a very unique
@@ -64,9 +61,41 @@ fn completions_from_string(
     }
 
     // If no special string cases are hit, we show file path completions
-    completions.append(&mut completions_from_string_file_path(&node, context)?);
+    completions.append(&mut completions_from_string_file_path(
+        &node,
+        completion_context,
+    )?);
 
     Ok(Some(completions))
+}
+
+pub(crate) fn is_path_completion_context(context: &DocumentContext) -> bool {
+    let Some(node) = string_node_at_completion_point(context) else {
+        return false;
+    };
+
+    if context.trigger.as_deref() == Some("/") {
+        return true;
+    }
+
+    let Ok(token) = node.node_as_str(&context.document.contents) else {
+        return false;
+    };
+
+    string_token_looks_like_path(token)
+}
+
+fn string_node_at_completion_point<'a>(context: &'a DocumentContext<'a>) -> Option<Node<'a>> {
+    // Find actual `NodeType::String` node. Needed in case we are in its children.
+    let node = node_find_string(&context.node)?;
+
+    // Must actually be "inside" the string, so these places don't count, even
+    // though they are detected as part of the string nodes `|""|`
+    if node.start_position() == context.point || node.end_position() == context.point {
+        return None;
+    }
+
+    Some(node)
 }
 
 #[cfg(test)]
@@ -92,9 +121,11 @@ mod tests {
             let (text, point) = point_from_cursor("@''");
             let document = Document::new(text.as_str(), None);
             let context = DocumentContext::new(&document, point, None);
+            let state = WorldState::default();
+            let completion_context = CompletionContext::new(&context, &state);
 
             assert!(node_find_string(&context.node).is_some());
-            assert_eq!(completions_from_string(&context).unwrap(), None);
+            assert_eq!(completions_from_string(&completion_context).unwrap(), None);
         })
     }
 
@@ -104,9 +135,11 @@ mod tests {
             let (text, point) = point_from_cursor("@foo");
             let document = Document::new(text.as_str(), None);
             let context = DocumentContext::new(&document, point, None);
+            let state = WorldState::default();
+            let completion_context = CompletionContext::new(&context, &state);
 
             assert!(context.node.is_identifier());
-            assert_eq!(completions_from_string(&context).unwrap(), None);
+            assert_eq!(completions_from_string(&completion_context).unwrap(), None);
         })
     }
 
@@ -120,8 +153,10 @@ mod tests {
 
             // `None` trigger -> Return file completions
             let context = DocumentContext::new(&document, point, None);
+            let state = WorldState::default();
+            let completion_context = CompletionContext::new(&context, &state);
             assert_match!(
-                completions_from_string(&context).unwrap(),
+                completions_from_string(&completion_context).unwrap(),
                 Some(items) => {
                     assert!(!items.is_empty())
                 }
@@ -129,7 +164,8 @@ mod tests {
 
             // `Some` trigger -> Should return empty completion set
             let context = DocumentContext::new(&document, point, Some(String::from("$")));
-            let res = completions_from_string(&context).unwrap();
+            let completion_context = CompletionContext::new(&context, &state);
+            let res = completions_from_string(&completion_context).unwrap();
             assert_match!(res, Some(items) => { assert!(items.is_empty()) });
 
             // Check for same result when consulting (potentially all) unique sources

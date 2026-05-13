@@ -57,6 +57,7 @@ use crate::lsp::backend::LspError;
 use crate::lsp::backend::LspResult;
 use crate::lsp::code_action::code_actions;
 use crate::lsp::completions::dedupe_and_sort_completion_items;
+use crate::lsp::completions::has_detached_static_path_completion_context;
 use crate::lsp::completions::provide_completions;
 use crate::lsp::completions::provide_detached_post_bridge_completions;
 use crate::lsp::completions::provide_detached_pre_bridge_completions;
@@ -81,6 +82,7 @@ use crate::lsp::selection_range::selection_range;
 use crate::lsp::session_bridge::is_bridge_unavailable;
 use crate::lsp::session_bridge::is_eval_missing_object_error;
 use crate::lsp::session_bridge::is_ipc_auth_error;
+use crate::lsp::session_bridge::runtime_string_completion_takes_precedence;
 use crate::lsp::session_bridge::target_name_completion_context;
 use crate::lsp::session_bridge::HelpPage;
 use crate::lsp::session_bridge::TargetCompletionProject;
@@ -615,6 +617,17 @@ pub(crate) fn handle_completion(
         if let Some(session_bridge) = state.session_bridge.as_ref() {
             let target_project = target_project_paths(&uri, state)
                 .map(|(root, script, _store)| TargetCompletionProject { root, script });
+            if has_detached_static_path_completion_context(&context, state) &&
+                !runtime_string_completion_takes_precedence(&context, target_project.as_ref())
+                    .map_err(LspError::Anyhow)?
+            {
+                if let Some(completions) = provide_detached_post_bridge_completions(&context, state)
+                    .map_err(LspError::Anyhow)?
+                {
+                    return Ok(completion_response_from_items(completions));
+                }
+            }
+
             let detached = match session_bridge.completion_items(&context, target_project) {
                 Ok(detached) => detached,
                 Err(err) => {

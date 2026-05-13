@@ -12,6 +12,7 @@ use crate::lsp::completions::plan::plan_completions;
 use crate::lsp::completions::plan::plan_detached_static_completions;
 use crate::lsp::completions::plan::CompletionPlan;
 use crate::lsp::completions::sources::composite;
+use crate::lsp::completions::sources::unique;
 use crate::lsp::document_context::DocumentContext;
 use crate::lsp::state::WorldState;
 use crate::lsp::traits::node::NodeExt;
@@ -50,9 +51,18 @@ pub(crate) fn provide_detached_pre_bridge_completions(
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
     let completion_context = CompletionContext::new(document_context, state);
     match plan_detached_static_completions(&completion_context)? {
+        CompletionPlan::HandledEmpty => Ok(Some(vec![])),
         CompletionPlan::Unique(plan) if plan.kind.is_detached_pre_bridge() => Ok(Some(plan.items)),
         _ => Ok(None),
     }
+}
+
+pub(crate) fn has_detached_static_path_completion_context(
+    document_context: &DocumentContext,
+    state: &WorldState,
+) -> bool {
+    let completion_context = CompletionContext::new(document_context, state);
+    unique::string_path_preempts_bridge(&completion_context)
 }
 
 pub(crate) fn provide_detached_post_bridge_completions(

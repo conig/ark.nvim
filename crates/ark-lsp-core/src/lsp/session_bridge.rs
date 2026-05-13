@@ -2847,6 +2847,18 @@ pub(crate) fn target_name_completion_context(
     }))
 }
 
+pub(crate) fn runtime_string_completion_takes_precedence(
+    context: &DocumentContext,
+    target_project: Option<&TargetCompletionProject>,
+) -> anyhow::Result<bool> {
+    Ok(
+        completion_request_from_comparison_string(context)?.is_some() ||
+            completion_request_from_package_string(context)?.is_some() ||
+            completion_request_from_custom_call(context, target_project)?.is_some() ||
+            completion_request_from_string_subset(context)?.is_some(),
+    )
+}
+
 fn target_name_call_callee(callee: &str) -> bool {
     matches!(
         unqualified_callee(callee),

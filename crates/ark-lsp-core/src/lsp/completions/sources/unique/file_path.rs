@@ -7,6 +7,7 @@
 
 use std::env::current_dir;
 use std::env::var_os;
+use std::path::Path;
 use std::path::PathBuf;
 
 use harp::utils::r_is_string;
@@ -15,18 +16,19 @@ use stdext::unwrap;
 use tower_lsp::lsp_types::CompletionItem;
 use tree_sitter::Node;
 
+use crate::lsp::completions::completion_context::CompletionContext;
 use crate::lsp::completions::completion_item::completion_item_from_direntry;
 use crate::lsp::completions::sources::utils::set_sort_text_by_words_first;
-use crate::lsp::document_context::DocumentContext;
 use crate::lsp::traits::node::NodeExt;
 
 pub(super) fn completions_from_string_file_path(
     node: &Node,
-    context: &DocumentContext,
+    completion_context: &CompletionContext,
 ) -> anyhow::Result<Vec<CompletionItem>> {
     log::trace!("completions_from_string_file_path()");
 
     let mut completions: Vec<CompletionItem> = vec![];
+    let context = completion_context.document_context;
 
     // Get the contents of the string token.
     //
@@ -35,42 +37,36 @@ pub(super) fn completions_from_string_file_path(
     // by parsing it before searching the path entries.
     let token = node.node_as_str(&context.document.contents)?;
 
-    let Some(mut path) = normalize_string_path(token)? else {
+    let Some(path) = normalize_string_path(token)? else {
         return Ok(completions);
     };
 
-    // parse the file path and get the directory component
     log::trace!("Normalized path: {}", path.display());
 
-    // if this path doesn't have a root, add it on
-    if !path.has_root() {
-        let root = current_dir()?;
-        path = root.join(path);
-    }
+    let directories = completion_directories(&path, completion_context);
 
-    // if this isn't a directory, get the parent path
-    if !path.is_dir() {
-        if let Some(parent) = path.parent() {
-            path = parent.to_path_buf();
+    for directory in directories {
+        // look for files in this directory
+        log::trace!("Reading directory: {}", directory.display());
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+
+        for entry in entries.into_iter() {
+            let entry = unwrap!(entry, Err(error) => {
+                log::error!("{}", error);
+                continue;
+            });
+
+            let item = unwrap!(completion_item_from_direntry(entry), Err(error) => {
+                log::error!("{}", error);
+                continue;
+            });
+
+            completions.push(item);
         }
-    }
 
-    // look for files in this directory
-    log::trace!("Reading directory: {}", path.display());
-    let entries = std::fs::read_dir(path)?;
-
-    for entry in entries.into_iter() {
-        let entry = unwrap!(entry, Err(error) => {
-            log::error!("{}", error);
-            continue;
-        });
-
-        let item = unwrap!(completion_item_from_direntry(entry), Err(error) => {
-            log::error!("{}", error);
-            continue;
-        });
-
-        completions.push(item);
+        break;
     }
 
     // Push path completions starting with non-word characters to the bottom of
@@ -78,6 +74,56 @@ pub(super) fn completions_from_string_file_path(
     set_sort_text_by_words_first(&mut completions);
 
     Ok(completions)
+}
+
+fn completion_directories(path: &Path, context: &CompletionContext) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+
+    if path.has_root() {
+        push_completion_directory(path.to_path_buf(), &mut directories);
+        return directories;
+    }
+
+    for root in workspace_roots(context) {
+        push_completion_directory(root.join(path), &mut directories);
+    }
+
+    directories
+}
+
+fn workspace_roots(context: &CompletionContext) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    for folder in &context.state.workspace.folders {
+        if let Ok(path) = folder.to_file_path() {
+            push_unique_path(path, &mut roots);
+        }
+    }
+
+    if let Ok(path) = current_dir() {
+        push_unique_path(path, &mut roots);
+    }
+
+    roots
+}
+
+fn push_completion_directory(path: PathBuf, directories: &mut Vec<PathBuf>) {
+    let directory = if path.is_dir() {
+        path
+    } else {
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        parent.to_path_buf()
+    };
+
+    push_unique_path(directory, directories);
+}
+
+fn push_unique_path(path: PathBuf, paths: &mut Vec<PathBuf>) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
 }
 
 fn normalize_string_path(token: &str) -> anyhow::Result<Option<PathBuf>> {
@@ -110,6 +156,18 @@ fn normalize_string_path_with_r(token: &str) -> anyhow::Result<Option<PathBuf>> 
 fn normalize_string_path_detached(token: &str) -> Option<PathBuf> {
     let contents = decode_string_token(token)?;
     Some(expand_tilde_path(&contents))
+}
+
+pub(super) fn string_token_looks_like_path(token: &str) -> bool {
+    let Some(contents) = decode_string_token(token) else {
+        return false;
+    };
+
+    !contents.is_empty() &&
+        (contents.contains('/') ||
+            contents.contains('\\') ||
+            contents.starts_with('~') ||
+            contents.starts_with('.'))
 }
 
 fn decode_string_token(token: &str) -> Option<String> {
@@ -170,12 +228,16 @@ fn expand_tilde_path(path: &str) -> PathBuf {
 mod tests {
     use std::path::PathBuf;
 
+    use url::Url;
+
     use crate::fixtures::point_from_cursor;
+    use crate::lsp::completions::completion_context::CompletionContext;
     use crate::lsp::completions::sources::unique::file_path::completions_from_string_file_path;
     use crate::lsp::completions::sources::unique::file_path::decode_string_token;
     use crate::lsp::completions::sources::unique::file_path::expand_tilde_path;
     use crate::lsp::document::Document;
     use crate::lsp::document_context::DocumentContext;
+    use crate::lsp::state::WorldState;
     use crate::r_task;
     use crate::treesitter::node_find_string;
 
@@ -187,9 +249,12 @@ mod tests {
             let (text, point) = point_from_cursor(r#" ".\R\utils.R@" "#);
             let document = Document::new(text.as_str(), None);
             let context = DocumentContext::new(&document, point, None);
+            let state = WorldState::default();
+            let completion_context = CompletionContext::new(&context, &state);
             let node = node_find_string(&context.node).unwrap();
 
-            let completions = completions_from_string_file_path(&node, &context).unwrap();
+            let completions =
+                completions_from_string_file_path(&node, &completion_context).unwrap();
             assert_eq!(completions.len(), 0);
         })
     }
@@ -207,5 +272,29 @@ mod tests {
     #[test]
     fn test_expand_tilde_path_passthrough() {
         assert_eq!(expand_tilde_path(".R"), PathBuf::from(".R"));
+    }
+
+    #[test]
+    fn test_detached_relative_path_uses_workspace_root() {
+        let tempdir = tempfile::tempdir().expect("expected tempdir");
+        let src_dir = tempdir.path().join("src");
+        std::fs::create_dir_all(&src_dir).expect("expected src directory");
+        std::fs::write(src_dir.join("sentinel.R"), "# sentinel").expect("expected sentinel");
+
+        let (text, point) = point_from_cursor(r#"source("src/@")"#);
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+        let node = node_find_string(&context.node).unwrap();
+
+        let mut state = WorldState::default();
+        state
+            .workspace
+            .folders
+            .push(Url::from_directory_path(tempdir.path()).expect("expected workspace uri"));
+        let completion_context = CompletionContext::new(&context, &state);
+
+        let completions = completions_from_string_file_path(&node, &completion_context).unwrap();
+
+        assert!(completions.iter().any(|item| item.label == "sentinel.R"));
     }
 }

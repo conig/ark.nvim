@@ -85,6 +85,10 @@ pub(crate) fn plan_completions(
         return Ok(CompletionPlan::Unique(plan));
     }
 
+    if completion_context.document_context.trigger.as_deref() == Some("/") {
+        return Ok(CompletionPlan::HandledEmpty);
+    }
+
     Ok(CompletionPlan::Composite(CompositeSourcePlan {
         kinds: composite::composite_source_kinds(completion_context),
     }))
@@ -102,6 +106,10 @@ pub(crate) fn plan_detached_static_completions(
 
     if let Some(plan) = unique::first_detached_static_source_plan(completion_context)? {
         return Ok(CompletionPlan::Unique(plan));
+    }
+
+    if completion_context.document_context.trigger.as_deref() == Some("/") {
+        return Ok(CompletionPlan::HandledEmpty);
     }
 
     Ok(CompletionPlan::Composite(CompositeSourcePlan {
@@ -188,5 +196,18 @@ mod tests {
         let plan = plan_detached_static_completions(&completion_context).unwrap();
 
         assert!(matches!(plan, CompletionPlan::Composite(_)));
+    }
+
+    #[test]
+    fn test_slash_trigger_outside_string_is_handled_empty() {
+        let (text, point) = point_from_cursor("1 /@ 2");
+        let document = Document::new(text.as_str(), None);
+        let document_context = DocumentContext::new(&document, point, Some(String::from("/")));
+        let state = WorldState::default();
+        let completion_context = CompletionContext::new(&document_context, &state);
+
+        let plan = plan_completions(&completion_context).unwrap();
+
+        assert!(matches!(plan, CompletionPlan::HandledEmpty));
     }
 }

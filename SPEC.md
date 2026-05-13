@@ -616,6 +616,7 @@ High-value regression coverage for this tranche includes:
 - extractor completion
 - subset and string-subset completion
 - comparison-string completion
+- path-string completion, including slash-triggered paths inside quoted strings
 - package-string and argument-string completion
 - frontmatter output completion
 - inline `` `r ` `` empty-prefix completion

@@ -8,11 +8,13 @@ local pane_id, client = ark_test.setup_managed_buffer(test_file, {
   'dt_cmp_ark[color == "a',
   'mtcars$cyl == "4',
   'iris$Species == "',
+  'path_values_ark == "src/',
 })
 
 local has_data_table = ark_test.probe_data_table_available(
   pane_id,
   'colors_ark <- c("apple", "banana", "apricot"); levels_ark <- factor(c("beta", "banana", "berry")); ark_dt_available <- requireNamespace("data.table", quietly = TRUE); if (ark_dt_available) dt_cmp_ark <- data.table::data.table(color = c("apple", "banana", "apricot"))'
+    .. '; path_values_ark <- c("src/apple", "src/banana")'
 )
 
 local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
@@ -82,5 +84,15 @@ if ark_test.insert_text(setosa) ~= "setosa" then
   ark_test.fail('iris$Species == " completion inserted unexpected text: ' .. vim.inspect(setosa))
 end
 result.iris = ark_test.insert_text(setosa)
+
+local path_value_items = completion_at(6, #lines[6])
+local path_value = ark_test.find_item(path_value_items, "src/apple")
+if not path_value then
+  ark_test.fail('path_values_ark == "src/ completion missing src/apple: ' .. vim.inspect(ark_test.item_labels(path_value_items)))
+end
+if ark_test.insert_text(path_value) ~= "src/apple" then
+  ark_test.fail('path_values_ark == "src/ completion inserted unexpected text: ' .. vim.inspect(path_value))
+end
+result.path_value = ark_test.insert_text(path_value)
 
 vim.print(result)
