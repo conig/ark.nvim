@@ -17,6 +17,14 @@
   as.integer(43000L + (pane_id %% 1000L))
 }
 
+.ark_call_head_name <- function(node) {
+  head <- node[[1L]]
+  if (is.symbol(head)) {
+    return(as.character(head))
+  }
+  NULL
+}
+
 .ark_root_symbol <- function(expr) {
   parsed <- tryCatch(parse(text = expr, keep.source = FALSE), error = function(e) NULL)
   if (is.null(parsed) || length(parsed) == 0L) {
@@ -29,8 +37,8 @@
     }
 
     if (is.call(node)) {
-      head <- as.character(node[[1L]])
-      if (head %in% c("$", "@", "[[", "[", "::", ":::") && length(node) >= 2L) {
+      head <- .ark_call_head_name(node)
+      if (!is.null(head) && head %in% c("$", "@", "[[", "[", "::", ":::") && length(node) >= 2L) {
         return(walk(node[[2L]]))
       }
       if (length(node) >= 2L) {

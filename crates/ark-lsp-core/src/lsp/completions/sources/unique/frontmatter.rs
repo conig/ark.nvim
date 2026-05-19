@@ -1,5 +1,3 @@
-use std::ops::Range;
-
 use tower_lsp::lsp_types::CompletionItem;
 use tower_lsp::lsp_types::CompletionItemKind;
 use tower_lsp::lsp_types::CompletionTextEdit;
@@ -14,9 +12,9 @@ use crate::lsp::completions::completion_context::CompletionContext;
 use crate::lsp::completions::completion_item::completion_item;
 use crate::lsp::completions::sources::CompletionSource;
 use crate::lsp::completions::types::CompletionData;
-use crate::lsp::document::Document;
 use crate::lsp::document::DocumentKind;
 use crate::lsp::document_context::DocumentContext;
+use crate::lsp::frontmatter::frontmatter_output_value_edit_range;
 
 const BUILTIN_OUTPUTS: &[BuiltinOutput] = &[
     BuiltinOutput {
@@ -60,13 +58,6 @@ struct BuiltinOutput {
 
 pub(super) struct FrontmatterSource;
 
-struct OutputValueEditRange {
-    start: Point,
-    end: Point,
-    value: String,
-    needs_leading_space: bool,
-}
-
 impl CompletionSource for FrontmatterSource {
     fn name(&self) -> &'static str {
         "frontmatter"
@@ -87,16 +78,8 @@ fn completions_from_frontmatter_output(
         return Ok(None);
     }
 
-    let row = context.point.row;
-    let Some(frontmatter_rows) = frontmatter_row_range(context.document) else {
-        return Ok(None);
-    };
-
-    if !frontmatter_rows.contains(&row) {
-        return Ok(None);
-    }
-
-    let Some(edit_range) = output_value_edit_range(context)? else {
+    let Some(edit_range) = frontmatter_output_value_edit_range(context.document, context.point)
+    else {
         return Ok(None);
     };
 
@@ -116,66 +99,6 @@ fn completions_from_frontmatter_output(
     }
 
     Ok(Some(completions))
-}
-
-fn frontmatter_row_range(document: &Document) -> Option<Range<usize>> {
-    let first = line_without_newline(document.get_line(0)?).trim();
-    if first != "---" {
-        return None;
-    }
-
-    let line_count: usize = document.line_index.len().try_into().ok()?;
-    for row in 1..line_count {
-        let line = line_without_newline(document.get_line(row)?).trim();
-        if line == "---" || line == "..." {
-            return Some(1..row);
-        }
-    }
-
-    None
-}
-
-fn output_value_edit_range(
-    context: &DocumentContext,
-) -> anyhow::Result<Option<OutputValueEditRange>> {
-    let Some(line) = context.document.get_line(context.point.row) else {
-        return Ok(None);
-    };
-    let line = line_without_newline(line);
-    let trimmed = line.trim_start();
-    let indent = line.len() - trimmed.len();
-
-    let Some((key, after_colon)) = trimmed.split_once(':') else {
-        return Ok(None);
-    };
-    if key.trim() != "output" {
-        return Ok(None);
-    }
-
-    let value_prefix = after_colon.trim_start_matches(|ch: char| ch.is_ascii_whitespace());
-    if value_prefix.starts_with('[') || value_prefix.starts_with('{') {
-        return Ok(None);
-    }
-
-    let colon_index = trimmed.find(':').unwrap_or_default();
-    let raw_value_start = indent + colon_index + 1;
-    let value_start = raw_value_start + (after_colon.len() - value_prefix.len());
-    let value_end = context.point.column.min(line.len());
-
-    if value_end < value_start {
-        return Ok(None);
-    }
-
-    if line[value_start..value_end].contains(['[', ']', '{', '}', ',']) {
-        return Ok(None);
-    }
-
-    Ok(Some(OutputValueEditRange {
-        start: Point::new(context.point.row, value_start),
-        end: Point::new(context.point.row, value_end),
-        value: line[value_start..value_end].to_string(),
-        needs_leading_space: value_start == raw_value_start,
-    }))
 }
 
 fn builtin_output_from_value(value: &str) -> Option<&'static BuiltinOutput> {
@@ -218,15 +141,12 @@ fn completion_item_from_builtin_output(
     Ok(item)
 }
 
-fn line_without_newline(line: &str) -> &str {
-    line.strip_suffix('\n').unwrap_or(line)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fixtures::point_from_cursor;
     use crate::lsp::completions::tests::utils::assert_text_edit;
+    use crate::lsp::document::Document;
 
     fn frontmatter_output_completions(cursor_text: &str) -> Option<Vec<CompletionItem>> {
         let (text, point) = point_from_cursor(cursor_text);

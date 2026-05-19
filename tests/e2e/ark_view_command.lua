@@ -8,6 +8,7 @@ local start_bufnrs = {}
 local status_bufnrs = {}
 local sync_bufnrs = {}
 local view_open_bufnrs = {}
+local view_open_exprs = {}
 local sort_calls = {}
 local filter_calls = {}
 local profile_calls = {}
@@ -267,8 +268,9 @@ local ok, err = pcall(function()
     sync_bufnrs[#sync_bufnrs + 1] = bufnr
   end
 
-  lsp.view_open = function(_opts, bufnr)
+  lsp.view_open = function(_opts, bufnr, expr)
     view_open_bufnrs[#view_open_bufnrs + 1] = bufnr
+    view_open_exprs[#view_open_exprs + 1] = expr
     return snapshot(), nil
   end
 
@@ -426,6 +428,9 @@ local ok, err = pcall(function()
   end
   if view_open_bufnrs[1] ~= source_buf then
     error("expected ArkView requests to use the source buffer, got " .. vim.inspect(view_open_bufnrs), 0)
+  end
+  if view_open_exprs[1] ~= "mtcars" then
+    error("expected explicit ArkView expression mtcars, got " .. vim.inspect(view_open_exprs), 0)
   end
 
   local current_tab = vim.api.nvim_get_current_tabpage()
@@ -979,6 +984,20 @@ local ok, err = pcall(function()
 
   if notifications[1] ~= nil then
     error("expected ArkView happy path to avoid notifications, got " .. vim.inspect(notifications), 0)
+  end
+
+  vim.api.nvim_set_current_tabpage(source_tab)
+  vim.api.nvim_set_current_buf(source_buf)
+  vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, { "targets::tar_read(clean_data)" })
+  vim.api.nvim_win_set_cursor(0, { 1, 18 })
+
+  -- Regression: no-argument ArkView should use the full R expression under the
+  -- cursor. This lets `:ArkView` and the recommended ArkView keymap inspect a
+  -- tabular target with the cursor anywhere inside `tar_read(clean_data)`.
+  vim.cmd("ArkView")
+
+  if view_open_exprs[#view_open_exprs] ~= "targets::tar_read(clean_data)" then
+    error("expected no-arg ArkView to use tar_read() expression, got " .. vim.inspect(view_open_exprs), 0)
   end
 end)
 

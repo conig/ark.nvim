@@ -30,6 +30,8 @@ pub mod document;
 pub mod document_context;
 #[path = "../../ark-lsp-core/src/lsp/folding_range.rs"]
 pub mod folding_range;
+#[path = "../../ark-lsp-core/src/lsp/frontmatter.rs"]
+pub mod frontmatter;
 #[path = "../../ark-lsp-core/src/lsp/handlers.rs"]
 pub mod handlers;
 #[path = "../../ark-lsp-core/src/lsp/help.rs"]

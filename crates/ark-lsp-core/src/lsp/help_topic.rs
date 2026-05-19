@@ -16,6 +16,7 @@ use tree_sitter::Tree;
 use crate::lsp;
 use crate::lsp::backend::LspResult;
 use crate::lsp::document::Document;
+use crate::lsp::frontmatter::frontmatter_output_help_topic;
 use crate::lsp::traits::node::NodeExt;
 use crate::treesitter::NodeType;
 use crate::treesitter::NodeTypeExt;
@@ -43,6 +44,18 @@ pub(crate) fn help_topic(
     document: &Document,
 ) -> LspResult<Option<HelpTopicResponse>> {
     let tree = &document.ast;
+
+    if let Some(topic) = frontmatter_output_help_topic(document, point) {
+        let response = HelpTopicResponse { topic };
+
+        lsp::log_info!(
+            "help_topic(): Using frontmatter output help topic '{}' at position {}",
+            response.topic,
+            point
+        );
+
+        return Ok(Some(response));
+    }
 
     let Some(node) = locate_help_node(tree, point) else {
         lsp::log_warn!("help_topic(): No help node at position {point}");
@@ -101,6 +114,7 @@ mod tests {
 
     use crate::fixtures::point_from_cursor;
     use crate::lsp::document::Document;
+    use crate::lsp::document::DocumentKind;
     use crate::lsp::help_topic::help_topic;
     use crate::lsp::help_topic::locate_help_node;
     use crate::lsp::traits::node::NodeExt;
@@ -164,5 +178,18 @@ mod tests {
                 .expect("expected help topic response");
             assert_eq!(response.topic, "geom_point");
         }
+    }
+
+    #[test]
+    fn test_help_topic_supports_frontmatter_output_renderer() {
+        let (text, point) =
+            point_from_cursor("---\ntitle: \"Report\"\noutput: revise::revise_letter_@pdf\n---\n");
+        let document = Document::new_with_kind(&text, None, DocumentKind::LiterateR);
+
+        let response = help_topic(point, &document)
+            .unwrap()
+            .expect("expected frontmatter output help topic response");
+
+        assert_eq!(response.topic, "revise::revise_letter_pdf");
     }
 }

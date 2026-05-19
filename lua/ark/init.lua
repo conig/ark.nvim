@@ -2,6 +2,7 @@ local blink = require("ark.blink")
 local bridge = require("ark.bridge")
 local config = require("ark.config")
 local dev = require("ark.dev")
+local expression = require("ark.expression")
 local keymaps = require("ark.keymaps")
 local lsp = require("ark.lsp")
 local session_backend = require("ark.session")
@@ -1675,7 +1676,7 @@ function M.view(expr, bufnr)
   bufnr = resolve_bufnr(bufnr)
 
   if type(expr) ~= "string" or expr == "" then
-    expr = vim.fn.expand("<cword>")
+    expr = expression.current()
   end
   if type(expr) ~= "string" or expr == "" then
     local err = "no ArkView expression found"

@@ -55,6 +55,7 @@ local pane_id, client = ark_test.setup_managed_buffer(test_file, {
   "clean_data <- tar_read(clean_data)",
   'clean_data[["',
   'tar_read(clean_data)$indigenous == "',
+  "targets::tar_read(clean_data)",
 })
 
 local ark = require("ark")
@@ -233,6 +234,29 @@ end
 local invalidate = ark.targets_action("invalidate", "report", 0)
 if type(invalidate) ~= "table" or invalidate.status ~= "ok" or invalidate.action ~= "invalidate" then
   ark_test.fail("expected target invalidate payload, got " .. vim.inspect(invalidate))
+end
+
+vim.api.nvim_win_set_cursor(0, { 8, 18 })
+local target_view, target_view_err = ark.view(nil, 0)
+if not target_view then
+  ark_test.fail("expected ArkView to open on targets::tar_read(clean_data): " .. tostring(target_view_err))
+end
+if target_view.expr ~= "targets::tar_read(clean_data)" then
+  ark_test.fail("expected ArkView to use tar_read expression, got " .. vim.inspect(target_view.expr))
+end
+if tonumber(target_view.total_rows or 0) ~= 3 or tonumber(target_view.total_columns or 0) ~= 3 then
+  ark_test.fail("expected ArkView target dimensions 3x3, got " .. vim.inspect(target_view))
+end
+local view_columns = {}
+for _, column in ipairs(target_view.schema or {}) do
+  view_columns[column.name] = true
+end
+if not (view_columns.id and view_columns.value and view_columns.indigenous) then
+  ark_test.fail("expected ArkView target columns, got " .. vim.inspect(target_view.schema))
+end
+local view_text = table.concat(vim.api.nvim_buf_get_lines(target_view.grid_buf, 0, -1, false), "\n")
+if not view_text:find("yes", 1, true) or not view_text:find("no", 1, true) then
+  ark_test.fail("expected ArkView grid to include target rows, got " .. vim.inspect(view_text))
 end
 
 vim.print({
