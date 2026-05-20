@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use anyhow::anyhow;
 use harp::exec::RFunction;
 use harp::exec::RFunctionExt;
-use oak_index::library::Library;
+use oak_semantic::library::Library;
 use regex::Regex;
 use tower_lsp::lsp_types::CompletionItem;
 use tower_lsp::lsp_types::Documentation;

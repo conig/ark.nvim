@@ -23,13 +23,14 @@ For `ark.nvim`, the most relevant ones are:
 - `harp`: Rust wrappers for R objects and interfaces
 - `libr`: bindings to R loaded dynamically
 - `amalthea`: upstream Jupyter / Positron kernel framework retained as reference during refactor
-- `oak_index`: per-file semantic index for R
+- `oak_semantic`: per-file semantic index for R
+- `oak_db`: Salsa-backed semantic database support from upstream Ark
 - `echo`: toy kernel used for framework testing
 - `stdext`: shared standard-library extensions used by the workspace
 
 ### External Dependencies (R Parser)
 
-The `oak_index` and `ark` crates depend on the R parser from `posit-dev/air`,
+The `oak_semantic` and `ark` crates depend on the R parser from `posit-dev/air`,
 pinned by git revision in the workspace `Cargo.toml`. The relevant crates are
 re-exported under `aether_` prefixes:
 

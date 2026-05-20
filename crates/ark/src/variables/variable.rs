@@ -1450,7 +1450,6 @@ impl PositronVariable {
                             has_methods = true;
                             false
                         },
-
                         BindingValue::Standard { .. } | BindingValue::Altrep { .. } => true,
 
                         // active bindings and promises

@@ -137,6 +137,15 @@ local ok, err = xpcall(function()
     "Escape",
     ":call setline(1, ['---', 'title: \"Inline\"', '---', '', 'The call is `r `.'])",
     "Enter",
+  })
+  vim.wait(750, function()
+    return false
+  end, 50, false)
+
+  tmux({
+    "send-keys",
+    "-t",
+    nvim_pane,
     "5G",
     "$",
     "h",

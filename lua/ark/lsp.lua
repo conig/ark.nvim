@@ -270,6 +270,10 @@ local function root_dir(bufnr, markers)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local cwd = vim.loop.cwd()
   if path == "" then
+    if type(cwd) == "string" and cwd ~= "" and vim.fs.normalize(cwd) == home_directory() then
+      return unnamed_workspace_root()
+    end
+
     return project_root_for_path(cwd, markers) or unnamed_workspace_root()
   end
 
@@ -519,6 +523,15 @@ local function cache_client_status(client, payload)
   }
 end
 
+local function clear_client_status(client)
+  if not client or type(client.id) ~= "number" then
+    return
+  end
+
+  client_status_payloads[client.id] = nil
+  client_status_attempt_ms[client.id] = nil
+end
+
 local function cached_client_status(client, ttl_ms)
   if not client or type(client.id) ~= "number" then
     return nil
@@ -555,6 +568,36 @@ end
 
 local function payload_present(payload)
   return type(payload) == "table" and next(payload) ~= nil
+end
+
+local function same_session_identity(lhs, rhs)
+  if type(lhs) ~= "table" or type(rhs) ~= "table" then
+    return false
+  end
+
+  return (lhs.kind or "") == (rhs.kind or "")
+    and (lhs.backend or "") == (rhs.backend or "")
+    and (lhs.sessionId or "") == (rhs.sessionId or "")
+    and (lhs.statusFile or "") == (rhs.statusFile or "")
+    and (lhs.tmuxSocket or "") == (rhs.tmuxSocket or "")
+    and (lhs.tmuxSession or "") == (rhs.tmuxSession or "")
+    and (lhs.tmuxPane or "") == (rhs.tmuxPane or "")
+end
+
+local function status_unavailable(payload)
+  if type(payload) ~= "table" then
+    return true
+  end
+
+  return (payload.status == nil or payload.status == "") and payload.replReady ~= true
+end
+
+local function suppress_transient_status_downgrade(previous, current)
+  return type(previous) == "table"
+    and previous.status == "ready"
+    and previous.replReady == true
+    and status_unavailable(current)
+    and same_session_identity(previous, current)
 end
 
 local function keep_startup_bootstrap_pending(payload, hydrated)
@@ -696,7 +739,12 @@ local function notify_client_session(client, payload)
   end
 
   local normalized = payload or {}
-  if vim.deep_equal(client_session_payloads[client.id] or {}, normalized) then
+  local previous = client_session_payloads[client.id] or {}
+  if suppress_transient_status_downgrade(previous, normalized) then
+    return
+  end
+
+  if vim.deep_equal(previous, normalized) then
     return
   end
 
@@ -897,6 +945,9 @@ bootstrap_client_session = function(client, opts, bufnr, payload)
   end
   if type(result) ~= "table" then
     return false, "invalid bootstrap response"
+  end
+  if result.hydrated == true then
+    clear_client_status(client)
   end
 
   return result.hydrated == true, nil

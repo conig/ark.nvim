@@ -703,6 +703,7 @@ impl<'ts_query> TsQuery<'ts_query> {
 
     /// Run the query on `contents` and filter captures that match `capture_names`.
     /// They are returned in a hashmap keyed by capture name.
+    #[allow(dead_code)]
     pub(crate) fn captures_by<'tree, 'query>(
         &'query mut self,
         node: tree_sitter::Node<'tree>,

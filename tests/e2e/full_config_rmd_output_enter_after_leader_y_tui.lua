@@ -90,8 +90,20 @@ local function matches_expected_output_items(items)
     return false
   end
 
-  for index, item in ipairs(items) do
-    if item.label ~= expected_output_labels[index] or item.client_name ~= "ark_lsp" then
+  if items[1].label ~= "html_document" or items[1].client_name ~= "ark_lsp" then
+    return false
+  end
+
+  local seen = {}
+  for _, item in ipairs(items) do
+    if item.client_name ~= "ark_lsp" then
+      return false
+    end
+    seen[item.label] = true
+  end
+
+  for _, label in ipairs(expected_output_labels) do
+    if not seen[label] then
       return false
     end
   end

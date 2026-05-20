@@ -14,8 +14,8 @@ use anyhow::bail;
 use anyhow::Result;
 use harp::syntax::is_valid_symbol;
 use harp::syntax::sym_quote_invalid;
-use oak_index::library::Library;
-use oak_index::package::Package;
+use oak_semantic::library::Library;
+use oak_semantic::package::Package;
 use stdext::*;
 use tower_lsp::lsp_types::Diagnostic;
 use tower_lsp::lsp_types::DiagnosticSeverity;
@@ -1371,12 +1371,12 @@ mod tests {
     use std::path::PathBuf;
 
     use harp::eval::RParseEvalOptions;
-    use oak_index::library::Library;
-    use oak_index::package::Package;
     use oak_package_metadata::dcf::Dcf;
     use oak_package_metadata::description::Description;
     use oak_package_metadata::index::Index;
     use oak_package_metadata::namespace::Namespace;
+    use oak_semantic::library::Library;
+    use oak_semantic::package::Package;
     use once_cell::sync::Lazy;
     use stdext::SortedVec;
     use tempfile::TempDir;
@@ -2451,7 +2451,7 @@ tar_make(names = c("clean_data", "missing_report"))
     #[test]
     fn test_penguins_symbol_no_diagnostic() {
         r_task(|| {
-            let palmerpenguins_dir = oak_index::package::temp_palmerpenguin();
+            let palmerpenguins_dir = oak_semantic::package::temp_palmerpenguin();
             let palmerpenguins_pkg = Package::load_from_folder(palmerpenguins_dir.path())
                 .unwrap()
                 .unwrap();

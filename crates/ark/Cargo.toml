@@ -11,11 +11,12 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-[lints]
-workspace = true
-
 [features]
 legacy-kernel-bin = []
+testing = []
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "ark"
@@ -31,6 +32,7 @@ aether_syntax.workspace = true
 amalthea.workspace = true
 anyhow.workspace = true
 ark-lsp-support.workspace = true
+ark_macros.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 biome_line_index.workspace = true
@@ -54,8 +56,9 @@ mime_guess.workspace = true
 nix.workspace = true
 notify.workspace = true
 oak_core.workspace = true
+oak_db.workspace = true
 oak_ide.workspace = true
-oak_index.workspace = true
+oak_semantic.workspace = true
 oak_sources.workspace = true
 once_cell.workspace = true
 regex.workspace = true
@@ -64,6 +67,7 @@ reqwest-middleware.workspace = true
 reqwest-retry.workspace = true
 rust-embed.workspace = true
 rustc-hash.workspace = true
+salsa.workspace = true
 scraper.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -88,7 +92,7 @@ yaml-rust2.workspace = true
 [dev-dependencies]
 assert_matches.workspace = true
 insta.workspace = true
-oak_index = { workspace = true, features = ["testing"] }
+oak_semantic = { workspace = true, features = ["testing"] }
 oak_package_metadata.workspace = true
 stdext = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

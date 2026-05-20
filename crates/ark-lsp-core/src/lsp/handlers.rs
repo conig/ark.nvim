@@ -5,6 +5,8 @@
 //
 //
 
+#![allow(clippy::items_after_test_module)]
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
