@@ -2378,6 +2378,70 @@ clean_data
     }
 
     #[test]
+    fn test_qmd_markup_does_not_create_r_diagnostics() {
+        r_task(|| {
+            let state = DEFAULT_STATE.clone();
+            let document = Document::new_with_kind(
+                r#"---
+title: "Synthetic Quarto deck"
+format:
+  revealjs:
+    theme: default
+---
+
+<section class="summary">
+  <p>The deck contains markup, prose, and `r known_value` inline output.</p>
+</section>
+
+```{python}
+undefined_symbol_in_python = library()
+```
+
+```{r setup, include=FALSE}
+known_value <- 1
+```
+
+```{r plot-label, fig.alt="Synthetic figure description", fig.width=7}
+undefined_symbol_in_qmd_chunk
+```
+"#,
+                None,
+                DocumentKind::LiterateR,
+            );
+
+            let diagnostics = generate_diagnostics(document, state);
+            let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+
+            assert_eq!(
+                messages
+                    .iter()
+                    .filter(
+                        |m| m.contains("No symbol named 'undefined_symbol_in_qmd_chunk' in scope.")
+                    )
+                    .count(),
+                1,
+                "expected exactly one diagnostic from the R chunk: {messages:?}"
+            );
+            assert!(
+                !messages
+                    .iter()
+                    .any(|m| m.contains("undefined_symbol_in_python")),
+                "unexpected diagnostic from non-R chunk: {messages:?}"
+            );
+            assert!(
+                !messages.iter().any(|m| m.contains("Syntax error")),
+                "unexpected syntax diagnostic from QMD markup: {messages:?}"
+            );
+            assert!(
+                !messages
+                    .iter()
+                    .any(|m| m.contains("No symbol named 'library' in scope.")),
+                "unexpected diagnostic from masked non-R chunk contents: {messages:?}"
+            );
+        });
+    }
+
+    #[test]
     fn test_tar_load_only_defines_targets_after_the_call() {
         r_task(|| {
             let state = WorldState {
