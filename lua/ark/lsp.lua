@@ -266,35 +266,63 @@ local function home_directory()
   return nil
 end
 
+local function temp_directory()
+  local tmpdir = uv and type(uv.os_tmpdir) == "function" and uv.os_tmpdir() or nil
+  if type(tmpdir) == "string" and tmpdir ~= "" then
+    return vim.fs.normalize(tmpdir)
+  end
+
+  return vim.fs.normalize("/tmp")
+end
+
+local function ad_hoc_directory(path)
+  local normalized = type(path) == "string" and path ~= "" and vim.fs.normalize(path) or nil
+  if not normalized then
+    return false
+  end
+
+  return normalized == home_directory() or normalized == temp_directory()
+end
+
 local function root_dir(bufnr, markers)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local cwd = vim.loop.cwd()
   if path == "" then
-    if type(cwd) == "string" and cwd ~= "" and vim.fs.normalize(cwd) == home_directory() then
+    if type(cwd) == "string" and cwd ~= "" and ad_hoc_directory(cwd) then
       return unnamed_workspace_root()
     end
 
-    return project_root_for_path(cwd, markers) or unnamed_workspace_root()
+    local cwd_root = project_root_for_path(cwd, markers)
+    if cwd_root and not ad_hoc_directory(cwd_root) then
+      return cwd_root
+    end
+
+    return unnamed_workspace_root()
   end
 
   local root = project_root_for_path(path, markers)
-  if root then
+  if root and not ad_hoc_directory(root) then
     return root
   end
 
   local path_dir = vim.fs.dirname(path)
   if type(path_dir) == "string" and path_dir ~= "" then
     local normalized_dir = vim.fs.normalize(path_dir)
-    if normalized_dir == home_directory() then
-      -- A direct `~/file.R` is usually an ad hoc scratch file, not a signal to
-      -- index the whole home directory as one detached workspace.
+    if ad_hoc_directory(normalized_dir) then
+      -- A direct `~/file.R` or `/tmp/file.R` is usually an ad hoc scratch file,
+      -- not a signal to index the whole directory as one detached workspace.
       return unnamed_workspace_root()
     end
 
     return normalized_dir
   end
 
-  return project_root_for_path(cwd, markers) or unnamed_workspace_root()
+  local cwd_root = project_root_for_path(cwd, markers)
+  if cwd_root and not ad_hoc_directory(cwd_root) then
+    return cwd_root
+  end
+
+  return unnamed_workspace_root()
 end
 
 local function same_server(lhs, rhs)
