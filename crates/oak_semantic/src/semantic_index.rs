@@ -126,21 +126,21 @@ impl SemanticIndex {
     /// Top-level definitions exported by this file (definitions in the file scope).
     /// Includes `Import`-kind forwarding definitions from `source()` calls.
     /// Last definition of each name wins (later assignments shadow earlier ones).
-    pub fn file_exports(&self) -> FxHashMap<&str, TextRange> {
+    pub fn exports(&self) -> FxHashMap<&str, &Definition> {
         let file_scope = ScopeId::from(0);
         let symbols = &self.symbol_tables[file_scope];
 
         let mut exports = FxHashMap::default();
         for (_id, def) in self.definitions[file_scope].iter() {
             let name = symbols.symbol(def.symbol()).name();
-            exports.insert(name, def.range());
+            exports.insert(name, def);
         }
 
         exports
     }
 
     /// Package names from `library()` / `require()` calls in this file.
-    pub fn file_attached_packages(&self) -> Vec<&str> {
+    pub fn attached_packages(&self) -> Vec<&str> {
         self.semantic_calls
             .iter()
             .filter_map(|c| match &c.kind {
@@ -208,18 +208,42 @@ impl SemanticIndex {
     }
 
     /// Resolve a name starting from `scope`, walking up the scope chain.
-    pub fn resolve_symbol(&self, name: &str, scope: ScopeId) -> Option<(ScopeId, SymbolId)> {
+    /// Returns the scope that owns the binding, the `DefinitionId` of the
+    /// first matching [`Definition`] in that scope (source-order first),
+    /// and a borrow of the definition itself.
+    pub fn resolve(
+        &self,
+        name: &str,
+        scope: ScopeId,
+    ) -> Option<(ScopeId, DefinitionId, &Definition)> {
         for ancestor in self.ancestor_scopes(scope) {
-            if let Some(id) = self.symbol_tables[ancestor].id(name) {
-                if self.symbol_tables[ancestor]
-                    .symbol(id)
-                    .flags()
-                    .contains(SymbolFlags::IS_BOUND)
-                {
-                    return Some((ancestor, id));
-                }
+            let Some(symbol_id) = self.symbol_tables[ancestor].id(name) else {
+                continue;
+            };
+            if !self.symbol_tables[ancestor]
+                .symbol(symbol_id)
+                .flags()
+                .contains(SymbolFlags::IS_BOUND)
+            {
+                continue;
             }
+
+            // `IS_BOUND` iff at least one `Definition` was recorded for
+            // this symbol. The builder maintains this in lockstep, so the
+            // panic below is unreachable.
+            let (def_id, def) = match self.definitions[ancestor]
+                .iter()
+                .find(|(_id, d)| d.symbol() == symbol_id)
+            {
+                Some(pair) => pair,
+                None => unreachable!(
+                    "IS_BOUND symbol {name:?} in scope {ancestor:?} has no \
+                    Definition: oak_semantic builder invariant violated"
+                ),
+            };
+            return Some((ancestor, def_id, def));
         }
+
         None
     }
 
@@ -484,12 +508,6 @@ impl SymbolFlags {
 // definition without invalidating the definition's identity (file + scope +
 // place) or the UseDefMap.
 //
-// Definitions carry `file` and `scope` so they're self-contained when
-// passed around (e.g., through `DefinitionKind::Import` chains during
-// cross-file goto-definition). This mirrors ty's `Definition<'db>`, a
-// salsa tracked struct that carries file + scope + place for the same
-// reason.
-//
 // Type inference will eventually take a definition as input and inspect
 // the syntax node (via the kind) to determine the type.
 //
@@ -502,11 +520,6 @@ impl SymbolFlags {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Definition {
     pub(crate) kind: DefinitionKind,
-    /// The file that owns this definition's index.
-    // TODO(salsa): Should become a File.
-    pub(crate) file: Url,
-    /// The scope within the file's index where this definition lives.
-    pub(crate) scope: ScopeId,
     // TODO(salsa): Should become a PlaceId (like ty's `ScopedPlaceId`).
     pub(crate) symbol: SymbolId,
     pub(crate) range: TextRange,
@@ -538,14 +551,6 @@ impl Definition {
 
     pub fn range(&self) -> TextRange {
         self.range
-    }
-
-    pub fn file(&self) -> &Url {
-        &self.file
-    }
-
-    pub fn scope(&self) -> ScopeId {
-        self.scope
     }
 }
 

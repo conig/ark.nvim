@@ -10,7 +10,8 @@ use oak_package_metadata::namespace::Namespace;
 use rustc_hash::FxHashMap;
 use stdext::result::ResultExt;
 
-use crate::semantic_index;
+use crate::build_index;
+use crate::resolver::NoopImportsResolver;
 
 define_index!(FileId);
 
@@ -84,15 +85,11 @@ fn append_definitions(
         return;
     }
 
-    let Some(file_url) = url::Url::from_file_path(&file).ok() else {
-        return;
-    };
-
-    let index = semantic_index(&parsed.tree(), &file_url);
+    let index = build_index(&parsed.tree(), NoopImportsResolver);
 
     let file_id = files.push(file);
 
-    for (name, range) in index.file_exports() {
+    for (name, def) in index.exports() {
         let visibility = if namespace.exports.contains_str(name) {
             PackageDefinitionVisibility::Exported
         } else {
@@ -102,7 +99,7 @@ fn append_definitions(
         let definition = PackageDefinition {
             visibility,
             file_id,
-            range,
+            range: def.range(),
         };
 
         definitions.insert(name.to_string(), definition);

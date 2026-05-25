@@ -38,6 +38,11 @@ use crate::NavigationTarget;
 ///
 /// Returns an empty `Vec` if the offset doesn't point at a known
 /// identifier, or if the symbol cannot be resolved.
+// TODO(salsa): This body is the `LegacyDb`-based implementation. Gets
+// rewritten on top of `oak_db::File::resolve_at`, at which point the
+// helpers below (`resolve_use`, `resolve_import`, `resolve_external`,
+// `resolve_namespace_access`) and the `ExternalScope` parameter all go
+// away.
 pub fn goto_definition(
     db: &dyn LegacyDb,
     offset: TextSize,
@@ -64,7 +69,7 @@ pub fn goto_definition(
         },
         Identifier::Use { scope_id, use_id } => {
             let use_site = &index.uses(scope_id)[use_id];
-            resolve_use(db, index, scope_id, use_id, use_site, offset, scope)
+            resolve_use(db, file, index, scope_id, use_id, use_site, offset, scope)
         },
         Identifier::NamespaceAccess {
             ref package,
@@ -84,6 +89,7 @@ pub fn goto_definition(
 
 fn resolve_use(
     db: &dyn LegacyDb,
+    file: &Url,
     index: &SemanticIndex,
     scope_id: ScopeId,
     use_id: UseId,
@@ -105,7 +111,7 @@ fn resolve_use(
                 match def.kind() {
                     DefinitionKind::Import { file, name, .. } => resolve_import(db, file, name),
                     _ => Some(NavigationTarget {
-                        file: def.file().clone(),
+                        file: file.clone(),
                         name: symbol_name.to_string(),
                         full_range: def.range(),
                         focus_range: def.range(),

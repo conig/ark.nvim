@@ -270,8 +270,8 @@ impl Document {
 
     /// TODO(salsa) Recomputed every time for now, but we'll track this with
     /// Salsa soon.
-    pub fn semantic_index(&self, file: &url::Url) -> SemanticIndex {
-        oak_semantic::semantic_index(&self.parse.tree(), file)
+    pub fn semantic_index(&self) -> SemanticIndex {
+        oak_semantic::build_index(&self.parse.tree(), oak_semantic::NoopImportsResolver)
     }
 
     fn clamp_lsp_position(&self, position: lsp_types::Position) -> lsp_types::Position {

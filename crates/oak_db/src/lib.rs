@@ -1,19 +1,33 @@
 mod db;
+mod definition;
 mod file;
+mod file_exports;
+mod file_imports;
+mod file_resolve;
+mod imports;
+mod inputs;
 mod legacy;
 mod name;
 mod parse;
-mod source_graph;
+mod storage;
 
 #[cfg(test)]
 mod tests;
 
 pub use db::Db;
+pub use db::DbInputs;
+pub use definition::Definition;
 pub use file::File;
+pub use file_exports::ExportEntry;
+pub use file_exports::FileExports;
+pub use file_imports::ImportLayer;
+pub use inputs::LibraryRoots;
+pub use inputs::OrphanRoot;
+pub use inputs::Package;
+pub use inputs::Root;
+pub use inputs::RootKind;
+pub use inputs::WorkspaceRoots;
+pub use legacy::semantic_index_with_source_resolver;
 pub use legacy::LegacyDb;
 pub use name::Name;
-pub use source_graph::Package;
-pub use source_graph::PackageOrigin;
-pub use source_graph::Script;
-pub use source_graph::SourceGraph;
-pub use source_graph::SourceNode;
+pub use storage::OakDatabase;
