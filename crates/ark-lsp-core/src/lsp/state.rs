@@ -119,6 +119,7 @@ pub(crate) struct Workspace {
 }
 
 impl WorldState {
+    #[allow(dead_code)]
     pub(crate) fn new(library: Library) -> Self {
         Self {
             library,

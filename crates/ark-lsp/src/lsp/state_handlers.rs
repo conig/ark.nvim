@@ -5,6 +5,8 @@
 //
 //
 
+#![allow(clippy::items_after_test_module)]
+
 use anyhow::anyhow;
 use oak_index::library::Library;
 use oak_index::package::Package;
