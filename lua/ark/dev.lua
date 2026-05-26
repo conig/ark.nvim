@@ -370,6 +370,7 @@ local function finish_build(result)
         replace = build_state.notify_id,
       })
     end
+    close_output_window()
   else
     append_output_status("detached ark-lsp rebuild failed; see the cargo output above.")
     if background and not user_initiated then
