@@ -199,8 +199,10 @@ fn obj_size_tree(
         // Nodes
         // https://github.com/wch/r-source/blob/master/src/include/Rinternals.h#L237-L249
         // All have enough space for three SEXP pointers
-        // Needed for DOTSXP
-        DOTSXP | LISTSXP | LANGSXP if unsafe { x != libr::R_MissingArg } => {
+        DOTSXP | LISTSXP | LANGSXP
+            // Needed for DOTSXP
+            if unsafe { x != libr::R_MissingArg } =>
+        {
             let mut cons = x;
             while is_linked_list(cons) {
                 if cons != x {

@@ -7,9 +7,10 @@
 
 #![allow(clippy::items_after_test_module)]
 
+use aether_url::UrlId;
 use anyhow::anyhow;
-use oak_index::library::Library;
-use oak_index::package::Package;
+use oak_semantic::library::Library;
+use oak_semantic::package::Package;
 use stdext::result::ResultExt;
 use tower_lsp::lsp_types;
 use tower_lsp::lsp_types::CompletionOptions;
@@ -73,7 +74,6 @@ use crate::lsp::session_bridge::SessionBridgeConfig;
 use crate::lsp::state::workspace_uris;
 use crate::lsp::state::RuntimeMode;
 use crate::lsp::state::WorldState;
-use crate::url::UrlId;
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()

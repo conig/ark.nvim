@@ -152,17 +152,27 @@ tmux_cmd() {
   tmux -S "$tmux_socket" "$@"
 }
 
-ensure_test_blink_plugin() {
-  local test_blink_root="${test_data_home}/nvim/lazy/blink.cmp"
-  local default_blink_root="${HOME}/.local/share/nvim/lazy/blink.cmp"
-  local source_blink_root="${ARK_TEST_BLINK_ROOT:-$default_blink_root}"
+ensure_test_lazy_plugin() {
+  local plugin_name="$1"
+  local env_name="$2"
+  local test_plugin_root="${test_data_home}/nvim/lazy/${plugin_name}"
+  local default_plugin_root="${HOME}/.local/share/nvim/lazy/${plugin_name}"
+  local source_plugin_root="${default_plugin_root}"
 
-  if [[ -e "$test_blink_root" || ! -d "$source_blink_root" ]]; then
-    return 0
+  if [[ -n "$env_name" && -n "${!env_name:-}" ]]; then
+    source_plugin_root="${!env_name}"
   fi
 
-  mkdir -p -- "$(dirname -- "$test_blink_root")"
-  ln -s -- "$source_blink_root" "$test_blink_root"
+  if [[ ! -e "$test_plugin_root" && -d "$source_plugin_root" ]]; then
+    mkdir -p -- "$(dirname -- "$test_plugin_root")"
+    ln -s -- "$source_plugin_root" "$test_plugin_root"
+  fi
+}
+
+ensure_test_plugins() {
+  ensure_test_lazy_plugin "blink.cmp" "ARK_TEST_BLINK_ROOT"
+  ensure_test_lazy_plugin "blink.lib" "ARK_TEST_BLINK_LIB_ROOT"
+  ensure_test_lazy_plugin "snacks.nvim" "ARK_TEST_SNACKS_ROOT"
 }
 
 setup_tmux_server() {
@@ -265,7 +275,7 @@ cleanup() {
 trap 'cleanup $?' EXIT INT TERM
 
 setup_tmux_server
-ensure_test_blink_plugin
+ensure_test_plugins
 
 if [[ -n "$run_cwd" ]]; then
   cd -- "$run_cwd"

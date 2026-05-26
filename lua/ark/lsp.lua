@@ -266,31 +266,63 @@ local function home_directory()
   return nil
 end
 
+local function temp_directory()
+  local tmpdir = uv and type(uv.os_tmpdir) == "function" and uv.os_tmpdir() or nil
+  if type(tmpdir) == "string" and tmpdir ~= "" then
+    return vim.fs.normalize(tmpdir)
+  end
+
+  return vim.fs.normalize("/tmp")
+end
+
+local function ad_hoc_directory(path)
+  local normalized = type(path) == "string" and path ~= "" and vim.fs.normalize(path) or nil
+  if not normalized then
+    return false
+  end
+
+  return normalized == home_directory() or normalized == temp_directory()
+end
+
 local function root_dir(bufnr, markers)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local cwd = vim.loop.cwd()
   if path == "" then
-    return project_root_for_path(cwd, markers) or unnamed_workspace_root()
+    if type(cwd) == "string" and cwd ~= "" and ad_hoc_directory(cwd) then
+      return unnamed_workspace_root()
+    end
+
+    local cwd_root = project_root_for_path(cwd, markers)
+    if cwd_root and not ad_hoc_directory(cwd_root) then
+      return cwd_root
+    end
+
+    return unnamed_workspace_root()
   end
 
   local root = project_root_for_path(path, markers)
-  if root then
+  if root and not ad_hoc_directory(root) then
     return root
   end
 
   local path_dir = vim.fs.dirname(path)
   if type(path_dir) == "string" and path_dir ~= "" then
     local normalized_dir = vim.fs.normalize(path_dir)
-    if normalized_dir == home_directory() then
-      -- A direct `~/file.R` is usually an ad hoc scratch file, not a signal to
-      -- index the whole home directory as one detached workspace.
+    if ad_hoc_directory(normalized_dir) then
+      -- A direct `~/file.R` or `/tmp/file.R` is usually an ad hoc scratch file,
+      -- not a signal to index the whole directory as one detached workspace.
       return unnamed_workspace_root()
     end
 
     return normalized_dir
   end
 
-  return project_root_for_path(cwd, markers) or unnamed_workspace_root()
+  local cwd_root = project_root_for_path(cwd, markers)
+  if cwd_root and not ad_hoc_directory(cwd_root) then
+    return cwd_root
+  end
+
+  return unnamed_workspace_root()
 end
 
 local function same_server(lhs, rhs)
@@ -519,6 +551,15 @@ local function cache_client_status(client, payload)
   }
 end
 
+local function clear_client_status(client)
+  if not client or type(client.id) ~= "number" then
+    return
+  end
+
+  client_status_payloads[client.id] = nil
+  client_status_attempt_ms[client.id] = nil
+end
+
 local function cached_client_status(client, ttl_ms)
   if not client or type(client.id) ~= "number" then
     return nil
@@ -555,6 +596,36 @@ end
 
 local function payload_present(payload)
   return type(payload) == "table" and next(payload) ~= nil
+end
+
+local function same_session_identity(lhs, rhs)
+  if type(lhs) ~= "table" or type(rhs) ~= "table" then
+    return false
+  end
+
+  return (lhs.kind or "") == (rhs.kind or "")
+    and (lhs.backend or "") == (rhs.backend or "")
+    and (lhs.sessionId or "") == (rhs.sessionId or "")
+    and (lhs.statusFile or "") == (rhs.statusFile or "")
+    and (lhs.tmuxSocket or "") == (rhs.tmuxSocket or "")
+    and (lhs.tmuxSession or "") == (rhs.tmuxSession or "")
+    and (lhs.tmuxPane or "") == (rhs.tmuxPane or "")
+end
+
+local function status_unavailable(payload)
+  if type(payload) ~= "table" then
+    return true
+  end
+
+  return (payload.status == nil or payload.status == "") and payload.replReady ~= true
+end
+
+local function suppress_transient_status_downgrade(previous, current)
+  return type(previous) == "table"
+    and previous.status == "ready"
+    and previous.replReady == true
+    and status_unavailable(current)
+    and same_session_identity(previous, current)
 end
 
 local function keep_startup_bootstrap_pending(payload, hydrated)
@@ -696,7 +767,12 @@ local function notify_client_session(client, payload)
   end
 
   local normalized = payload or {}
-  if vim.deep_equal(client_session_payloads[client.id] or {}, normalized) then
+  local previous = client_session_payloads[client.id] or {}
+  if suppress_transient_status_downgrade(previous, normalized) then
+    return
+  end
+
+  if vim.deep_equal(previous, normalized) then
     return
   end
 
@@ -897,6 +973,9 @@ bootstrap_client_session = function(client, opts, bufnr, payload)
   end
   if type(result) ~= "table" then
     return false, "invalid bootstrap response"
+  end
+  if result.hydrated == true then
+    clear_client_status(client)
   end
 
   return result.hydrated == true, nil

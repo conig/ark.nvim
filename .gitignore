@@ -4,6 +4,25 @@ tags
 *.tags
 .Rproj.user
 /TODO.md
+
+# Local agent/session state
+/.codex
+
+# Scratch and generated artifacts
+/tmp_examples/
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*.log
+*.pyc
+*.snap.new
+__pycache__/
+.pytest_cache/
+
 packages/rscope/src/*.o
 packages/rscope/src/*.so
 packages/arkbridge/src/*.o

@@ -10,20 +10,24 @@
 resolver = "2"
 
 members = [
+    "crates/aether_url",
     "crates/amalthea",
     "crates/ark",
     "crates/ark-lsp",
     "crates/ark-lsp-support",
+    "crates/ark_macros",
     "crates/echo",
     "crates/harp",
+    "crates/harp_macros",
     "crates/libr",
     "crates/oak_core",
+    "crates/oak_db",
     "crates/oak_fs",
     "crates/oak_ide",
-    "crates/oak_index",
     "crates/oak_index_vec",
     "crates/oak_package_metadata",
     "crates/oak_r_process",
+    "crates/oak_semantic",
     "crates/oak_sources",
     "crates/stdext",
 ]
@@ -44,10 +48,12 @@ aether_factory = { git = "https://github.com/posit-dev/air", package = "air_r_fa
 aether_lsp_utils = { git = "https://github.com/posit-dev/air", rev = "d2659d5b158374bf486b594625ca50abbd0ac879" }
 aether_parser = { git = "https://github.com/posit-dev/air", package = "air_r_parser", rev = "d2659d5b158374bf486b594625ca50abbd0ac879" }
 aether_syntax = { git = "https://github.com/posit-dev/air", package = "air_r_syntax", rev = "d2659d5b158374bf486b594625ca50abbd0ac879" }
+aether_url = { path = "crates/aether_url" }
 amalthea = { path = "crates/amalthea" }
 anyhow = "1.0.102"
 ark = { path = "crates/ark" }
 ark-lsp-support = { path = "crates/ark-lsp-support" }
+ark_macros = { path = "crates/ark_macros" }
 assert_matches = "1.5.0"
 async-trait = "0.1.89"
 base64 = "0.22.1"
@@ -59,6 +65,7 @@ bus = "2.4.1"
 cc = "1.2.61"
 cfg-if = "1.0.4"
 chrono = "0.4.44"
+compact_str = "0.9"
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 ctor = "1.0.0"
 dap = { branch = "main", git = "https://github.com/sztomi/dap-rs" }
@@ -71,7 +78,7 @@ etcetera = "0.11.0"
 flate2 = "1.1.9"
 futures = "0.3.32"
 harp = { path = "crates/harp" }
-harp-macros = { path = "crates/harp/harp-macros" }
+harp_macros = { path = "crates/harp_macros" }
 hex = "0.4.3"
 hmac = "0.13.0"
 home = "0.5.12"
@@ -85,12 +92,13 @@ mime_guess = "2.0.5"
 nix = { version = "0.31", features = ["fs", "poll", "process", "signal"] }
 notify = "8.2.0"
 oak_core = { path = "crates/oak_core" }
+oak_db = { path = "crates/oak_db" }
 oak_fs = { path = "crates/oak_fs" }
 oak_ide = { path = "crates/oak_ide" }
-oak_index = { path = "crates/oak_index" }
 oak_index_vec = { path = "crates/oak_index_vec" }
 oak_package_metadata = { path = "crates/oak_package_metadata" }
 oak_r_process = { path = "crates/oak_r_process" }
+oak_semantic = { path = "crates/oak_semantic" }
 oak_sources = { path = "crates/oak_sources" }
 once_cell = "1.21.4"
 parking_lot = "0.12.5"
@@ -103,6 +111,8 @@ reqwest-middleware = "0.5.1"
 reqwest-retry = "0.9.1"
 rust-embed = "8.11.0"
 rustc-hash = "2.1.2"
+salsa = { version = "0.26.2", features = ["compact_str"] }
+salsa-macros = "0.26.2"
 scraper = "0.26.0"
 semver = "1.0.28"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -135,4 +145,5 @@ windows-sys = "0.61.2"
 winsafe = { version = "0.0.27", features = ["kernel"] }
 xdg = "3.0.0"
 yaml-rust2 = "0.11"
-zmq = "0.10.0"
+# We need ZMQ 4.3.5 to fix polling issues on Windows arm64
+zmq = { git = "https://github.com/erickt/rust-zmq", rev = "5d78967" }

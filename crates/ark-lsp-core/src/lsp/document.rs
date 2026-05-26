@@ -11,7 +11,7 @@ use aether_lsp_utils::proto::from_proto;
 use aether_lsp_utils::proto::to_proto;
 use aether_lsp_utils::proto::PositionEncoding;
 use anyhow::anyhow;
-use oak_index::semantic_index::SemanticIndex;
+use oak_semantic::semantic_index::SemanticIndex;
 use tower_lsp::lsp_types;
 use tree_sitter::Parser;
 use tree_sitter::Tree;
@@ -268,9 +268,10 @@ impl Document {
         Ok(self.parse.syntax())
     }
 
-    /// Recomputed every time for now, we'll track this with Salsa soon.
+    /// TODO(salsa) Recomputed every time for now, but we'll track this with
+    /// Salsa soon.
     pub fn semantic_index(&self) -> SemanticIndex {
-        oak_index::semantic_index(&self.parse.tree())
+        oak_semantic::build_index(&self.parse.tree(), oak_semantic::NoopImportsResolver)
     }
 
     fn clamp_lsp_position(&self, position: lsp_types::Position) -> lsp_types::Position {

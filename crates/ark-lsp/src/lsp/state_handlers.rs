@@ -8,8 +8,8 @@
 #![allow(clippy::items_after_test_module)]
 
 use anyhow::anyhow;
-use oak_index::library::Library;
-use oak_index::package::Package;
+use oak_semantic::library::Library;
+use oak_semantic::package::Package;
 use stdext::result::ResultExt;
 use tower_lsp::lsp_types;
 use tower_lsp::lsp_types::CompletionOptions;

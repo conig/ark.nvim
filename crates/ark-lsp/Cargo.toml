@@ -43,7 +43,10 @@ log.workspace = true
 mime_guess.workspace = true
 nix.workspace = true
 notify.workspace = true
-oak_index.workspace = true
+oak_core.workspace = true
+oak_db.workspace = true
+oak_ide.workspace = true
+oak_semantic.workspace = true
 once_cell.workspace = true
 regex.workspace = true
 reqwest.workspace = true
@@ -51,6 +54,7 @@ reqwest-middleware.workspace = true
 reqwest-retry.workspace = true
 rust-embed.workspace = true
 rustc-hash.workspace = true
+salsa.workspace = true
 scraper.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -75,7 +79,7 @@ yaml-rust2.workspace = true
 [dev-dependencies]
 assert_matches.workspace = true
 insta.workspace = true
-oak_index = { workspace = true, features = ["testing"] }
+oak_semantic = { workspace = true, features = ["testing"] }
 oak_package_metadata.workspace = true
 stdext = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

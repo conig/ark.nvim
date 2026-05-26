@@ -4,7 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::anyhow;
-use oak_index::library::Library;
+use oak_semantic::library::Library;
 use stdext::result::ResultExt;
 use url::Url;
 
