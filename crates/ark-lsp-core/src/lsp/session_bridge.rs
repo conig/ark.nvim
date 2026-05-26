@@ -437,6 +437,12 @@ struct CallArgument {
     value_expr: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct IncompleteDataContextCall {
+    callee: String,
+    arguments: Vec<CallArgument>,
+}
+
 #[derive(Clone, Copy, Debug)]
 enum CompletionFlavor {
     Argument,
@@ -1199,8 +1205,8 @@ impl SessionBridge {
         }
 
         let prefix = symbol_prefix(context)?;
-        let Some(mut call_node) = node_find_containing_call(context.node) else {
-            return Ok(None);
+        let Some(mut call_node) = data_context_call_node(context) else {
+            return self.completion_request_from_incomplete_data_context(context, prefix);
         };
         let pipe_root_expr =
             find_pipe_root_name(context, &call_node)?.or_else(|| pipe_root_text_expr(context));
@@ -1235,6 +1241,34 @@ impl SessionBridge {
 
             call_node = parent;
         }
+    }
+
+    fn completion_request_from_incomplete_data_context(
+        &self,
+        context: &DocumentContext,
+        prefix: Option<String>,
+    ) -> anyhow::Result<Option<CompletionRequest>> {
+        let Some(call) = incomplete_data_context_call(context)? else {
+            return Ok(None);
+        };
+
+        let formals = self.call_formals(call.callee.as_str())?;
+        if !formals.iter().any(|formal| formal == "data") {
+            return Ok(None);
+        }
+
+        let expr =
+            resolve_bound_argument_expr(formals.as_slice(), call.arguments.as_slice(), "data")
+                .or_else(|| pipe_root_text_expr(context));
+        Ok(expr.map(|expr| CompletionRequest {
+            expr,
+            flavor: CompletionFlavor::Pipe,
+            prefix,
+            accessor: None,
+            close_string: false,
+            quote_insert: false,
+            subset_kind: None,
+        }))
     }
 
     fn data_completion_expr_for_call(
@@ -3578,6 +3612,237 @@ fn next_enclosing_call<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
     }
 }
 
+fn data_context_call_node<'tree>(context: &'tree DocumentContext) -> Option<Node<'tree>> {
+    node_find_containing_call(context.node)
+        .or_else(|| node_find_containing_call(context.closest_node))
+}
+
+fn incomplete_data_context_call(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<IncompleteDataContextCall>> {
+    let Some(line) = context.document.get_line(context.point.row) else {
+        return Ok(None);
+    };
+
+    let prefix = line.chars().take(context.point.column).collect::<String>();
+    let Some(nested_open) = last_unmatched_open_paren(prefix.as_str()) else {
+        return Ok(None);
+    };
+
+    let nested_prefix = prefix[nested_open + 1..].trim();
+    if !nested_prefix
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.'))
+    {
+        return Ok(None);
+    }
+
+    let Some(nested_callee_start) = callee_start_before_open(prefix.as_str(), nested_open) else {
+        return Ok(None);
+    };
+    let Some(outer_open) = last_unmatched_open_paren(&prefix[..nested_callee_start]) else {
+        return Ok(None);
+    };
+    let Some(outer_callee_start) = callee_start_before_open(prefix.as_str(), outer_open) else {
+        return Ok(None);
+    };
+
+    let callee = prefix[outer_callee_start..outer_open].trim();
+    if callee.is_empty() {
+        return Ok(None);
+    }
+
+    let arguments = call_arguments_from_text(&prefix[outer_open + 1..nested_callee_start])?;
+    Ok(Some(IncompleteDataContextCall {
+        callee: String::from(callee),
+        arguments,
+    }))
+}
+
+fn last_unmatched_open_paren(text: &str) -> Option<usize> {
+    let mut stack = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (index, ch) in text.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' | '`' => quote = Some(ch),
+            '(' => stack.push(index),
+            ')' => {
+                stack.pop();
+            },
+            _ => {},
+        }
+    }
+
+    stack.pop()
+}
+
+fn callee_start_before_open(text: &str, open_index: usize) -> Option<usize> {
+    let before_open = text.get(..open_index)?;
+    let end = before_open
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(index, ch)| index + ch.len_utf8())?;
+    let start = before_open[..end]
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !is_callee_char(*ch))
+        .map(|(index, ch)| index + ch.len_utf8())
+        .unwrap_or(0);
+
+    if start == end {
+        return None;
+    }
+
+    Some(start)
+}
+
+fn is_callee_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':')
+}
+
+fn call_arguments_from_text(arguments: &str) -> anyhow::Result<Vec<CallArgument>> {
+    top_level_split(arguments, ',')
+        .into_iter()
+        .filter_map(|argument| {
+            let argument = argument.trim();
+            if argument.is_empty() {
+                return None;
+            }
+
+            let (name, value_expr) = match top_level_assignment_index(argument) {
+                Some(index) => {
+                    let name = argument[..index].trim();
+                    let value = argument[index + 1..].trim();
+                    let name = if is_identifier_text(name) {
+                        Some(String::from(name))
+                    } else {
+                        None
+                    };
+                    (name, value)
+                },
+                None => (None, argument),
+            };
+
+            if value_expr.is_empty() {
+                return None;
+            }
+
+            Some(Ok(CallArgument {
+                name,
+                value_expr: String::from(value_expr),
+            }))
+        })
+        .collect()
+}
+
+fn top_level_split(text: &str, delimiter: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (index, ch) in text.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' | '`' => quote = Some(ch),
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            ch if ch == delimiter && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                parts.push(&text[start..index]);
+                start = index + ch.len_utf8();
+            },
+            _ => {},
+        }
+    }
+
+    parts.push(&text[start..]);
+    parts
+}
+
+fn top_level_assignment_index(text: &str) -> Option<usize> {
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+
+    for (index, ch) in text.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' | '`' => quote = Some(ch),
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            '=' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                let previous = text[..index].chars().next_back();
+                let next = text[index + ch.len_utf8()..].chars().next();
+                if previous != Some('=') && next != Some('=') {
+                    return Some(index);
+                }
+            },
+            _ => {},
+        }
+    }
+
+    None
+}
+
+fn is_identifier_text(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() && first != '.' && first != '_' {
+        return false;
+    }
+
+    chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.'))
+}
+
 fn call_arguments(contents: &str, call_node: &Node) -> anyhow::Result<Vec<CallArgument>> {
     let Some(arguments) = call_node.child_by_field_name("arguments") else {
         return Ok(vec![]);
@@ -4345,6 +4610,22 @@ mod tests {
                 value_expr: String::from("cyl"),
             },
         ]);
+    }
+
+    #[test]
+    fn test_incomplete_data_context_call_extracts_outer_data_argument() {
+        let (text, point) = point_from_cursor("ggplot(mtcars, aes(@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+        let call = incomplete_data_context_call(&context)
+            .expect("expected call parse")
+            .unwrap();
+
+        assert_eq!(call.callee, "ggplot");
+        assert_eq!(call.arguments, vec![CallArgument {
+            name: None,
+            value_expr: String::from("mtcars"),
+        }]);
     }
 
     #[test]
