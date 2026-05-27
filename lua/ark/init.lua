@@ -1754,7 +1754,27 @@ local function targets_project(bufnr)
   }
 end
 
+local function target_name_text(value)
+  if type(value) == "string" then
+    return value
+  elseif type(value) == "number" then
+    return tostring(value)
+  end
+  return ""
+end
+
 local function normalize_target_names(value)
+  if type(value) == "table" then
+    local names = {}
+    for _, item in ipairs(value) do
+      local name = target_name_text(item)
+      if name ~= "" then
+        names[#names + 1] = name
+      end
+    end
+    return names
+  end
+
   if type(value) ~= "string" or value == "" then
     return {}
   end
@@ -1764,6 +1784,30 @@ local function normalize_target_names(value)
     names[#names + 1] = name
   end
   return names
+end
+
+local function r_symbol_or_string(value)
+  local name = target_name_text(value)
+  if name:match("^%.?[A-Za-z][A-Za-z0-9._]*$") and not name:match("^%.[0-9]") then
+    return name
+  end
+  return r_string_literal(name)
+end
+
+local function target_load_expression(names)
+  if type(names) ~= "table" or #names == 0 then
+    return "targets::tar_load()"
+  end
+
+  if #names == 1 then
+    return string.format("targets::tar_load(%s)", r_symbol_or_string(names[1]))
+  end
+
+  local rendered = {}
+  for _, name in ipairs(names) do
+    rendered[#rendered + 1] = r_symbol_or_string(name)
+  end
+  return string.format("targets::tar_load(c(%s))", table.concat(rendered, ", "))
 end
 
 local function targets_request(bufnr, label, request)
@@ -2083,7 +2127,7 @@ local function target_action_message(action, result, requested_names)
     end
     return #names > 0 and ("Invalidated " .. noun .. ": " .. rendered_names) or "Invalidated targets"
   elseif action == "load" then
-    return #names > 0 and ("Loaded " .. noun .. ": " .. rendered_names) or "Loaded targets"
+    return #names > 0 and ("Sent tar_load() for " .. noun .. ": " .. rendered_names) or "Sent tar_load()"
   elseif action == "make_downstream" then
     return #names > 0 and ("Built " .. noun .. " and downstream: " .. rendered_names)
       or "Built target and downstream"
@@ -2333,8 +2377,31 @@ function M.targets_object_meta(name, bufnr)
   end)
 end
 
+function M.targets_load(names, bufnr)
+  ensure_setup()
+  bufnr = resolve_bufnr(bufnr)
+  names = normalize_target_names(names)
+
+  local expr = target_load_expression(names)
+  local ok, err = M.send(expr)
+  if not ok then
+    return nil, err
+  end
+
+  return {
+    status = "sent",
+    action = "load",
+    names = names,
+    expression = expr,
+  }
+end
+
 function M.targets_action(action, names, bufnr)
   names = normalize_target_names(names)
+  if action == "load" then
+    return M.targets_load(names, bufnr)
+  end
+
   return targets_request(bufnr, "ark.nvim target action", function(project, target_bufnr)
     return lsp.targets_action(options, target_bufnr, project, action, names)
   end)
@@ -2342,6 +2409,14 @@ end
 
 function M.targets_action_user(action, names, bufnr)
   names = normalize_target_names(names)
+  if action == "load" then
+    local result, err = M.targets_load(names, bufnr)
+    if result then
+      notify(target_action_message(action, result, names), vim.log.levels.INFO)
+    end
+    return result, err
+  end
+
   return targets_request_async(bufnr, "ark.nvim target action", function(project, target_bufnr, callback)
     return lsp.targets_action_async(options, target_bufnr, project, action, names, callback)
   end, function(result)

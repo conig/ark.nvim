@@ -391,8 +391,9 @@ set of R function calls. In a project with `_targets.R`, Ark can:
   `targets::tar_read(clean_data)$`
 - open target graph, status, metadata, and log views
 - pick and remember an active target for repeated build/load actions
-- run approved local actions such as build, build downstream, invalidate, and
-  load
+- run approved local actions such as build, build downstream, and invalidate
+- send `targets::tar_load(...)` to the managed pane so loaded targets appear in
+  the pane's active R context
 
 The design is deliberately narrow: Ark does not reimplement `{targets}` or
 invent a separate pipeline runner. Static analysis discovers what it can from
@@ -420,8 +421,10 @@ For `{targets}` projects:
 - `:Ark targets graph`, `:Ark targets network`, `:Ark targets status`,
   `:Ark targets meta`, and `:Ark targets log` open target views
 - `:Ark targets pick` selects and remembers an active `{targets}` target
-- `:Ark targets load-pick` / `:Ark targets build-pick` pick a target and run the exact Ark target action
-- `:Ark targets load-active` / `:Ark targets build-active` run the action for the remembered active target
+- `:Ark targets load-pick` / `:Ark targets build-pick` pick a target and run
+  the matching target operation
+- `:Ark targets load-active` / `:Ark targets build-active` run the operation
+  for the remembered active target
 - `:Ark targets build-downstream`, `:Ark targets invalidate`, and related `*-pick`
   variants run the matching local target action
 

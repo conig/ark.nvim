@@ -277,7 +277,7 @@ The resulting architecture is:
 - **LSP layer**: target-aware parsing, symbol resolution, completions, hover,
   definitions, references, diagnostics, and code actions
 - **Session bridge layer**: trusted local execution of `{targets}` queries and
-  selected actions inside the managed R session
+  selected project-scoped actions inside the managed R session
 - **Project intelligence layer**: the merged static/dynamic target model used
   by the LSP and bridge-backed features
 
@@ -355,14 +355,18 @@ pretending there is a precise source location.
   bytes, and path-like metadata
 - `targets_object_meta`: return bounded object metadata for one target without
   eagerly materializing large payloads unless allowed by config
-- `targets_action`: run approved actions such as make, invalidate, load, or
-  downstream make against explicit target names
+- `targets_action`: run approved project-scoped actions such as make,
+  invalidate, or downstream make against explicit target names
 
 Bridge requests must be project-scoped and side-effect aware:
 
 - read-only queries should be safe to run automatically after debounce
 - build, invalidate, and load actions require explicit user commands or code
   actions
+- load actions are editor execution actions: Ark should send
+  `targets::tar_load(...)` to the managed pane so objects are bound in the
+  pane's active evaluation context, rather than evaluating `tar_load()` inside a
+  bridge request frame
 - commands must pass explicit `names = ...` rather than fuzzy strings unless the
   UI has already resolved the exact set of targets
 - long-running actions should stream progress or expose a log path, but Ark

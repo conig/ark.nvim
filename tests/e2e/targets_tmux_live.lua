@@ -212,8 +212,38 @@ if not ark_test.find_item(assigned_items, "id") or not ark_test.find_item(assign
 end
 
 local load = ark.targets_action("load", "clean_data", 0)
-if type(load) ~= "table" or load.status ~= "ok" or load.action ~= "load" then
+if type(load) ~= "table" or load.action ~= "load" then
   ark_test.fail("expected target load payload, got " .. vim.inspect(load))
+end
+if load.status ~= "sent" or load.expression ~= "targets::tar_load(clean_data)" then
+  ark_test.fail("expected load action to report pane send details, got " .. vim.inspect(load))
+end
+
+-- Loading a target is an editor execution action: it must send tar_load() to the
+-- managed pane so the object lands in that pane's active evaluation context.
+local tar_load_sent = vim.wait(10000, function()
+  local capture = ark_test.tmux({ "capture-pane", "-p", "-t", pane_id })
+  return capture:find("targets::tar_load(clean_data)", 1, true) ~= nil
+end, 100, false)
+if not tar_load_sent then
+  local capture = ark_test.tmux({ "capture-pane", "-p", "-t", pane_id })
+  ark_test.fail("expected load action to send targets::tar_load(clean_data) to the managed pane; pane output:\n" .. capture)
+end
+
+ark_test.tmux({
+  "send-keys",
+  "-t",
+  pane_id,
+  'ark_tar_load_probe <- exists("clean_data", inherits = FALSE) && identical(clean_data$value, c("a", "b", "c")); cat("ARK_TAR_LOAD_PROBE=", ark_tar_load_probe, "\\n", sep = "")',
+  "Enter",
+})
+local loaded_in_pane = vim.wait(10000, function()
+  local capture = ark_test.tmux({ "capture-pane", "-p", "-t", pane_id })
+  return capture:find("ARK_TAR_LOAD_PROBE=TRUE", 1, true) ~= nil
+end, 100, false)
+if not loaded_in_pane then
+  local capture = ark_test.tmux({ "capture-pane", "-p", "-t", pane_id })
+  ark_test.fail("expected tar_load action to load clean_data in the managed pane; pane output:\n" .. capture)
 end
 
 local downstream = ark.targets_action("make_downstream", "raw_data", 0)
