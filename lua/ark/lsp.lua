@@ -19,6 +19,7 @@ local VIEW_CODE_METHOD = "ark/internal/viewCode"
 local VIEW_EXPORT_METHOD = "ark/internal/viewExport"
 local VIEW_CELL_METHOD = "ark/internal/viewCell"
 local VIEW_CLOSE_METHOD = "ark/internal/viewClose"
+local VIEW_REQUEST_TIMEOUT_MS = 12000
 local TARGETS_PROJECT_INFO_METHOD = "ark/internal/targetsProjectInfo"
 local TARGETS_MANIFEST_METHOD = "ark/internal/targetsManifest"
 local TARGETS_NETWORK_METHOD = "ark/internal/targetsNetwork"
@@ -1651,13 +1652,13 @@ end
 function M.view_open(opts, bufnr, expr)
   return view_request(opts, bufnr, VIEW_OPEN_METHOD, {
     expr = expr,
-  }, 5000)
+  }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 function M.view_state(opts, bufnr, session_id)
   return view_request(opts, bufnr, VIEW_STATE_METHOD, {
     sessionId = session_id,
-  }, 3000)
+  }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 function M.view_page(opts, bufnr, session_id, offset, limit)
@@ -1665,7 +1666,7 @@ function M.view_page(opts, bufnr, session_id, offset, limit)
     sessionId = session_id,
     offset = offset or 0,
     limit = limit or 200,
-  }, 5000)
+  }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 function M.view_sort(opts, bufnr, session_id, column_index, direction)
@@ -1673,7 +1674,7 @@ function M.view_sort(opts, bufnr, session_id, column_index, direction)
     sessionId = session_id,
     columnIndex = column_index,
     direction = direction,
-  }, 5000)
+  }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 function M.view_filter(opts, bufnr, session_id, column_index, query)
@@ -1681,34 +1682,34 @@ function M.view_filter(opts, bufnr, session_id, column_index, query)
     sessionId = session_id,
     columnIndex = column_index,
     query = query,
-  }, 5000)
+  }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 function M.view_schema_search(opts, bufnr, session_id, query)
   return view_request(opts, bufnr, VIEW_SCHEMA_SEARCH_METHOD, {
     sessionId = session_id,
     query = query,
-  }, 3000)
+  }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 function M.view_profile(opts, bufnr, session_id, column_index)
   return view_request(opts, bufnr, VIEW_PROFILE_METHOD, {
     sessionId = session_id,
     columnIndex = column_index,
-  }, 5000)
+  }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 function M.view_code(opts, bufnr, session_id)
   return view_request(opts, bufnr, VIEW_CODE_METHOD, {
     sessionId = session_id,
-  }, 3000)
+  }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 function M.view_export(opts, bufnr, session_id, format)
   return view_request(opts, bufnr, VIEW_EXPORT_METHOD, {
     sessionId = session_id,
     format = format or "tsv",
-  }, 5000)
+  }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 function M.view_cell(opts, bufnr, session_id, row_index, column_index)
@@ -1716,13 +1717,13 @@ function M.view_cell(opts, bufnr, session_id, row_index, column_index)
     sessionId = session_id,
     rowIndex = row_index,
     columnIndex = column_index,
-  }, 3000)
+  }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 function M.view_close(opts, bufnr, session_id)
   return view_request(opts, bufnr, VIEW_CLOSE_METHOD, {
     sessionId = session_id,
-  }, 3000)
+  }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 local function targets_project_payload(project)

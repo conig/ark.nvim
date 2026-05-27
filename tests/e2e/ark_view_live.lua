@@ -62,6 +62,18 @@ local ok, err = pcall(function()
     error("expected first mpg cell from mtcars page, got " .. vim.inspect(page.rows[1]), 0)
   end
 
+  -- Regression: ArkView is a user-initiated table operation and must not use
+  -- the same tight bridge timeout as latency-sensitive completion requests.
+  -- Real wide targets such as DAvalidate's final_data can legitimately take
+  -- more than one second to evaluate and serialize their schema.
+  local slow_view = ark_test.request(client, "ark/internal/viewOpen", {
+    expr = [[local({ Sys.sleep(1.2); as.data.frame(setNames(as.list(seq_len(12)), sprintf("col_%02d", seq_len(12)))) })]],
+  }, 10000)
+
+  if tonumber(slow_view.total_columns or 0) ~= 12 then
+    error("expected slow ArkView table to open with 12 columns, got " .. vim.inspect(slow_view), 0)
+  end
+
   -- Regression: visually empty strings must be distinguishable in ArkView's
   -- page payload before the Lua grid pads them into fixed-width cells.
   local string_view = ark_test.request(client, "ark/internal/viewOpen", {

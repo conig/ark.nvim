@@ -56,6 +56,8 @@ pub(crate) struct SessionBridge {
     timeout: Duration,
 }
 
+const VIEW_COMMAND_TIMEOUT_MS: u64 = 10_000;
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SessionBridgeDebugInfo {
@@ -809,11 +811,11 @@ impl SessionBridge {
     }
 
     pub(crate) fn view_open(&self, expr: &str) -> anyhow::Result<Value> {
-        self.bridge_command("view_open", serde_json::json!({ "expr": expr }))
+        self.view_command("view_open", serde_json::json!({ "expr": expr }))
     }
 
     pub(crate) fn view_state(&self, session_id: &str) -> anyhow::Result<Value> {
-        self.bridge_command(
+        self.view_command(
             "view_state",
             serde_json::json!({ "session_id": session_id }),
         )
@@ -825,7 +827,7 @@ impl SessionBridge {
         offset: u32,
         limit: u32,
     ) -> anyhow::Result<Value> {
-        self.bridge_command(
+        self.view_command(
             "view_page",
             serde_json::json!({
                 "session_id": session_id,
@@ -841,7 +843,7 @@ impl SessionBridge {
         column_index: u32,
         direction: &str,
     ) -> anyhow::Result<Value> {
-        self.bridge_command(
+        self.view_command(
             "view_sort",
             serde_json::json!({
                 "session_id": session_id,
@@ -857,7 +859,7 @@ impl SessionBridge {
         column_index: u32,
         query: &str,
     ) -> anyhow::Result<Value> {
-        self.bridge_command(
+        self.view_command(
             "view_filter",
             serde_json::json!({
                 "session_id": session_id,
@@ -872,7 +874,7 @@ impl SessionBridge {
         session_id: &str,
         query: &str,
     ) -> anyhow::Result<Value> {
-        self.bridge_command(
+        self.view_command(
             "view_schema_search",
             serde_json::json!({
                 "session_id": session_id,
@@ -886,7 +888,7 @@ impl SessionBridge {
         session_id: &str,
         column_index: u32,
     ) -> anyhow::Result<Value> {
-        self.bridge_command(
+        self.view_command(
             "view_profile",
             serde_json::json!({
                 "session_id": session_id,
@@ -896,11 +898,11 @@ impl SessionBridge {
     }
 
     pub(crate) fn view_code(&self, session_id: &str) -> anyhow::Result<Value> {
-        self.bridge_command("view_code", serde_json::json!({ "session_id": session_id }))
+        self.view_command("view_code", serde_json::json!({ "session_id": session_id }))
     }
 
     pub(crate) fn view_export(&self, session_id: &str, format: &str) -> anyhow::Result<Value> {
-        self.bridge_command(
+        self.view_command(
             "view_export",
             serde_json::json!({
                 "session_id": session_id,
@@ -915,7 +917,7 @@ impl SessionBridge {
         row_index: u32,
         column_index: u32,
     ) -> anyhow::Result<Value> {
-        self.bridge_command(
+        self.view_command(
             "view_cell",
             serde_json::json!({
                 "session_id": session_id,
@@ -926,7 +928,7 @@ impl SessionBridge {
     }
 
     pub(crate) fn view_close(&self, session_id: &str) -> anyhow::Result<Value> {
-        self.bridge_command(
+        self.view_command(
             "view_close",
             serde_json::json!({ "session_id": session_id }),
         )
@@ -1424,6 +1426,19 @@ impl SessionBridge {
                 })
             },
         }
+    }
+
+    fn view_command(&self, command: &str, payload: Value) -> anyhow::Result<Value> {
+        self.with_min_timeout(Duration::from_millis(VIEW_COMMAND_TIMEOUT_MS))
+            .bridge_command(command, payload)
+    }
+
+    fn with_min_timeout(&self, timeout: Duration) -> Self {
+        let mut bridge = self.clone();
+        if bridge.timeout < timeout {
+            bridge.timeout = timeout;
+        }
+        bridge
     }
 
     fn bridge_command_with_connection<T>(
