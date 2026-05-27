@@ -29,6 +29,39 @@ pub(crate) fn frontmatter_row_range(document: &Document) -> Option<Range<usize>>
     None
 }
 
+pub(crate) fn frontmatter_has_top_level_key(document: &Document, key: &str) -> bool {
+    if document.kind != DocumentKind::LiterateR || key.is_empty() {
+        return false;
+    }
+
+    let Some(frontmatter_rows) = frontmatter_row_range(document) else {
+        return false;
+    };
+
+    for row in frontmatter_rows {
+        let Some(line) = document.get_line(row).map(line_without_newline) else {
+            continue;
+        };
+        if line.chars().next().is_some_and(char::is_whitespace) {
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let Some((raw_key, _)) = trimmed.split_once(':') else {
+            continue;
+        };
+        if clean_scalar_value(raw_key).as_deref() == Some(key) || raw_key.trim() == key {
+            return true;
+        }
+    }
+
+    false
+}
+
 pub(crate) fn frontmatter_output_value_edit_range(
     document: &Document,
     point: Point,
@@ -206,5 +239,27 @@ mod tests {
         let document = Document::new_with_kind(text.as_str(), None, DocumentKind::LiterateR);
 
         assert!(frontmatter_output_help_topic(&document, point).is_none());
+    }
+
+    #[test]
+    fn test_frontmatter_has_top_level_key_detects_params() {
+        let document = Document::new_with_kind(
+            "---\ntitle: \"Report\"\nparams:\n  value: !r NULL\n---\n",
+            None,
+            DocumentKind::LiterateR,
+        );
+
+        assert!(frontmatter_has_top_level_key(&document, "params"));
+    }
+
+    #[test]
+    fn test_frontmatter_has_top_level_key_ignores_nested_key() {
+        let document = Document::new_with_kind(
+            "---\noutput:\n  params: html_document\n---\n",
+            None,
+            DocumentKind::LiterateR,
+        );
+
+        assert!(!frontmatter_has_top_level_key(&document, "params"));
     }
 }

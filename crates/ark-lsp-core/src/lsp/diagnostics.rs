@@ -27,6 +27,7 @@ use crate::lsp;
 use crate::lsp::declarations::top_level_declare;
 use crate::lsp::diagnostics_syntax::syntax_diagnostics;
 use crate::lsp::document::Document;
+use crate::lsp::frontmatter::frontmatter_has_top_level_key;
 use crate::lsp::indexer;
 use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::state::WorldState;
@@ -227,6 +228,10 @@ pub(crate) fn generate_diagnostics(
     // Add `_` pipe placeholder as a "known" session symbol so we never flag it with
     // "symbol not found" when it shows up as an `identifier` node
     context.session_symbols.insert(String::from("_"));
+
+    if frontmatter_has_top_level_key(&doc, "params") {
+        context.session_symbols.insert(String::from("params"));
+    }
 
     // Some runtime-visible datasets are exposed via package metadata or
     // autoloads rather than the captured search-path symbol list. Accepting
@@ -2437,6 +2442,44 @@ undefined_symbol_in_qmd_chunk
                     .iter()
                     .any(|m| m.contains("No symbol named 'library' in scope.")),
                 "unexpected diagnostic from masked non-R chunk contents: {messages:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn test_rmd_params_frontmatter_defines_params_object() {
+        r_task(|| {
+            let state = DEFAULT_STATE.clone();
+            let document = Document::new_with_kind(
+                r#"---
+title: "`r params$form_label` Alcohol ATRSQ Bass-Ackwards Report"
+params:
+  form_label: !r NULL
+  demographics_summary: !r NULL
+---
+
+```{r setup, include=FALSE}
+demographics_summary <- params$demographics_summary
+undefined_symbol_in_rmd_params_chunk
+```
+"#,
+                None,
+                DocumentKind::LiterateR,
+            );
+
+            let diagnostics = generate_diagnostics(document, state);
+            let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+
+            assert!(
+                !messages
+                    .iter()
+                    .any(|m| m.contains("No symbol named 'params' in scope.")),
+                "unexpected params diagnostic in parameterized Rmd: {messages:?}"
+            );
+            assert!(
+                messages.iter().any(|m| m
+                    .contains("No symbol named 'undefined_symbol_in_rmd_params_chunk' in scope.")),
+                "expected diagnostics to keep reporting unrelated missing symbols: {messages:?}"
             );
         });
     }

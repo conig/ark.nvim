@@ -40,8 +40,11 @@ local test_file = "/tmp/ark_rmd_diagnostics.Rmd"
 
 vim.fn.writefile({
   "---",
-  'title: "Ark R Markdown diagnostics"',
+  'title: "`r params$form_label` Ark R Markdown diagnostics"',
   "output: html_document",
+  "params:",
+  "  form_label: !r NULL",
+  "  summary_table: !r NULL",
   "---",
   "",
   "This prose mentions undefined_symbol_in_prose and library().",
@@ -52,6 +55,7 @@ vim.fn.writefile({
   "",
   "```{r}",
   "library(ggplot2)",
+  "summary_table <- params$summary_table",
   "undefined_symbol_in_chunk",
   "```",
 }, test_file)
@@ -89,6 +93,10 @@ end
 
 if not any_message_contains(messages, "No symbol named 'undefined_symbol_in_chunk' in scope.") then
   fail("expected chunk diagnostic, got: " .. vim.inspect(messages))
+end
+
+if any_message_contains(messages, "No symbol named 'params' in scope.") then
+  fail("unexpected params diagnostic in parameterized Rmd: " .. vim.inspect(messages))
 end
 
 if any_message_contains(messages, "undefined_symbol_in_prose") then
