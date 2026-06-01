@@ -15,6 +15,7 @@ use tower_lsp::lsp_types::WorkDoneProgressOptions;
 #[derive(Debug, Default)]
 pub(crate) struct Capabilities {
     dynamic_registration_for_did_change_configuration: bool,
+    dynamic_registration_for_did_change_watched_files: bool,
     code_action_literal_support: bool,
     workspace_edit_document_changes: bool,
 }
@@ -26,6 +27,13 @@ impl Capabilities {
             .as_ref()
             .and_then(|workspace| workspace.did_change_configuration)
             .and_then(|did_change_configuration| did_change_configuration.dynamic_registration)
+            .unwrap_or(false);
+
+        let dynamic_registration_for_did_change_watched_files = client_capabilities
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.did_change_watched_files.as_ref())
+            .and_then(|did_change_watched_files| did_change_watched_files.dynamic_registration)
             .unwrap_or(false);
 
         // In theory the client also tells us which code action kinds it supports inside
@@ -48,6 +56,7 @@ impl Capabilities {
 
         Self {
             dynamic_registration_for_did_change_configuration,
+            dynamic_registration_for_did_change_watched_files,
             code_action_literal_support,
             workspace_edit_document_changes,
         }
@@ -55,6 +64,10 @@ impl Capabilities {
 
     pub(crate) fn dynamic_registration_for_did_change_configuration(&self) -> bool {
         self.dynamic_registration_for_did_change_configuration
+    }
+
+    pub(crate) fn dynamic_registration_for_did_change_watched_files(&self) -> bool {
+        self.dynamic_registration_for_did_change_watched_files
     }
 
     pub(crate) fn code_action_literal_support(&self) -> bool {

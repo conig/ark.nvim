@@ -6,6 +6,7 @@
 //
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::future;
 use std::path::Path;
 use std::path::PathBuf;
@@ -995,7 +996,34 @@ pub(crate) fn index_start(folders: Vec<String>, state: WorldState) {
 pub(crate) fn index_create(uris: Vec<Url>, state: WorldState) {
     store_latest_world_state(&state);
 
+    let mut queued_uris = HashSet::new();
+    let mut related_disk_uris = Vec::new();
+
     for uri in uris {
+        if !ExtUrl::is_indexable(&uri) {
+            continue;
+        }
+
+        if let Some(targets_uri) = related_targets_script_uri(&uri) {
+            if targets_uri != uri && !related_disk_uris.contains(&targets_uri) {
+                related_disk_uris.push(targets_uri);
+            }
+        }
+
+        if !queued_uris.insert(uri.clone()) {
+            continue;
+        }
+
+        INDEXER_QUEUE
+            .send(IndexerQueueTask::Indexer(IndexerTask::Create { uri }))
+            .unwrap_or_else(|err| crate::lsp::log_error!("Failed to queue index create: {err}"));
+    }
+
+    for uri in related_disk_uris {
+        if !queued_uris.insert(uri.clone()) {
+            continue;
+        }
+
         INDEXER_QUEUE
             .send(IndexerQueueTask::Indexer(IndexerTask::Create { uri }))
             .unwrap_or_else(|err| crate::lsp::log_error!("Failed to queue index create: {err}"));

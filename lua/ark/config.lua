@@ -74,6 +74,7 @@ function M.defaults()
     lsp = {
       name = "ark_lsp",
       cmd = { lsp_bin, "--runtime-mode", "detached" },
+      file_watch = true,
       root_markers = { ".git", ".Rproj", "DESCRIPTION", "renv.lock" },
       restart_wait_ms = 2000,
     },

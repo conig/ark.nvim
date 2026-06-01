@@ -26,11 +26,14 @@ use tower_lsp::lsp_types::CompletionItemKind;
 use tower_lsp::lsp_types::CompletionParams;
 use tower_lsp::lsp_types::CompletionResponse;
 use tower_lsp::lsp_types::CompletionTriggerKind;
+use tower_lsp::lsp_types::DidChangeWatchedFilesRegistrationOptions;
 use tower_lsp::lsp_types::DocumentOnTypeFormattingParams;
 use tower_lsp::lsp_types::DocumentSymbolParams;
 use tower_lsp::lsp_types::DocumentSymbolResponse;
+use tower_lsp::lsp_types::FileSystemWatcher;
 use tower_lsp::lsp_types::FoldingRange;
 use tower_lsp::lsp_types::FoldingRangeParams;
+use tower_lsp::lsp_types::GlobPattern;
 use tower_lsp::lsp_types::GotoDefinitionParams;
 use tower_lsp::lsp_types::GotoDefinitionResponse;
 use tower_lsp::lsp_types::Hover;
@@ -48,6 +51,7 @@ use tower_lsp::lsp_types::SignatureHelp;
 use tower_lsp::lsp_types::SignatureHelpParams;
 use tower_lsp::lsp_types::SymbolInformation;
 use tower_lsp::lsp_types::TextEdit;
+use tower_lsp::lsp_types::WatchKind;
 use tower_lsp::lsp_types::WorkspaceEdit;
 use tower_lsp::lsp_types::WorkspaceSymbolParams;
 use tower_lsp::Client;
@@ -394,6 +398,28 @@ pub(crate) async fn handle_initialized(
                 });
             }
         }
+    }
+
+    if lsp_state
+        .capabilities
+        .dynamic_registration_for_did_change_watched_files()
+    {
+        regs.push(Registration {
+            id: uuid::Uuid::new_v4().to_string(),
+            method: String::from("workspace/didChangeWatchedFiles"),
+            register_options: Some(serde_json::to_value(
+                DidChangeWatchedFilesRegistrationOptions {
+                    watchers: vec![FileSystemWatcher {
+                        // Neovim's Linux watchdirs backend applies the include
+                        // pattern while deciding which directories to watch.
+                        // Keep the client-side pattern broad so nested R files
+                        // are observed; Ark filters non-R URIs before indexing.
+                        glob_pattern: GlobPattern::String(String::from("**/*")),
+                        kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+                    }],
+                },
+            )?),
+        });
     }
 
     client

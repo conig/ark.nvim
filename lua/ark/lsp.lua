@@ -326,6 +326,27 @@ local function root_dir(bufnr, markers)
   return unnamed_workspace_root()
 end
 
+local function lsp_capabilities(opts)
+  local capabilities = vim.lsp.protocol.make_client_capabilities()
+  local lsp_opts = type(opts) == "table" and type(opts.lsp) == "table" and opts.lsp or {}
+
+  if type(lsp_opts.capabilities) == "table" then
+    capabilities = vim.tbl_deep_extend("force", capabilities, lsp_opts.capabilities)
+  end
+
+  capabilities.workspace = capabilities.workspace or {}
+
+  if lsp_opts.file_watch == false then
+    capabilities.workspace.didChangeWatchedFiles = nil
+  else
+    capabilities.workspace.didChangeWatchedFiles = capabilities.workspace.didChangeWatchedFiles or {}
+    capabilities.workspace.didChangeWatchedFiles.dynamicRegistration = true
+    capabilities.workspace.didChangeWatchedFiles.relativePatternSupport = true
+  end
+
+  return capabilities
+end
+
 local function same_server(lhs, rhs)
   if type(lhs) ~= "table" or type(rhs) ~= "table" then
     return false
@@ -1169,6 +1190,7 @@ function M.config(opts, bufnr, _config_opts)
       allow_incremental_sync = false,
     },
     cmd_env = cmd_env,
+    capabilities = lsp_capabilities(opts),
     root_dir = root_dir(bufnr, opts.lsp.root_markers),
   }, nil
 end
