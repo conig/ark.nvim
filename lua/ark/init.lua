@@ -700,7 +700,7 @@ local function is_navigable_reference_label(label)
   return #label >= 3 and label:match("[%a][%a][%a]") ~= nil
 end
 
-local function build_help_reference_matches(lines, references)
+local function build_help_reference_matches(lines, references, code_lines)
   local grouped = {}
 
   for _, reference in ipairs(references or {}) do
@@ -736,6 +736,10 @@ local function build_help_reference_matches(lines, references)
 
   local matches = {}
   for line_index, line in ipairs(lines) do
+    if code_lines and code_lines[line_index] then
+      goto next_line
+    end
+
     local occupied = {}
 
     for _, label in ipairs(labels) do
@@ -771,6 +775,8 @@ local function build_help_reference_matches(lines, references)
         start_col = match_start + 1
       end
     end
+
+    ::next_line::
   end
 
   return matches
@@ -863,9 +869,13 @@ local function apply_help_highlights(buf, rendered, references)
   local title_line = nil
   local sections = {}
   local code_blocks_by_header = {}
+  local code_lines = {}
 
   for _, block in ipairs(rendered.code_blocks or {}) do
     code_blocks_by_header[block.header_line] = block
+    for line_index = block.fence_start, block.fence_end do
+      code_lines[line_index] = true
+    end
   end
 
   for index, line in ipairs(lines) do
@@ -919,7 +929,7 @@ local function apply_help_highlights(buf, rendered, references)
     end
   end
 
-  local matches = build_help_reference_matches(lines, references)
+  local matches = build_help_reference_matches(lines, references, code_lines)
   for _, match in ipairs(matches) do
     vim.api.nvim_buf_set_extmark(buf, help_float_ns, match.line - 1, match.start_col, {
       end_col = match.end_col,
@@ -1152,6 +1162,82 @@ local function sync_sessions_soon()
   end)
 end
 
+local function slime_target()
+  local target = vim.b.slime_target or vim.g.slime_target
+  if type(target) == "string" and target ~= "" then
+    return target
+  end
+
+  local resolve = vim.fn["slime#config#resolve"]
+  if type(resolve) == "function" then
+    local ok, resolved = pcall(resolve, "target")
+    if ok and type(resolved) == "string" and resolved ~= "" then
+      return resolved
+    end
+  end
+
+  return nil
+end
+
+local function slime_config(fallback)
+  if type(vim.b.slime_config) == "table" then
+    return vim.b.slime_config
+  end
+
+  if type(vim.g.slime_default_config) == "table" then
+    return vim.g.slime_default_config
+  end
+
+  return fallback
+end
+
+local function default_slime_send(config_arg, text)
+  local target = slime_target()
+  if type(target) ~= "string" or target == "" then
+    return nil, "vim-slime target is not configured"
+  end
+
+  local send = vim.fn["slime#targets#" .. target .. "#send"]
+  local ok, result = pcall(send, slime_config(config_arg), text)
+  if not ok then
+    return nil, tostring(result)
+  end
+
+  return result == nil and true or result, nil
+end
+
+local function install_slime_override()
+  _G.__ark_slime_override_send = function(config_arg, text)
+    local ok, err = M._slime_override_send(config_arg, text)
+    if ok then
+      return nil
+    end
+    return err or "failed to send text through vim-slime"
+  end
+
+  if vim.g.ark_slime_override_send_installed == 1 then
+    return
+  end
+
+  if vim.fn.exists("*SlimeOverrideSend") == 1 then
+    if vim.g.ark_slime_override_send_conflict_notified ~= 1 then
+      vim.g.ark_slime_override_send_conflict_notified = 1
+      notify("vim-slime SlimeOverrideSend already exists; Ark closed-pane send preflight is disabled", vim.log.levels.WARN)
+    end
+    return
+  end
+
+  vim.g.ark_slime_override_send_installed = 1
+  vim.cmd([[
+function! SlimeOverrideSend(config, text) abort
+  let l:ark_err = v:lua.__ark_slime_override_send(a:config, a:text)
+  if type(l:ark_err) == v:t_string && l:ark_err !=# ''
+    throw 'ark.nvim: ' . l:ark_err
+  endif
+endfunction
+]])
+end
+
 local function start_managed_buffer(bufnr)
   if not options or type(bufnr) ~= "number" then
     return
@@ -1259,6 +1345,9 @@ function M.setup(opts)
 
   local group = vim.api.nvim_create_augroup("ArkNvim", { clear = true })
   keymaps.setup(options)
+  if options.configure_slime == true then
+    install_slime_override()
+  end
 
   vim.api.nvim_create_autocmd("FileType", {
     group = group,
@@ -1516,6 +1605,54 @@ function M.snippets(bufnr)
   })
 end
 
+function M._slime_before_send()
+  ensure_setup()
+
+  if options.configure_slime ~= true then
+    return true, nil
+  end
+
+  local bufnr = vim.api.nvim_get_current_buf()
+  if not is_ark_buffer(bufnr) then
+    return true, nil
+  end
+
+  local bridge_ok, bridge_err = ensure_bridge_runtime({
+    user_initiated = true,
+    wait_on_pending = true,
+  })
+  if not bridge_ok then
+    return nil, bridge_err
+  end
+
+  local pane_id, pane_err = session_backend.start(options)
+  if not pane_id then
+    return nil, pane_err
+  end
+
+  sync_sessions_soon()
+  return true, nil
+end
+
+function M._slime_override_send(config_arg, text, delegate)
+  local ready, ready_err = M._slime_before_send()
+  if not ready then
+    return nil, ready_err
+  end
+
+  local send = type(delegate) == "function" and delegate or default_slime_send
+  local ok, result, send_err = pcall(send, slime_config(config_arg), text)
+  if not ok then
+    return nil, tostring(result)
+  end
+
+  if result == nil or result == false then
+    return nil, send_err or "vim-slime send failed"
+  end
+
+  return true, nil
+end
+
 function M.send(text)
   ensure_setup()
 
@@ -1738,20 +1875,116 @@ local function targets_project_store(root, script)
   return nil
 end
 
+local function targets_trim(value)
+  return (value:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function targets_config_path(root)
+  local config = vim.env.TAR_CONFIG
+  if type(config) ~= "string" or config == "" then
+    config = "_targets.yaml"
+  end
+  if config:sub(1, 1) == "/" then
+    return vim.fs.normalize(config)
+  end
+  return vim.fs.normalize(root .. "/" .. config)
+end
+
+local function targets_yaml_scalar(value)
+  value = targets_trim(value or "")
+  if value == "" or value == "null" or value == "~" then
+    return nil
+  end
+
+  local quote = value:sub(1, 1)
+  if (quote == '"' or quote == "'") and value:sub(-1) == quote then
+    return value:sub(2, -2)
+  end
+  return value
+end
+
+local function targets_config_value(root, name)
+  local config = targets_config_path(root)
+  if vim.fn.filereadable(config) ~= 1 then
+    return nil
+  end
+
+  local ok, lines = pcall(vim.fn.readfile, config, "", 2000)
+  if not ok or type(lines) ~= "table" then
+    return nil
+  end
+
+  local project = vim.env.TAR_PROJECT
+  if type(project) ~= "string" or project == "" then
+    project = "main"
+  end
+
+  local in_project = false
+  for _, line in ipairs(lines) do
+    local top = line:match("^([%w_.-]+):%s*$")
+    if top then
+      in_project = top == project
+    elseif in_project then
+      local value = line:match("^%s+" .. name .. ":%s*(.-)%s*$")
+      if value then
+        return targets_yaml_scalar(value)
+      end
+    end
+  end
+
+  for _, line in ipairs(lines) do
+    local value = line:match("^" .. name .. ":%s*(.-)%s*$")
+    if value then
+      return targets_yaml_scalar(value)
+    end
+  end
+
+  return nil
+end
+
+local function targets_resolve_project_path(root, path)
+  if type(path) ~= "string" or path == "" then
+    return nil
+  end
+  if path:sub(1, 1) == "/" then
+    return vim.fs.normalize(path)
+  end
+  return vim.fs.normalize(root .. "/" .. path)
+end
+
+local function targets_project_script(root)
+  return targets_resolve_project_path(root, targets_config_value(root, "script"))
+    or vim.fs.normalize(root .. "/_targets.R")
+end
+
+local function targets_project_store_path(root, script)
+  return targets_resolve_project_path(root, targets_config_value(root, "store"))
+    or targets_project_store(root, script)
+    or vim.fs.normalize(root .. "/_targets")
+end
+
 local function targets_project(bufnr)
   bufnr = resolve_bufnr(bufnr)
   local path = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) or ""
   local anchor = path ~= "" and path or vim.loop.cwd()
-  local root = vim.fs.root(anchor, { "_targets.R", ".git" }) or vim.loop.cwd()
+  local root = vim.fs.root(anchor, { "_targets.R", "_targets.yaml", ".git" }) or vim.loop.cwd()
   root = vim.fs.normalize(root)
-  local script = vim.fs.normalize(root .. "/_targets.R")
-  local store = targets_project_store(root, script) or vim.fs.normalize(root .. "/_targets")
+  local script = targets_project_script(root)
+  local store = targets_project_store_path(root, script)
 
   return {
     root = root,
     script = script,
     store = store,
   }
+end
+
+function M.targets_project(bufnr)
+  return targets_project(bufnr)
+end
+
+function M.targets_script(bufnr)
+  return targets_project(bufnr).script
 end
 
 local function target_name_text(value)
@@ -2168,6 +2401,28 @@ local function read_active_target(project)
   return name
 end
 
+local function clear_active_target(project)
+  local root = type(project) == "table" and project.root or nil
+  if type(root) == "string" and root ~= "" then
+    target_active_by_root[root] = nil
+  end
+
+  local path = target_active_path(project)
+  if vim.fn.filereadable(path) == 1 then
+    pcall(vim.fn.delete, path)
+  end
+end
+
+local function target_manifest_has_name(project, name)
+  local payload = target_tools.static_manifest(project)
+  for _, record in ipairs(target_records(payload, "targets")) do
+    if target_name(record) == name then
+      return true
+    end
+  end
+  return false
+end
+
 local function target_project_label(payload)
   local project = type(payload) == "table" and payload.project or nil
   if type(project) == "table" and type(project.root) == "string" and project.root ~= "" then
@@ -2292,6 +2547,10 @@ function M.targets_active(bufnr)
   local name = target_active_by_root[project.root] or read_active_target(project)
   if type(name) ~= "string" or name == "" then
     return nil, "no active target set"
+  end
+  if not target_manifest_has_name(project, name) then
+    clear_active_target(project)
+    return nil, "active target no longer exists: " .. name
   end
   target_active_by_root[project.root] = name
   return name

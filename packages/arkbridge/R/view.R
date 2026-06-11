@@ -369,7 +369,7 @@
       offset = as.integer(offset),
       limit = as.integer(limit),
       total_rows = as.integer(total_rows),
-      row_numbers = as.integer(row_numbers),
+      row_numbers = I(as.integer(row_numbers)),
       rows = page_rows
     ))
   })

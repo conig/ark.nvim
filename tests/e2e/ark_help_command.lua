@@ -80,7 +80,7 @@ local ok, err = pcall(function()
           "",
           "     mutate(mtcars, cyl2 = cyl * 2)",
           "",
-          "     group_by(mtcars, cyl)",
+          "     group_by()",
         }, "\n"),
         references = {
           { label = "group_by()", topic = "group_by", package = "dplyr" },
@@ -190,7 +190,7 @@ local ok, err = pcall(function()
     "```r",
     "     mutate(mtcars, cyl2 = cyl * 2)",
     "",
-    "     group_by(mtcars, cyl)",
+    "     group_by()",
     "```",
   }) then
     error("unexpected help buffer contents: " .. vim.inspect(lines), 0)
@@ -214,12 +214,21 @@ local ok, err = pcall(function()
   local extmarks = vim.api.nvim_buf_get_extmarks(help_buf, ns, 0, -1, { details = true })
   local line_groups = {}
   local has_reference_highlight = false
+  local code_reference_highlights = {}
   for _, mark in ipairs(extmarks) do
     if mark[4].line_hl_group then
       line_groups[mark[2] + 1] = mark[4].line_hl_group
     end
     if mark[4].hl_group == "ArkHelpReference" then
       has_reference_highlight = true
+      local line = mark[2] + 1
+      if line >= 8 and line <= 10 or line >= 18 and line <= 22 then
+        code_reference_highlights[#code_reference_highlights + 1] = {
+          line = line,
+          col = mark[3],
+          text = lines[line],
+        }
+      end
     end
   end
 
@@ -286,6 +295,10 @@ local ok, err = pcall(function()
 
   if not has_reference_highlight then
     error("expected at least one help reference highlight", 0)
+  end
+
+  if #code_reference_highlights ~= 0 then
+    error("expected ArkHelp references to avoid Usage/Examples code blocks, got " .. vim.inspect(code_reference_highlights), 0)
   end
 
   vim.wait(120, function()

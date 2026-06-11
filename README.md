@@ -333,6 +333,8 @@ With `configure_slime = true`:
 
 - `ark.nvim` starts or reuses the managed R session
 - `ark.nvim` updates the backend-specific send target
+- R-family `vim-slime` sends revalidate that target first, so a closed managed
+  pane is relaunched before the original code is sent
 - `nvim-slimetree` can keep handling statement, form, and region sends
 
 That means the split of responsibility is:

@@ -159,6 +159,10 @@ part of the default supported path.
   recorded directly from successful detached session bootstrap when that signal
   is available. `SafeState` remains a fallback for paths that do not get an
   explicit bootstrap-complete event.
+- When `configure_slime = true`, R-family `vim-slime` sends must revalidate the
+  Ark-managed send target before transport. If the previously published tmux
+  pane disappeared, Ark should create or restore one managed session, republish
+  the target, and then send the user's original text to that fresh target.
 - Unnamed scratch startup should only reuse the current working directory as
   the LSP workspace root when that directory resolves to a real project root;
   otherwise Ark should fall back to a dedicated scratch workspace. The same
@@ -206,6 +210,18 @@ part of the default supported path.
 - R Markdown / Quarto fenced-chunk completion and diagnostics
 - R Markdown / Quarto inline `` `r ...` `` completion
 - Safety-oriented E2E runner for tmux-backed and Blink-backed tests
+
+## Future Product Track: Ark Terminal
+
+Ark Terminal is the planned product track for replacing the raw managed `R`
+prompt with an Ark-owned terminal console that preserves normal Linux terminal
+behavior while adding Ark LSP completions, docs, signature help, and
+Neovim-managed control. The detailed sub-project plan lives in
+[ark-terminal-todo.md](/home/marine/repos/ark.nvim/ark-terminal-todo.md).
+
+This track must not degrade the current raw-terminal R experience. It remains
+separate from the active v1 workflow until parity, fallback behavior, and
+tmux-backed verification are proven.
 
 ## Named Future Version: v1.1 Target Lens
 
