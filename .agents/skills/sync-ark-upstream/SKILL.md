@@ -53,6 +53,7 @@ Keep this fork current with `posit-dev/ark` without damaging local history or si
 - For the normal case, run `git merge --no-ff upstream/main`.
 - If Git stops for conflicts, resolve them file by file and continue the merge.
 - Do not use `-X ours` or `-X theirs` globally. This fork diverges in meaningful ways and blanket strategies hide real regressions.
+- Ensure the repo is left in a clean, up to date state on main after the merge.
 
 ## Conflict Rules
 
@@ -62,6 +63,7 @@ Keep this fork current with `posit-dev/ark` without damaging local history or si
 - For startup, session, REPL, completion, and editor integration code, preserve the fork's intended UX and local integrations, but port upstream correctness or performance fixes into the local shape.
 - If a conflict shows that the fork has a long-lived patch that upstream has independently solved more elegantly, prefer the upstream design and keep only the minimal fork-specific delta.
 - In some cases an upstream fix may adress a the bug targetted by a local patch. Choose which ever version is more elegant and easy to maintian.
+- In case of a conflict where there is no clear superiod solution, prefer the upstream varaint to prevent future merge conflicts.
 
 ## Verification
 
