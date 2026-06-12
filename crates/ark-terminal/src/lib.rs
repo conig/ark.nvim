@@ -2,6 +2,7 @@ mod cli;
 mod enhanced;
 mod prompt;
 mod raw_terminal;
+mod render;
 mod status;
 mod trace;
 

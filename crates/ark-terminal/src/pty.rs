@@ -12,6 +12,8 @@ use std::process::Child;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 
 use anyhow::anyhow;
@@ -25,8 +27,12 @@ use nix::sys::signal::Signal;
 use nix::unistd::dup;
 use serde_json::json;
 
+use crate::enhanced::EnhancedInputRuntime;
+use crate::enhanced::InputEffect;
 use crate::prompt::PromptDetector;
+use crate::prompt::PromptState;
 use crate::raw_terminal::RawTerminal;
+use crate::render::LocalInputRenderer;
 use crate::status::StartupStatus;
 use crate::trace::TraceLog;
 use crate::Cli;
@@ -37,12 +43,13 @@ pub fn run(cli: Cli) -> anyhow::Result<i32> {
     }
 
     let trace = TraceLog::open(cli.trace_log.as_deref())?;
-    if !cli.raw && !cli.no_lsp {
+    let enhanced_mode = !cli.raw;
+    if enhanced_mode && !cli.no_lsp {
         trace.event(
-            "enhanced_mode_not_ready",
+            "enhanced_mode_started",
             json!({
-                "fallback": "raw",
-                "reason": "prompt-owned line editor and LSP UI are not implemented yet"
+                "lsp": "pending",
+                "mode": "prompt-owned-input"
             }),
         );
     }
@@ -68,7 +75,7 @@ pub fn run(cli: Cli) -> anyhow::Result<i32> {
         "child_started",
         json!({
             "pid": child.id(),
-            "mode": if cli.raw || cli.no_lsp { "raw" } else { "raw-fallback" },
+            "mode": if enhanced_mode { "enhanced" } else { "raw" },
             "backend": cli.backend,
             "session_id": cli.session_id,
         }),
@@ -82,10 +89,24 @@ pub fn run(cli: Cli) -> anyhow::Result<i32> {
 
     start_resize_thread(stdout_fd, dup(&master_for_output)?, trace.clone())?;
 
-    let _input_thread = thread::spawn(move || forward_stdin_to_pty(master_for_input));
+    let prompt_state = Arc::new(Mutex::new(PromptState::PassThrough));
+    let stdout_lock = Arc::new(Mutex::new(()));
+    let input_prompt_state = Arc::clone(&prompt_state);
+    let input_stdout_lock = Arc::clone(&stdout_lock);
+    let input_trace = trace.clone();
+    let _input_thread = thread::spawn(move || {
+        forward_stdin_to_pty(
+            master_for_input,
+            enhanced_mode,
+            input_prompt_state,
+            input_stdout_lock,
+            input_trace,
+        )
+    });
     let output_trace = trace.clone();
-    let output_thread =
-        thread::spawn(move || forward_pty_to_stdout(master_for_output, output_trace));
+    let output_thread = thread::spawn(move || {
+        forward_pty_to_stdout(master_for_output, output_trace, prompt_state, stdout_lock)
+    });
 
     let status = child.wait().context("failed waiting for child process")?;
     trace.event("child_exited", json!({ "code": exit_status_code(status) }));
@@ -133,9 +154,17 @@ fn spawn_child(cli: &Cli, slave: &OwnedFd) -> anyhow::Result<Child> {
     command.spawn().map_err(Into::into)
 }
 
-fn forward_stdin_to_pty(master: OwnedFd) -> io::Result<()> {
+fn forward_stdin_to_pty(
+    master: OwnedFd,
+    enhanced_mode: bool,
+    prompt_state: Arc<Mutex<PromptState>>,
+    stdout_lock: Arc<Mutex<()>>,
+    trace: TraceLog,
+) -> io::Result<()> {
     let mut master = file_from_owned_fd(master);
     let mut stdin = io::stdin().lock();
+    let mut enhanced = EnhancedInputRuntime::new();
+    let mut renderer = LocalInputRenderer::new();
     let mut buffer = [0; 8192];
 
     loop {
@@ -143,16 +172,75 @@ fn forward_stdin_to_pty(master: OwnedFd) -> io::Result<()> {
         if read == 0 {
             break;
         }
-        master.write_all(&buffer[..read])?;
-        master.flush()?;
+        if enhanced_mode {
+            let state = *prompt_state.lock().unwrap_or_else(|err| err.into_inner());
+            for effect in enhanced.handle_bytes(&buffer[..read], state) {
+                consume_input_effect(
+                    effect,
+                    state,
+                    &mut master,
+                    &mut renderer,
+                    &stdout_lock,
+                    &trace,
+                )?;
+            }
+        } else {
+            master.write_all(&buffer[..read])?;
+            master.flush()?;
+        }
     }
 
     Ok(())
 }
 
-fn forward_pty_to_stdout(master: OwnedFd, trace: TraceLog) -> io::Result<()> {
+fn consume_input_effect(
+    effect: InputEffect,
+    prompt_state: PromptState,
+    master: &mut File,
+    renderer: &mut LocalInputRenderer,
+    stdout_lock: &Arc<Mutex<()>>,
+    trace: &TraceLog,
+) -> io::Result<()> {
+    match effect {
+        InputEffect::Forward(bytes) => {
+            write_stdout_bytes(&renderer.clear_to_prompt(prompt_state), stdout_lock)?;
+            master.write_all(&bytes)?;
+            master.flush()?;
+            trace.event(
+                "enhanced_forward",
+                json!({
+                    "bytes": bytes.len(),
+                    "prompt_state": prompt_state.as_str(),
+                }),
+            );
+        },
+        InputEffect::Redraw(snapshot) => {
+            let bytes = renderer.redraw(&snapshot, prompt_state);
+            write_stdout_bytes(&bytes, stdout_lock)?;
+            trace.event(
+                "enhanced_redraw",
+                json!({
+                    "chars": snapshot.display_cursor,
+                    "bytes": snapshot.text.len(),
+                    "prompt_state": prompt_state.as_str(),
+                }),
+            );
+        },
+        InputEffect::ReverseSearchRequested => {
+            trace.event("enhanced_reverse_search_requested", json!({}));
+        },
+    }
+
+    Ok(())
+}
+
+fn forward_pty_to_stdout(
+    master: OwnedFd,
+    trace: TraceLog,
+    prompt_state: Arc<Mutex<PromptState>>,
+    stdout_lock: Arc<Mutex<()>>,
+) -> io::Result<()> {
     let mut master = file_from_owned_fd(master);
-    let mut stdout = io::stdout().lock();
     let mut detector = PromptDetector::new();
     let mut buffer = [0; 8192];
 
@@ -160,9 +248,10 @@ fn forward_pty_to_stdout(master: OwnedFd, trace: TraceLog) -> io::Result<()> {
         match master.read(&mut buffer) {
             Ok(0) => break,
             Ok(read) => {
-                stdout.write_all(&buffer[..read])?;
-                stdout.flush()?;
+                write_stdout_bytes(&buffer[..read], &stdout_lock)?;
                 for transition in detector.push_bytes(&buffer[..read]) {
+                    *prompt_state.lock().unwrap_or_else(|err| err.into_inner()) =
+                        transition.current;
                     trace.event(
                         "prompt_state",
                         json!({
@@ -179,6 +268,17 @@ fn forward_pty_to_stdout(master: OwnedFd, trace: TraceLog) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn write_stdout_bytes(bytes: &[u8], stdout_lock: &Arc<Mutex<()>>) -> io::Result<()> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+
+    let _guard = stdout_lock.lock().unwrap_or_else(|err| err.into_inner());
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(bytes)?;
+    stdout.flush()
 }
 
 fn start_resize_thread(host_fd: i32, master: OwnedFd, trace: TraceLog) -> anyhow::Result<()> {
