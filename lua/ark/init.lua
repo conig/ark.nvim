@@ -1084,7 +1084,16 @@ local function notify(message, level)
 end
 
 local function merged_opts(base, opts)
-  return vim.tbl_deep_extend("force", config.defaults(), base or {}, opts or {})
+  local merged = vim.tbl_deep_extend("force", config.defaults(), base or {}, opts or {})
+  local frontend = type(merged.session) == "table" and merged.session.console_frontend or nil
+  if type(frontend) == "string" and frontend ~= "" then
+    merged.tmux = merged.tmux or {}
+    merged.terminal = merged.terminal or {}
+    merged.tmux.console_frontend = frontend
+    merged.terminal.console_frontend = frontend
+  end
+
+  return merged
 end
 
 local function ensure_setup()

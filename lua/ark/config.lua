@@ -53,11 +53,23 @@ function M.defaults()
     vim.env.ARK_NVIM_LAUNCHER,
     root .. "/scripts/ark-r-launcher.sh"
   )) or (root .. "/scripts/ark-r-launcher.sh")
+  local ark_terminal_bin = first_executable(compact(
+    vim.env.ARK_NVIM_ARK_TERMINAL_BIN,
+    root .. "/target/debug/ark-terminal",
+    root .. "/target/release/ark-terminal",
+    "ark-terminal"
+  )) or "ark-terminal"
   local session_lib_path = expand_candidate(vim.env.ARK_NVIM_SESSION_LIB)
     or (vim.fn.stdpath("data") .. "/ark/r-lib")
 
   local session_backend = vim.env.ARK_NVIM_SESSION_BACKEND or "tmux"
   local session_kind = vim.env.ARK_NVIM_SESSION_KIND or "ark"
+  local console_frontend = vim.env.ARK_NVIM_CONSOLE_FRONTEND or "raw"
+  local ark_terminal = {
+    bin = ark_terminal_bin,
+    trace_log = expand_candidate(vim.env.ARK_NVIM_ARK_TERMINAL_TRACE_LOG),
+    print_status_json = vim.env.ARK_NVIM_ARK_TERMINAL_PRINT_STATUS_JSON == "1",
+  }
 
   return {
     auto_start_pane = true,
@@ -81,9 +93,13 @@ function M.defaults()
     session = {
       backend = session_backend,
       kind = session_kind,
+      console_frontend = console_frontend,
     },
     tmux = {
       launcher = launcher,
+      console_frontend = console_frontend,
+      ark_terminal = ark_terminal,
+      lsp_bin = lsp_bin,
       pane_layout = "auto",
       stacked_max_width = 100,
       pane_percent = 33,
@@ -102,6 +118,9 @@ function M.defaults()
     },
     terminal = {
       launcher = launcher,
+      console_frontend = console_frontend,
+      ark_terminal = ark_terminal,
+      lsp_bin = lsp_bin,
       split_direction = vim.env.ARK_NVIM_TERMINAL_SPLIT_DIRECTION or "horizontal",
       split_position = vim.env.ARK_NVIM_TERMINAL_SPLIT_POSITION or "botright",
       split_size = tonumber(vim.env.ARK_NVIM_TERMINAL_SPLIT_SIZE or "15") or 15,

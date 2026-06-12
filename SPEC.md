@@ -227,6 +227,12 @@ This track must not degrade the current raw-terminal R experience. It remains
 separate from the active v1 workflow until parity, fallback behavior, and
 tmux-backed verification are proven.
 
+The initial implementation substrate is present as the opt-in `ark-terminal`
+binary and `session.console_frontend = "ark-terminal"` launcher wrapper. It
+currently runs the existing managed R launcher through transparent PTY
+pass-through; prompt-owned editing and Ark LSP console UI remain gated behind
+the Ark Terminal track.
+
 ## Named Future Version: v1.1 Target Lens
 
 `v1.1 Target Lens` is the named version for making `{targets}` projects a

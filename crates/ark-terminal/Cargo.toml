@@ -1,0 +1,22 @@
+[package]
+name = "ark-terminal"
+version = "0.1.0"
+description = "Ark-owned terminal frontend for managed interactive R sessions."
+
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+libc.workspace = true
+nix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

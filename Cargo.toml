@@ -13,6 +13,7 @@ members = [
     "crates/aether_url",
     "crates/amalthea",
     "crates/ark",
+    "crates/ark-terminal",
     "crates/ark-lsp",
     "crates/ark-lsp-support",
     "crates/ark_macros",
@@ -89,7 +90,7 @@ libloading = "0.9.0"
 libr = { path = "crates/libr" }
 log = "0.4.29"
 mime_guess = "2.0.5"
-nix = { version = "0.31", features = ["fs", "poll", "process", "signal"] }
+nix = { version = "0.31", features = ["fs", "poll", "process", "signal", "term"] }
 notify = "8.2.0"
 oak_core = { path = "crates/oak_core" }
 oak_db = { path = "crates/oak_db" }

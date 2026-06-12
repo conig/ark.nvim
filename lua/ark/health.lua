@@ -1,4 +1,5 @@
 local config = require("ark.config")
+local console_frontend = require("ark.console_frontend")
 
 local M = {}
 
@@ -45,6 +46,7 @@ function M.check()
   local report = health_reporter()
   local defaults = config.defaults()
   local backend = defaults.session.backend
+  local frontend = console_frontend.normalize(defaults.session.console_frontend)
   local runtime = defaults[backend] or {}
   local launcher = runtime.launcher
   local lsp_bin = defaults.lsp.cmd[1]
@@ -56,6 +58,7 @@ function M.check()
   report.start("ark.nvim")
 
   report.ok("Configured session backend: " .. backend)
+  report.ok("Configured console frontend: " .. frontend)
 
   if backend == "tmux" then
     ok_or_error(
@@ -110,6 +113,19 @@ function M.check()
     "Launcher is executable: " .. launcher,
     "Launcher is missing or not executable: " .. launcher
   )
+
+  if frontend == "ark-terminal" then
+    local ark_terminal_bin = console_frontend.ark_terminal_bin(runtime)
+    if file_exists(ark_terminal_bin) and executable(ark_terminal_bin) then
+      report.ok("Ark Terminal binary is executable: " .. ark_terminal_bin)
+    elseif executable(ark_terminal_bin) then
+      report.ok("Ark Terminal binary is discoverable on PATH: " .. ark_terminal_bin)
+    else
+      report.error("Ark Terminal frontend is configured but binary is unavailable: " .. ark_terminal_bin)
+    end
+  elseif frontend ~= "raw" then
+    report.error("Configured console frontend is not supported by this ark.nvim build: " .. frontend)
+  end
 
   if file_exists(lsp_bin) and executable(lsp_bin) then
     report.ok("Detached `ark-lsp` binary is executable: " .. lsp_bin)

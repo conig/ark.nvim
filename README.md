@@ -524,6 +524,7 @@ require("ark").setup({
   session = {
     backend = "tmux",
     kind = "ark",
+    console_frontend = "raw",
   },
   keymaps = {
     enabled = false,
@@ -606,6 +607,20 @@ The terminal backend is useful when you want the same detached LSP and bridge
 model without running Neovim inside tmux. It intentionally does not implement
 tmux-only tab parking commands.
 
+Ark Terminal is available as an opt-in raw PTY wrapper while the enhanced console
+track is being built:
+
+```lua
+require("ark").setup({
+  session = {
+    console_frontend = "ark-terminal",
+  },
+})
+```
+
+This wraps the existing managed R launcher with `ark-terminal --raw`, preserving
+the current bridge and REPL readiness path. The raw launcher remains the default.
+
 ## Environment Knobs
 
 The main overrides are:
@@ -617,6 +632,9 @@ The main overrides are:
 - `ARK_NVIM_SESSION_LIB` (optional override for a dedicated bridge library)
 - `ARK_NVIM_SESSION_BACKEND` (`tmux` or `terminal`)
 - `ARK_NVIM_SESSION_KIND`
+- `ARK_NVIM_CONSOLE_FRONTEND` (`raw` or `ark-terminal`)
+- `ARK_NVIM_ARK_TERMINAL_BIN`
+- `ARK_NVIM_ARK_TERMINAL_TRACE_LOG`
 - `ARK_NVIM_SESSION_PKG_PATH`
 - `ARK_NVIM_TERMINAL_SPLIT_DIRECTION`
 - `ARK_NVIM_TERMINAL_SPLIT_POSITION`

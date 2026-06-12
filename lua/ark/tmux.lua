@@ -1,4 +1,5 @@
 local session_runtime = require("ark.session_runtime")
+local console_frontend = require("ark.console_frontend")
 local uv = vim.uv or vim.loop
 
 local M = {}
@@ -1149,6 +1150,13 @@ local function active_startup_session()
 end
 
 function M.pane_command(config)
+  local command, command_err = console_frontend.shell_command(config, "tmux", nil)
+  if not command then
+    return "printf "
+      .. vim.fn.shellescape("ark.nvim: " .. tostring(command_err) .. "\n")
+      .. " >&2; sleep 5"
+  end
+
   local exports = {
     "ARK_STATUS_DIR=" .. vim.fn.shellescape(config.startup_status_dir),
     "ARK_NVIM_SESSION_PKG_PATH=" .. vim.fn.shellescape(config.session_pkg_path),
@@ -1160,7 +1168,7 @@ function M.pane_command(config)
 
   return "export " .. table.concat(exports, " ")
     .. "; exec "
-    .. vim.fn.shellescape(config.launcher)
+    .. command
 end
 
 function M.session()

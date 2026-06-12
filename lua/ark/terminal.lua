@@ -1,4 +1,5 @@
 local session_runtime = require("ark.session_runtime")
+local console_frontend = require("ark.console_frontend")
 
 local M = {}
 
@@ -219,7 +220,12 @@ local function start_terminal_job(config, opts, target_bufnr)
     return nil, "failed to assign managed terminal session id"
   end
 
-  local jobid = vim.fn.termopen({ config.launcher }, {
+  local argv, argv_err = console_frontend.argv(config, "terminal", session_id)
+  if not argv then
+    return nil, argv_err
+  end
+
+  local jobid = vim.fn.termopen(argv, {
     cwd = vim.fn.getcwd(),
     env = launcher_env(config, session_id),
     on_exit = function(_, _code, _event)
@@ -374,9 +380,16 @@ end
 
 function M.pane_command(config)
   local session_id = state.session_id or "ark-terminal-session"
+  local command, command_err = console_frontend.shell_command(config, "terminal", session_id)
+  if not command then
+    return "printf "
+      .. shellescape("ark.nvim: " .. tostring(command_err) .. "\n")
+      .. " >&2; sleep 5"
+  end
+
   return "export " .. table.concat(pane_command_exports(config, session_id), " ")
     .. "; exec "
-    .. shellescape(config.launcher)
+    .. command
 end
 
 function M.session()
