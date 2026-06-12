@@ -1,4 +1,5 @@
 mod cli;
+mod enhanced;
 mod prompt;
 mod raw_terminal;
 mod status;
@@ -10,6 +11,8 @@ mod pty;
 pub mod input;
 pub mod keys;
 pub use cli::Cli;
+pub use enhanced::EnhancedInputRuntime;
+pub use enhanced::InputEffect;
 
 pub fn run_from_env() -> anyhow::Result<i32> {
     let cli = Cli::parse(std::env::args().skip(1))?;

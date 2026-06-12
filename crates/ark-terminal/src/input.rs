@@ -75,6 +75,13 @@ impl LineEditor {
         &self.history
     }
 
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.cursor = 0;
+        self.history_position = None;
+        self.draft_before_history = None;
+    }
+
     pub fn handle(&mut self, command: EditCommand) -> EditAction {
         match command {
             EditCommand::Insert(text) => {
