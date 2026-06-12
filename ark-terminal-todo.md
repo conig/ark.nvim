@@ -398,6 +398,8 @@ Current implementation status:
   `utils::select.list(graphics = FALSE)`, and text help output
 - direct real-R transcript tests cover child shell prompts and an interactive
   `less -X` pager launched through `system()`
+- renderer unit tests cover exact right-margin autowrap and wide-grapheme wrap
+  boundaries for local redraw/clear behavior
 - the Neovim managed-pane wrapper still launches `ark-terminal --raw` until
   more R-interaction transcripts and terminal edge-case hardening are in place
 

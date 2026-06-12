@@ -404,4 +404,44 @@ mod tests {
             b"a\xe8\xaa\x9ebc\x1b[1A\r\x1b[5C".to_vec()
         );
     }
+
+    #[test]
+    fn exact_terminal_width_does_not_create_extra_row() {
+        let mut renderer = LocalInputRenderer::with_terminal_cols(5);
+        renderer.redraw(&snapshot("abc"), PromptState::TopLevel);
+
+        assert_eq!(
+            renderer.redraw(&snapshot("x"), PromptState::TopLevel),
+            b"\r\x1b[2K> x".to_vec()
+        );
+    }
+
+    #[test]
+    fn one_cell_past_terminal_width_clears_wrapped_row() {
+        let mut renderer = LocalInputRenderer::with_terminal_cols(5);
+        renderer.redraw(&snapshot("abcd"), PromptState::TopLevel);
+
+        assert_eq!(
+            renderer.redraw(&snapshot("x"), PromptState::TopLevel),
+            b"\r\x1b[2K\x1b[1A\r\x1b[2K> x".to_vec()
+        );
+    }
+
+    #[test]
+    fn wide_grapheme_exact_terminal_width_does_not_create_extra_row() {
+        let mut renderer = LocalInputRenderer::with_terminal_cols(5);
+        renderer.redraw(&snapshot("a語"), PromptState::TopLevel);
+
+        assert_eq!(renderer.clear(), b"\r\x1b[2K".to_vec());
+    }
+
+    #[test]
+    fn wide_grapheme_wraps_before_right_margin_overflow() {
+        let mut renderer = LocalInputRenderer::with_terminal_cols(5);
+
+        assert_eq!(
+            renderer.redraw(&snapshot_at("ab語", "ab".len()), PromptState::TopLevel),
+            b"ab\xe8\xaa\x9e\x1b[1A\r\x1b[4C".to_vec()
+        );
+    }
 }
