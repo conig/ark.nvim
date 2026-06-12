@@ -396,6 +396,8 @@ Current implementation status:
   rendering/submission, `browser()` pass-through, and `debugonce()` pass-through
 - direct real-R transcript tests cover pass-through for `readline()`, `menu()`,
   `utils::select.list(graphics = FALSE)`, and text help output
+- direct real-R transcript tests cover child shell prompts and an interactive
+  `less -X` pager launched through `system()`
 - the Neovim managed-pane wrapper still launches `ark-terminal --raw` until
   more R-interaction transcripts and terminal edge-case hardening are in place
 
