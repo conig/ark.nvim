@@ -15,6 +15,7 @@ local function ark_terminal_config(config)
   local nested = type(config.ark_terminal) == "table" and config.ark_terminal or {}
   return {
     bin = nested.bin or config.ark_terminal_bin or "ark-terminal",
+    raw = nested.raw ~= false,
     trace_log = nested.trace_log or config.ark_terminal_trace_log,
     print_status_json = nested.print_status_json == true or config.ark_terminal_print_status_json == true,
   }
@@ -49,8 +50,10 @@ function M.argv(config, backend, session_id)
     ark_terminal.bin,
     "--backend",
     backend,
-    "--raw",
   }
+  if ark_terminal.raw then
+    argv[#argv + 1] = "--raw"
+  end
 
   if type(config.startup_status_dir) == "string" and config.startup_status_dir ~= "" then
     vim.list_extend(argv, { "--status-dir", config.startup_status_dir })

@@ -89,6 +89,10 @@ local function session_panes()
   return panes
 end
 
+local function looks_like_r_pane(pane)
+  return pane ~= nil and not pane.active and pane_contains(pane.pane_id, ">")
+end
+
 local function cleanup()
   tmux({ "kill-session", "-t", session_name }, true)
 end
@@ -128,7 +132,7 @@ local ok, err = xpcall(function()
       return false
     end
     for _, pane in ipairs(panes) do
-      if pane.command == "sh" and pane_contains(pane.pane_id, ">") then
+      if looks_like_r_pane(pane) then
         return true
       end
     end
@@ -139,7 +143,7 @@ local ok, err = xpcall(function()
   for _, pane in ipairs(session_panes()) do
     if pane.active then
       nvim_pane = pane.pane_id
-    elseif pane.command == "sh" then
+    elseif looks_like_r_pane(pane) then
       r_pane = pane.pane_id
     end
   end

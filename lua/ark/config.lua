@@ -67,6 +67,7 @@ function M.defaults()
   local console_frontend = vim.env.ARK_NVIM_CONSOLE_FRONTEND or "raw"
   local ark_terminal = {
     bin = ark_terminal_bin,
+    raw = vim.env.ARK_NVIM_ARK_TERMINAL_RAW ~= "0",
     trace_log = expand_candidate(vim.env.ARK_NVIM_ARK_TERMINAL_TRACE_LOG),
     print_status_json = vim.env.ARK_NVIM_ARK_TERMINAL_PRINT_STATUS_JSON == "1",
   }

@@ -45,6 +45,18 @@ if vim.inspect(argv) ~= vim.inspect(expected) then
   error("unexpected ark-terminal argv: " .. vim.inspect(argv), 0)
 end
 
+local enhanced_config = vim.deepcopy(config)
+enhanced_config.ark_terminal.raw = false
+local enhanced_argv, enhanced_argv_err = console_frontend.argv(enhanced_config, "terminal", "session-1")
+if not enhanced_argv then
+  error(enhanced_argv_err, 0)
+end
+for _, value in ipairs(enhanced_argv) do
+  if value == "--raw" then
+    error("enhanced ark-terminal argv should not include --raw: " .. vim.inspect(enhanced_argv), 0)
+  end
+end
+
 local raw_argv, raw_err = console_frontend.argv({
   launcher = "/tmp/ark-r-launcher.sh",
   console_frontend = "raw",

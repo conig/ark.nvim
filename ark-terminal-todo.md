@@ -402,8 +402,14 @@ Current implementation status:
   `less -X` pager launched through `system()`
 - renderer unit tests cover exact right-margin autowrap and wide-grapheme wrap
   boundaries for local redraw/clear behavior
-- the Neovim managed-pane wrapper still launches `ark-terminal --raw` until
-  broader terminal edge-case hardening and manual emulator coverage are in place
+- the Neovim frontend wrapper now supports explicit enhanced mode via
+  `ark_terminal.raw = false`; the repo default remains raw unless configured
+  otherwise
+- the user's full Neovim config is wired to launch the managed tmux R pane
+  through release `ark-terminal` enhanced mode with a stable trace log
+- batched enhanced input now compacts intermediate redraws so send-style
+  workflows do not redraw once per byte; release benchmarking showed parity
+  with raw PTY mode on a 1000-command batch workload
 
 Tasks:
 

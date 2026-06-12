@@ -66,7 +66,7 @@ impl EnhancedInputRuntime {
             self.handle_decoded(decoded, &mut effects);
         }
 
-        effects
+        compact_batch_effects(effects)
     }
 
     pub fn snapshot(&self) -> EditorSnapshot {
@@ -227,6 +227,33 @@ fn is_editable_prompt(prompt_state: PromptState) -> bool {
     )
 }
 
+fn compact_batch_effects(effects: Vec<InputEffect>) -> Vec<InputEffect> {
+    let mut compacted = Vec::with_capacity(effects.len());
+
+    for effect in effects {
+        match effect {
+            InputEffect::Redraw(snapshot) => {
+                if let Some(InputEffect::Redraw(previous)) = compacted.last_mut() {
+                    *previous = snapshot;
+                } else {
+                    compacted.push(InputEffect::Redraw(snapshot));
+                }
+            },
+            InputEffect::Forward(bytes) => {
+                if matches!(compacted.last(), Some(InputEffect::Redraw(_))) {
+                    compacted.pop();
+                }
+                compacted.push(InputEffect::Forward(bytes));
+            },
+            InputEffect::ReverseSearch(snapshot) => {
+                compacted.push(InputEffect::ReverseSearch(snapshot));
+            },
+        }
+    }
+
+    compacted
+}
+
 fn pop_grapheme(text: &mut String) {
     let Some((index, _)) = text.grapheme_indices(true).next_back() else {
         return;
@@ -259,15 +286,40 @@ mod tests {
     fn edits_locally_and_submits_complete_input() {
         let mut runtime = EnhancedInputRuntime::new();
 
+        assert_eq!(
+            text(&runtime.handle_bytes(b"a", PromptState::TopLevel)[0]),
+            Some("a")
+        );
+        assert_eq!(
+            text(&runtime.handle_bytes(b"b", PromptState::TopLevel)[0]),
+            Some("ab")
+        );
+        assert_eq!(
+            text(&runtime.handle_bytes(b"c", PromptState::TopLevel)[0]),
+            Some("abc")
+        );
+        assert_eq!(
+            text(&runtime.handle_bytes(b"\x08", PromptState::TopLevel)[0]),
+            Some("ab")
+        );
+        assert_eq!(
+            text(&runtime.handle_bytes(b"d", PromptState::TopLevel)[0]),
+            Some("abd")
+        );
+
+        let effects = runtime.handle_bytes(b"\n", PromptState::TopLevel);
+        assert_eq!(effects[0], InputEffect::Forward(b"abd\n".to_vec()));
+        assert_eq!(text(&effects[1]), Some(""));
+    }
+
+    #[test]
+    fn batched_submit_skips_intermediate_redraws() {
+        let mut runtime = EnhancedInputRuntime::new();
+
         let effects = runtime.handle_bytes(b"abc\x08d\n", PromptState::TopLevel);
 
-        assert_eq!(text(&effects[0]), Some("a"));
-        assert_eq!(text(&effects[1]), Some("ab"));
-        assert_eq!(text(&effects[2]), Some("abc"));
-        assert_eq!(text(&effects[3]), Some("ab"));
-        assert_eq!(text(&effects[4]), Some("abd"));
-        assert_eq!(effects[5], InputEffect::Forward(b"abd\n".to_vec()));
-        assert_eq!(text(&effects[6]), Some(""));
+        assert_eq!(effects[0], InputEffect::Forward(b"abd\n".to_vec()));
+        assert_eq!(text(&effects[1]), Some(""));
     }
 
     #[test]
