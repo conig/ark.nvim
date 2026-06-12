@@ -83,8 +83,12 @@ ark_test.wait_for("ark-terminal send output", 10000, function()
   return table.concat(lines, "\n"):find("ark%-terminal%-frontend%-send%-ok") ~= nil
 end)
 
-ark_test.wait_for("ark-terminal trace log", 5000, function()
-  return vim.fn.filereadable(trace_log) == 1
+ark_test.wait_for("ark-terminal prompt trace log", 5000, function()
+  if vim.fn.filereadable(trace_log) ~= 1 then
+    return false
+  end
+  local lines = vim.fn.readfile(trace_log)
+  return table.concat(lines, "\n"):find('"event":"prompt_state"', 1, true) ~= nil
 end)
 
 ark.stop_pane()

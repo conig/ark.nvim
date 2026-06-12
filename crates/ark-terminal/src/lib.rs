@@ -1,4 +1,5 @@
 mod cli;
+mod prompt;
 mod raw_terminal;
 mod status;
 mod trace;

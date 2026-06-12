@@ -25,6 +25,7 @@ use nix::sys::signal::Signal;
 use nix::unistd::dup;
 use serde_json::json;
 
+use crate::prompt::PromptDetector;
 use crate::raw_terminal::RawTerminal;
 use crate::status::StartupStatus;
 use crate::trace::TraceLog;
@@ -82,7 +83,9 @@ pub fn run(cli: Cli) -> anyhow::Result<i32> {
     start_resize_thread(stdout_fd, dup(&master_for_output)?, trace.clone())?;
 
     let _input_thread = thread::spawn(move || forward_stdin_to_pty(master_for_input));
-    let output_thread = thread::spawn(move || forward_pty_to_stdout(master_for_output));
+    let output_trace = trace.clone();
+    let output_thread =
+        thread::spawn(move || forward_pty_to_stdout(master_for_output, output_trace));
 
     let status = child.wait().context("failed waiting for child process")?;
     trace.event("child_exited", json!({ "code": exit_status_code(status) }));
@@ -147,9 +150,10 @@ fn forward_stdin_to_pty(master: OwnedFd) -> io::Result<()> {
     Ok(())
 }
 
-fn forward_pty_to_stdout(master: OwnedFd) -> io::Result<()> {
+fn forward_pty_to_stdout(master: OwnedFd, trace: TraceLog) -> io::Result<()> {
     let mut master = file_from_owned_fd(master);
     let mut stdout = io::stdout().lock();
+    let mut detector = PromptDetector::new();
     let mut buffer = [0; 8192];
 
     loop {
@@ -158,6 +162,15 @@ fn forward_pty_to_stdout(master: OwnedFd) -> io::Result<()> {
             Ok(read) => {
                 stdout.write_all(&buffer[..read])?;
                 stdout.flush()?;
+                for transition in detector.push_bytes(&buffer[..read]) {
+                    trace.event(
+                        "prompt_state",
+                        json!({
+                            "previous": transition.previous.as_str(),
+                            "current": transition.current.as_str(),
+                        }),
+                    );
+                }
             },
             Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
             Err(err) if err.raw_os_error() == Some(libc::EIO) => break,
