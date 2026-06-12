@@ -2043,6 +2043,97 @@ local function target_load_expression(names)
   return string.format("targets::tar_load(c(%s))", table.concat(rendered, ", "))
 end
 
+local function description_file_for_buffer(bufnr)
+  local path = ""
+  if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+    path = vim.api.nvim_buf_get_name(bufnr)
+  end
+
+  local start = ""
+  if type(path) == "string" and path ~= "" then
+    start = vim.fn.fnamemodify(path, ":p:h")
+  elseif uv and type(uv.cwd) == "function" then
+    start = uv.cwd()
+  else
+    start = vim.fn.getcwd()
+  end
+
+  if type(start) ~= "string" or start == "" then
+    return ""
+  end
+
+  local found = vim.fs.find("DESCRIPTION", {
+    path = start,
+    upward = true,
+    type = "file",
+  })[1]
+
+  return found and vim.fs.normalize(found) or ""
+end
+
+local function missing_packages_from_diagnostics(bufnr)
+  bufnr = resolve_bufnr(bufnr)
+
+  local seen = {}
+  local packages = {}
+  for _, diagnostic in ipairs(vim.diagnostic.get(bufnr)) do
+    local package = tostring(diagnostic.message or ""):match("^Package '([^']+)' is not installed%.$")
+    if package and not seen[package] then
+      seen[package] = true
+      packages[#packages + 1] = package
+    end
+  end
+
+  table.sort(packages)
+  return packages
+end
+
+local function package_install_message(result)
+  if type(result) ~= "table" then
+    return "R package install completed"
+  end
+
+  local packages = result.packages
+  if type(packages) ~= "table" or #packages == 0 then
+    packages = result.specs
+  end
+  if type(packages) ~= "table" or #packages == 0 then
+    return "R package install completed"
+  end
+
+  local verb = #packages == 1 and "package" or "packages"
+  local method = type(result.method) == "string" and result.method ~= "" and result.method or "R"
+  return string.format("Installed R %s with %s: %s", verb, method, table.concat(packages, ", "))
+end
+
+local function package_install_request_async(bufnr, packages, description, dry_run, callback)
+  ensure_setup()
+  bufnr = resolve_bufnr(bufnr)
+
+  local ok, runtime_err = ensure_runtime_ready(bufnr, "ark.nvim package install")
+  if not ok then
+    notify(runtime_err, vim.log.levels.WARN)
+    if type(callback) == "function" then
+      callback(nil, runtime_err)
+    end
+    return nil, runtime_err
+  end
+
+  return lsp.package_install_async(options, bufnr, packages, description, dry_run, function(result, err)
+    if err then
+      notify(err or "package install failed", vim.log.levels.WARN)
+      if type(callback) == "function" then
+        callback(nil, err)
+      end
+      return
+    end
+
+    if type(callback) == "function" then
+      callback(result, nil)
+    end
+  end)
+end
+
 local function targets_request(bufnr, label, request)
   ensure_setup()
   bufnr = resolve_bufnr(bufnr)
@@ -2127,6 +2218,65 @@ local function targets_request_async(bufnr, label, request, callback)
 
   request_once()
   return true
+end
+
+function M.missing_packages(bufnr)
+  ensure_setup()
+  return missing_packages_from_diagnostics(bufnr)
+end
+
+function M.install_missing_packages(bufnr, install_opts)
+  ensure_setup()
+  bufnr = resolve_bufnr(bufnr)
+  install_opts = install_opts or {}
+
+  local raw_packages = install_opts.packages or missing_packages_from_diagnostics(bufnr)
+  if type(raw_packages) ~= "table" then
+    raw_packages = {}
+  end
+
+  local seen = {}
+  local packages = {}
+  for _, package in ipairs(raw_packages) do
+    package = tostring(package or "")
+    if package ~= "" and not seen[package] then
+      seen[package] = true
+      packages[#packages + 1] = package
+    end
+  end
+
+  if #packages == 0 then
+    local result = {
+      status = "noop",
+      packages = {},
+    }
+    notify("No missing R package diagnostics in current buffer", vim.log.levels.INFO)
+    if type(install_opts.callback) == "function" then
+      install_opts.callback(result, nil)
+    end
+    return result
+  end
+
+  local description = install_opts.description
+  if description == nil then
+    description = description_file_for_buffer(bufnr)
+  end
+
+  local dry_run = install_opts.dry_run == true
+  if not dry_run then
+    notify("Installing R packages: " .. table.concat(packages, ", "), vim.log.levels.INFO)
+  end
+
+  return package_install_request_async(bufnr, packages, description, dry_run, function(result, err)
+    if result and not dry_run then
+      notify(package_install_message(result), vim.log.levels.INFO)
+      M.refresh(bufnr)
+    end
+
+    if type(install_opts.callback) == "function" then
+      install_opts.callback(result, err)
+    end
+  end)
 end
 
 local target_scalar

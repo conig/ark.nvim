@@ -1038,6 +1038,22 @@ impl SessionBridge {
         )
     }
 
+    pub(crate) fn package_install(
+        &self,
+        packages: Vec<String>,
+        description: String,
+        dry_run: bool,
+    ) -> anyhow::Result<Value> {
+        self.bridge_command(
+            "package_install",
+            serde_json::json!({
+                "packages": packages,
+                "description": description,
+                "dry_run": dry_run,
+            }),
+        )
+    }
+
     pub(crate) fn resolve_completion_item(
         &self,
         mut item: CompletionItem,

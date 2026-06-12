@@ -15,6 +15,9 @@ package.loaded["ark"] = {
   help_pane = function(bufnr)
     calls[#calls + 1] = { name = "help_pane", bufnr = bufnr }
   end,
+  install_missing_packages = function(bufnr)
+    calls[#calls + 1] = { name = "install_missing_packages", bufnr = bufnr }
+  end,
   list_tabs = function()
     calls[#calls + 1] = { name = "list_tabs" }
     return { status = "ok" }
@@ -139,6 +142,7 @@ vim.cmd("Ark tab close")
 vim.cmd("Ark tab list")
 vim.cmd("Ark tab go 2")
 vim.cmd("Ark lsp start")
+vim.cmd("Ark packages install-missing")
 vim.cmd("Ark help")
 vim.cmd("Ark help pane")
 vim.cmd("Ark view")
@@ -186,6 +190,7 @@ local expected = {
   { name = "list_tabs" },
   { name = "go_tab", index = "2" },
   { name = "start_lsp", bufnr = 0 },
+  { name = "install_missing_packages", bufnr = 0 },
   { name = "help", bufnr = 0 },
   { name = "help_pane", bufnr = 0 },
   { name = "view", expr = nil, bufnr = 0 },
@@ -222,4 +227,9 @@ end
 local completions = vim.fn.getcompletion("Ark targets b", "cmdline")
 if not vim.tbl_contains(completions, "targets build") then
   error("expected Ark dispatcher completion to include targets build, got " .. vim.inspect(completions), 0)
+end
+
+local package_completions = vim.fn.getcompletion("Ark packages i", "cmdline")
+if not vim.tbl_contains(package_completions, "packages install-missing") then
+  error("expected Ark dispatcher completion to include packages install-missing, got " .. vim.inspect(package_completions), 0)
 end

@@ -429,6 +429,9 @@ impl GlobalState {
                         LspRequest::HelpText(params) => {
                             respond(tx, || handlers::handle_help_text(params, &self.world), LspResponse::HelpText)?;
                         },
+                        LspRequest::PackageInstall(params) => {
+                            respond(tx, || handlers::handle_package_install(params, &self.world), LspResponse::PackageInstall)?;
+                        },
                         LspRequest::InputBoundaries(params) => {
                             respond(tx, || handlers::handle_input_boundaries(params), LspResponse::InputBoundaries)?;
                         },

@@ -29,6 +29,7 @@ use tower_lsp::Server;
 use super::main_loop::LSP_HAS_CRASHED;
 use crate::console::ConsoleNotification;
 use crate::lsp::handlers::HelpTextParams;
+use crate::lsp::handlers::PackageInstallParams;
 use crate::lsp::handlers::SessionBootstrapResponse;
 use crate::lsp::handlers::SessionUpdateParams;
 use crate::lsp::handlers::StatusParams;
@@ -50,6 +51,7 @@ use crate::lsp::handlers::ViewSortParams;
 use crate::lsp::handlers::VirtualDocumentParams;
 use crate::lsp::handlers::VirtualDocumentResponse;
 use crate::lsp::handlers::ARK_HELP_TEXT_REQUEST;
+use crate::lsp::handlers::ARK_PACKAGE_INSTALL_REQUEST;
 use crate::lsp::handlers::ARK_SESSION_BOOTSTRAP_REQUEST;
 use crate::lsp::handlers::ARK_SESSION_UPDATE_NOTIFICATION;
 use crate::lsp::handlers::ARK_STATUS_REQUEST;
@@ -184,6 +186,7 @@ pub(crate) enum LspRequest {
     VirtualDocument(VirtualDocumentParams),
     Status(StatusParams),
     HelpText(HelpTextParams),
+    PackageInstall(PackageInstallParams),
     InputBoundaries(InputBoundariesParams),
     SessionBootstrap(SessionUpdateParams),
     ViewRpc(ViewRpcRequest),
@@ -213,6 +216,7 @@ pub(crate) enum LspResponse {
     VirtualDocument(VirtualDocumentResponse),
     Status(Value),
     HelpText(Option<HelpPage>),
+    PackageInstall(Value),
     InputBoundaries(InputBoundariesResponse),
     SessionBootstrap(SessionBootstrapResponse),
     ViewRpc(Value),
@@ -797,6 +801,17 @@ impl Backend {
         )
     }
 
+    async fn package_install(
+        &self,
+        params: PackageInstallParams,
+    ) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::PackageInstall(params)).await,
+            LspResponse::PackageInstall
+        )
+    }
+
     async fn notification(&self, params: Option<Value>) {
         log::info!("Received legacy ark/notification payload: {:?}", params);
     }
@@ -847,6 +862,7 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
         .custom_method(ARK_STATUS_REQUEST, Backend::status)
         .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
+        .custom_method(ARK_PACKAGE_INSTALL_REQUEST, Backend::package_install)
         .custom_method(ARK_SESSION_BOOTSTRAP_REQUEST, Backend::bootstrap_session)
         .custom_method(ARK_VIEW_OPEN_REQUEST, Backend::view_open)
         .custom_method(ARK_VIEW_STATE_REQUEST, Backend::view_state)

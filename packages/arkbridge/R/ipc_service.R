@@ -195,6 +195,15 @@
     return(.ark_package_info_payload(session, package))
   }
 
+  if (identical(req$command %||% "", "package_install")) {
+    return(.ark_package_install_payload(
+      session,
+      req$packages %||% character(),
+      req$description %||% "",
+      req$dry_run %||% FALSE
+    ))
+  }
+
   if (identical(req$command %||% "", "view_open")) {
     expr <- req$expr %||% ""
     if (!is.character(expr) || length(expr) != 1L || !nzchar(expr)) {

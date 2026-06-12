@@ -362,6 +362,7 @@ session metadata and live features become richer:
 - runtime-aware hover and signature help
 - full help text for `:ArkHelp`
 - `:ArkView` inspection for live objects
+- `:ArkInstallMissingPackages` for missing-package diagnostics
 - target cache and target object metadata when a `{targets}` project is active
 
 If the live session is unavailable, Ark should degrade to static-only language
@@ -413,6 +414,8 @@ The commands you will usually reach for are:
 - `:Ark view` opens the live data explorer for an expression or the symbol under cursor
 - `:Ark send` sends text to the active managed Ark R session
 - `:Ark snippets` opens the explicit Ark snippets picker
+- `:Ark packages install-missing` installs packages from current missing-package
+  diagnostics, using `pak` and DESCRIPTION remotes when available
 - `:Ark pane start`, `:Ark pane restart`, and `:Ark pane stop` manage the R session
 - `:Ark pane command` prints the exact launcher command used for the managed pane
 - `:checkhealth ark` reports install/runtime prerequisites without starting a session

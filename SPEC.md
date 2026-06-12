@@ -187,6 +187,10 @@ part of the default supported path.
   should rely on the current installed-package snapshot or lazy library-path
   metadata, without forcing an eager installed-package enumeration on the
   startup path.
+- `:ArkInstallMissingPackages` and `:Ark packages install-missing` should install
+  packages named by current missing-package diagnostics in the managed R session,
+  prefer `pak::pkg_install()` when `pak` is available, and use a nearby
+  `DESCRIPTION` file's `Remotes` field to resolve GitHub package specs.
 - The launcher may prepend Ark's private session library while bootstrapping
   `arkbridge`, but it must restore the user's normal `.libPaths()` before
   handing control to the interactive REPL.

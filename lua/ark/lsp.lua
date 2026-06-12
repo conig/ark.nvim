@@ -7,6 +7,7 @@ local SESSION_UPDATE_METHOD = "ark/updateSession"
 local SESSION_BOOTSTRAP_METHOD = "ark/internal/bootstrapSession"
 local HELP_TOPIC_METHOD = "ark/textDocument/helpTopic"
 local HELP_TEXT_METHOD = "ark/internal/helpText"
+local PACKAGE_INSTALL_METHOD = "ark/internal/packageInstall"
 local STATUS_REQUEST_METHOD = "ark/internal/status"
 local VIEW_OPEN_METHOD = "ark/internal/viewOpen"
 local VIEW_STATE_METHOD = "ark/internal/viewState"
@@ -1793,6 +1794,22 @@ function M.targets_action_async(opts, bufnr, project, action, names, callback)
   payload.action = action or ""
   payload.names = names or {}
   return view_request_async(opts, bufnr, TARGETS_ACTION_METHOD, payload, 120000, callback)
+end
+
+function M.package_install(opts, bufnr, packages, description, dry_run)
+  return view_request(opts, bufnr, PACKAGE_INSTALL_METHOD, {
+    packages = packages or {},
+    description = description or "",
+    dryRun = dry_run == true,
+  }, 600000)
+end
+
+function M.package_install_async(opts, bufnr, packages, description, dry_run, callback)
+  return view_request_async(opts, bufnr, PACKAGE_INSTALL_METHOD, {
+    packages = packages or {},
+    description = description or "",
+    dryRun = dry_run == true,
+  }, 600000, callback)
 end
 
 return M

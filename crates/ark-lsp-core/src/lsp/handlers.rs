@@ -107,6 +107,7 @@ use crate::treesitter::NodeTypeExt;
 pub static ARK_VDOC_REQUEST: &str = "ark/internal/virtualDocument";
 pub static ARK_STATUS_REQUEST: &str = "ark/internal/status";
 pub static ARK_HELP_TEXT_REQUEST: &str = "ark/internal/helpText";
+pub static ARK_PACKAGE_INSTALL_REQUEST: &str = "ark/internal/packageInstall";
 pub static ARK_SESSION_BOOTSTRAP_REQUEST: &str = "ark/internal/bootstrapSession";
 pub static ARK_SESSION_UPDATE_NOTIFICATION: &str = "ark/updateSession";
 pub static ARK_VIEW_OPEN_REQUEST: &str = "ark/internal/viewOpen";
@@ -330,6 +331,17 @@ pub(crate) struct TargetsActionParams {
     pub store: String,
     #[serde(default)]
     pub names: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PackageInstallParams {
+    #[serde(default)]
+    pub packages: Vec<String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug)]
@@ -602,6 +614,25 @@ pub(crate) fn handle_targets_rpc(
     };
 
     response.map_err(LspError::Anyhow)
+}
+
+pub(crate) fn handle_package_install(
+    params: PackageInstallParams,
+    state: &WorldState,
+) -> LspResult<Value> {
+    if state.has_attached_runtime() {
+        return Err(LspError::Anyhow(anyhow!(
+            "Ark package install requests are only supported in detached runtime mode"
+        )));
+    }
+
+    let Some(session_bridge) = state.session_bridge.as_ref() else {
+        return Err(LspError::Anyhow(anyhow!("session bridge missing")));
+    };
+
+    session_bridge
+        .package_install(params.packages, params.description, params.dry_run)
+        .map_err(LspError::Anyhow)
 }
 
 #[tracing::instrument(level = "info", skip_all)]

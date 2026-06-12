@@ -79,6 +79,7 @@ local ark_command_completions = {
   "pane restart",
   "pane start",
   "pane stop",
+  "packages install-missing",
   "refresh",
   "send",
   "snippets",
@@ -227,6 +228,8 @@ local function dispatch_ark_command(args)
     end
   elseif top == "lsp" and args[2] == "start" then
     ark.start_lsp(0)
+  elseif top == "packages" and args[2] == "install-missing" then
+    ark.install_missing_packages(0)
   elseif top == "help" then
     if args[2] == "pane" then
       ark.help_pane(0)
@@ -299,6 +302,10 @@ end, {
 vim.api.nvim_create_user_command("ArkLspStart", function()
   require("ark").start_lsp(0)
 end, { desc = "Start ark.nvim LSP for the current buffer" })
+
+vim.api.nvim_create_user_command("ArkInstallMissingPackages", function()
+  require("ark").install_missing_packages(0)
+end, { desc = "Install R packages reported missing by ark.nvim diagnostics" })
 
 vim.api.nvim_create_user_command("ArkHelp", function()
   require("ark").help(0)

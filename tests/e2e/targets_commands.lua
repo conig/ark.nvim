@@ -19,6 +19,10 @@ package.loaded["ark"] = {
     calls[#calls + 1] = { name = "active", bufnr = bufnr }
     return "clean_data"
   end,
+  install_missing_packages = function(bufnr)
+    calls[#calls + 1] = { name = "install_missing_packages", bufnr = bufnr }
+    return true
+  end,
   targets_network = function(bufnr)
     calls[#calls + 1] = { name = "network", bufnr = bufnr }
     return { status = "ok" }
@@ -82,6 +86,7 @@ vim.cmd("ArkTargetLoad clean_data")
 vim.cmd("ArkTargetLoadPick")
 vim.cmd("ArkTargetLoadActive")
 vim.cmd("ArkTargetLog clean_data")
+vim.cmd("ArkInstallMissingPackages")
 
 local command = vim.lsp.commands["ark.targetAction"]
 if type(command) ~= "function" then
@@ -119,6 +124,7 @@ local expected = {
   { name = "action_pick", action = "load", bufnr = 0 },
   { name = "action_active", action = "load", bufnr = 0 },
   { name = "log", names = "clean_data", bufnr = 0 },
+  { name = "install_missing_packages", bufnr = 0 },
   { name = "action", action = "make", names = "clean_data", bufnr = 42 },
   { name = "action", action = "make_downstream", names = "clean_data", bufnr = 42 },
   { name = "status", names = "clean_data", bufnr = 42 },
