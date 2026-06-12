@@ -394,6 +394,8 @@ Current implementation status:
 - browser/debug-style prompts currently use safe pass-through fallback
 - direct real-R transcript tests cover enhanced top-level input, local multiline
   rendering/submission, `browser()` pass-through, and `debugonce()` pass-through
+- direct real-R transcript tests cover pass-through for `readline()`, `menu()`,
+  `utils::select.list(graphics = FALSE)`, and text help output
 - the Neovim managed-pane wrapper still launches `ark-terminal --raw` until
   more R-interaction transcripts and terminal edge-case hardening are in place
 
