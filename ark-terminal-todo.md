@@ -461,12 +461,17 @@ Current implementation status:
   restores the cursor to the editor position, and clears menu rows through the
   normal redraw path; LSP items are deduped by label while preserving Ark LSP
   response order
+- completion acceptance is now wired for the first visible item: Tab or Enter
+  applies `textEdit` when present, otherwise replaces the current prefix with
+  `insertText` or the item label, redraws the local input, syncs the console
+  document, and leaves submission to the next Enter
 
 Tasks:
 
 - add manual completion invocation
-- add completion menu selection state and key handling
-- apply LSP text edits and insert text accurately
+- add completion menu selection state and next/previous key handling
+- broaden completion edit handling beyond the current first-item accept path as
+  real Ark LSP items require it
 - implement completion item resolve
 - extend ranking/deduping policy as needed beyond first-label wins
 

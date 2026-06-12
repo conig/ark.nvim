@@ -181,6 +181,12 @@ pub struct LspTransport {
     read_buffer: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedCompletion {
+    pub text: String,
+    pub cursor: usize,
+}
+
 impl Default for LspMessageFactory {
     fn default() -> Self {
         Self::new()
@@ -454,36 +460,40 @@ pub fn completion_items_from_response(response: &Value) -> Vec<Value> {
 }
 
 pub fn apply_lsp_text_edit(text: &str, edit: &Value) -> anyhow::Result<String> {
-    let range = edit
-        .get("range")
-        .ok_or_else(|| anyhow!("LSP text edit missing range"))?;
-    let start = range
-        .get("start")
-        .map(LspPosition::from_value)
-        .transpose()?
-        .ok_or_else(|| anyhow!("LSP text edit missing start range"))?;
-    let end = range
-        .get("end")
-        .map(LspPosition::from_value)
-        .transpose()?
-        .ok_or_else(|| anyhow!("LSP text edit missing end range"))?;
-    let new_text = edit
-        .get("newText")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("LSP text edit missing newText"))?;
-
-    let start_offset = byte_offset_for_position(text, start)
-        .ok_or_else(|| anyhow!("LSP text edit start is outside the document"))?;
-    let end_offset = byte_offset_for_position(text, end)
-        .ok_or_else(|| anyhow!("LSP text edit end is outside the document"))?;
-
-    if start_offset > end_offset {
-        return Err(anyhow!("LSP text edit start is after end"));
-    }
+    let (start_offset, end_offset, new_text) = lsp_text_edit_parts(text, edit)?;
 
     let mut edited = text.to_string();
     edited.replace_range(start_offset..end_offset, new_text);
     Ok(edited)
+}
+
+pub fn apply_completion_item(
+    snapshot: &EditorSnapshot,
+    item: &Value,
+) -> anyhow::Result<AppliedCompletion> {
+    if let Some(text_edit) = item.get("textEdit") {
+        let (start_offset, end_offset, new_text) = lsp_text_edit_parts(&snapshot.text, text_edit)?;
+        let mut text = snapshot.text.clone();
+        text.replace_range(start_offset..end_offset, new_text);
+        return Ok(AppliedCompletion {
+            text,
+            cursor: start_offset + new_text.len(),
+        });
+    }
+
+    let insert_text = item
+        .get("insertText")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("label").and_then(Value::as_str))
+        .ok_or_else(|| anyhow!("LSP completion item missing label or insertText"))?;
+    let start_offset = completion_prefix_start(&snapshot.text, snapshot.cursor);
+    let mut text = snapshot.text.clone();
+    text.replace_range(start_offset..snapshot.cursor, insert_text);
+
+    Ok(AppliedCompletion {
+        text,
+        cursor: start_offset + insert_text.len(),
+    })
 }
 
 pub fn byte_offset_for_position(text: &str, position: LspPosition) -> Option<usize> {
@@ -572,6 +582,59 @@ fn content_length(header: &str) -> anyhow::Result<usize> {
     }
 
     Err(anyhow!("LSP message missing Content-Length header"))
+}
+
+fn lsp_text_edit_parts<'a>(text: &str, edit: &'a Value) -> anyhow::Result<(usize, usize, &'a str)> {
+    let range = edit
+        .get("range")
+        .or_else(|| edit.get("replace"))
+        .or_else(|| edit.get("insert"))
+        .ok_or_else(|| anyhow!("LSP text edit missing range"))?;
+    let start = range
+        .get("start")
+        .map(LspPosition::from_value)
+        .transpose()?
+        .ok_or_else(|| anyhow!("LSP text edit missing start range"))?;
+    let end = range
+        .get("end")
+        .map(LspPosition::from_value)
+        .transpose()?
+        .ok_or_else(|| anyhow!("LSP text edit missing end range"))?;
+    let new_text = edit
+        .get("newText")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("LSP text edit missing newText"))?;
+
+    let start_offset = byte_offset_for_position(text, start)
+        .ok_or_else(|| anyhow!("LSP text edit start is outside the document"))?;
+    let end_offset = byte_offset_for_position(text, end)
+        .ok_or_else(|| anyhow!("LSP text edit end is outside the document"))?;
+
+    if start_offset > end_offset {
+        return Err(anyhow!("LSP text edit start is after end"));
+    }
+
+    Ok((start_offset, end_offset, new_text))
+}
+
+fn completion_prefix_start(text: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(text.len());
+    let before = &text[..cursor];
+    before
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| {
+            if is_completion_prefix_char(ch) {
+                None
+            } else {
+                Some(index + ch.len_utf8())
+            }
+        })
+        .unwrap_or(0)
+}
+
+fn is_completion_prefix_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.')
 }
 
 #[cfg(test)]
@@ -873,6 +936,87 @@ mod tests {
         .unwrap();
 
         assert_eq!(edited, "df$😀y\nnext");
+    }
+
+    #[test]
+    fn applies_completion_items_with_label_fallback_after_operator() {
+        let applied = apply_completion_item(
+            &snapshot("mtcars$", "mtcars$".len()),
+            &json!({"label": "mpg"}),
+        )
+        .unwrap();
+
+        assert_eq!(applied, AppliedCompletion {
+            text: "mtcars$mpg".to_string(),
+            cursor: "mtcars$mpg".len(),
+        });
+    }
+
+    #[test]
+    fn applies_completion_items_by_replacing_current_prefix() {
+        let applied = apply_completion_item(
+            &snapshot("libr", "libr".len()),
+            &json!({"label": "library"}),
+        )
+        .unwrap();
+
+        assert_eq!(applied, AppliedCompletion {
+            text: "library".to_string(),
+            cursor: "library".len(),
+        });
+
+        let applied = apply_completion_item(
+            &snapshot("mtcars$m", "mtcars$m".len()),
+            &json!({"label": "mpg"}),
+        )
+        .unwrap();
+
+        assert_eq!(applied, AppliedCompletion {
+            text: "mtcars$mpg".to_string(),
+            cursor: "mtcars$mpg".len(),
+        });
+    }
+
+    #[test]
+    fn applies_completion_text_edits_and_insert_replace_edits() {
+        let text_edit = apply_completion_item(
+            &snapshot("df$mp", "df$mp".len()),
+            &json!({
+                "label": "mpg",
+                "textEdit": {
+                    "range": {
+                        "start": {"line": 0, "character": 3},
+                        "end": {"line": 0, "character": 5}
+                    },
+                    "newText": "mpg"
+                }
+            }),
+        )
+        .unwrap();
+        let insert_replace = apply_completion_item(
+            &snapshot("df$mp", "df$mp".len()),
+            &json!({
+                "label": "mpg",
+                "textEdit": {
+                    "insert": {
+                        "start": {"line": 0, "character": 3},
+                        "end": {"line": 0, "character": 5}
+                    },
+                    "replace": {
+                        "start": {"line": 0, "character": 3},
+                        "end": {"line": 0, "character": 5}
+                    },
+                    "newText": "mpg"
+                }
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(text_edit, AppliedCompletion {
+            text: "df$mpg".to_string(),
+            cursor: "df$mpg".len(),
+        });
+        assert_eq!(insert_replace, text_edit);
     }
 
     #[test]

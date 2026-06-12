@@ -58,7 +58,7 @@ local script = "trace="
   .. vim.fn.shellescape(trace_log)
   .. "; lsp="
   .. vim.fn.shellescape(fake_lsp)
-  .. "; { sleep 0.2; printf 'mtcars$'; sleep 0.4; printf '\\n'; sleep 0.1; } | "
+  .. "; { sleep 0.2; printf 'mtcars$'; sleep 0.4; printf '\\t'; sleep 0.2; printf '\\n'; sleep 0.1; } | "
   .. vim.fn.shellescape(ark_terminal_bin)
   .. ' --ark-lsp "$lsp" --trace-log "$trace" -- /usr/bin/bash -lc '
   .. vim.fn.shellescape(child)
@@ -69,7 +69,7 @@ if vim.v.shell_error ~= 0 then
 end
 
 local joined = table.concat(output, "\n")
-if not joined:find("GOT:mtcars$", 1, true) then
+if not joined:find("GOT:mtcars$mpg", 1, true) then
   error("enhanced LSP runtime did not submit input to child: " .. vim.inspect(output), 0)
 end
 if not joined:find("mpg", 1, true) or not joined:find("cyl", 1, true) then
@@ -89,6 +89,7 @@ for _, event in ipairs({
   '"event":"lsp_completion_request"',
   '"event":"lsp_completion_response"',
   '"event":"lsp_completion_menu"',
+  '"event":"lsp_completion_accept"',
 }) do
   if not trace:find(event, 1, true) then
     error("enhanced LSP runtime trace missing " .. event .. ": " .. trace, 0)

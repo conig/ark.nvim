@@ -78,6 +78,12 @@ impl EnhancedInputRuntime {
         self.editor.snapshot()
     }
 
+    pub fn replace_text_and_cursor(&mut self, text: String, cursor: usize) -> EditorSnapshot {
+        self.reverse_search = None;
+        self.editor.replace_text_and_cursor(text, cursor);
+        self.editor.snapshot()
+    }
+
     fn handle_decoded(&mut self, decoded: DecodedInput, effects: &mut Vec<InputEffect>) {
         match decoded {
             decoded if self.reverse_search.is_some() => {
@@ -394,6 +400,18 @@ mod tests {
 
         assert_eq!(effects.len(), 1);
         assert_eq!(text(&effects[0]), Some("mtcars$x"));
+    }
+
+    #[test]
+    fn replaces_text_and_cursor_for_completion_acceptance() {
+        let mut runtime = EnhancedInputRuntime::new();
+        runtime.handle_bytes(b"mtcars$m", PromptState::TopLevel);
+
+        let snapshot =
+            runtime.replace_text_and_cursor("mtcars$mpg".to_string(), "mtcars$mpg".len());
+
+        assert_eq!(snapshot.text, "mtcars$mpg");
+        assert_eq!(snapshot.cursor, "mtcars$mpg".len());
     }
 
     #[test]

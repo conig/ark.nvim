@@ -103,6 +103,13 @@ impl LineEditor {
         self.draft_before_history = None;
     }
 
+    pub fn replace_text_and_cursor(&mut self, text: String, cursor: usize) {
+        self.buffer = text;
+        self.cursor = cursor.min(self.buffer.len());
+        self.history_position = None;
+        self.draft_before_history = None;
+    }
+
     pub fn history_match_before(
         &self,
         query: &str,

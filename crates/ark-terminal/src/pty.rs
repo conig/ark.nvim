@@ -36,6 +36,7 @@ use serde_json::Value;
 
 use crate::enhanced::EnhancedInputRuntime;
 use crate::enhanced::InputEffect;
+use crate::lsp_client::apply_completion_item;
 use crate::lsp_runtime::TerminalLspEvent;
 use crate::lsp_runtime::TerminalLspHandle;
 use crate::prompt::PromptDetector;
@@ -49,6 +50,25 @@ use crate::trace::TraceLog;
 use crate::Cli;
 
 const ENHANCED_STDIN_POLL_MS: u16 = 10;
+
+#[derive(Debug, Clone)]
+struct ActiveCompletionMenu {
+    items: Vec<Value>,
+    selected: usize,
+}
+
+impl ActiveCompletionMenu {
+    fn selected_item(&self) -> Option<&Value> {
+        self.items.get(self.selected)
+    }
+
+    fn snapshot(&self) -> CompletionMenuSnapshot {
+        CompletionMenuSnapshot {
+            items: self.items.iter().filter_map(completion_menu_item).collect(),
+            selected: self.selected,
+        }
+    }
+}
 
 pub fn run(cli: Cli) -> anyhow::Result<i32> {
     if cli.child_command.is_empty() {
@@ -185,10 +205,17 @@ fn forward_stdin_to_pty(
     let mut stdin = stdin_handle.lock();
     let mut enhanced = EnhancedInputRuntime::new();
     let mut renderer = LocalInputRenderer::new();
+    let mut completion_menu: Option<ActiveCompletionMenu> = None;
     let mut buffer = [0; 8192];
 
     loop {
-        drain_lsp_events(&mut lsp, &trace, Some(&mut renderer), Some(&stdout_lock))?;
+        drain_lsp_events(
+            &mut lsp,
+            &trace,
+            Some(&mut renderer),
+            Some(&stdout_lock),
+            Some(&mut completion_menu),
+        )?;
         if enhanced_mode && !stdin_ready(stdin_fd)? {
             continue;
         }
@@ -199,6 +226,26 @@ fn forward_stdin_to_pty(
         if enhanced_mode {
             let state = *prompt_state.lock().unwrap_or_else(|err| err.into_inner());
             renderer.set_terminal_cols(usize::from(terminal_size(host_stdout_fd).ws_col));
+            if accept_completion_if_requested(
+                &buffer[..read],
+                state,
+                &mut enhanced,
+                &mut renderer,
+                &stdout_lock,
+                &trace,
+                &mut lsp,
+                &mut completion_menu,
+            )? {
+                drain_lsp_events(
+                    &mut lsp,
+                    &trace,
+                    Some(&mut renderer),
+                    Some(&stdout_lock),
+                    Some(&mut completion_menu),
+                )?;
+                continue;
+            }
+            completion_menu = None;
             for effect in enhanced.handle_bytes(&buffer[..read], state) {
                 consume_input_effect(
                     effect,
@@ -209,7 +256,13 @@ fn forward_stdin_to_pty(
                     &trace,
                     &mut lsp,
                 )?;
-                drain_lsp_events(&mut lsp, &trace, Some(&mut renderer), Some(&stdout_lock))?;
+                drain_lsp_events(
+                    &mut lsp,
+                    &trace,
+                    Some(&mut renderer),
+                    Some(&stdout_lock),
+                    Some(&mut completion_menu),
+                )?;
             }
         } else {
             master.write_all(&buffer[..read])?;
@@ -217,7 +270,13 @@ fn forward_stdin_to_pty(
         }
     }
 
-    drain_lsp_events(&mut lsp, &trace, Some(&mut renderer), Some(&stdout_lock))?;
+    drain_lsp_events(
+        &mut lsp,
+        &trace,
+        Some(&mut renderer),
+        Some(&stdout_lock),
+        Some(&mut completion_menu),
+    )?;
     Ok(())
 }
 
@@ -299,6 +358,60 @@ fn consume_input_effect(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn accept_completion_if_requested(
+    bytes: &[u8],
+    prompt_state: PromptState,
+    enhanced: &mut EnhancedInputRuntime,
+    renderer: &mut LocalInputRenderer,
+    stdout_lock: &Arc<Mutex<()>>,
+    trace: &TraceLog,
+    lsp: &mut Option<TerminalLspHandle>,
+    completion_menu: &mut Option<ActiveCompletionMenu>,
+) -> io::Result<bool> {
+    if !matches!(bytes, b"\t" | b"\n" | b"\r") {
+        return Ok(false);
+    }
+
+    let Some(menu) = completion_menu.take() else {
+        return Ok(false);
+    };
+    let Some(item) = menu.selected_item() else {
+        return Ok(false);
+    };
+
+    match apply_completion_item(&enhanced.snapshot(), item) {
+        Ok(applied) => {
+            let snapshot = enhanced.replace_text_and_cursor(applied.text, applied.cursor);
+            if let Some(lsp) = lsp.as_ref() {
+                if !lsp.sync_snapshot(&snapshot) {
+                    trace.event("lsp_sync_dropped", json!({}));
+                }
+            }
+            let bytes = renderer.redraw(&snapshot, prompt_state);
+            write_stdout_bytes(&bytes, stdout_lock)?;
+            trace.event(
+                "lsp_completion_accept",
+                json!({
+                    "selected": menu.selected,
+                    "bytes": snapshot.text.len(),
+                    "cursor": snapshot.cursor,
+                }),
+            );
+        },
+        Err(err) => {
+            trace.event(
+                "lsp_completion_accept_failed",
+                json!({
+                    "error": err.to_string(),
+                }),
+            );
+        },
+    }
+
+    Ok(true)
+}
+
 fn start_terminal_lsp(
     cli: &Cli,
     enhanced_mode: bool,
@@ -345,6 +458,7 @@ fn drain_lsp_events(
     trace: &TraceLog,
     mut renderer: Option<&mut LocalInputRenderer>,
     stdout_lock: Option<&Arc<Mutex<()>>>,
+    mut active_completion_menu: Option<&mut Option<ActiveCompletionMenu>>,
 ) -> io::Result<()> {
     let Some(handle) = lsp.as_mut() else {
         return Ok(());
@@ -378,15 +492,23 @@ fn drain_lsp_events(
                 );
                 if let (Some(renderer), Some(stdout_lock)) = (renderer.as_deref_mut(), stdout_lock)
                 {
-                    let menu = completion_menu_from_lsp_items(&items);
-                    let bytes = renderer.redraw_completion_menu(&menu);
+                    let menu = active_completion_menu_from_lsp_items(&items);
+                    let snapshot = menu.snapshot();
+                    let bytes = renderer.redraw_completion_menu(&snapshot);
                     write_stdout_bytes(&bytes, stdout_lock)?;
-                    if !menu.items.is_empty() {
+                    if let Some(active_completion_menu) = active_completion_menu.as_deref_mut() {
+                        *active_completion_menu = if snapshot.items.is_empty() {
+                            None
+                        } else {
+                            Some(menu)
+                        };
+                    }
+                    if !snapshot.items.is_empty() {
                         trace.event(
                             "lsp_completion_menu",
                             json!({
                                 "sequence": sequence,
-                                "items": menu.items.len(),
+                                "items": snapshot.items.len(),
                             }),
                         );
                     }
@@ -406,7 +528,7 @@ fn drain_lsp_events(
     Ok(())
 }
 
-fn completion_menu_from_lsp_items(items: &[Value]) -> CompletionMenuSnapshot {
+fn active_completion_menu_from_lsp_items(items: &[Value]) -> ActiveCompletionMenu {
     let mut seen = HashSet::new();
     let mut menu_items = Vec::new();
 
@@ -417,21 +539,29 @@ fn completion_menu_from_lsp_items(items: &[Value]) -> CompletionMenuSnapshot {
         if label.is_empty() || !seen.insert(label.to_string()) {
             continue;
         }
-        let detail = item
-            .get("detail")
-            .and_then(Value::as_str)
-            .filter(|detail| !detail.is_empty())
-            .map(ToString::to_string);
-        menu_items.push(CompletionMenuItem {
-            label: label.to_string(),
-            detail,
-        });
+        menu_items.push(item.clone());
     }
 
-    CompletionMenuSnapshot {
+    ActiveCompletionMenu {
         items: menu_items,
         selected: 0,
     }
+}
+
+fn completion_menu_item(item: &Value) -> Option<CompletionMenuItem> {
+    let label = item.get("label").and_then(Value::as_str)?;
+    if label.is_empty() {
+        return None;
+    }
+    let detail = item
+        .get("detail")
+        .and_then(Value::as_str)
+        .filter(|detail| !detail.is_empty())
+        .map(ToString::to_string);
+    Some(CompletionMenuItem {
+        label: label.to_string(),
+        detail,
+    })
 }
 
 fn forward_pty_to_stdout(
@@ -593,7 +723,7 @@ mod tests {
 
     #[test]
     fn completion_menu_preserves_lsp_order_and_deduplicates_labels() {
-        let menu = completion_menu_from_lsp_items(&[
+        let menu = active_completion_menu_from_lsp_items(&[
             json!({"label": "mpg", "detail": "field"}),
             json!({"label": "cyl", "detail": "field"}),
             json!({"label": "mpg", "detail": "duplicate"}),
@@ -601,7 +731,7 @@ mod tests {
             json!({"detail": "missing label"}),
         ]);
 
-        assert_eq!(menu, CompletionMenuSnapshot {
+        assert_eq!(menu.snapshot(), CompletionMenuSnapshot {
             selected: 0,
             items: vec![
                 CompletionMenuItem {
@@ -614,5 +744,6 @@ mod tests {
                 },
             ],
         });
+        assert_eq!(menu.selected_item().unwrap()["label"], "mpg");
     }
 }
