@@ -11,8 +11,12 @@ use anyhow::anyhow;
 use serde_json::json;
 use serde_json::Value;
 
+use crate::input::EditorSnapshot;
+
 const JSONRPC_VERSION: &str = "2.0";
 const CONSOLE_LANGUAGE_ID: &str = "r";
+pub const COMPLETION_TRIGGER_CHARACTERS: &[&str] =
+    &["$", "@", ":", "(", "[", ",", " ", "\"", "'", "/"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LspPosition {
@@ -251,6 +255,101 @@ impl LspMessageFactory {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ConsoleLspState {
+    document: ConsoleDocument,
+    factory: LspMessageFactory,
+    opened: bool,
+}
+
+impl ConsoleLspState {
+    pub fn new(session_id: &str) -> Self {
+        Self {
+            document: ConsoleDocument::new(session_id),
+            factory: LspMessageFactory::new(),
+            opened: false,
+        }
+    }
+
+    pub fn document(&self) -> &ConsoleDocument {
+        &self.document
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.opened
+    }
+
+    pub fn initialize(&mut self, process_id: Option<u32>) -> Value {
+        self.factory.initialize(process_id)
+    }
+
+    pub fn initialized() -> Value {
+        LspMessageFactory::initialized()
+    }
+
+    pub fn sync_snapshot(&mut self, snapshot: &EditorSnapshot) -> Option<Value> {
+        if !self.opened {
+            self.document.text = snapshot.text.clone();
+            self.opened = true;
+            return Some(self.document.did_open());
+        }
+
+        if self.document.text() == snapshot.text {
+            return None;
+        }
+
+        Some(self.document.replace_text(snapshot.text.clone()))
+    }
+
+    pub fn completion_messages_for_snapshot(
+        &mut self,
+        snapshot: &EditorSnapshot,
+        trigger_character: Option<&str>,
+    ) -> Vec<Value> {
+        let mut messages = Vec::new();
+        if let Some(message) = self.sync_snapshot(snapshot) {
+            messages.push(message);
+        }
+
+        messages.push(self.completion_request_for_snapshot(snapshot, trigger_character));
+        messages
+    }
+
+    pub fn completion_request_for_snapshot(
+        &mut self,
+        snapshot: &EditorSnapshot,
+        trigger_character: Option<&str>,
+    ) -> Value {
+        let position = LspPosition::from_byte_offset(&snapshot.text, snapshot.cursor);
+        self.factory
+            .completion(&self.document, position, trigger_character)
+    }
+
+    pub fn resolve_completion(&mut self, item: Value) -> Value {
+        self.factory.resolve_completion(item)
+    }
+}
+
+pub fn completion_trigger_from_inserted_text(text: &str) -> Option<&'static str> {
+    text.chars().last().and_then(completion_trigger_for_char)
+}
+
+pub fn completion_trigger_for_char(ch: char) -> Option<&'static str> {
+    match ch {
+        '$' => Some("$"),
+        '@' => Some("@"),
+        ':' => Some(":"),
+        '(' => Some("("),
+        '[' => Some("["),
+        ',' => Some(","),
+        ' ' => Some(" "),
+        '"' => Some("\""),
+        '\'' => Some("'"),
+        '/' => Some("/"),
+        _ => None,
+    }
+}
+
 impl LspTransport {
     pub fn spawn_ark_lsp(ark_lsp: impl AsRef<Path>) -> anyhow::Result<Self> {
         let mut command = Command::new(ark_lsp.as_ref());
@@ -483,6 +582,15 @@ mod tests {
         value.get("label").and_then(Value::as_str)
     }
 
+    fn snapshot(text: &str, cursor: usize) -> EditorSnapshot {
+        EditorSnapshot {
+            text: text.to_string(),
+            cursor,
+            display_cursor: cursor,
+            is_complete: true,
+        }
+    }
+
     #[test]
     fn console_document_uri_escapes_session_identity() {
         let document = ConsoleDocument::new("/tmp/tmux/default__%169");
@@ -570,6 +678,94 @@ mod tests {
         assert_eq!(resolve["method"], "completionItem/resolve");
         assert_eq!(resolve["params"]["label"], "mean");
         assert_eq!(LspMessageFactory::initialized()["method"], "initialized");
+    }
+
+    #[test]
+    fn console_lsp_state_opens_once_and_syncs_changed_snapshots() {
+        let mut state = ConsoleLspState::new("session-1");
+        let first = snapshot("mtcars$", "mtcars$".len());
+
+        let opened = state.sync_snapshot(&first).unwrap();
+
+        assert!(state.is_open());
+        assert_eq!(state.document().version(), 0);
+        assert_eq!(state.document().text(), "mtcars$");
+        assert_eq!(opened["method"], "textDocument/didOpen");
+        assert_eq!(opened["params"]["textDocument"]["version"], 0);
+        assert_eq!(opened["params"]["textDocument"]["text"], "mtcars$");
+        assert!(state.sync_snapshot(&first).is_none());
+
+        let changed = state
+            .sync_snapshot(&snapshot("mtcars$c", "mtcars$c".len()))
+            .unwrap();
+
+        assert_eq!(state.document().version(), 1);
+        assert_eq!(state.document().text(), "mtcars$c");
+        assert_eq!(changed["method"], "textDocument/didChange");
+        assert_eq!(changed["params"]["textDocument"]["version"], 1);
+        assert_eq!(changed["params"]["contentChanges"][0]["text"], "mtcars$c");
+    }
+
+    #[test]
+    fn console_lsp_state_sequences_initialize_completion_and_resolve() {
+        let mut state = ConsoleLspState::new("session-1");
+        let input = "x😀$";
+        let initialize = state.initialize(Some(99));
+        let messages = state.completion_messages_for_snapshot(
+            &snapshot(input, input.len()),
+            completion_trigger_from_inserted_text(input),
+        );
+        let completion = messages.last().unwrap();
+        let resolve = state.resolve_completion(json!({"label": "x"}));
+
+        assert_eq!(initialize["id"], 1);
+        assert_eq!(initialize["method"], "initialize");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["method"], "textDocument/didOpen");
+        assert_eq!(completion["id"], 2);
+        assert_eq!(completion["method"], "textDocument/completion");
+        assert_eq!(
+            completion["params"]["position"],
+            json!({"line": 0, "character": 4})
+        );
+        assert_eq!(completion["params"]["context"]["triggerKind"], 2);
+        assert_eq!(completion["params"]["context"]["triggerCharacter"], "$");
+        assert_eq!(resolve["id"], 3);
+        assert_eq!(resolve["method"], "completionItem/resolve");
+    }
+
+    #[test]
+    fn console_lsp_state_sends_change_before_completion_for_stale_document() {
+        let mut state = ConsoleLspState::new("session-1");
+        let first = snapshot("mtcars$", "mtcars$".len());
+        let second = snapshot("mtcars$c", "mtcars$c".len());
+
+        let first_messages = state.completion_messages_for_snapshot(&first, Some("$"));
+        let second_messages = state.completion_messages_for_snapshot(&second, None);
+
+        assert_eq!(first_messages.len(), 2);
+        assert_eq!(second_messages.len(), 2);
+        assert_eq!(second_messages[0]["method"], "textDocument/didChange");
+        assert_eq!(
+            second_messages[0]["params"]["contentChanges"][0]["text"],
+            "mtcars$c"
+        );
+        assert_eq!(second_messages[1]["method"], "textDocument/completion");
+        assert_eq!(second_messages[1]["params"]["context"]["triggerKind"], 1);
+    }
+
+    #[test]
+    fn recognizes_console_completion_triggers_from_inserted_text() {
+        assert_eq!(COMPLETION_TRIGGER_CHARACTERS.len(), 10);
+        for trigger in COMPLETION_TRIGGER_CHARACTERS {
+            assert_eq!(
+                completion_trigger_from_inserted_text(&format!("abc{trigger}")),
+                Some(*trigger)
+            );
+        }
+
+        assert_eq!(completion_trigger_for_char('m'), None);
+        assert_eq!(completion_trigger_from_inserted_text(""), None);
     }
 
     #[test]

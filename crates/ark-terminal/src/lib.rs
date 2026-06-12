@@ -18,12 +18,16 @@ pub use enhanced::InputEffect;
 pub use lsp_client::apply_lsp_text_edit;
 pub use lsp_client::byte_offset_for_position;
 pub use lsp_client::completion_items_from_response;
+pub use lsp_client::completion_trigger_for_char;
+pub use lsp_client::completion_trigger_from_inserted_text;
 pub use lsp_client::decode_message;
 pub use lsp_client::encode_message;
 pub use lsp_client::ConsoleDocument;
+pub use lsp_client::ConsoleLspState;
 pub use lsp_client::LspMessageFactory;
 pub use lsp_client::LspPosition;
 pub use lsp_client::LspTransport;
+pub use lsp_client::COMPLETION_TRIGGER_CHARACTERS;
 
 pub fn run_from_env() -> anyhow::Result<i32> {
     let cli = Cli::parse(std::env::args().skip(1))?;

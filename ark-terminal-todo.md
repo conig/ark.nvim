@@ -442,15 +442,22 @@ Current implementation status:
 - the same module now includes a blocking stdio `LspTransport` that can spawn
   `ark-lsp --runtime-mode detached`, send framed JSON-RPC messages, read framed
   replies, and clean up the child process on drop
+- `ConsoleLspState` now converts line-editor `EditorSnapshot`s into console
+  document `didOpen` / `didChange` messages, coalesces unchanged snapshots,
+  sequences initialize/completion/resolve request IDs, computes UTF-16 cursor
+  positions from byte cursors, and recognizes the planned trigger characters
+  (`$`, `@`, `:`, `(`, `[`, `,`, space, `"`, `'`, `/`)
 - the substrate is not yet connected to the enhanced terminal runtime or a live
   completion UI
 
 Tasks:
 
 - start or connect to `ark-lsp`
-- maintain `ark-console://<session-id>/input.R`
-- synchronize line-editor edits to LSP document changes
-- request completions on manual invocation and trigger characters
+- wire `ConsoleLspState` into enhanced terminal events so
+  `ark-console://<session-id>/input.R` is maintained at runtime
+- send line-editor snapshot changes over the LSP transport
+- request completions on manual invocation and trigger characters from the
+  terminal event loop
 - apply LSP text edits and insert text accurately
 - implement completion item resolve
 - dedupe and rank display consistently with Ark LSP responses
