@@ -1,5 +1,6 @@
 mod cli;
 mod enhanced;
+mod lsp_client;
 mod prompt;
 mod raw_terminal;
 mod render;
@@ -14,6 +15,14 @@ pub mod keys;
 pub use cli::Cli;
 pub use enhanced::EnhancedInputRuntime;
 pub use enhanced::InputEffect;
+pub use lsp_client::apply_lsp_text_edit;
+pub use lsp_client::byte_offset_for_position;
+pub use lsp_client::completion_items_from_response;
+pub use lsp_client::decode_message;
+pub use lsp_client::encode_message;
+pub use lsp_client::ConsoleDocument;
+pub use lsp_client::LspMessageFactory;
+pub use lsp_client::LspPosition;
 
 pub fn run_from_env() -> anyhow::Result<i32> {
     let cli = Cli::parse(std::env::args().skip(1))?;

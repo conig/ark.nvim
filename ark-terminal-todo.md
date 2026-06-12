@@ -432,6 +432,16 @@ Exit criteria:
 
 Goal: console completions match script-buffer Ark completions.
 
+Current implementation status:
+
+- `crates/ark-terminal/src/lsp_client.rs` provides the tested protocol substrate
+  for console documents: `ark-console://<session-id>/input.R` URI creation,
+  full-document `didOpen` / `didChange` notifications, initialize/completion/
+  resolve request construction, Content-Length JSON-RPC framing, completion
+  response item extraction, and UTF-16 LSP text edit application
+- the substrate is not yet connected to the enhanced terminal runtime or a live
+  `ark-lsp` child process
+
 Tasks:
 
 - start or connect to `ark-lsp`
