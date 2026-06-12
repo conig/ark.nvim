@@ -392,9 +392,10 @@ Current implementation status:
   bracketed paste, multiline submit, display-width-aware local rendering, and
   reverse history search are implemented for direct non-raw `ark-terminal` runs
 - browser/debug-style prompts currently use safe pass-through fallback
+- direct real-R transcript tests cover enhanced top-level input, local multiline
+  rendering/submission, `browser()` pass-through, and `debugonce()` pass-through
 - the Neovim managed-pane wrapper still launches `ark-terminal --raw` until
-  broader real-R transcript coverage and terminal edge-case hardening are in
-  place
+  more R-interaction transcripts and terminal edge-case hardening are in place
 
 Tasks:
 
