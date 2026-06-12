@@ -439,8 +439,11 @@ Current implementation status:
   full-document `didOpen` / `didChange` notifications, initialize/completion/
   resolve request construction, Content-Length JSON-RPC framing, completion
   response item extraction, and UTF-16 LSP text edit application
+- the same module now includes a blocking stdio `LspTransport` that can spawn
+  `ark-lsp --runtime-mode detached`, send framed JSON-RPC messages, read framed
+  replies, and clean up the child process on drop
 - the substrate is not yet connected to the enhanced terminal runtime or a live
-  `ark-lsp` child process
+  completion UI
 
 Tasks:
 

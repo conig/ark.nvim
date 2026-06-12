@@ -23,6 +23,7 @@ pub use lsp_client::encode_message;
 pub use lsp_client::ConsoleDocument;
 pub use lsp_client::LspMessageFactory;
 pub use lsp_client::LspPosition;
+pub use lsp_client::LspTransport;
 
 pub fn run_from_env() -> anyhow::Result<i32> {
     let cli = Cli::parse(std::env::args().skip(1))?;

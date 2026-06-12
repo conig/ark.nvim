@@ -1,3 +1,12 @@
+use std::io::Read;
+use std::io::Write;
+use std::path::Path;
+use std::process::Child;
+use std::process::ChildStdin;
+use std::process::ChildStdout;
+use std::process::Command;
+use std::process::Stdio;
+
 use anyhow::anyhow;
 use serde_json::json;
 use serde_json::Value;
@@ -160,6 +169,14 @@ pub struct LspMessageFactory {
     next_id: u64,
 }
 
+#[derive(Debug)]
+pub struct LspTransport {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: ChildStdout,
+    read_buffer: Vec<u8>,
+}
+
 impl Default for LspMessageFactory {
     fn default() -> Self {
         Self::new()
@@ -231,6 +248,71 @@ impl LspMessageFactory {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+}
+
+impl LspTransport {
+    pub fn spawn_ark_lsp(ark_lsp: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let mut command = Command::new(ark_lsp.as_ref());
+        command.arg("--runtime-mode").arg("detached");
+        Self::spawn(command)
+    }
+
+    pub fn spawn(mut command: Command) -> anyhow::Result<Self> {
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("failed to open LSP child stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("failed to open LSP child stdout"))?;
+
+        Ok(Self {
+            child,
+            stdin,
+            stdout,
+            read_buffer: Vec::new(),
+        })
+    }
+
+    pub fn child_id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn send(&mut self, message: &Value) -> anyhow::Result<()> {
+        let bytes = encode_message(message)?;
+        self.stdin.write_all(&bytes)?;
+        self.stdin.flush()?;
+        Ok(())
+    }
+
+    pub fn read_message(&mut self) -> anyhow::Result<Value> {
+        let mut buffer = [0; 8192];
+        loop {
+            if let Some((message, consumed)) = decode_message(&self.read_buffer)? {
+                self.read_buffer.drain(..consumed);
+                return Ok(message);
+            }
+
+            let read = self.stdout.read(&mut buffer)?;
+            if read == 0 {
+                return Err(anyhow!("LSP child stdout closed before a complete message"));
+            }
+            self.read_buffer.extend_from_slice(&buffer[..read]);
+        }
+    }
+}
+
+impl Drop for LspTransport {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -595,5 +677,23 @@ mod tests {
         .unwrap();
 
         assert_eq!(edited, "df$😀y\nnext");
+    }
+
+    #[test]
+    fn transport_writes_and_reads_framed_messages_through_stdio() {
+        let mut transport = LspTransport::spawn(Command::new("cat")).unwrap();
+        let message = json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "test/echo",
+            "params": {
+                "value": "ok"
+            }
+        });
+
+        transport.send(&message).unwrap();
+
+        assert_eq!(transport.read_message().unwrap(), message);
+        assert!(transport.child_id() > 0);
     }
 }
