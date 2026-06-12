@@ -8,6 +8,7 @@ mod trace;
 mod pty;
 
 pub mod input;
+pub mod keys;
 pub use cli::Cli;
 
 pub fn run_from_env() -> anyhow::Result<i32> {
