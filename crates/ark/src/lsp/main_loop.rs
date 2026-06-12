@@ -1076,19 +1076,7 @@ pub(crate) fn index_update(uris: Vec<Url>, state: WorldState) {
 }
 
 fn related_targets_script_uri(uri: &Url) -> Option<Url> {
-    let Ok(path) = uri.to_file_path() else {
-        return None;
-    };
-
-    let start = path.parent()?;
-    for ancestor in start.ancestors() {
-        let candidate = ancestor.join("_targets.R");
-        if candidate.exists() {
-            return Url::from_file_path(candidate).ok();
-        }
-    }
-
-    None
+    crate::lsp::targets_project::related_targets_script_uri(uri)
 }
 
 pub(crate) fn index_delete(uris: Vec<Url>, state: WorldState) {

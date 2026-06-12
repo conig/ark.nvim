@@ -2349,6 +2349,77 @@ undefined_symbol_ark
     }
 
     #[test]
+    fn test_targets_script_attach_calls_attach_exports_to_workspace_scripts() {
+        r_task(|| {
+            let _lock = indexer::indexer_test_lock();
+            let _guard = indexer::ResetIndexerGuard;
+            let tempdir = tempfile::tempdir().expect("expected tempdir");
+            let targets_path = tempdir.path().join("pipeline_main.R");
+
+            fs::write(
+                tempdir.path().join("_targets.yaml"),
+                r#"
+main:
+  script: pipeline_main.R
+"#,
+            )
+            .expect("expected targets config");
+            fs::write(
+                &targets_path,
+                r#"
+library(tarchetypes)
+"#,
+            )
+            .expect("expected configured targets script");
+
+            let tarchetypes = Package::from_parts(
+                PathBuf::from("/mock/tarchetypes"),
+                Description {
+                    name: String::from("tarchetypes"),
+                    version: String::from("1.0.0"),
+                    ..Default::default()
+                },
+                Namespace {
+                    exports: SortedVec::from_vec(vec![String::from("tar_map")]),
+                    ..Default::default()
+                },
+            );
+            let library = Library::new(vec![], None).insert("tarchetypes", tarchetypes);
+
+            let targets_uri = Url::from_file_path(&targets_path).expect("expected targets uri");
+            indexer::create(&targets_uri).expect("expected configured targets script indexing");
+
+            let script_document = Document::new(
+                r#"
+tar_map()
+undefined_symbol_ark
+"#,
+                None,
+            );
+            let state = WorldState {
+                library,
+                ..Default::default()
+            };
+
+            let diagnostics = generate_diagnostics(script_document, state);
+            let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+
+            assert!(
+                !messages
+                    .iter()
+                    .any(|m| m.contains("No symbol named 'tar_map' in scope.")),
+                "unexpected diagnostics: {messages:?}"
+            );
+            assert!(
+                messages
+                    .iter()
+                    .any(|m| m.contains("No symbol named 'undefined_symbol_ark' in scope.")),
+                "expected diagnostics to keep reporting unrelated missing symbols: {messages:?}"
+            );
+        });
+    }
+
+    #[test]
     fn test_tar_load_marks_loaded_targets_as_in_scope_in_literate_r() {
         r_task(|| {
             let state = WorldState {

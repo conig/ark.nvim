@@ -74,9 +74,10 @@ view.
 
 ### Work With `{targets}`
 
-In projects with `_targets.R`, Ark can complete target names, jump to target
+In `{targets}` projects, Ark can complete target names, jump to target
 declarations, show references, inspect target metadata, complete cached target
-object members, and run approved local target actions.
+object members, and run approved local target actions. Ark uses `_targets.R` by
+default and also honors targets script settings from `_targets.yaml`.
 
 ## What It Is Not
 
@@ -384,7 +385,7 @@ for quick local inspection, not a replacement for a full IDE data pane.
 ## Target Workflows
 
 Ark treats `{targets}` projects as an editor workflow rather than just another
-set of R function calls. In a project with `_targets.R`, Ark can:
+set of R function calls. In a project with a configured targets script, Ark can:
 
 - complete target names in common target-reading and target-building calls
 - jump from target references to static target declarations

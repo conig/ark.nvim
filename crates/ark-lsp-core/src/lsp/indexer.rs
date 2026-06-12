@@ -25,6 +25,7 @@ use walkdir::WalkDir;
 
 use crate::lsp;
 use crate::lsp::document::Document;
+use crate::lsp::targets_project;
 use crate::lsp::traits::node::NodeExt;
 use crate::treesitter::BinaryOperatorType;
 use crate::treesitter::NodeType;
@@ -343,6 +344,9 @@ fn index_document_entries_impl(doc: &Document, index_targets_options: bool) -> V
             lsp::log_error!("Can't index document: {err:?}");
         }
         if index_targets_options {
+            if let Err(err) = index_targets_attach_calls(doc, &node, &mut entries) {
+                lsp::log_error!("Can't index targets attach calls: {err:?}");
+            }
             if let Err(err) = index_targets_option_set(doc, &node, &mut entries) {
                 lsp::log_error!("Can't index targets options: {err:?}");
             }
@@ -356,17 +360,11 @@ fn index_document_entries_impl(doc: &Document, index_targets_options: bool) -> V
 }
 
 fn is_targets_pipeline_uri(uri: &Url) -> bool {
-    if is_targets_script_uri(uri) || is_conventional_targets_pipeline_uri(uri) {
+    if targets_project::is_targets_script_uri(uri) || is_conventional_targets_pipeline_uri(uri) {
         return true;
     }
 
     SOURCED_TARGET_PIPELINE_URIS.lock().unwrap().contains(uri)
-}
-
-fn is_targets_script_uri(uri: &Url) -> bool {
-    uri.path_segments()
-        .and_then(|mut segments| segments.next_back())
-        .is_some_and(|segment| segment == "_targets.R")
 }
 
 fn is_conventional_targets_pipeline_uri(uri: &Url) -> bool {
@@ -389,6 +387,98 @@ pub fn find_in_document(
         .get(symbol)
         .cloned()
         .map(|entry| (FileId::from_uri(uri.clone()), entry))
+}
+
+fn index_targets_attach_calls(
+    doc: &Document,
+    node: &Node,
+    entries: &mut Vec<IndexEntry>,
+) -> anyhow::Result<()> {
+    if node.is_function_definition() {
+        return Ok(());
+    }
+
+    if node.is_call() {
+        index_targets_attach_call(doc, node, entries)?;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        index_targets_attach_calls(doc, &child, entries)?;
+    }
+
+    Ok(())
+}
+
+fn index_targets_attach_call(
+    doc: &Document,
+    node: &Node,
+    entries: &mut Vec<IndexEntry>,
+) -> anyhow::Result<()> {
+    let Some(callee) = node.child_by_field_name("function") else {
+        return Ok(());
+    };
+    let callee = callee.node_as_str(&doc.contents)?;
+    if !matches!(
+        callee,
+        "library" |
+            "base::library" |
+            "base:::library" |
+            "require" |
+            "base::require" |
+            "base:::require"
+    ) {
+        return Ok(());
+    }
+
+    if node
+        .arguments_names_as_string(&doc.contents)
+        .flatten()
+        .any(|name| name == "character.only")
+    {
+        return Ok(());
+    }
+
+    let Some(package_node) = package_attach_argument(doc, node)? else {
+        return Ok(());
+    };
+    let package = package_node
+        .get_identifier_or_string_text(&doc.contents)?
+        .to_string();
+    let start = doc.lsp_position_from_tree_sitter_point(package_node.start_position())?;
+    let end = doc.lsp_position_from_tree_sitter_point(package_node.end_position())?;
+    let range = Range { start, end };
+
+    entries.push(IndexEntry {
+        key: format!("targets-package:{package}"),
+        range,
+        data: IndexEntryData::PackageImport { package },
+    });
+
+    Ok(())
+}
+
+fn package_attach_argument<'a>(doc: &Document, node: &'a Node) -> anyhow::Result<Option<Node<'a>>> {
+    let mut first_unnamed = None;
+
+    for (name, value) in node.arguments() {
+        let Some(value) = value else {
+            continue;
+        };
+
+        let Some(name) = name else {
+            if first_unnamed.is_none() {
+                first_unnamed = Some(value);
+            }
+            continue;
+        };
+
+        if name.node_as_str(&doc.contents)? == "package" {
+            return Ok(Some(value));
+        }
+    }
+
+    Ok(first_unnamed)
 }
 
 fn index_node(doc: &Document, node: &Node, entries: &mut Vec<IndexEntry>) -> anyhow::Result<()> {
@@ -513,7 +603,7 @@ fn index_targets_target_call(
 }
 
 fn index_targets_sourced_pipeline_files(doc: &Document, uri: &Url) {
-    if !is_targets_script_uri(uri) {
+    if !targets_project::is_targets_script_uri(uri) {
         return;
     }
 
@@ -1023,6 +1113,56 @@ targets::tar_option_set(
                 .into_iter()
                 .all(|entry| !matches!(entry.data, IndexEntryData::PackageImport { .. })),
             "targets package imports should only be indexed from _targets.R"
+        );
+    }
+
+    #[test]
+    fn test_index_configured_targets_script_attach_calls() {
+        let _lock = indexer_test_lock();
+        let _guard = ResetIndexerGuard;
+        let tempdir = tempfile::tempdir().expect("expected tempdir");
+        let targets_path = tempdir.path().join("pipeline_main.R");
+
+        std::fs::write(
+            tempdir.path().join("_targets.yaml"),
+            r#"
+main:
+  script: pipeline_main.R
+"#,
+        )
+        .expect("expected targets config");
+        std::fs::write(
+            &targets_path,
+            r#"
+library(tarchetypes)
+require(targets)
+"#,
+        )
+        .expect("expected configured targets script");
+
+        let targets_uri = Url::from_file_path(&targets_path).expect("expected targets uri");
+        create(&targets_uri).expect("expected configured targets script indexing");
+
+        let mut packages: Option<Vec<_>> = {
+            let index = WORKSPACE_INDEX.lock().unwrap();
+            let file_id = FileId::from_uri(targets_uri);
+            index.get(&file_id).map(|entries| {
+                entries
+                    .values()
+                    .filter_map(|entry| match &entry.data {
+                        IndexEntryData::PackageImport { package } => Some(package.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+        };
+        if let Some(packages) = &mut packages {
+            packages.sort();
+        }
+
+        assert_eq!(
+            packages.expect("expected configured targets script index"),
+            vec!["tarchetypes", "targets"]
         );
     }
 

@@ -231,7 +231,7 @@ first-class Ark concept.
 This version exists because the target user workflow is not just editing loose
 R scripts. The common high-value workflow is:
 
-1. maintain a project-level `_targets.R`
+1. maintain a project-level targets script, usually `_targets.R`
 2. split pipeline declarations across `_target_pipelines/` or similar files
 3. define analysis functions in `R/`
 4. render `.Rmd` / `.qmd` manuscripts from cached targets
@@ -253,8 +253,8 @@ The v1.1 user-facing feature set is:
 - jump from a target reference to the nearest static declaration such as
   `tar_target(clean_data, ...)`, even when that declaration lives in a sourced
   pipeline file
-- show references for a target across `_targets.R`, `_target_pipelines/`,
-  `R/`, and literate documents
+- show references for a target across the configured targets script,
+  `_target_pipelines/`, `R/`, and literate documents
 - hover a target name to show its command, upstream dependencies, downstream
   dependents, status, last build time, error/warning state, object format, and
   lightweight object metadata when available
@@ -304,11 +304,15 @@ must not scrape tmux text or infer pipeline state from console output.
 
 `ark-lsp-core` should maintain a target project model per workspace root:
 
-- project root and `_targets.R` path
+- project root and configured targets script path, defaulting to `_targets.R`
+  and honoring `_targets.yaml`, `TAR_CONFIG`, and `TAR_PROJECT` where practical
 - target store path, including non-default `tar_config_set(store = ...)` or
   equivalent detected configuration when available
-- target declarations found statically in `_targets.R`, `_target_pipelines/`,
-  and other files reached by `tar_source()` / `source()` where practical
+- target declarations found statically in the configured targets script,
+  `_target_pipelines/`, and other files reached by `tar_source()` / `source()`
+  where practical
+- package attach context from top-level `library()` / `require()` calls and
+  `tar_option_set(packages = ...)` in the configured targets script
 - manifest targets from `targets::tar_manifest()`
 - graph edges from `targets::tar_network(targets_only = TRUE)` or an
   equivalent bridge-owned query
@@ -343,9 +347,9 @@ generator declaration when Ark can identify one.
 
 The static indexer should recognize at least:
 
-- `_targets.R`
+- the configured targets script, defaulting to `_targets.R`
 - files loaded with `tar_source()`
-- simple `source()` calls from `_targets.R`
+- simple `source()` calls from the configured targets script
 - conventional `_target_pipelines/*.R` files
 - direct `tar_target(name, command, ...)` declarations
 - namespace-qualified declarations such as `targets::tar_target(...)`
@@ -459,8 +463,8 @@ or manifest preflight before the invalidation request.
 Target project state should be cached with explicit invalidation:
 
 - buffer edits invalidate static declarations and references for that document
-- writes to `_targets.R` or sourced pipeline files invalidate the static project
-  target index
+- writes to the configured targets script or sourced pipeline files invalidate
+  the static project target index
 - changes under the target store invalidate dynamic metadata
 - a successful build/invalidate action invalidates affected target metadata and
   graph status
@@ -488,8 +492,8 @@ readiness, unless the user explicitly runs a target command.
 `v1.1 Target Lens` is shippable when:
 
 - target-name completion works in R scripts and literate R documents
-- go-to-definition works for statically declared targets across `_targets.R` and
-  sourced pipeline files
+- go-to-definition works for statically declared targets across the configured
+  targets script and sourced pipeline files
 - hover shows a useful merged static/dynamic target summary
 - `tar_read()` / `tar_load()` references are not reported as unknown symbols
   when the target exists

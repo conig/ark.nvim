@@ -99,6 +99,7 @@ use crate::lsp::statement_range::StatementRangeParams;
 use crate::lsp::statement_range::StatementRangeResponse;
 use crate::lsp::symbols;
 use crate::lsp::target_context::target_reference_context;
+use crate::lsp::targets_project;
 use crate::lsp::traits::node::NodeExt;
 use crate::r_task;
 use crate::treesitter::NodeTypeExt;
@@ -1059,11 +1060,12 @@ fn target_project_paths(
     state: &WorldState,
 ) -> Option<(String, String, String)> {
     let path = uri.to_file_path().ok()?;
-    let root = find_targets_root_for_path(path.as_path())
+    let root = targets_project::find_targets_root_for_path(path.as_path())
         .or_else(|| find_open_targets_root(state))
         .or_else(|| path.parent().map(Path::to_path_buf))?;
-    let script = root.join("_targets.R");
-    let store = target_store_path(root.as_path(), state).unwrap_or_else(|| root.join("_targets"));
+    let script = targets_project::targets_script_for_root(root.as_path());
+    let store = target_store_path(root.as_path(), script.as_path(), state)
+        .unwrap_or_else(|| root.join("_targets"));
 
     Some((
         root.to_string_lossy().to_string(),
@@ -1072,10 +1074,15 @@ fn target_project_paths(
     ))
 }
 
-fn target_store_path(root: &Path, state: &WorldState) -> Option<PathBuf> {
-    let script = root.join("_targets.R");
-    let contents = open_targets_script_contents(script.as_path(), state)
-        .or_else(|| fs::read_to_string(script.as_path()).ok())?;
+fn target_store_path(root: &Path, script: &Path, state: &WorldState) -> Option<PathBuf> {
+    if let Some(store) = targets_project::targets_config_value(root, "store")
+        .and_then(|store| targets_project::targets_resolve_project_path(root, &store))
+    {
+        return Some(store);
+    }
+
+    let contents =
+        open_targets_script_contents(script, state).or_else(|| fs::read_to_string(script).ok())?;
     let store = PathBuf::from(target_store_config(contents.as_str())?);
 
     if store.is_absolute() {
@@ -1110,26 +1117,15 @@ fn target_store_config(contents: &str) -> Option<String> {
         .map(|capture| capture.as_str().to_string())
 }
 
-fn find_targets_root_for_path(path: &Path) -> Option<PathBuf> {
-    let start = if path.is_dir() { path } else { path.parent()? };
-
-    for ancestor in start.ancestors() {
-        if ancestor.join("_targets.R").exists() {
-            return Some(ancestor.to_path_buf());
-        }
-    }
-
-    None
-}
-
 fn find_open_targets_root(state: &WorldState) -> Option<PathBuf> {
     state.documents.keys().find_map(|uri| {
         let path = uri.to_file_path().ok()?;
-        if path.file_name()?.to_str()? == "_targets.R" {
-            path.parent().map(Path::to_path_buf)
-        } else {
-            None
+        if !targets_project::is_targets_script_path(&path) {
+            return None;
         }
+
+        targets_project::find_targets_root_for_path(&path)
+            .or_else(|| path.parent().map(Path::to_path_buf))
     })
 }
 
@@ -1800,6 +1796,37 @@ list()
         assert_eq!(
             PathBuf::from(store),
             tempdir.path().join("cache").join("targets")
+        );
+    }
+
+    #[test]
+    fn test_target_project_paths_uses_configured_script_and_store() {
+        let tempdir = tempdir().expect("expected tempdir");
+        let script_path = tempdir.path().join("pipeline").join("main.R");
+        fs::create_dir_all(script_path.parent().unwrap()).expect("expected script dir");
+        fs::write(
+            tempdir.path().join("_targets.yaml"),
+            r#"
+main:
+  script: pipeline/main.R
+  store: cache/main
+"#,
+        )
+        .expect("expected targets config");
+        fs::write(&script_path, "list()\n").expect("expected targets script");
+
+        let analysis_uri =
+            Url::from_file_path(tempdir.path().join("analysis.R")).expect("expected analysis uri");
+        let state = WorldState::default();
+
+        let (root, script, store) =
+            target_project_paths(&analysis_uri, &state).expect("expected target project paths");
+
+        assert_eq!(PathBuf::from(root), tempdir.path());
+        assert_eq!(PathBuf::from(script), script_path);
+        assert_eq!(
+            PathBuf::from(store),
+            tempdir.path().join("cache").join("main")
         );
     }
 
