@@ -1,7 +1,10 @@
+use unicode_segmentation::UnicodeSegmentation;
+
 use crate::input::EditAction;
 use crate::input::EditCommand;
 use crate::input::EditorSnapshot;
 use crate::input::LineEditor;
+use crate::input::ReverseSearchSnapshot;
 use crate::keys::ControlInput;
 use crate::keys::DecodedInput;
 use crate::keys::InputDecoder;
@@ -11,13 +14,40 @@ use crate::prompt::PromptState;
 pub enum InputEffect {
     Forward(Vec<u8>),
     Redraw(EditorSnapshot),
-    ReverseSearchRequested,
+    ReverseSearch(ReverseSearchSnapshot),
 }
 
 #[derive(Debug, Default)]
 pub struct EnhancedInputRuntime {
     decoder: InputDecoder,
     editor: LineEditor,
+    reverse_search: Option<ReverseSearchState>,
+}
+
+#[derive(Debug, Clone)]
+struct ReverseSearchState {
+    original: EditorSnapshot,
+    query: String,
+    match_index: Option<usize>,
+    result: Option<String>,
+}
+
+impl ReverseSearchState {
+    fn new(original: EditorSnapshot) -> Self {
+        Self {
+            original,
+            query: String::new(),
+            match_index: None,
+            result: None,
+        }
+    }
+
+    fn snapshot(&self) -> ReverseSearchSnapshot {
+        ReverseSearchSnapshot {
+            query: self.query.clone(),
+            result: self.result.clone(),
+        }
+    }
 }
 
 impl EnhancedInputRuntime {
@@ -27,6 +57,7 @@ impl EnhancedInputRuntime {
 
     pub fn handle_bytes(&mut self, bytes: &[u8], prompt_state: PromptState) -> Vec<InputEffect> {
         if !is_editable_prompt(prompt_state) {
+            self.reverse_search = None;
             return vec![InputEffect::Forward(bytes.to_vec())];
         }
 
@@ -44,6 +75,9 @@ impl EnhancedInputRuntime {
 
     fn handle_decoded(&mut self, decoded: DecodedInput, effects: &mut Vec<InputEffect>) {
         match decoded {
+            decoded if self.reverse_search.is_some() => {
+                self.handle_reverse_search(decoded, effects);
+            },
             DecodedInput::Edit(command) => self.handle_edit(command, effects),
             DecodedInput::Control(control) => self.handle_control(control, effects),
             DecodedInput::Raw(bytes) => effects.push(InputEffect::Forward(bytes)),
@@ -70,6 +104,7 @@ impl EnhancedInputRuntime {
                 effects.push(InputEffect::Redraw(self.editor.snapshot()));
             },
             ControlInput::Suspend => effects.push(InputEffect::Forward(vec![0x1a])),
+            ControlInput::Cancel => {},
             ControlInput::EofOrDelete => {
                 if self.editor.snapshot().text.is_empty() {
                     effects.push(InputEffect::Forward(vec![0x04]));
@@ -77,8 +112,111 @@ impl EnhancedInputRuntime {
                     self.handle_edit(EditCommand::Delete, effects);
                 }
             },
-            ControlInput::ReverseSearch => effects.push(InputEffect::ReverseSearchRequested),
+            ControlInput::ReverseSearch => self.start_reverse_search(effects),
         }
+    }
+
+    fn start_reverse_search(&mut self, effects: &mut Vec<InputEffect>) {
+        self.reverse_search = Some(ReverseSearchState::new(self.editor.snapshot()));
+        self.redraw_reverse_search(effects);
+    }
+
+    fn handle_reverse_search(&mut self, decoded: DecodedInput, effects: &mut Vec<InputEffect>) {
+        match decoded {
+            DecodedInput::Edit(EditCommand::Insert(text)) => {
+                let Some(state) = &mut self.reverse_search else {
+                    return;
+                };
+                state.query.push_str(&text);
+                self.refresh_reverse_search(None);
+                self.redraw_reverse_search(effects);
+            },
+            DecodedInput::Edit(EditCommand::Backspace) => {
+                let Some(state) = &mut self.reverse_search else {
+                    return;
+                };
+                pop_grapheme(&mut state.query);
+                self.refresh_reverse_search(None);
+                self.redraw_reverse_search(effects);
+            },
+            DecodedInput::Edit(EditCommand::Enter) => {
+                self.accept_reverse_search_and_submit(effects);
+            },
+            DecodedInput::Control(ControlInput::ReverseSearch) => {
+                let before = self
+                    .reverse_search
+                    .as_ref()
+                    .and_then(|state| state.match_index);
+                self.refresh_reverse_search(before);
+                self.redraw_reverse_search(effects);
+            },
+            DecodedInput::Control(ControlInput::Cancel) => {
+                self.cancel_reverse_search(effects);
+            },
+            DecodedInput::Control(ControlInput::Interrupt) => {
+                self.reverse_search = None;
+                self.editor.clear();
+                effects.push(InputEffect::Forward(vec![0x03]));
+                effects.push(InputEffect::Redraw(self.editor.snapshot()));
+            },
+            DecodedInput::Control(ControlInput::Suspend) => {
+                self.reverse_search = None;
+                effects.push(InputEffect::Forward(vec![0x1a]));
+            },
+            DecodedInput::Control(ControlInput::EofOrDelete) => {
+                self.cancel_reverse_search(effects);
+            },
+            DecodedInput::Edit(command) => {
+                self.accept_reverse_search(effects);
+                self.handle_edit(command, effects);
+            },
+            DecodedInput::Raw(bytes) => {
+                self.reverse_search = None;
+                effects.push(InputEffect::Forward(bytes));
+            },
+        }
+    }
+
+    fn refresh_reverse_search(&mut self, before_index: Option<usize>) {
+        let Some(state) = &mut self.reverse_search else {
+            return;
+        };
+
+        if let Some((index, result)) = self.editor.history_match_before(&state.query, before_index)
+        {
+            state.match_index = Some(index);
+            state.result = Some(result.clone());
+            self.editor.replace_text(result);
+        } else {
+            state.match_index = None;
+            state.result = None;
+            self.editor.restore(&state.original);
+        }
+    }
+
+    fn redraw_reverse_search(&mut self, effects: &mut Vec<InputEffect>) {
+        let Some(state) = &self.reverse_search else {
+            return;
+        };
+        effects.push(InputEffect::ReverseSearch(state.snapshot()));
+    }
+
+    fn accept_reverse_search(&mut self, effects: &mut Vec<InputEffect>) {
+        self.reverse_search = None;
+        effects.push(InputEffect::Redraw(self.editor.snapshot()));
+    }
+
+    fn accept_reverse_search_and_submit(&mut self, effects: &mut Vec<InputEffect>) {
+        self.reverse_search = None;
+        self.handle_edit(EditCommand::Enter, effects);
+    }
+
+    fn cancel_reverse_search(&mut self, effects: &mut Vec<InputEffect>) {
+        let Some(state) = self.reverse_search.take() else {
+            return;
+        };
+        self.editor.restore(&state.original);
+        effects.push(InputEffect::Redraw(self.editor.snapshot()));
     }
 }
 
@@ -87,6 +225,13 @@ fn is_editable_prompt(prompt_state: PromptState) -> bool {
         prompt_state,
         PromptState::TopLevel | PromptState::Continuation
     )
+}
+
+fn pop_grapheme(text: &mut String) {
+    let Some((index, _)) = text.grapheme_indices(true).next_back() else {
+        return;
+    };
+    text.truncate(index);
 }
 
 #[cfg(test)]
@@ -191,7 +336,62 @@ mod tests {
         let mut runtime = EnhancedInputRuntime::new();
 
         assert_eq!(runtime.handle_bytes(&[0x12], PromptState::TopLevel), vec![
-            InputEffect::ReverseSearchRequested
+            InputEffect::ReverseSearch(ReverseSearchSnapshot {
+                query: String::new(),
+                result: None,
+            })
         ]);
+    }
+
+    #[test]
+    fn reverse_search_submits_latest_matching_history() {
+        let mut runtime = EnhancedInputRuntime::new();
+        runtime.handle_bytes(b"alpha()\n", PromptState::TopLevel);
+        runtime.handle_bytes(b"beta()\n", PromptState::TopLevel);
+        runtime.handle_bytes(b"alpha(2)\n", PromptState::TopLevel);
+
+        let effects = runtime.handle_bytes(b"\x12alpha\n", PromptState::TopLevel);
+
+        assert!(
+            effects.contains(&InputEffect::ReverseSearch(ReverseSearchSnapshot {
+                query: "alpha".to_string(),
+                result: Some("alpha(2)".to_string()),
+            }))
+        );
+        assert_eq!(
+            effects
+                .iter()
+                .find(|effect| matches!(effect, InputEffect::Forward(_))),
+            Some(&InputEffect::Forward(b"alpha(2)\n".to_vec()))
+        );
+    }
+
+    #[test]
+    fn reverse_search_repeats_to_older_match() {
+        let mut runtime = EnhancedInputRuntime::new();
+        runtime.handle_bytes(b"alpha()\n", PromptState::TopLevel);
+        runtime.handle_bytes(b"alpha(2)\n", PromptState::TopLevel);
+
+        let effects = runtime.handle_bytes(b"\x12alpha\x12\n", PromptState::TopLevel);
+
+        assert!(
+            effects.contains(&InputEffect::ReverseSearch(ReverseSearchSnapshot {
+                query: "alpha".to_string(),
+                result: Some("alpha()".to_string()),
+            }))
+        );
+        assert!(effects.contains(&InputEffect::Forward(b"alpha()\n".to_vec())));
+    }
+
+    #[test]
+    fn reverse_search_cancel_restores_original_draft() {
+        let mut runtime = EnhancedInputRuntime::new();
+        runtime.handle_bytes(b"alpha()\n", PromptState::TopLevel);
+        runtime.handle_bytes(b"draft", PromptState::TopLevel);
+
+        let effects = runtime.handle_bytes(b"\x12alpha\x07", PromptState::TopLevel);
+
+        assert_eq!(text(effects.last().unwrap()), Some("draft"));
+        assert_eq!(runtime.snapshot().text, "draft");
     }
 }

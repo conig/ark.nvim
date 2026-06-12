@@ -19,6 +19,7 @@ pub enum ControlInput {
     Suspend,
     EofOrDelete,
     ReverseSearch,
+    Cancel,
 }
 
 #[derive(Debug, Default)]
@@ -84,6 +85,7 @@ impl InputDecoder {
             0x04 => Some(self.consume_control(1, ControlInput::EofOrDelete)),
             0x05 => Some(self.consume_edit(1, EditCommand::End)),
             0x06 => Some(self.consume_edit(1, EditCommand::MoveRight)),
+            0x07 => Some(self.consume_control(1, ControlInput::Cancel)),
             0x0b => Some(self.consume_edit(1, EditCommand::KillToEnd)),
             0x0e => Some(self.consume_edit(1, EditCommand::HistoryNext)),
             0x10 => Some(self.consume_edit(1, EditCommand::HistoryPrevious)),
@@ -282,11 +284,12 @@ mod tests {
     fn decodes_interrupt_suspend_and_eof_controls() {
         let mut decoder = InputDecoder::new();
 
-        assert_eq!(decoder.push_bytes(&[0x03, 0x1a, 0x04, 0x12]), vec![
+        assert_eq!(decoder.push_bytes(&[0x03, 0x1a, 0x04, 0x12, 0x07]), vec![
             DecodedInput::Control(ControlInput::Interrupt),
             DecodedInput::Control(ControlInput::Suspend),
             DecodedInput::Control(ControlInput::EofOrDelete),
             DecodedInput::Control(ControlInput::ReverseSearch),
+            DecodedInput::Control(ControlInput::Cancel),
         ]);
     }
 

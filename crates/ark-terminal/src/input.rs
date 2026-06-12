@@ -35,6 +35,12 @@ pub struct EditorSnapshot {
     pub is_complete: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReverseSearchSnapshot {
+    pub query: String,
+    pub result: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct LineEditor {
     buffer: String,
@@ -81,6 +87,38 @@ impl LineEditor {
         self.cursor = 0;
         self.history_position = None;
         self.draft_before_history = None;
+    }
+
+    pub fn restore(&mut self, snapshot: &EditorSnapshot) {
+        self.buffer = snapshot.text.clone();
+        self.cursor = snapshot.cursor.min(self.buffer.len());
+        self.history_position = None;
+        self.draft_before_history = None;
+    }
+
+    pub fn replace_text(&mut self, text: String) {
+        self.buffer = text;
+        self.cursor = self.buffer.len();
+        self.history_position = None;
+        self.draft_before_history = None;
+    }
+
+    pub fn history_match_before(
+        &self,
+        query: &str,
+        before_index: Option<usize>,
+    ) -> Option<(usize, String)> {
+        if query.is_empty() {
+            return None;
+        }
+
+        let upper_bound = before_index
+            .unwrap_or(self.history.len())
+            .min(self.history.len());
+        self.history[..upper_bound]
+            .iter()
+            .rposition(|entry| entry.contains(query))
+            .map(|index| (index, self.history[index].clone()))
     }
 
     pub fn handle(&mut self, command: EditCommand) -> EditAction {
@@ -253,7 +291,7 @@ impl LineEditor {
             return;
         }
 
-        let Some(index) = self.history.iter().rposition(|entry| entry.contains(query)) else {
+        let Some((index, entry)) = self.history_match_before(query, None) else {
             return;
         };
 
@@ -261,7 +299,7 @@ impl LineEditor {
             self.draft_before_history = Some(self.buffer.clone());
         }
         self.history_position = Some(index);
-        self.buffer = self.history[index].clone();
+        self.buffer = entry;
         self.cursor = self.buffer.len();
     }
 
@@ -501,6 +539,42 @@ mod tests {
         assert_eq!(editor.snapshot().text, "second");
         editor.handle(EditCommand::HistoryNext);
         assert_eq!(editor.snapshot().text, "draft");
+    }
+
+    #[test]
+    fn restores_snapshot_without_history_navigation_state() {
+        let mut editor = LineEditor::new();
+        insert(&mut editor, "first");
+        editor.handle(EditCommand::Enter);
+        insert(&mut editor, "draft");
+        let snapshot = editor.snapshot();
+
+        editor.handle(EditCommand::HistoryPrevious);
+        editor.restore(&snapshot);
+
+        assert_eq!(editor.snapshot(), snapshot);
+        editor.handle(EditCommand::HistoryNext);
+        assert_eq!(editor.snapshot().text, "draft");
+    }
+
+    #[test]
+    fn finds_history_match_before_selected_index() {
+        let mut editor = LineEditor::new();
+        insert(&mut editor, "alpha()");
+        editor.handle(EditCommand::Enter);
+        insert(&mut editor, "beta()");
+        editor.handle(EditCommand::Enter);
+        insert(&mut editor, "alpha(2)");
+        editor.handle(EditCommand::Enter);
+
+        assert_eq!(
+            editor.history_match_before("alpha", None),
+            Some((2, "alpha(2)".to_string()))
+        );
+        assert_eq!(
+            editor.history_match_before("alpha", Some(2)),
+            Some((0, "alpha()".to_string()))
+        );
     }
 
     #[test]

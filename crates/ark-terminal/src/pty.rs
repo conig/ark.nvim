@@ -229,8 +229,17 @@ fn consume_input_effect(
                 }),
             );
         },
-        InputEffect::ReverseSearchRequested => {
-            trace.event("enhanced_reverse_search_requested", json!({}));
+        InputEffect::ReverseSearch(snapshot) => {
+            let bytes = renderer.redraw_reverse_search(&snapshot, prompt_state);
+            write_stdout_bytes(&bytes, stdout_lock)?;
+            trace.event(
+                "enhanced_reverse_search",
+                json!({
+                    "matched": snapshot.result.is_some(),
+                    "prompt_state": prompt_state.as_str(),
+                    "query_bytes": snapshot.query.len(),
+                }),
+            );
         },
     }
 

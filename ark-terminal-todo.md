@@ -386,6 +386,16 @@ Exit criteria:
 
 Goal: enhanced mode owns the editable R input line only when it is safe.
 
+Current implementation status:
+
+- prompt-state detection, key decoding, line editing, history navigation,
+  bracketed paste, multiline submit, display-width-aware local rendering, and
+  reverse history search are implemented for direct non-raw `ark-terminal` runs
+- browser/debug-style prompts currently use safe pass-through fallback
+- the Neovim managed-pane wrapper still launches `ark-terminal --raw` until
+  broader real-R transcript coverage and terminal edge-case hardening are in
+  place
+
 Tasks:
 
 - implement prompt state machine
@@ -619,4 +629,3 @@ Ark Terminal is product-ready when:
 - performance is measured and within the targets above or the targets have been
   updated with justified baselines
 - raw managed R remains available as a documented fallback
-

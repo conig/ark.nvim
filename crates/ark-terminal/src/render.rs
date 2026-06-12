@@ -2,6 +2,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::input::EditorSnapshot;
+use crate::input::ReverseSearchSnapshot;
 use crate::prompt::PromptState;
 
 #[derive(Debug)]
@@ -64,6 +65,25 @@ impl LocalInputRenderer {
         out
     }
 
+    pub fn redraw_reverse_search(
+        &mut self,
+        snapshot: &ReverseSearchSnapshot,
+        prompt_state: PromptState,
+    ) -> Vec<u8> {
+        let had_rendered = self.rendered.is_some();
+        let mut out = self.clear();
+        if had_rendered {
+            out.extend_from_slice(prompt_for_state(prompt_state).as_bytes());
+        }
+
+        let text = reverse_search_text(snapshot);
+        out.extend_from_slice(text.as_bytes());
+        let layout = layout_for_text(&text, prompt_state, self.terminal_cols);
+        self.rendered = Some(RenderedInput { layout });
+
+        out
+    }
+
     pub fn clear(&mut self) -> Vec<u8> {
         let Some(rendered) = self.rendered.take() else {
             return Vec::new();
@@ -107,10 +127,38 @@ fn render_input_bytes(text: &str) -> Vec<u8> {
     out
 }
 
+fn reverse_search_text(snapshot: &ReverseSearchSnapshot) -> String {
+    let result = snapshot
+        .result
+        .as_deref()
+        .unwrap_or("failed reverse-i-search");
+    format!("(reverse-i-search)`{}': {}", snapshot.query, result)
+}
+
 fn layout_for_snapshot(
     snapshot: &EditorSnapshot,
     prompt_state: PromptState,
     terminal_cols: usize,
+) -> RenderLayout {
+    layout_with_cursor(
+        &snapshot.text,
+        snapshot.cursor,
+        prompt_state,
+        terminal_cols,
+        true,
+    )
+}
+
+fn layout_for_text(text: &str, prompt_state: PromptState, terminal_cols: usize) -> RenderLayout {
+    layout_with_cursor(text, text.len(), prompt_state, terminal_cols, false)
+}
+
+fn layout_with_cursor(
+    text: &str,
+    cursor_byte_offset: usize,
+    prompt_state: PromptState,
+    terminal_cols: usize,
+    continuation_prompts: bool,
 ) -> RenderLayout {
     let terminal_cols = terminal_cols.max(1);
     let first_prompt_width = display_width(prompt_for_state(prompt_state));
@@ -123,26 +171,30 @@ fn layout_for_snapshot(
     let mut cursor = None;
     let mut absolute_offset = 0;
 
-    for (line_index, line) in snapshot.text.split('\n').enumerate() {
+    for (line_index, line) in text.split('\n').enumerate() {
         if line_index > 0 {
             position.row += 1;
-            position.col = continuation_prompt_width;
+            position.col = if continuation_prompts {
+                continuation_prompt_width
+            } else {
+                0
+            };
         }
 
-        if snapshot.cursor == absolute_offset {
+        if cursor_byte_offset == absolute_offset {
             cursor = Some(position);
         }
 
         for (relative_offset, grapheme) in line.grapheme_indices(true) {
             let grapheme_offset = absolute_offset + relative_offset;
-            if snapshot.cursor == grapheme_offset {
+            if cursor_byte_offset == grapheme_offset {
                 cursor = Some(position);
             }
             position = advance_position(position, display_width(grapheme), terminal_cols);
         }
 
         absolute_offset += line.len();
-        if snapshot.cursor == absolute_offset {
+        if cursor_byte_offset == absolute_offset {
             cursor = Some(position);
         }
         absolute_offset += 1;
@@ -287,6 +339,38 @@ mod tests {
         assert_eq!(
             renderer.clear_to_prompt(PromptState::TopLevel),
             b"\r\x1b[2K> ".to_vec()
+        );
+    }
+
+    #[test]
+    fn redraws_reverse_search_after_existing_prompt() {
+        let mut renderer = LocalInputRenderer::new();
+
+        assert_eq!(
+            renderer.redraw_reverse_search(
+                &ReverseSearchSnapshot {
+                    query: "alp".to_string(),
+                    result: Some("alpha()".to_string()),
+                },
+                PromptState::TopLevel,
+            ),
+            b"(reverse-i-search)`alp': alpha()".to_vec()
+        );
+    }
+
+    #[test]
+    fn redraws_reverse_search_failure() {
+        let mut renderer = LocalInputRenderer::new();
+
+        assert_eq!(
+            renderer.redraw_reverse_search(
+                &ReverseSearchSnapshot {
+                    query: "zzz".to_string(),
+                    result: None,
+                },
+                PromptState::TopLevel,
+            ),
+            b"(reverse-i-search)`zzz': failed reverse-i-search".to_vec()
         );
     }
 
