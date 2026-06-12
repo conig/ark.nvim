@@ -1,21 +1,50 @@
 use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::input::EditorSnapshot;
 use crate::prompt::PromptState;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LocalInputRenderer {
     rendered: Option<RenderedInput>,
+    terminal_cols: usize,
 }
 
 #[derive(Debug)]
 struct RenderedInput {
-    text: String,
+    layout: RenderLayout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RenderLayout {
+    end: TerminalPosition,
+    cursor: TerminalPosition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalPosition {
+    row: usize,
+    col: usize,
 }
 
 impl LocalInputRenderer {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            rendered: None,
+            terminal_cols: 80,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_terminal_cols(terminal_cols: usize) -> Self {
+        Self {
+            rendered: None,
+            terminal_cols: terminal_cols.max(1),
+        }
+    }
+
+    pub fn set_terminal_cols(&mut self, terminal_cols: usize) {
+        self.terminal_cols = terminal_cols.max(1);
     }
 
     pub fn redraw(&mut self, snapshot: &EditorSnapshot, prompt_state: PromptState) -> Vec<u8> {
@@ -24,21 +53,13 @@ impl LocalInputRenderer {
         if had_rendered {
             out.extend_from_slice(prompt_for_state(prompt_state).as_bytes());
         }
-        out.extend_from_slice(snapshot.text.as_bytes());
+        out.extend_from_slice(&render_input_bytes(&snapshot.text));
 
-        if !snapshot.text.contains('\n') {
-            let end = snapshot.text.graphemes(true).count();
-            if end > snapshot.display_cursor {
-                out.extend_from_slice(
-                    format!("\x1b[{}D", end - snapshot.display_cursor).as_bytes(),
-                );
-            }
-        }
+        let layout = layout_for_snapshot(snapshot, prompt_state, self.terminal_cols);
+        out.extend_from_slice(&move_cursor(layout.end, layout.cursor));
 
         if had_rendered || !snapshot.text.is_empty() {
-            self.rendered = Some(RenderedInput {
-                text: snapshot.text.clone(),
-            });
+            self.rendered = Some(RenderedInput { layout });
         }
         out
     }
@@ -48,10 +69,18 @@ impl LocalInputRenderer {
             return Vec::new();
         };
 
-        let line_count = rendered.text.split('\n').count().max(1);
         let mut out = Vec::new();
+        if rendered.layout.cursor.row < rendered.layout.end.row {
+            out.extend_from_slice(
+                format!(
+                    "\x1b[{}B",
+                    rendered.layout.end.row - rendered.layout.cursor.row
+                )
+                .as_bytes(),
+            );
+        }
         out.extend_from_slice(b"\r\x1b[2K");
-        for _ in 1..line_count {
+        for _ in 0..rendered.layout.end.row {
             out.extend_from_slice(b"\x1b[1A\r\x1b[2K");
         }
         out
@@ -66,6 +95,111 @@ impl LocalInputRenderer {
     }
 }
 
+fn render_input_bytes(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            out.extend_from_slice(b"\r\n");
+            out.extend_from_slice(continuation_prompt().as_bytes());
+        }
+        out.extend_from_slice(line.as_bytes());
+    }
+    out
+}
+
+fn layout_for_snapshot(
+    snapshot: &EditorSnapshot,
+    prompt_state: PromptState,
+    terminal_cols: usize,
+) -> RenderLayout {
+    let terminal_cols = terminal_cols.max(1);
+    let first_prompt_width = display_width(prompt_for_state(prompt_state));
+    let continuation_prompt_width = display_width(continuation_prompt());
+
+    let mut position = TerminalPosition {
+        row: 0,
+        col: first_prompt_width,
+    };
+    let mut cursor = None;
+    let mut absolute_offset = 0;
+
+    for (line_index, line) in snapshot.text.split('\n').enumerate() {
+        if line_index > 0 {
+            position.row += 1;
+            position.col = continuation_prompt_width;
+        }
+
+        if snapshot.cursor == absolute_offset {
+            cursor = Some(position);
+        }
+
+        for (relative_offset, grapheme) in line.grapheme_indices(true) {
+            let grapheme_offset = absolute_offset + relative_offset;
+            if snapshot.cursor == grapheme_offset {
+                cursor = Some(position);
+            }
+            position = advance_position(position, display_width(grapheme), terminal_cols);
+        }
+
+        absolute_offset += line.len();
+        if snapshot.cursor == absolute_offset {
+            cursor = Some(position);
+        }
+        absolute_offset += 1;
+    }
+
+    RenderLayout {
+        end: position,
+        cursor: cursor.unwrap_or(position),
+    }
+}
+
+fn advance_position(
+    mut position: TerminalPosition,
+    width: usize,
+    terminal_cols: usize,
+) -> TerminalPosition {
+    if width == 0 {
+        return position;
+    }
+
+    if position.col >= terminal_cols {
+        position.row += 1;
+        position.col = 0;
+    }
+
+    if position.col > 0 && position.col + width > terminal_cols {
+        position.row += 1;
+        position.col = 0;
+    }
+
+    position.col += width;
+    position
+}
+
+fn move_cursor(from: TerminalPosition, to: TerminalPosition) -> Vec<u8> {
+    let mut out = Vec::new();
+
+    if from.row > to.row {
+        out.extend_from_slice(format!("\x1b[{}A", from.row - to.row).as_bytes());
+        out.extend_from_slice(b"\r");
+        if to.col > 0 {
+            out.extend_from_slice(format!("\x1b[{}C", to.col).as_bytes());
+        }
+        return out;
+    }
+
+    if from.row == to.row && from.col > to.col {
+        out.extend_from_slice(format!("\x1b[{}D", from.col - to.col).as_bytes());
+    }
+
+    out
+}
+
+fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
 fn prompt_for_state(prompt_state: PromptState) -> &'static str {
     match prompt_state {
         PromptState::TopLevel => "> ",
@@ -74,15 +208,23 @@ fn prompt_for_state(prompt_state: PromptState) -> &'static str {
     }
 }
 
+fn continuation_prompt() -> &'static str {
+    "+ "
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn snapshot(text: &str, display_cursor: usize) -> EditorSnapshot {
+    fn snapshot(text: &str) -> EditorSnapshot {
+        snapshot_at(text, text.len())
+    }
+
+    fn snapshot_at(text: &str, cursor: usize) -> EditorSnapshot {
         EditorSnapshot {
             text: text.to_string(),
-            cursor: text.len(),
-            display_cursor,
+            cursor,
+            display_cursor: text[..cursor].width(),
             is_complete: true,
         }
     }
@@ -92,7 +234,7 @@ mod tests {
         let mut renderer = LocalInputRenderer::new();
 
         assert_eq!(
-            renderer.redraw(&snapshot("abc", 3), PromptState::TopLevel),
+            renderer.redraw(&snapshot("abc"), PromptState::TopLevel),
             b"abc".to_vec()
         );
     }
@@ -100,10 +242,10 @@ mod tests {
     #[test]
     fn redraw_clears_previous_line() {
         let mut renderer = LocalInputRenderer::new();
-        renderer.redraw(&snapshot("abc", 3), PromptState::TopLevel);
+        renderer.redraw(&snapshot("abc"), PromptState::TopLevel);
 
         assert_eq!(
-            renderer.redraw(&snapshot("x", 1), PromptState::TopLevel),
+            renderer.redraw(&snapshot("x"), PromptState::TopLevel),
             b"\r\x1b[2K> x".to_vec()
         );
     }
@@ -113,7 +255,7 @@ mod tests {
         let mut renderer = LocalInputRenderer::new();
 
         assert!(renderer
-            .redraw(&snapshot("", 0), PromptState::TopLevel)
+            .redraw(&snapshot(""), PromptState::TopLevel)
             .is_empty());
         assert!(renderer.clear().is_empty());
     }
@@ -123,7 +265,7 @@ mod tests {
         let mut renderer = LocalInputRenderer::new();
 
         assert_eq!(
-            renderer.redraw(&snapshot("abc", 1), PromptState::TopLevel),
+            renderer.redraw(&snapshot_at("abc", 1), PromptState::TopLevel),
             b"abc\x1b[2D".to_vec()
         );
     }
@@ -131,7 +273,7 @@ mod tests {
     #[test]
     fn clear_removes_multiline_render() {
         let mut renderer = LocalInputRenderer::new();
-        renderer.redraw(&snapshot("a\nb", 3), PromptState::Continuation);
+        renderer.redraw(&snapshot("a\nb"), PromptState::Continuation);
 
         assert_eq!(renderer.clear(), b"\r\x1b[2K\x1b[1A\r\x1b[2K".to_vec());
         assert!(renderer.clear().is_empty());
@@ -140,11 +282,42 @@ mod tests {
     #[test]
     fn clear_to_prompt_restores_prompt_for_child_echo() {
         let mut renderer = LocalInputRenderer::new();
-        renderer.redraw(&snapshot("abc", 3), PromptState::TopLevel);
+        renderer.redraw(&snapshot("abc"), PromptState::TopLevel);
 
         assert_eq!(
             renderer.clear_to_prompt(PromptState::TopLevel),
             b"\r\x1b[2K> ".to_vec()
+        );
+    }
+
+    #[test]
+    fn redraws_multiline_with_continuation_prompt_and_cursor_position() {
+        let mut renderer = LocalInputRenderer::new();
+
+        assert_eq!(
+            renderer.redraw(&snapshot_at("alpha\nbeta", 3), PromptState::TopLevel),
+            b"alpha\r\n+ beta\x1b[1A\r\x1b[5C".to_vec()
+        );
+    }
+
+    #[test]
+    fn clear_starts_from_cursor_and_removes_all_visual_rows() {
+        let mut renderer = LocalInputRenderer::new();
+        renderer.redraw(&snapshot_at("alpha\nbeta", 3), PromptState::TopLevel);
+
+        assert_eq!(
+            renderer.clear(),
+            b"\x1b[1B\r\x1b[2K\x1b[1A\r\x1b[2K".to_vec()
+        );
+    }
+
+    #[test]
+    fn cursor_position_uses_display_width_and_terminal_columns() {
+        let mut renderer = LocalInputRenderer::with_terminal_cols(5);
+
+        assert_eq!(
+            renderer.redraw(&snapshot_at("a語bc", "a語".len()), PromptState::TopLevel),
+            b"a\xe8\xaa\x9ebc\x1b[1A\r\x1b[5C".to_vec()
         );
     }
 }

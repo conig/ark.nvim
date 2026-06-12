@@ -98,6 +98,7 @@ pub fn run(cli: Cli) -> anyhow::Result<i32> {
         forward_stdin_to_pty(
             master_for_input,
             enhanced_mode,
+            stdout_fd,
             input_prompt_state,
             input_stdout_lock,
             input_trace,
@@ -157,6 +158,7 @@ fn spawn_child(cli: &Cli, slave: &OwnedFd) -> anyhow::Result<Child> {
 fn forward_stdin_to_pty(
     master: OwnedFd,
     enhanced_mode: bool,
+    host_stdout_fd: i32,
     prompt_state: Arc<Mutex<PromptState>>,
     stdout_lock: Arc<Mutex<()>>,
     trace: TraceLog,
@@ -174,6 +176,7 @@ fn forward_stdin_to_pty(
         }
         if enhanced_mode {
             let state = *prompt_state.lock().unwrap_or_else(|err| err.into_inner());
+            renderer.set_terminal_cols(usize::from(terminal_size(host_stdout_fd).ws_col));
             for effect in enhanced.handle_bytes(&buffer[..read], state) {
                 consume_input_effect(
                     effect,

@@ -1,4 +1,5 @@
 use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditCommand {
@@ -66,7 +67,7 @@ impl LineEditor {
         EditorSnapshot {
             text: self.buffer.clone(),
             cursor: self.cursor,
-            display_cursor: grapheme_count(&self.buffer[..self.cursor]),
+            display_cursor: display_width(&self.buffer[..self.cursor]),
             is_complete: is_complete_r_input(&self.buffer),
         }
     }
@@ -322,8 +323,8 @@ fn normalize_paste(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-fn grapheme_count(text: &str) -> usize {
-    UnicodeSegmentation::graphemes(text, true).count()
+fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
 }
 
 fn previous_grapheme_boundary(text: &str, cursor: usize) -> usize {
@@ -444,6 +445,16 @@ mod tests {
 
         assert_eq!(editor.snapshot().text, "b");
         assert_eq!(editor.snapshot().display_cursor, 0);
+    }
+
+    #[test]
+    fn display_cursor_uses_terminal_cell_width() {
+        let mut editor = LineEditor::new();
+        insert(&mut editor, "a語b");
+
+        assert_eq!(editor.snapshot().display_cursor, 4);
+        editor.handle(EditCommand::MoveLeft);
+        assert_eq!(editor.snapshot().display_cursor, 3);
     }
 
     #[test]
