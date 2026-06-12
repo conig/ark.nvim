@@ -456,16 +456,19 @@ Current implementation status:
   inserts and compacts stale trigger requests out of batched send-style input
 - `pty.rs` starts the terminal-side LSP worker in enhanced mode, syncs redraw
   snapshots to `ark-console://<session-id>/input.R`, sends trigger completion
-  requests, and traces request/response counts; no terminal completion menu is
-  rendered yet
+  requests, and traces request/response counts
+- `render.rs` now draws a compact read-only completion menu below local input,
+  restores the cursor to the editor position, and clears menu rows through the
+  normal redraw path; LSP items are deduped by label while preserving Ark LSP
+  response order
 
 Tasks:
 
-- add manual completion invocation once a visible menu exists
-- render terminal completion items and selection state
+- add manual completion invocation
+- add completion menu selection state and key handling
 - apply LSP text edits and insert text accurately
 - implement completion item resolve
-- dedupe and rank display consistently with Ark LSP responses
+- extend ranking/deduping policy as needed beyond first-label wins
 
 Exit criteria:
 

@@ -11,8 +11,45 @@ vim.fn.mkdir(run_tmpdir, "p")
 local trace_log = vim.fs.normalize(run_tmpdir .. "/ark-terminal-lsp.jsonl")
 local fake_lsp = vim.fs.normalize(run_tmpdir .. "/fake-lsp")
 vim.fn.writefile({
-  "#!/usr/bin/env bash",
-  "exec cat",
+  "#!/usr/bin/env python3",
+  "import json",
+  "import sys",
+  "",
+  "def read_message():",
+  "    header = b''",
+  "    while b'\\r\\n\\r\\n' not in header:",
+  "        chunk = sys.stdin.buffer.read(1)",
+  "        if not chunk:",
+  "            return None",
+  "        header += chunk",
+  "    raw_header, rest = header.split(b'\\r\\n\\r\\n', 1)",
+  "    length = 0",
+  "    for line in raw_header.decode().split('\\r\\n'):",
+  "        if line.lower().startswith('content-length:'):",
+  "            length = int(line.split(':', 1)[1].strip())",
+  "    body = rest + sys.stdin.buffer.read(length - len(rest))",
+  "    return json.loads(body.decode())",
+  "",
+  "def send(message):",
+  "    body = json.dumps(message, separators=(',', ':')).encode()",
+  "    sys.stdout.buffer.write(b'Content-Length: %d\\r\\n\\r\\n' % len(body))",
+  "    sys.stdout.buffer.write(body)",
+  "    sys.stdout.buffer.flush()",
+  "",
+  "while True:",
+  "    message = read_message()",
+  "    if message is None:",
+  "        break",
+  "    method = message.get('method')",
+  "    request_id = message.get('id')",
+  "    if request_id is None:",
+  "        continue",
+  "    if method == 'initialize':",
+  "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'capabilities': {'completionProvider': {}}}})",
+  "    elif method == 'textDocument/completion':",
+  "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'isIncomplete': False, 'items': [{'label': 'mpg', 'detail': 'field'}, {'label': 'cyl', 'detail': 'field'}]}})",
+  "    else:",
+  "        send({'jsonrpc': '2.0', 'id': request_id, 'result': None})",
 }, fake_lsp)
 vim.fn.setfperm(fake_lsp, "rwx------")
 
@@ -35,6 +72,9 @@ local joined = table.concat(output, "\n")
 if not joined:find("GOT:mtcars$", 1, true) then
   error("enhanced LSP runtime did not submit input to child: " .. vim.inspect(output), 0)
 end
+if not joined:find("mpg", 1, true) or not joined:find("cyl", 1, true) then
+  error("enhanced LSP runtime did not render completion menu: " .. vim.inspect(output), 0)
+end
 
 if vim.fn.filereadable(trace_log) ~= 1 then
   error("enhanced LSP runtime did not write trace log: " .. trace_log, 0)
@@ -48,6 +88,7 @@ for _, event in ipairs({
   '"event":"lsp_snapshot_synced"',
   '"event":"lsp_completion_request"',
   '"event":"lsp_completion_response"',
+  '"event":"lsp_completion_menu"',
 }) do
   if not trace:find(event, 1, true) then
     error("enhanced LSP runtime trace missing " .. event .. ": " .. trace, 0)
@@ -56,4 +97,7 @@ end
 
 if not trace:find('"trigger_character":"$"', 1, true) then
   error("enhanced LSP runtime trace did not preserve trigger character: " .. trace, 0)
+end
+if not trace:find('"item_count":2', 1, true) then
+  error("enhanced LSP runtime trace did not report fake items: " .. trace, 0)
 end

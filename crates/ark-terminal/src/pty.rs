@@ -1,9 +1,11 @@
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
 use std::io::Write;
 use std::io::{self};
 use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
+use std::os::fd::BorrowedFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::IntoRawFd;
 use std::os::fd::OwnedFd;
@@ -18,6 +20,10 @@ use std::thread;
 
 use anyhow::anyhow;
 use anyhow::Context;
+use nix::poll::poll;
+use nix::poll::PollFd;
+use nix::poll::PollFlags;
+use nix::poll::PollTimeout;
 use nix::pty::openpty;
 use nix::pty::Winsize;
 use nix::sys::signal::pthread_sigmask;
@@ -26,6 +32,7 @@ use nix::sys::signal::SigmaskHow;
 use nix::sys::signal::Signal;
 use nix::unistd::dup;
 use serde_json::json;
+use serde_json::Value;
 
 use crate::enhanced::EnhancedInputRuntime;
 use crate::enhanced::InputEffect;
@@ -34,10 +41,14 @@ use crate::lsp_runtime::TerminalLspHandle;
 use crate::prompt::PromptDetector;
 use crate::prompt::PromptState;
 use crate::raw_terminal::RawTerminal;
+use crate::render::CompletionMenuItem;
+use crate::render::CompletionMenuSnapshot;
 use crate::render::LocalInputRenderer;
 use crate::status::StartupStatus;
 use crate::trace::TraceLog;
 use crate::Cli;
+
+const ENHANCED_STDIN_POLL_MS: u16 = 10;
 
 pub fn run(cli: Cli) -> anyhow::Result<i32> {
     if cli.child_command.is_empty() {
@@ -169,13 +180,18 @@ fn forward_stdin_to_pty(
     mut lsp: Option<TerminalLspHandle>,
 ) -> io::Result<()> {
     let mut master = file_from_owned_fd(master);
-    let mut stdin = io::stdin().lock();
+    let stdin_handle = io::stdin();
+    let stdin_fd = stdin_handle.as_fd().as_raw_fd();
+    let mut stdin = stdin_handle.lock();
     let mut enhanced = EnhancedInputRuntime::new();
     let mut renderer = LocalInputRenderer::new();
     let mut buffer = [0; 8192];
 
     loop {
-        drain_lsp_events(&mut lsp, &trace);
+        drain_lsp_events(&mut lsp, &trace, Some(&mut renderer), Some(&stdout_lock))?;
+        if enhanced_mode && !stdin_ready(stdin_fd)? {
+            continue;
+        }
         let read = stdin.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -193,7 +209,7 @@ fn forward_stdin_to_pty(
                     &trace,
                     &mut lsp,
                 )?;
-                drain_lsp_events(&mut lsp, &trace);
+                drain_lsp_events(&mut lsp, &trace, Some(&mut renderer), Some(&stdout_lock))?;
             }
         } else {
             master.write_all(&buffer[..read])?;
@@ -201,7 +217,7 @@ fn forward_stdin_to_pty(
         }
     }
 
-    drain_lsp_events(&mut lsp, &trace);
+    drain_lsp_events(&mut lsp, &trace, Some(&mut renderer), Some(&stdout_lock))?;
     Ok(())
 }
 
@@ -324,9 +340,14 @@ fn start_terminal_lsp(
     }
 }
 
-fn drain_lsp_events(lsp: &mut Option<TerminalLspHandle>, trace: &TraceLog) {
+fn drain_lsp_events(
+    lsp: &mut Option<TerminalLspHandle>,
+    trace: &TraceLog,
+    mut renderer: Option<&mut LocalInputRenderer>,
+    stdout_lock: Option<&Arc<Mutex<()>>>,
+) -> io::Result<()> {
     let Some(handle) = lsp.as_mut() else {
-        return;
+        return Ok(());
     };
 
     let mut failed = false;
@@ -345,7 +366,7 @@ fn drain_lsp_events(lsp: &mut Option<TerminalLspHandle>, trace: &TraceLog) {
                 sequence,
                 trigger_character,
                 item_count,
-                ..
+                items,
             } => {
                 trace.event(
                     "lsp_completion_response",
@@ -355,6 +376,21 @@ fn drain_lsp_events(lsp: &mut Option<TerminalLspHandle>, trace: &TraceLog) {
                         "item_count": item_count,
                     }),
                 );
+                if let (Some(renderer), Some(stdout_lock)) = (renderer.as_deref_mut(), stdout_lock)
+                {
+                    let menu = completion_menu_from_lsp_items(&items);
+                    let bytes = renderer.redraw_completion_menu(&menu);
+                    write_stdout_bytes(&bytes, stdout_lock)?;
+                    if !menu.items.is_empty() {
+                        trace.event(
+                            "lsp_completion_menu",
+                            json!({
+                                "sequence": sequence,
+                                "items": menu.items.len(),
+                            }),
+                        );
+                    }
+                }
             },
             TerminalLspEvent::Error { message } => {
                 trace.event("lsp_error", json!({ "message": message }));
@@ -365,6 +401,36 @@ fn drain_lsp_events(lsp: &mut Option<TerminalLspHandle>, trace: &TraceLog) {
 
     if failed {
         *lsp = None;
+    }
+
+    Ok(())
+}
+
+fn completion_menu_from_lsp_items(items: &[Value]) -> CompletionMenuSnapshot {
+    let mut seen = HashSet::new();
+    let mut menu_items = Vec::new();
+
+    for item in items {
+        let Some(label) = item.get("label").and_then(Value::as_str) else {
+            continue;
+        };
+        if label.is_empty() || !seen.insert(label.to_string()) {
+            continue;
+        }
+        let detail = item
+            .get("detail")
+            .and_then(Value::as_str)
+            .filter(|detail| !detail.is_empty())
+            .map(ToString::to_string);
+        menu_items.push(CompletionMenuItem {
+            label: label.to_string(),
+            detail,
+        });
+    }
+
+    CompletionMenuSnapshot {
+        items: menu_items,
+        selected: 0,
     }
 }
 
@@ -477,6 +543,26 @@ fn set_terminal_size(fd: i32, winsize: Winsize) -> io::Result<()> {
     Ok(())
 }
 
+fn stdin_ready(fd: i32) -> io::Result<bool> {
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    let mut poll_fds = [PollFd::new(
+        borrowed,
+        PollFlags::POLLIN | PollFlags::POLLHUP | PollFlags::POLLERR,
+    )];
+    let count =
+        poll(&mut poll_fds, PollTimeout::from(ENHANCED_STDIN_POLL_MS)).map_err(io::Error::other)?;
+    if count == 0 {
+        return Ok(false);
+    }
+
+    let revents = poll_fds[0].revents().unwrap_or_else(PollFlags::empty);
+    if revents.contains(PollFlags::POLLERR) {
+        return Err(io::Error::other("stdin poll returned POLLERR"));
+    }
+
+    Ok(revents.intersects(PollFlags::POLLIN | PollFlags::POLLHUP))
+}
+
 fn is_tty(fd: i32) -> bool {
     unsafe { libc::isatty(fd) == 1 }
 }
@@ -499,4 +585,34 @@ fn exit_status_code(status: ExitStatus) -> i32 {
     }
 
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_menu_preserves_lsp_order_and_deduplicates_labels() {
+        let menu = completion_menu_from_lsp_items(&[
+            json!({"label": "mpg", "detail": "field"}),
+            json!({"label": "cyl", "detail": "field"}),
+            json!({"label": "mpg", "detail": "duplicate"}),
+            json!({"label": ""}),
+            json!({"detail": "missing label"}),
+        ]);
+
+        assert_eq!(menu, CompletionMenuSnapshot {
+            selected: 0,
+            items: vec![
+                CompletionMenuItem {
+                    label: "mpg".to_string(),
+                    detail: Some("field".to_string()),
+                },
+                CompletionMenuItem {
+                    label: "cyl".to_string(),
+                    detail: Some("field".to_string()),
+                },
+            ],
+        });
+    }
 }

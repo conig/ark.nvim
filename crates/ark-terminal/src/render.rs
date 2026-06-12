@@ -13,7 +13,20 @@ pub struct LocalInputRenderer {
 
 #[derive(Debug)]
 struct RenderedInput {
+    input_layout: RenderLayout,
     layout: RenderLayout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionMenuSnapshot {
+    pub items: Vec<CompletionMenuItem>,
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionMenuItem {
+    pub label: String,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +73,10 @@ impl LocalInputRenderer {
         out.extend_from_slice(&move_cursor(layout.end, layout.cursor));
 
         if had_rendered || !snapshot.text.is_empty() {
-            self.rendered = Some(RenderedInput { layout });
+            self.rendered = Some(RenderedInput {
+                input_layout: layout,
+                layout,
+            });
         }
         out
     }
@@ -79,8 +95,41 @@ impl LocalInputRenderer {
         let text = reverse_search_text(snapshot);
         out.extend_from_slice(text.as_bytes());
         let layout = layout_for_text(&text, prompt_state, self.terminal_cols);
-        self.rendered = Some(RenderedInput { layout });
+        self.rendered = Some(RenderedInput {
+            input_layout: layout,
+            layout,
+        });
 
+        out
+    }
+
+    pub fn redraw_completion_menu(&mut self, snapshot: &CompletionMenuSnapshot) -> Vec<u8> {
+        let Some(rendered) = &mut self.rendered else {
+            return Vec::new();
+        };
+        if snapshot.items.is_empty() {
+            return Vec::new();
+        }
+
+        let input_layout = rendered.input_layout;
+        let lines = completion_menu_lines(snapshot, self.terminal_cols);
+        if lines.is_empty() {
+            return Vec::new();
+        }
+
+        let mut out = move_cursor_any(input_layout.cursor, input_layout.end);
+        let mut end = input_layout.end;
+        for line in lines {
+            out.extend_from_slice(b"\r\n\x1b[2K");
+            out.extend_from_slice(line.as_bytes());
+            end.row += 1;
+            end.col = display_width(&line).min(self.terminal_cols);
+        }
+        out.extend_from_slice(&move_cursor_any(end, input_layout.cursor));
+        rendered.layout = RenderLayout {
+            end,
+            cursor: input_layout.cursor,
+        };
         out
     }
 
@@ -248,6 +297,72 @@ fn move_cursor(from: TerminalPosition, to: TerminalPosition) -> Vec<u8> {
     out
 }
 
+fn move_cursor_any(from: TerminalPosition, to: TerminalPosition) -> Vec<u8> {
+    let mut out = Vec::new();
+
+    if from.row > to.row {
+        out.extend_from_slice(format!("\x1b[{}A", from.row - to.row).as_bytes());
+        out.extend_from_slice(b"\r");
+        if to.col > 0 {
+            out.extend_from_slice(format!("\x1b[{}C", to.col).as_bytes());
+        }
+        return out;
+    }
+
+    if from.row < to.row {
+        out.extend_from_slice(format!("\x1b[{}B", to.row - from.row).as_bytes());
+        out.extend_from_slice(b"\r");
+        if to.col > 0 {
+            out.extend_from_slice(format!("\x1b[{}C", to.col).as_bytes());
+        }
+        return out;
+    }
+
+    if from.col > to.col {
+        out.extend_from_slice(format!("\x1b[{}D", from.col - to.col).as_bytes());
+    } else if from.col < to.col {
+        out.extend_from_slice(format!("\x1b[{}C", to.col - from.col).as_bytes());
+    }
+
+    out
+}
+
+fn completion_menu_lines(snapshot: &CompletionMenuSnapshot, terminal_cols: usize) -> Vec<String> {
+    let terminal_cols = terminal_cols.max(1);
+    snapshot
+        .items
+        .iter()
+        .take(8)
+        .enumerate()
+        .map(|(index, item)| {
+            let marker = if index == snapshot.selected {
+                "> "
+            } else {
+                "  "
+            };
+            let line = match item.detail.as_deref().filter(|detail| !detail.is_empty()) {
+                Some(detail) => format!("{marker}{}  {detail}", item.label),
+                None => format!("{marker}{}", item.label),
+            };
+            truncate_display_width(&line, terminal_cols)
+        })
+        .collect()
+}
+
+fn truncate_display_width(text: &str, max_width: usize) -> String {
+    let mut width = 0;
+    let mut out = String::new();
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = display_width(grapheme);
+        if width + grapheme_width > max_width {
+            break;
+        }
+        width += grapheme_width;
+        out.push_str(grapheme);
+    }
+    out
+}
+
 fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
@@ -278,6 +393,19 @@ mod tests {
             cursor,
             display_cursor: text[..cursor].width(),
             is_complete: true,
+        }
+    }
+
+    fn completion_menu(labels: &[&str]) -> CompletionMenuSnapshot {
+        CompletionMenuSnapshot {
+            items: labels
+                .iter()
+                .map(|label| CompletionMenuItem {
+                    label: (*label).to_string(),
+                    detail: Some("field".to_string()),
+                })
+                .collect(),
+            selected: 0,
         }
     }
 
@@ -371,6 +499,40 @@ mod tests {
                 PromptState::TopLevel,
             ),
             b"(reverse-i-search)`zzz': failed reverse-i-search".to_vec()
+        );
+    }
+
+    #[test]
+    fn redraws_completion_menu_below_local_input_and_restores_cursor() {
+        let mut renderer = LocalInputRenderer::new();
+        renderer.redraw(&snapshot("mtcars$"), PromptState::TopLevel);
+
+        assert_eq!(
+            renderer.redraw_completion_menu(&completion_menu(&["mpg", "cyl"])),
+            b"\r\n\x1b[2K> mpg  field\r\n\x1b[2K  cyl  field\x1b[2A\r\x1b[9C".to_vec()
+        );
+    }
+
+    #[test]
+    fn clearing_input_also_removes_completion_menu_rows() {
+        let mut renderer = LocalInputRenderer::new();
+        renderer.redraw(&snapshot("mtcars$"), PromptState::TopLevel);
+        renderer.redraw_completion_menu(&completion_menu(&["mpg", "cyl"]));
+
+        assert_eq!(
+            renderer.redraw(&snapshot("mtcars$m"), PromptState::TopLevel),
+            b"\x1b[2B\r\x1b[2K\x1b[1A\r\x1b[2K\x1b[1A\r\x1b[2K> mtcars$m".to_vec()
+        );
+    }
+
+    #[test]
+    fn completion_menu_lines_truncate_to_terminal_width() {
+        let mut renderer = LocalInputRenderer::with_terminal_cols(8);
+        renderer.redraw(&snapshot("x$"), PromptState::TopLevel);
+
+        assert_eq!(
+            renderer.redraw_completion_menu(&completion_menu(&["verylong"])),
+            b"\r\n\x1b[2K> verylo\x1b[1A\r\x1b[4C".to_vec()
         );
     }
 
