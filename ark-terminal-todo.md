@@ -447,17 +447,22 @@ Current implementation status:
   sequences initialize/completion/resolve request IDs, computes UTF-16 cursor
   positions from byte cursors, and recognizes the planned trigger characters
   (`$`, `@`, `:`, `(`, `[`, `,`, space, `"`, `'`, `/`)
-- the substrate is not yet connected to the enhanced terminal runtime or a live
-  completion UI
+- `crates/ark-terminal/src/lsp_runtime.rs` now runs a nonblocking terminal LSP
+  worker over stdio: it spawns `ark-lsp --runtime-mode detached`, initializes
+  the server, accepts snapshot sync/completion commands over a channel, returns
+  completion response events, and reports worker errors without blocking PTY
+  input
+- enhanced input now emits explicit completion effects for trigger-character
+  inserts and compacts stale trigger requests out of batched send-style input
+- `pty.rs` starts the terminal-side LSP worker in enhanced mode, syncs redraw
+  snapshots to `ark-console://<session-id>/input.R`, sends trigger completion
+  requests, and traces request/response counts; no terminal completion menu is
+  rendered yet
 
 Tasks:
 
-- start or connect to `ark-lsp`
-- wire `ConsoleLspState` into enhanced terminal events so
-  `ark-console://<session-id>/input.R` is maintained at runtime
-- send line-editor snapshot changes over the LSP transport
-- request completions on manual invocation and trigger characters from the
-  terminal event loop
+- add manual completion invocation once a visible menu exists
+- render terminal completion items and selection state
 - apply LSP text edits and insert text accurately
 - implement completion item resolve
 - dedupe and rank display consistently with Ark LSP responses

@@ -8,6 +8,7 @@ use crate::input::ReverseSearchSnapshot;
 use crate::keys::ControlInput;
 use crate::keys::DecodedInput;
 use crate::keys::InputDecoder;
+use crate::lsp_client::completion_trigger_from_inserted_text;
 use crate::prompt::PromptState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +16,10 @@ pub enum InputEffect {
     Forward(Vec<u8>),
     Redraw(EditorSnapshot),
     ReverseSearch(ReverseSearchSnapshot),
+    Completion {
+        snapshot: EditorSnapshot,
+        trigger_character: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -85,8 +90,22 @@ impl EnhancedInputRuntime {
     }
 
     fn handle_edit(&mut self, command: EditCommand, effects: &mut Vec<InputEffect>) {
+        let completion_trigger = match &command {
+            EditCommand::Insert(text) => completion_trigger_from_inserted_text(text),
+            _ => None,
+        };
+
         match self.editor.handle(command) {
-            EditAction::Redraw => effects.push(InputEffect::Redraw(self.editor.snapshot())),
+            EditAction::Redraw => {
+                let snapshot = self.editor.snapshot();
+                effects.push(InputEffect::Redraw(snapshot.clone()));
+                if let Some(trigger_character) = completion_trigger {
+                    effects.push(InputEffect::Completion {
+                        snapshot,
+                        trigger_character: trigger_character.to_string(),
+                    });
+                }
+            },
             EditAction::Submit(input) => {
                 let mut bytes = input.into_bytes();
                 bytes.push(b'\n');
@@ -233,6 +252,9 @@ fn compact_batch_effects(effects: Vec<InputEffect>) -> Vec<InputEffect> {
     for effect in effects {
         match effect {
             InputEffect::Redraw(snapshot) => {
+                if matches!(compacted.last(), Some(InputEffect::Completion { .. })) {
+                    compacted.pop();
+                }
                 if let Some(InputEffect::Redraw(previous)) = compacted.last_mut() {
                     *previous = snapshot;
                 } else {
@@ -240,6 +262,9 @@ fn compact_batch_effects(effects: Vec<InputEffect>) -> Vec<InputEffect> {
                 }
             },
             InputEffect::Forward(bytes) => {
+                if matches!(compacted.last(), Some(InputEffect::Completion { .. })) {
+                    compacted.pop();
+                }
                 if matches!(compacted.last(), Some(InputEffect::Redraw(_))) {
                     compacted.pop();
                 }
@@ -247,6 +272,24 @@ fn compact_batch_effects(effects: Vec<InputEffect>) -> Vec<InputEffect> {
             },
             InputEffect::ReverseSearch(snapshot) => {
                 compacted.push(InputEffect::ReverseSearch(snapshot));
+            },
+            InputEffect::Completion {
+                snapshot,
+                trigger_character,
+            } => {
+                if let Some(InputEffect::Completion {
+                    snapshot: previous_snapshot,
+                    trigger_character: previous_trigger,
+                }) = compacted.last_mut()
+                {
+                    *previous_snapshot = snapshot;
+                    *previous_trigger = trigger_character;
+                } else {
+                    compacted.push(InputEffect::Completion {
+                        snapshot,
+                        trigger_character,
+                    });
+                }
             },
         }
     }
@@ -268,6 +311,16 @@ mod tests {
     fn text(effect: &InputEffect) -> Option<&str> {
         match effect {
             InputEffect::Redraw(snapshot) => Some(snapshot.text.as_str()),
+            _ => None,
+        }
+    }
+
+    fn completion(effect: &InputEffect) -> Option<(&str, &str)> {
+        match effect {
+            InputEffect::Completion {
+                snapshot,
+                trigger_character,
+            } => Some((snapshot.text.as_str(), trigger_character.as_str())),
             _ => None,
         }
     }
@@ -320,6 +373,27 @@ mod tests {
 
         assert_eq!(effects[0], InputEffect::Forward(b"abd\n".to_vec()));
         assert_eq!(text(&effects[1]), Some(""));
+    }
+
+    #[test]
+    fn reports_completion_after_trigger_character_insert() {
+        let mut runtime = EnhancedInputRuntime::new();
+
+        let effects = runtime.handle_bytes(b"mtcars$", PromptState::TopLevel);
+
+        assert_eq!(effects.len(), 2);
+        assert_eq!(text(&effects[0]), Some("mtcars$"));
+        assert_eq!(completion(&effects[1]), Some(("mtcars$", "$")));
+    }
+
+    #[test]
+    fn drops_stale_completion_when_batch_continues_after_trigger() {
+        let mut runtime = EnhancedInputRuntime::new();
+
+        let effects = runtime.handle_bytes(b"mtcars$x", PromptState::TopLevel);
+
+        assert_eq!(effects.len(), 1);
+        assert_eq!(text(&effects[0]), Some("mtcars$x"));
     }
 
     #[test]

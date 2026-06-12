@@ -29,6 +29,8 @@ use serde_json::json;
 
 use crate::enhanced::EnhancedInputRuntime;
 use crate::enhanced::InputEffect;
+use crate::lsp_runtime::TerminalLspEvent;
+use crate::lsp_runtime::TerminalLspHandle;
 use crate::prompt::PromptDetector;
 use crate::prompt::PromptState;
 use crate::raw_terminal::RawTerminal;
@@ -80,6 +82,7 @@ pub fn run(cli: Cli) -> anyhow::Result<i32> {
             "session_id": cli.session_id,
         }),
     );
+    let lsp = start_terminal_lsp(&cli, enhanced_mode, child.id(), &trace);
 
     let _raw_terminal = if stdin_is_tty {
         Some(RawTerminal::enter(stdin.as_fd()).context("failed to enter raw terminal mode")?)
@@ -102,6 +105,7 @@ pub fn run(cli: Cli) -> anyhow::Result<i32> {
             input_prompt_state,
             input_stdout_lock,
             input_trace,
+            lsp,
         )
     });
     let output_trace = trace.clone();
@@ -162,6 +166,7 @@ fn forward_stdin_to_pty(
     prompt_state: Arc<Mutex<PromptState>>,
     stdout_lock: Arc<Mutex<()>>,
     trace: TraceLog,
+    mut lsp: Option<TerminalLspHandle>,
 ) -> io::Result<()> {
     let mut master = file_from_owned_fd(master);
     let mut stdin = io::stdin().lock();
@@ -170,6 +175,7 @@ fn forward_stdin_to_pty(
     let mut buffer = [0; 8192];
 
     loop {
+        drain_lsp_events(&mut lsp, &trace);
         let read = stdin.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -185,7 +191,9 @@ fn forward_stdin_to_pty(
                     &mut renderer,
                     &stdout_lock,
                     &trace,
+                    &mut lsp,
                 )?;
+                drain_lsp_events(&mut lsp, &trace);
             }
         } else {
             master.write_all(&buffer[..read])?;
@@ -193,6 +201,7 @@ fn forward_stdin_to_pty(
         }
     }
 
+    drain_lsp_events(&mut lsp, &trace);
     Ok(())
 }
 
@@ -203,6 +212,7 @@ fn consume_input_effect(
     renderer: &mut LocalInputRenderer,
     stdout_lock: &Arc<Mutex<()>>,
     trace: &TraceLog,
+    lsp: &mut Option<TerminalLspHandle>,
 ) -> io::Result<()> {
     match effect {
         InputEffect::Forward(bytes) => {
@@ -218,6 +228,11 @@ fn consume_input_effect(
             );
         },
         InputEffect::Redraw(snapshot) => {
+            if let Some(lsp) = lsp.as_ref() {
+                if !lsp.sync_snapshot(&snapshot) {
+                    trace.event("lsp_sync_dropped", json!({}));
+                }
+            }
             let bytes = renderer.redraw(&snapshot, prompt_state);
             write_stdout_bytes(&bytes, stdout_lock)?;
             trace.event(
@@ -228,6 +243,28 @@ fn consume_input_effect(
                     "prompt_state": prompt_state.as_str(),
                 }),
             );
+        },
+        InputEffect::Completion {
+            snapshot,
+            trigger_character,
+        } => {
+            if let Some(lsp) = lsp.as_mut() {
+                if let Some(sequence) = lsp.request_completion(&snapshot, Some(&trigger_character))
+                {
+                    trace.event(
+                        "lsp_completion_request",
+                        json!({
+                            "sequence": sequence,
+                            "trigger_character": trigger_character,
+                            "bytes": snapshot.text.len(),
+                            "cursor": snapshot.cursor,
+                            "prompt_state": prompt_state.as_str(),
+                        }),
+                    );
+                } else {
+                    trace.event("lsp_completion_dropped", json!({}));
+                }
+            }
         },
         InputEffect::ReverseSearch(snapshot) => {
             let bytes = renderer.redraw_reverse_search(&snapshot, prompt_state);
@@ -244,6 +281,91 @@ fn consume_input_effect(
     }
 
     Ok(())
+}
+
+fn start_terminal_lsp(
+    cli: &Cli,
+    enhanced_mode: bool,
+    child_id: u32,
+    trace: &TraceLog,
+) -> Option<TerminalLspHandle> {
+    if !enhanced_mode || cli.no_lsp {
+        return None;
+    }
+
+    let Some(ark_lsp) = cli.ark_lsp.clone() else {
+        trace.event("lsp_disabled", json!({ "reason": "missing ark-lsp path" }));
+        return None;
+    };
+    let session_id = cli
+        .session_id
+        .clone()
+        .unwrap_or_else(|| format!("ark-terminal-{child_id}"));
+
+    match TerminalLspHandle::spawn_ark_lsp(ark_lsp, session_id.clone()) {
+        Ok(lsp) => {
+            trace.event(
+                "lsp_worker_spawned",
+                json!({
+                    "session_id": session_id,
+                }),
+            );
+            Some(lsp)
+        },
+        Err(err) => {
+            trace.event(
+                "lsp_worker_spawn_failed",
+                json!({
+                    "error": err.to_string(),
+                }),
+            );
+            None
+        },
+    }
+}
+
+fn drain_lsp_events(lsp: &mut Option<TerminalLspHandle>, trace: &TraceLog) {
+    let Some(handle) = lsp.as_mut() else {
+        return;
+    };
+
+    let mut failed = false;
+    for event in handle.drain_events() {
+        match event {
+            TerminalLspEvent::Started { child_id } => {
+                trace.event("lsp_child_started", json!({ "pid": child_id }));
+            },
+            TerminalLspEvent::Initialized => {
+                trace.event("lsp_initialized", json!({}));
+            },
+            TerminalLspEvent::SnapshotSynced { version } => {
+                trace.event("lsp_snapshot_synced", json!({ "version": version }));
+            },
+            TerminalLspEvent::Completion {
+                sequence,
+                trigger_character,
+                item_count,
+                ..
+            } => {
+                trace.event(
+                    "lsp_completion_response",
+                    json!({
+                        "sequence": sequence,
+                        "trigger_character": trigger_character,
+                        "item_count": item_count,
+                    }),
+                );
+            },
+            TerminalLspEvent::Error { message } => {
+                trace.event("lsp_error", json!({ "message": message }));
+                failed = true;
+            },
+        }
+    }
+
+    if failed {
+        *lsp = None;
+    }
 }
 
 fn forward_pty_to_stdout(

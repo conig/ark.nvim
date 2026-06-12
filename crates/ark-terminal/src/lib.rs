@@ -1,6 +1,7 @@
 mod cli;
 mod enhanced;
 mod lsp_client;
+mod lsp_runtime;
 mod prompt;
 mod raw_terminal;
 mod render;
@@ -28,6 +29,8 @@ pub use lsp_client::LspMessageFactory;
 pub use lsp_client::LspPosition;
 pub use lsp_client::LspTransport;
 pub use lsp_client::COMPLETION_TRIGGER_CHARACTERS;
+pub use lsp_runtime::TerminalLspEvent;
+pub use lsp_runtime::TerminalLspHandle;
 
 pub fn run_from_env() -> anyhow::Result<i32> {
     let cli = Cli::parse(std::env::args().skip(1))?;
