@@ -7,6 +7,7 @@ mod trace;
 #[cfg(unix)]
 mod pty;
 
+pub mod input;
 pub use cli::Cli;
 
 pub fn run_from_env() -> anyhow::Result<i32> {

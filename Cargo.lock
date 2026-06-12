@@ -563,6 +563,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "unicode-segmentation",
 ]
 
 [[package]]

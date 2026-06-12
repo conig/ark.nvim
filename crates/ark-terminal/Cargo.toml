@@ -17,6 +17,7 @@ libc.workspace = true
 nix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+unicode-segmentation.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
