@@ -1,6 +1,7 @@
 local M = {}
 local dev = require("ark.dev")
 local session_backend = require("ark.session")
+local session_runtime = require("ark.session_runtime")
 local uv = vim.uv or vim.loop
 
 local SESSION_UPDATE_METHOD = "ark/updateSession"
@@ -491,6 +492,106 @@ local function normalize_repl_ready(status)
   return status.repl_ready == true or status.repl_ready == 1
 end
 
+local function console_status(bufnr)
+  bufnr = resolve_bufnr(bufnr)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) or vim.b[bufnr].ark_console ~= true then
+    return nil
+  end
+
+  local console = package.loaded["ark.console"]
+  if type(console) ~= "table" or type(console.status) ~= "function" then
+    local ok, loaded = pcall(require, "ark.console")
+    if not ok or type(loaded) ~= "table" or type(loaded.status) ~= "function" then
+      return nil
+    end
+    console = loaded
+  end
+
+  return console.status(bufnr)
+end
+
+local function console_session_backend(status)
+  local session_id = type(status) == "table" and status.session_id or nil
+  if type(vim.env.TMUX) == "string"
+    and vim.env.TMUX ~= ""
+    and type(session_id) == "string"
+    and not vim.startswith(session_id, "nvim_console__")
+  then
+    return "tmux"
+  end
+
+  return "nvim-console"
+end
+
+local function console_bridge_env(runtime_config, backend, session_id, status_path)
+  if type(session_id) ~= "string" or session_id == "" then
+    return nil
+  end
+  if type(status_path) ~= "string" or status_path == "" then
+    return nil
+  end
+
+  return {
+    ARK_SESSION_KIND = runtime_config.session_kind or "ark",
+    ARK_SESSION_BACKEND = backend,
+    ARK_SESSION_ID = session_id,
+    ARK_SESSION_STATUS_FILE = status_path,
+    ARK_SESSION_TIMEOUT_MS = tostring(runtime_config.session_timeout_ms or 1000),
+  }
+end
+
+local function console_session_snapshot(opts, snapshot_opts, bufnr)
+  local status = console_status(bufnr)
+  if type(status) ~= "table" then
+    return nil
+  end
+
+  local session_id = status.session_id
+  local status_path = status.status_path
+  if type(session_id) ~= "string" or session_id == "" then
+    return nil
+  end
+  if type(status_path) ~= "string" or status_path == "" then
+    return nil
+  end
+
+  local runtime_config = opts.terminal or opts.tmux or {}
+  local authoritative_status = session_runtime.read_status_file(status_path, { require_live_pid = true })
+  local bridge_ready = false
+  if type(authoritative_status) == "table"
+    and authoritative_status.status == "ready"
+    and authoritative_status.port ~= nil
+    and type(authoritative_status.auth_token) == "string"
+    and authoritative_status.auth_token ~= ""
+  then
+    if snapshot_opts.validate_bridge == false then
+      bridge_ready = true
+    else
+      local timeout_ms = tonumber(snapshot_opts.bridge_timeout_ms or snapshot_opts.timeout_ms or 150) or 150
+      bridge_ready = session_runtime.ping_bridge({
+        backend = console_session_backend(status),
+        session_id = session_id,
+      }, authoritative_status, timeout_ms)
+    end
+  end
+
+  local backend = console_session_backend(status)
+  return {
+    backend = backend,
+    bridge_ready = bridge_ready,
+    runtime_config = runtime_config,
+    session = {
+      backend = backend,
+      session_id = session_id,
+    },
+    session_id = session_id,
+    startup_status = authoritative_status and vim.deepcopy(authoritative_status) or nil,
+    authoritative_status = authoritative_status and vim.deepcopy(authoritative_status) or nil,
+    status_path = status_path,
+    cmd_env = bridge_ready and console_bridge_env(runtime_config, backend, session_id, status_path) or nil,
+  }
+end
+
 local function request_result(client, method, params, timeout_ms, bufnr)
   local response, err = client:request_sync(method, params, timeout_ms, bufnr or 0)
   if err then
@@ -700,10 +801,15 @@ local function notify_startup_ready(bufnr, payload)
   end
 end
 
-local function session_snapshot(opts, snapshot_opts)
+local function session_snapshot(opts, snapshot_opts, bufnr)
   snapshot_opts = snapshot_opts or {}
   if type(snapshot_opts.snapshot) == "table" then
     return snapshot_opts.snapshot
+  end
+
+  local console_snapshot = console_session_snapshot(opts, snapshot_opts, bufnr or snapshot_opts.bufnr)
+  if type(console_snapshot) == "table" then
+    return console_snapshot
   end
 
   local snapshot = session_backend.startup_snapshot(opts, {
@@ -755,16 +861,17 @@ local function session_snapshot(opts, snapshot_opts)
   }
 end
 
-local function session_payload(opts, payload_opts)
-  local snapshot = session_snapshot(opts, payload_opts)
+local function session_payload(opts, payload_opts, bufnr)
+  local snapshot = session_snapshot(opts, payload_opts, bufnr or (payload_opts and payload_opts.bufnr))
   if type(snapshot) ~= "table" then
     return {}
   end
 
   local session = snapshot.session
-  local runtime_config = session_backend.runtime_config(opts) or {}
-  local session_id = session_backend.session_id(opts, session)
+  local runtime_config = snapshot.runtime_config or session_backend.runtime_config(opts) or {}
+  local session_id = snapshot.session_id or session_backend.session_id(opts, session)
   local session_opts = type(opts.session) == "table" and opts.session or {}
+  local backend = snapshot.backend or session_backend.backend_name(opts)
   local startup_status = snapshot.startup_status
   local authoritative_status = snapshot.authoritative_status
   local status = snapshot.bridge_ready == true and "ready"
@@ -777,8 +884,8 @@ local function session_payload(opts, payload_opts)
   end
 
   return {
-    kind = session_opts.kind or (opts.tmux and opts.tmux.session_kind) or "ark",
-    backend = session_backend.backend_name(opts),
+    kind = session_opts.kind or runtime_config.session_kind or (opts.tmux and opts.tmux.session_kind) or "ark",
+    backend = backend,
     sessionId = session_id,
     statusFile = snapshot.status_path,
     tmuxSocket = session.tmux_socket,
@@ -814,10 +921,24 @@ end
 
 local function notify_sessions(opts, bufnr, payload)
   local clients = session_clients(opts, bufnr)
-  local normalized = payload or session_payload(opts, { fast = true })
+  local normalized = payload or session_payload(opts, { fast = true }, bufnr)
   for _, client in ipairs(clients) do
     notify_client_session(client, normalized)
   end
+end
+
+local function first_watched_bufnr(watch)
+  if type(watch) ~= "table" then
+    return nil
+  end
+
+  for bufnr, _ in pairs(watch.bufnrs or {}) do
+    if vim.api.nvim_buf_is_valid(bufnr) and buffer_watch_keys[bufnr] == watch.key then
+      return bufnr
+    end
+  end
+
+  return nil
 end
 
 local function notify_watch_sessions(opts, watch, payload)
@@ -833,7 +954,7 @@ local function notify_watch_sessions(opts, watch, payload)
   end
 
   local clients = clients_for_buffers(opts, bufnrs)
-  local normalized = payload or session_payload(opts, { fast = true })
+  local normalized = payload or session_payload(opts, { fast = true }, bufnrs[1])
   for _, client in ipairs(clients) do
     notify_client_session(client, normalized)
   end
@@ -923,7 +1044,7 @@ local function schedule_session_syncs(opts, bufnr, client_id)
       return
     end
 
-    local payload = session_payload(opts, { fast = true })
+    local payload = session_payload(opts, { fast = true }, bufnr)
     local function schedule_next()
       if session_watch_finished(opts, bufnr, payload) or session_poll_finished(opts, bufnr, payload) then
         return
@@ -1180,7 +1301,7 @@ local function start_session_watch_poll(opts, status_path)
       return
     end
 
-    local current = session_payload(opts, { fast = true })
+    local current = session_payload(opts, { fast = true }, first_watched_bufnr(current_watch))
     if current.statusFile ~= status_path then
       stop_session_watch(status_path)
       return
@@ -1216,7 +1337,7 @@ local function ensure_session_watch(opts, bufnr, payload, watch_opts)
     return nil
   end
 
-  local current_payload = payload or session_payload(opts, { fast = true })
+  local current_payload = payload or session_payload(opts, { fast = true }, bufnr)
   local status_path = current_payload.statusFile
   if type(status_path) ~= "string" or status_path == "" then
     detach_buffer_watch(bufnr)
@@ -1243,7 +1364,7 @@ local function ensure_session_watch(opts, bufnr, payload, watch_opts)
         return
       end
 
-      local current = session_payload(opts, { fast = true })
+      local current = session_payload(opts, { fast = true }, first_watched_bufnr(current_watch))
       if current.statusFile ~= watch_key then
         stop_session_watch(watch_key)
         return
@@ -1287,7 +1408,7 @@ function M.config(opts, bufnr, _config_opts)
       or session_snapshot(opts, {
         fast = true,
         validate_bridge = true,
-      })
+      }, bufnr)
     cmd_env = type(config_snapshot) == "table" and config_snapshot.cmd_env or nil
   end
 
@@ -1318,11 +1439,11 @@ local function start_client(opts, bufnr, start_opts)
   local startup_snapshot = wait_for_client_sync and session_snapshot(opts, {
     fast = true,
     validate_bridge = false,
-  }) or nil
+  }, bufnr) or nil
   local startup_payload = wait_for_client_sync and session_payload(opts, {
     fast = true,
     snapshot = startup_snapshot,
-  }) or {}
+  }, bufnr) or {}
 
   local desired, config_err = M.config(opts, bufnr, vim.tbl_extend("force", start_opts or {}, {
     defer_session_bootstrap = not wait_for_client_sync,
@@ -1486,15 +1607,16 @@ function M.sync_sessions(opts, bufnr, sync_opts)
   local payload_opts = vim.tbl_extend("keep", sync_opts or {}, {
     fast = true,
   })
-  local payload = session_payload(opts, payload_opts)
 
   if bufnr then
+    local payload = session_payload(opts, payload_opts, bufnr)
     ensure_session_watch(opts, bufnr, payload)
     return
   end
 
   local touched_watches = {}
   for _, buffer in ipairs(session_buffers(opts)) do
+    local payload = session_payload(opts, payload_opts, buffer)
     local watch = ensure_session_watch(opts, buffer, payload)
     if type(watch) == "table" then
       touched_watches[watch.key] = watch
@@ -1502,7 +1624,7 @@ function M.sync_sessions(opts, bufnr, sync_opts)
   end
 
   for _, watch in pairs(touched_watches) do
-    notify_watch_sessions(opts, watch, payload)
+    notify_watch_sessions(opts, watch)
   end
 end
 

@@ -1183,6 +1183,13 @@ impl SessionBridge {
 
             return Ok(Some(CompletionPlan::Unique(request)));
         }
+        if let Some(request) = completion_request_from_call_text_after_named_argument(context)? {
+            if let Some(search_path) = completion_request_from_search_path(context)? {
+                return Ok(Some(CompletionPlan::Composite(vec![request, search_path])));
+            }
+
+            return Ok(Some(CompletionPlan::Unique(request)));
+        }
         if let Some(request) = self.completion_request_from_data_context(context)? {
             if let Some(search_path) = completion_request_from_search_path(context)? {
                 return Ok(Some(CompletionPlan::Composite(vec![request, search_path])));
@@ -3340,6 +3347,25 @@ fn completion_request_from_call_text(
     }))
 }
 
+fn completion_request_from_call_text_after_named_argument(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<CompletionRequest>> {
+    let Some((callee, argument_prefix)) = call_text_argument_slot_after_named_argument(context)?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(CompletionRequest {
+        expr: callee,
+        flavor: CompletionFlavor::Argument,
+        prefix: argument_prefix,
+        accessor: Some(String::from("arg")),
+        close_string: false,
+        quote_insert: false,
+        subset_kind: None,
+    }))
+}
+
 fn call_text_argument_slot(
     context: &DocumentContext,
 ) -> anyhow::Result<Option<(String, Option<String>)>> {
@@ -3362,6 +3388,46 @@ fn call_text_argument_slot(
 
     let arguments = &prefix[open + 1..];
     let Some(current_argument) = top_level_split(arguments, ',').last().copied() else {
+        return Ok(None);
+    };
+    let Some(argument_prefix) = argument_name_prefix_from_text(current_argument) else {
+        return Ok(None);
+    };
+
+    Ok(Some((String::from(callee), argument_prefix)))
+}
+
+fn call_text_argument_slot_after_named_argument(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<(String, Option<String>)>> {
+    let Some(line) = context.document.get_line(context.point.row) else {
+        return Ok(None);
+    };
+
+    let prefix = line.chars().take(context.point.column).collect::<String>();
+    let Some(open) = last_unmatched_open_paren(prefix.as_str()) else {
+        return Ok(None);
+    };
+    let Some(callee_start) = callee_start_before_open(prefix.as_str(), open) else {
+        return Ok(None);
+    };
+
+    let callee = prefix[callee_start..open].trim();
+    if callee.is_empty() || callee == "." {
+        return Ok(None);
+    }
+
+    let arguments = &prefix[open + 1..];
+    let parts = top_level_split(arguments, ',');
+    if parts.len() < 2 ||
+        !parts[..parts.len() - 1]
+            .iter()
+            .any(|argument| top_level_assignment_index(argument).is_some())
+    {
+        return Ok(None);
+    }
+
+    let Some(current_argument) = parts.last().copied() else {
         return Ok(None);
     };
     let Some(argument_prefix) = argument_name_prefix_from_text(current_argument) else {
@@ -4853,6 +4919,58 @@ mod tests {
         let request = completion_request_from_search_path(&context).unwrap();
 
         assert!(request.is_none());
+    }
+
+    #[test]
+    fn test_completion_plan_prefers_argument_after_named_arg_in_console_transcript() {
+        let (text, point) = point_from_cursor("cat(\"ready\\n\")\n#> ready\nlm(data = mtcars, @");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port: 1,
+            auth_token: String::new(),
+            status_file: None,
+            backend: String::new(),
+            session_id: String::new(),
+            tmux_socket: String::new(),
+            tmux_session: String::new(),
+            tmux_pane: String::new(),
+            timeout_ms: 1000,
+        })
+        .unwrap();
+
+        let plan = bridge
+            .completion_plan(&context, None)
+            .unwrap()
+            .expect("expected completion plan");
+
+        match plan {
+            CompletionPlan::Unique(request) => {
+                assert!(matches!(request.flavor, CompletionFlavor::Argument));
+                assert_eq!(request.expr, "lm");
+                assert_eq!(request.prefix, None);
+            },
+            CompletionPlan::Composite(requests) => {
+                assert!(requests.iter().any(|request| {
+                    matches!(request.flavor, CompletionFlavor::Argument) &&
+                        request.expr == "lm" &&
+                        request.prefix.is_none()
+                }));
+            },
+            CompletionPlan::HandledEmpty => panic!("expected argument completion plan"),
+        }
+    }
+
+    #[test]
+    fn test_call_text_after_named_argument_does_not_claim_data_mask_slot() {
+        let (text, point) = point_from_cursor("filter(mtcars, cy@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let slot = call_text_argument_slot_after_named_argument(&context).unwrap();
+
+        assert!(slot.is_none());
     }
 
     #[test]
