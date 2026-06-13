@@ -39,6 +39,7 @@ local stale_status = vim.tbl_extend("force", status.startup_status or {}, {
   status = "ready",
   port = 9,
   auth_token = "stale-test-token",
+  pid = 99999999,
 })
 
 vim.fn.writefile({ vim.json.encode(stale_status) }, startup_status_path)
@@ -46,6 +47,11 @@ vim.fn.writefile({ vim.json.encode(stale_status) }, startup_status_path)
 local stale_config = require("ark.lsp").config(require("ark").options(), 0, {
   wait_for_bridge = false,
 })
+
+local poisoned_status = require("ark").status()
+if poisoned_status.startup_status ~= nil then
+  ark_test.fail("dead ready status should not be exposed as startup status: " .. vim.inspect(poisoned_status))
+end
 
 vim.fn.writefile(original_lines, startup_status_path)
 

@@ -332,7 +332,9 @@ local function startup_snapshot(config, snapshot_opts)
   end
 
   local status_path = session_runtime.status_file_path(config, session.session_id)
-  local authoritative_status = status_path and session_runtime.read_status_file(status_path) or nil
+  local authoritative_status = status_path
+    and session_runtime.read_status_file(status_path, { require_live_pid = true })
+    or nil
   local bridge_ready = false
   if type(authoritative_status) == "table"
     and authoritative_status.status == "ready"

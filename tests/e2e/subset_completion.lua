@@ -3,6 +3,7 @@ local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test
 local test_file = "/tmp/ark_subset_completion.R"
 
 local pane_id, client = ark_test.setup_managed_buffer(test_file, {
+  "mtcars$",
   "mtcars[",
   'mtcars[, c("',
   'mtcars[["',
@@ -53,8 +54,20 @@ end
 if not vim.tbl_contains(trigger_characters, " ") then
   ark_test.fail('ark_lsp completion triggers missing space: ' .. vim.inspect(trigger_characters))
 end
+if not vim.tbl_contains(trigger_characters, "$") then
+  ark_test.fail('ark_lsp completion triggers missing dollar: ' .. vim.inspect(trigger_characters))
+end
 
-local df_subset_items = completion_at(1, 7)
+local dollar_items = completion_at(1, 7, "$")
+local dollar_column = ark_test.find_item(dollar_items, "mpg")
+if not dollar_column then
+  ark_test.fail("mtcars$ completion missing mpg: " .. vim.inspect(ark_test.item_labels(dollar_items)))
+end
+if ark_test.insert_text(dollar_column) ~= "mpg" then
+  ark_test.fail("mtcars$ completion inserted unexpected text: " .. vim.inspect(dollar_column))
+end
+
+local df_subset_items = completion_at(2, 7)
 local df_subset = ark_test.find_item(df_subset_items, "mpg")
 if not df_subset then
   ark_test.fail("mtcars[ completion missing mpg: " .. vim.inspect(ark_test.item_labels(df_subset_items)))
@@ -63,7 +76,7 @@ if ark_test.insert_text(df_subset) ~= '"mpg"' then
   ark_test.fail("mtcars[ completion inserted unexpected text: " .. vim.inspect(df_subset))
 end
 
-local df_string_subset_items = completion_at(2, 12)
+local df_string_subset_items = completion_at(3, 12)
 local df_string_subset = ark_test.find_item(df_string_subset_items, "mpg")
 if not df_string_subset then
   ark_test.fail('mtcars[, c(" completion missing mpg: ' .. vim.inspect(ark_test.item_labels(df_string_subset_items)))
@@ -72,7 +85,7 @@ if ark_test.insert_text(df_string_subset) ~= "mpg" then
   ark_test.fail('mtcars[, c(" completion inserted unexpected text: ' .. vim.inspect(df_string_subset))
 end
 
-local df_subset2_items = completion_at(3, 9)
+local df_subset2_items = completion_at(4, 9)
 local df_subset2 = ark_test.find_item(df_subset2_items, "mpg")
 if not df_subset2 then
   ark_test.fail('mtcars[[" completion missing mpg: ' .. vim.inspect(ark_test.item_labels(df_subset2_items)))
@@ -82,13 +95,14 @@ if ark_test.insert_text(df_subset2) ~= "mpg" then
 end
 
 local result = {
+  mtcars_dollar = ark_test.insert_text(dollar_column),
   mtcars_subset = ark_test.insert_text(df_subset),
   mtcars_string_subset = ark_test.insert_text(df_string_subset),
   mtcars_subset2 = ark_test.insert_text(df_subset2),
 }
 
 if has_data_table then
-  local dt_subset_items = completion_at(4, 7)
+  local dt_subset_items = completion_at(5, 7)
   local dt_subset = ark_test.find_item(dt_subset_items, "mpg")
   if not dt_subset then
     ark_test.fail("dt_ark[ completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_subset_items)))
@@ -98,7 +112,7 @@ if has_data_table then
   end
   result.dt_subset = ark_test.insert_text(dt_subset)
 
-  local dt_subset_pair_items = completion_at(5, 7, "[")
+  local dt_subset_pair_items = completion_at(6, 7, "[")
   local dt_subset_pair = ark_test.find_item(dt_subset_pair_items, "mpg")
   if not dt_subset_pair then
     ark_test.fail("dt_ark[] completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_subset_pair_items)))
@@ -111,14 +125,14 @@ if has_data_table then
   end
   result.dt_subset_pair = ark_test.insert_text(dt_subset_pair)
 
-  local dt_symbol_items = completion_at(6, 14)
+  local dt_symbol_items = completion_at(7, 14)
   local dt_symbol = ark_test.find_item(dt_symbol_items, "as.character")
   if not dt_symbol then
     ark_test.fail("dt_ark[as.char completion missing as.character: " .. vim.inspect(ark_test.item_labels(dt_symbol_items)))
   end
   result.dt_symbol = ark_test.insert_text(dt_symbol)
 
-  local dt_compact_open_j_items = completion_at(7, 10, "(")
+  local dt_compact_open_j_items = completion_at(8, 10, "(")
   local dt_compact_open_j = ark_test.find_item(dt_compact_open_j_items, "mpg")
   if not dt_compact_open_j then
     ark_test.fail("dt_ark[,.()] completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_compact_open_j_items)))
@@ -131,7 +145,7 @@ if has_data_table then
   end
   result.dt_compact_open_j = ark_test.insert_text(dt_compact_open_j)
 
-  local dt_open_j_items = completion_at(8, 11)
+  local dt_open_j_items = completion_at(9, 11)
   local dt_open_j = ark_test.find_item(dt_open_j_items, "mpg")
   if not dt_open_j then
     ark_test.fail("dt_ark[, .()] completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_open_j_items)))
@@ -144,7 +158,7 @@ if has_data_table then
   end
   result.dt_open_j = ark_test.insert_text(dt_open_j)
 
-  local dt_j_items = completion_at(9, 12)
+  local dt_j_items = completion_at(10, 12)
   local dt_j = ark_test.find_item(dt_j_items, "mpg")
   if not dt_j then
     ark_test.fail("dt_ark[, .(m completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_j_items)))
@@ -157,7 +171,7 @@ if has_data_table then
   end
   result.dt_j = ark_test.insert_text(dt_j)
 
-  local dt_closed_j_items = completion_at(10, 12)
+  local dt_closed_j_items = completion_at(11, 12)
   local dt_closed_j = ark_test.find_item(dt_closed_j_items, "mpg")
   if not dt_closed_j then
     ark_test.fail("dt_ark[, .(m)] completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_closed_j_items)))
@@ -170,7 +184,7 @@ if has_data_table then
   end
   result.dt_closed_j = ark_test.insert_text(dt_closed_j)
 
-  local dt_after_space_items = completion_at(11, 16, " ")
+  local dt_after_space_items = completion_at(12, 16, " ")
   local dt_after_space = ark_test.find_item(dt_after_space_items, "cyl")
   if not dt_after_space then
     ark_test.fail("dt_ark[, .(mpg, ) completion missing cyl: " .. vim.inspect(ark_test.item_labels(dt_after_space_items)))
@@ -183,7 +197,7 @@ if has_data_table then
   end
   result.dt_after_space = ark_test.insert_text(dt_after_space)
 
-  local dt_list_open_items = completion_at(12, 14)
+  local dt_list_open_items = completion_at(13, 14)
   local dt_list_open = ark_test.find_item(dt_list_open_items, "mpg")
   if not dt_list_open then
     ark_test.fail("dt_ark[, list()] completion missing mpg: " .. vim.inspect(ark_test.item_labels(dt_list_open_items)))
@@ -196,7 +210,7 @@ if has_data_table then
   end
   result.dt_list_open = ark_test.insert_text(dt_list_open)
 
-  local dt_list_after_items = completion_at(13, 18)
+  local dt_list_after_items = completion_at(14, 18)
   local dt_list_after = ark_test.find_item(dt_list_after_items, "cyl")
   if not dt_list_after then
     ark_test.fail("dt_ark[, list(mpg,)] completion missing cyl: " .. vim.inspect(ark_test.item_labels(dt_list_after_items)))
@@ -210,8 +224,8 @@ if has_data_table then
   result.dt_list_after = ark_test.insert_text(dt_list_after)
 
   local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-  local dt_open_nested_call_column = #lines[14]
-  local dt_open_nested_call_items = completion_at(14, dt_open_nested_call_column, "(")
+  local dt_open_nested_call_column = #lines[15]
+  local dt_open_nested_call_items = completion_at(15, dt_open_nested_call_column, "(")
   local dt_open_nested_call = ark_test.find_item(dt_open_nested_call_items, "Sepal.Length")
   if not dt_open_nested_call then
     ark_test.fail(
@@ -227,8 +241,8 @@ if has_data_table then
   end
   result.dt_open_nested_call = ark_test.insert_text(dt_open_nested_call)
 
-  local dt_nested_call_column = assert(lines[15]:find("mean()", 1, true)) + 4
-  local dt_nested_call_items = completion_at(15, dt_nested_call_column, "(")
+  local dt_nested_call_column = assert(lines[16]:find("mean()", 1, true)) + 4
+  local dt_nested_call_items = completion_at(16, dt_nested_call_column, "(")
   local dt_nested_call = ark_test.find_item(dt_nested_call_items, "Sepal.Length")
   if not dt_nested_call then
     ark_test.fail(

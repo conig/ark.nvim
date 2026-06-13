@@ -1206,7 +1206,9 @@ function M.startup_snapshot(config, snapshot_opts)
 
   local request_session = bridge_session(session)
   local status_path = startup_status_path(session, config)
-  local authoritative_status = status_path and session_runtime.read_status_file(status_path) or nil
+  local authoritative_status = status_path
+    and session_runtime.read_status_file(status_path, { require_live_pid = true })
+    or nil
   local startup_status = authoritative_status and vim.deepcopy(authoritative_status) or nil
   if startup_status and startup_status.repl_ready ~= true and snapshot_opts.include_prompt_ready == true then
     if prompt_ready(session) then

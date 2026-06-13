@@ -58,6 +58,38 @@ local function same_session(lhs, rhs)
     and lhs.tmux_pane == rhs.tmux_pane
 end
 
+local function status_payload_allowed(payload, opts)
+  opts = opts or {}
+  if opts.require_live_pid ~= true then
+    return true
+  end
+
+  return M.status_pid_alive(payload and payload.pid)
+end
+
+function M.status_pid_alive(pid)
+  pid = tonumber(pid)
+  if type(pid) ~= "number" or pid <= 0 then
+    return false
+  end
+  if not uv or type(uv.kill) ~= "function" then
+    return true
+  end
+
+  local ok, result, _, err_name = pcall(uv.kill, pid, 0)
+  if not ok then
+    return false
+  end
+  if result == 0 then
+    return true
+  end
+  if err_name == "ESRCH" then
+    return false
+  end
+
+  return true
+end
+
 function M.status_root(config)
   local root = config.startup_status_dir
   if type(root) ~= "string" or root == "" then
@@ -101,14 +133,11 @@ function M.status_file_trusted(path)
   return true
 end
 
-function M.read_status_file(path)
+function M.read_status_file(path, opts)
   local cached = type(path) == "string" and startup_status_cache[path] or nil
   local cached_payload = type(cached) == "table" and cached.payload or nil
 
   if not path or vim.fn.filereadable(path) ~= 1 then
-    if type(cached_payload) == "table" then
-      return vim.deepcopy(cached_payload)
-    end
     startup_status_cache[path or ""] = nil
     return nil
   end
@@ -124,6 +153,10 @@ function M.read_status_file(path)
     and cached.mtime_sec == (stat.mtime and stat.mtime.sec or nil)
     and cached.mtime_nsec == (stat.mtime and stat.mtime.nsec or nil)
   then
+    if not status_payload_allowed(cached.payload, opts) then
+      startup_status_cache[path] = nil
+      return nil
+    end
     return vim.deepcopy(cached.payload)
   end
 
@@ -155,6 +188,10 @@ function M.read_status_file(path)
   payload.repl_ready = payload.repl_ready == true or payload.repl_ready == 1
   payload.log_path = type(payload.log_path) == "string" and payload.log_path or nil
   payload._status_path = path
+  if not status_payload_allowed(payload, opts) then
+    startup_status_cache[path] = nil
+    return nil
+  end
   startup_status_cache[path] = {
     size = type(stat) == "table" and stat.size or nil,
     mtime_sec = type(stat) == "table" and stat.mtime and stat.mtime.sec or nil,
