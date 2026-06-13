@@ -854,6 +854,18 @@ local function install_console_number_autocmds(bufnr)
   })
 end
 
+local function install_console_clipboard_keymaps(bufnr)
+  local opts = {
+    buffer = bufnr,
+    desc = "Yank Ark console selection to system clipboard",
+    silent = true,
+  }
+  vim.keymap.set("n", "y", '"+y', opts)
+  vim.keymap.set("n", "Y", '"+Y', opts)
+  vim.keymap.set("x", "y", '"+y', opts)
+  vim.keymap.set("x", "Y", '"+Y', opts)
+end
+
 local function apply_console_window_options(winid)
   if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
     return
@@ -1064,6 +1076,7 @@ function M.start(opts)
   }
   install_paste_handler()
   install_console_number_autocmds(bufnr)
+  install_console_clipboard_keymaps(bufnr)
   set_input_start(bufnr, state.buffers[bufnr], 0)
   place_prompt(bufnr)
   refresh_valid_snapshot(bufnr, state.buffers[bufnr])
