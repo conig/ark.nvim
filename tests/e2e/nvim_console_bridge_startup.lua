@@ -124,7 +124,7 @@ local ok, err = xpcall(function()
     "ARK_NVIM_SESSION_LIB=" .. vim.fn.shellescape(session_lib),
     "ARK_STATUS_DIR=" .. vim.fn.shellescape(status_dir),
     "ARK_NVIM_CONSOLE_FRONTEND=nvim-console",
-    "ARK_NVIM_CONSOLE_BIN=" .. vim.fn.shellescape(repo_root .. "/scripts/ark-console"),
+    "ARK_NVIM_CONSOLE_BIN=" .. vim.fn.shellescape(vim.env.ARK_TEST_NVIM_CONSOLE_BIN or (repo_root .. "/scripts/ark-console")),
     "ARK_TMUX_SOCKET=" .. vim.fn.shellescape(vim.env.ARK_TMUX_SOCKET or ""),
     "env -u ARK_TMUX_ANCHOR_PANE -u ARK_TMUX_SESSION",
     "nvim",
