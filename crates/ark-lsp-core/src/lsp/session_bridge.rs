@@ -3294,14 +3294,22 @@ fn capture_prefix(captures: &regex::Captures, name: &str) -> Option<String> {
 fn completion_request_from_call(
     context: &DocumentContext,
 ) -> anyhow::Result<Option<CompletionRequest>> {
+    let text_argument_slot = call_text_argument_slot(context)?;
     let Some(call) = analyze_call_context(context)? else {
-        return Ok(None);
+        return completion_request_from_call_text(context);
     };
     if call.callee == "." {
         return Ok(None);
     }
 
-    let prefix = argument_prefix(context)?;
+    let mut prefix = argument_prefix(context)?;
+    if prefix.is_none() {
+        if let Some((text_callee, text_prefix)) = text_argument_slot {
+            if text_callee == call.callee {
+                prefix = text_prefix;
+            }
+        }
+    }
 
     Ok(Some(CompletionRequest {
         expr: call.callee,
@@ -3312,6 +3320,55 @@ fn completion_request_from_call(
         quote_insert: false,
         subset_kind: None,
     }))
+}
+
+fn completion_request_from_call_text(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<CompletionRequest>> {
+    let Some((callee, argument_prefix)) = call_text_argument_slot(context)? else {
+        return Ok(None);
+    };
+
+    Ok(Some(CompletionRequest {
+        expr: callee,
+        flavor: CompletionFlavor::Argument,
+        prefix: argument_prefix,
+        accessor: Some(String::from("arg")),
+        close_string: false,
+        quote_insert: false,
+        subset_kind: None,
+    }))
+}
+
+fn call_text_argument_slot(
+    context: &DocumentContext,
+) -> anyhow::Result<Option<(String, Option<String>)>> {
+    let Some(line) = context.document.get_line(context.point.row) else {
+        return Ok(None);
+    };
+
+    let prefix = line.chars().take(context.point.column).collect::<String>();
+    let Some(open) = last_unmatched_open_paren(prefix.as_str()) else {
+        return Ok(None);
+    };
+    let Some(callee_start) = callee_start_before_open(prefix.as_str(), open) else {
+        return Ok(None);
+    };
+
+    let callee = prefix[callee_start..open].trim();
+    if callee.is_empty() || callee == "." {
+        return Ok(None);
+    }
+
+    let arguments = &prefix[open + 1..];
+    let Some(current_argument) = top_level_split(arguments, ',').last().copied() else {
+        return Ok(None);
+    };
+    let Some(argument_prefix) = argument_name_prefix_from_text(current_argument) else {
+        return Ok(None);
+    };
+
+    Ok(Some((String::from(callee), argument_prefix)))
 }
 
 fn completion_request_from_pipe(
@@ -3872,6 +3929,21 @@ fn is_identifier_text(text: &str) -> bool {
     }
 
     chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.'))
+}
+
+fn argument_name_prefix_from_text(text: &str) -> Option<Option<String>> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Some(None);
+    }
+    if top_level_assignment_index(trimmed).is_some() {
+        return None;
+    }
+    if !is_identifier_text(trimmed) {
+        return None;
+    }
+
+    Some(Some(String::from(trimmed)))
 }
 
 fn call_arguments(contents: &str, call_node: &Node) -> anyhow::Result<Vec<CallArgument>> {
@@ -4716,6 +4788,44 @@ mod tests {
             .expect("expected call context");
 
         assert_eq!(call.callee, "aes");
+    }
+
+    #[test]
+    fn test_completion_request_from_call_text_handles_named_arg_then_comma() {
+        let (text, point) = point_from_cursor("lm(data = mtcars, @");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_call(&context)
+            .unwrap()
+            .expect("expected argument completion request");
+
+        assert_eq!(request.expr, "lm");
+        assert!(matches!(request.flavor, CompletionFlavor::Argument));
+        assert_eq!(request.prefix, None);
+
+        let (text, point) = point_from_cursor("lm(data = mtcars, sub@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_call(&context)
+            .unwrap()
+            .expect("expected prefixed argument completion request");
+
+        assert_eq!(request.expr, "lm");
+        assert!(matches!(request.flavor, CompletionFlavor::Argument));
+        assert_eq!(request.prefix, Some(String::from("sub")));
+    }
+
+    #[test]
+    fn test_completion_request_from_call_text_ignores_value_position() {
+        let (text, point) = point_from_cursor("lm(data = mtcars, subset = @");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_call(&context).unwrap();
+
+        assert!(request.is_none());
     }
 
     #[test]
