@@ -292,6 +292,162 @@ local ok, err = xpcall(function()
 
   rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
   if type(rpc_chan) ~= "number" or rpc_chan <= 0 then
+    ark_test.fail("failed to reconnect to managed nvim-console RPC socket for send state probe")
+  end
+  local state_prepare_ok, state_prepare_result = pcall(vim.rpcrequest, rpc_chan, "nvim_exec_lua", [[
+    local function stop_insert()
+      if vim.fn.mode():sub(1, 1) == "i" then
+        vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "xt", false)
+        vim.wait(4000, function()
+          return vim.fn.mode() == "n"
+        end, 20, false)
+      end
+    end
+
+    local bufnr = vim.api.nvim_get_current_buf()
+    local found = vim.wait(10000, function()
+      local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      return table.concat(lines, "\n"):find("#> console saw: direct_socket_send%(%)") ~= nil
+    end, 50, false)
+    if not found then
+      return {
+        ok = false,
+        reason = "console transcript did not contain direct_socket_send() output",
+        lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false),
+      }
+    end
+
+    stop_insert()
+    local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local row = nil
+    for index, line in ipairs(lines) do
+      if line:find("direct_socket_send()", 1, true) then
+        row = index
+        break
+      end
+    end
+    if row == nil then
+      return {
+        ok = false,
+        reason = "failed to locate protected direct_socket_send() row",
+        lines = lines,
+      }
+    end
+
+    vim.api.nvim_win_set_cursor(0, { row, 0 })
+    return {
+      ok = true,
+      cursor = vim.api.nvim_win_get_cursor(0),
+      input_start = require("ark.console").status(bufnr).input_start,
+      mode = vim.fn.mode(),
+      row = row,
+    }
+  ]], {})
+  pcall(vim.fn.chanclose, rpc_chan)
+  if not state_prepare_ok or type(state_prepare_result) ~= "table" or state_prepare_result.ok ~= true then
+    ark_test.fail("managed nvim-console send state setup failed: " .. vim.inspect(state_prepare_result))
+  end
+
+  local state_send_output = vim.fn.system({
+    "nvim",
+    "--server",
+    console_status.nvim_console_rpc_socket,
+    "--remote-expr",
+    "v:lua.__ark_console_rpc_send('send_after_normal_cursor()')",
+  })
+  if vim.v.shell_error ~= 0 or vim.trim(state_send_output) ~= "ok" then
+    ark_test.fail("direct console socket send from normal cursor failed: " .. state_send_output)
+  end
+
+  ark_test.wait_for("managed nvim-console R process received normal-cursor send", 20000, function()
+    if vim.fn.filereadable(fake_r_log) ~= 1 then
+      return false
+    end
+    return table.concat(vim.fn.readfile(fake_r_log), "\n"):find("send_after_normal_cursor%(%)") ~= nil
+  end)
+
+  rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
+  if type(rpc_chan) ~= "number" or rpc_chan <= 0 then
+    ark_test.fail("failed to reconnect to managed nvim-console RPC socket for send state assertion")
+  end
+  local state_after_ok, state_after_result = pcall(vim.rpcrequest, rpc_chan, "nvim_exec_lua", [[
+    local bufnr = vim.api.nvim_get_current_buf()
+    vim.wait(4000, function()
+      local status = require("ark.console").status(bufnr)
+      local cursor = vim.api.nvim_win_get_cursor(0)
+      return type(status) == "table" and cursor[1] >= status.input_start + 1
+    end, 20, false)
+
+    local status = require("ark.console").status(bufnr)
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local mode = vim.fn.mode()
+    return {
+      ok = type(status) == "table" and cursor[1] >= status.input_start + 1,
+      cursor = cursor,
+      input_start = type(status) == "table" and status.input_start or nil,
+      mode = mode,
+      line = vim.api.nvim_get_current_line(),
+    }
+  ]], {})
+  pcall(vim.fn.chanclose, rpc_chan)
+  if not state_after_ok or type(state_after_result) ~= "table" or state_after_result.ok ~= true then
+    ark_test.fail("managed nvim-console send should restore input cursor state: " .. vim.inspect(state_after_result))
+  end
+
+  rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
+  if type(rpc_chan) ~= "number" or rpc_chan <= 0 then
+    ark_test.fail("failed to reconnect to managed nvim-console RPC socket for normal-mode completion probe")
+  end
+  local normal_completion_ok, normal_completion_result = pcall(vim.rpcrequest, rpc_chan, "nvim_exec_lua", [[
+    local function stop_insert()
+      if vim.fn.mode():sub(1, 1) == "i" then
+        vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "xt", false)
+        vim.wait(4000, function()
+          return vim.fn.mode() == "n"
+        end, 20, false)
+      end
+    end
+
+    local bufnr = vim.api.nvim_get_current_buf()
+    local status = require("ark.console").status(bufnr)
+    vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "mtcars$" })
+    vim.api.nvim_win_set_cursor(0, { status.input_start + 1, 7 })
+    stop_insert()
+    local ok_trigger, trigger = pcall(require, "blink.cmp.completion.trigger")
+    if ok_trigger and type(trigger.hide) == "function" then
+      pcall(trigger.hide)
+    end
+    local ok_blink, blink = pcall(require, "blink.cmp")
+    if not ok_blink then
+      return {
+        ok = false,
+        reason = "blink.cmp unavailable",
+      }
+    end
+    local show_result = blink.show({ providers = { "lsp" } })
+    vim.wait(500, function()
+      return blink.is_visible()
+    end, 20, false)
+    local visible = blink.is_visible()
+    return {
+      ok = visible == false,
+      visible = visible,
+      show_result = show_result,
+      mode = vim.fn.mode(),
+      cursor = vim.api.nvim_win_get_cursor(0),
+      input_start = require("ark.console").status(bufnr).input_start,
+    }
+  ]], {})
+  pcall(vim.fn.chanclose, rpc_chan)
+  if not normal_completion_ok
+    or type(normal_completion_result) ~= "table"
+    or normal_completion_result.ok ~= true
+  then
+    ark_test.fail("managed nvim-console should suppress normal-mode completions: " .. vim.inspect(normal_completion_result))
+  end
+
+  rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
+  if type(rpc_chan) ~= "number" or rpc_chan <= 0 then
     ark_test.fail("failed to reconnect to managed nvim-console RPC socket for edit protection probe")
   end
   local edit_ok, edit_result = pcall(vim.rpcrequest, rpc_chan, "nvim_exec_lua", [[

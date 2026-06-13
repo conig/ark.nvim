@@ -239,6 +239,7 @@ end
 
 local input_start_line
 local place_prompt
+local focus_input
 
 local function setup_highlights()
   pcall(vim.api.nvim_set_hl, 0, "ArkConsolePrompt", { link = "Question", default = true })
@@ -364,6 +365,12 @@ local function restore_valid_snapshot(bufnr, info)
     vim.bo[bufnr].modified = false
     refresh_valid_snapshot(bufnr, info)
     place_prompt(bufnr)
+    if type(focus_input) == "function" then
+      local mode = vim.api.nvim_get_mode().mode
+      focus_input(bufnr, info, {
+        insert = type(mode) == "string" and mode:sub(1, 1) == "i",
+      })
+    end
   end
 
   return true
@@ -397,6 +404,58 @@ local function current_input_text(bufnr, info)
   return table.concat(current_input_lines(bufnr, info), "\n")
 end
 
+focus_input = function(bufnr, info, opts)
+  opts = opts or {}
+  if type(info) ~= "table" or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+
+  local winid = vim.fn.bufwinid(bufnr)
+  if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
+    return false
+  end
+
+  if vim.api.nvim_get_current_win() ~= winid then
+    pcall(vim.api.nvim_set_current_win, winid)
+  end
+
+  local start_line = input_start_line(bufnr, info)
+  local input_lines = current_input_lines(bufnr, info)
+  if #input_lines == 0 then
+    input_lines = { "" }
+  end
+
+  local target_row = start_line + #input_lines
+  local target_col = #input_lines[#input_lines]
+  if opts.position == "start" then
+    target_row = start_line + 1
+    target_col = 0
+  end
+
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  target_row = math.max(1, math.min(target_row, line_count))
+  local target_line = vim.api.nvim_buf_get_lines(bufnr, target_row - 1, target_row, false)[1] or ""
+  target_col = math.max(0, math.min(target_col, #target_line))
+  pcall(vim.api.nvim_win_set_cursor, winid, { target_row, target_col })
+
+  if opts.insert == true then
+    local function enter_insert_mode()
+      if not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_win_is_valid(winid) then
+        return
+      end
+      if vim.api.nvim_get_current_win() ~= winid then
+        pcall(vim.api.nvim_set_current_win, winid)
+      end
+      pcall(vim.cmd, "startinsert")
+    end
+
+    enter_insert_mode()
+    vim.schedule(enter_insert_mode)
+  end
+
+  return true
+end
+
 local function set_current_input(bufnr, info, text)
   local lines = vim.split(text or "", "\n", { plain = true })
   if #lines == 0 then
@@ -418,6 +477,39 @@ local function set_current_input(bufnr, info, text)
     vim.api.nvim_win_set_cursor(winid, { last_line, last_col })
   end
   place_prompt(bufnr)
+end
+
+local function cursor_before_input(bufnr, info)
+  local winid = vim.fn.bufwinid(bufnr)
+  if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
+    return false
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(winid)
+  return type(cursor) == "table" and tonumber(cursor[1]) ~= nil and (cursor[1] - 1) < input_start_line(bufnr, info)
+end
+
+local function focus_input_for_normal_edit(bufnr, keys)
+  local info = state.buffers[bufnr]
+  if type(info) == "table" and cursor_before_input(bufnr, info) then
+    focus_input(bufnr, info, { insert = true })
+    return
+  end
+
+  vim.api.nvim_feedkeys(vim.keycode(keys), "n", false)
+end
+
+local function clamp_insert_cursor_to_input(bufnr)
+  local info = state.buffers[bufnr]
+  if type(info) ~= "table" then
+    return
+  end
+  if (tonumber(info.internal_edit) or 0) > 0 or info.reverting_protected_edit == true then
+    return
+  end
+  if cursor_before_input(bufnr, info) then
+    focus_input(bufnr, info, { insert = true })
+  end
 end
 
 local function append_submitted_input_before_input(bufnr, lines, first_prompt)
@@ -850,6 +942,18 @@ function M.start(opts)
   vim.keymap.set({ "n", "i" }, "<C-n>", function()
     M.history_next(bufnr)
   end, { buffer = bufnr, desc = "Next Ark console input" })
+  vim.keymap.set("i", "<Up>", function()
+    M.history_prev(bufnr)
+  end, { buffer = bufnr, desc = "Previous Ark console input" })
+  vim.keymap.set("i", "<Down>", function()
+    M.history_next(bufnr)
+  end, { buffer = bufnr, desc = "Next Ark console input" })
+  vim.keymap.set("n", "o", function()
+    focus_input_for_normal_edit(bufnr, "o")
+  end, { buffer = bufnr, desc = "Open line in Ark console input" })
+  vim.keymap.set("n", "O", function()
+    focus_input_for_normal_edit(bufnr, "O")
+  end, { buffer = bufnr, desc = "Open line above in Ark console input" })
   vim.keymap.set({ "n", "i" }, "<C-c>", function()
     M.interrupt(bufnr)
   end, { buffer = bufnr, desc = "Interrupt Ark console R process" })
@@ -876,6 +980,15 @@ function M.start(opts)
       })
     end,
     desc = "Stop Ark console resources when its buffer is wiped",
+  })
+
+  vim.api.nvim_create_autocmd("CursorMovedI", {
+    buffer = bufnr,
+    group = vim.api.nvim_create_augroup("ArkConsoleInputCursor" .. tostring(bufnr), { clear = true }),
+    callback = function()
+      clamp_insert_cursor_to_input(bufnr)
+    end,
+    desc = "Keep Ark console insert cursor in the active input",
   })
 
   vim.api.nvim_buf_attach(bufnr, false, {
@@ -1008,9 +1121,11 @@ function M.send_text(bufnr, text)
   info.last_send = text
   info.last_send_ms = math.floor(vim.loop.hrtime() / 1e6)
   publish_status(bufnr)
+  restore_pending_protected_edit(bufnr, info)
   append_submitted_input_before_input(bufnr, vim.split(text, "\n", { plain = true }), prompt_label(info))
   send_to_job(info, text)
   place_prompt(bufnr)
+  focus_input(bufnr, info, { insert = true })
   return true
 end
 

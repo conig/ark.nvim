@@ -1334,6 +1334,21 @@ local function nvim_console_send(config, session, text)
     return nil
   end
 
+  local connect_ok, chan = pcall(vim.fn.sockconnect, "pipe", socket, { rpc = true })
+  if connect_ok and type(chan) == "number" and chan > 0 then
+    local ok, result = pcall(vim.rpcrequest, chan, "nvim_exec_lua", "return _G.__ark_console_rpc_send(...)", {
+      text,
+    })
+    pcall(vim.fn.chanclose, chan)
+    if ok and result == "ok" then
+      return true, nil
+    end
+    if ok then
+      return nil, "nvim-console RPC send returned unexpected response: " .. tostring(result)
+    end
+    return nil, tostring(result)
+  end
+
   local nvim_bin = vim.env.ARK_NVIM_CONSOLE_NVIM or vim.v.progpath or "nvim"
   local expr = "v:lua.__ark_console_rpc_send(" .. vim.fn.string(text) .. ")"
   local output = vim.fn.system({

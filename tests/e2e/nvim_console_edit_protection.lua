@@ -72,6 +72,28 @@ if type(status) ~= "table" or tonumber(status.input_start) == nil or status.inpu
   }))
 end
 
+vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "arrow_draft()" })
+vim.api.nvim_win_set_cursor(0, { status.input_start + 1, #"arrow_draft()" })
+feed("i<Up><Esc>")
+ark_test.wait_for("insert-mode up should recall previous console history", 4000, function()
+  local current_status = require("ark.console").status(bufnr)
+  local input = table.concat(vim.api.nvim_buf_get_lines(bufnr, current_status.input_start, -1, false), "\n")
+  return input == "old_call()"
+end)
+local up_cursor = vim.api.nvim_win_get_cursor(0)
+if up_cursor[1] < require("ark.console").status(bufnr).input_start + 1 then
+  ark_test.fail("insert-mode up moved cursor out of active input: " .. vim.inspect(up_cursor))
+end
+feed("i<Down><Esc>")
+ark_test.wait_for("insert-mode down should restore draft input", 4000, function()
+  local current_status = require("ark.console").status(bufnr)
+  local input = table.concat(vim.api.nvim_buf_get_lines(bufnr, current_status.input_start, -1, false), "\n")
+  return input == "arrow_draft()"
+end)
+status = require("ark.console").status(bufnr)
+vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "" })
+before = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+
 -- Old submitted input and output must remain readable/yankable, but normal
 -- edit commands must not be able to mutate them. The active input line is the
 -- only writable region.
@@ -82,6 +104,22 @@ wait_for_line_text(1, before[1])
 vim.api.nvim_win_set_cursor(0, { 1, 0 })
 feed("dd")
 wait_for_line_text(1, before[1])
+
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+feed("o")
+ark_test.wait_for("normal-mode o to keep cursor in active input", 4000, function()
+  local current_status = require("ark.console").status(bufnr)
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  return type(current_status) == "table" and cursor[1] >= current_status.input_start + 1
+end)
+local after_o = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+if vim.inspect(after_o) ~= vim.inspect(before) then
+  ark_test.fail("normal-mode o on protected transcript changed console text: " .. vim.inspect({
+    before = before,
+    after = after_o,
+  }))
+end
+stop_insert_mode()
 
 local after_invalid_edits = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 if vim.inspect(after_invalid_edits) ~= vim.inspect(before) then

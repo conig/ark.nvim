@@ -25,6 +25,22 @@ local function in_ark_filetype(bufnr)
   return vim.tbl_contains(ark_filetypes, filetype)
 end
 
+local function is_console_buffer(bufnr)
+  return vim.b[bufnr].ark_console == true
+end
+
+local function console_completion_allowed(bufnr)
+  if not is_console_buffer(bufnr) then
+    return true
+  end
+  if vim.api.nvim_get_current_buf() ~= bufnr then
+    return false
+  end
+
+  local mode = vim.api.nvim_get_mode().mode
+  return type(mode) == "string" and mode:sub(1, 1) == "i"
+end
+
 local function current_insert_col()
   local col = vim.fn.col(".") - 1
   if type(col) ~= "number" or col < 0 then
@@ -449,6 +465,11 @@ function M.patch_blink_trigger()
     M.configure_blink_sources()
 
     local bufnr = vim.api.nvim_get_current_buf()
+    if not console_completion_allowed(bufnr) then
+      hide_visible_blink_menu()
+      return false
+    end
+
     local trigger_kind = type(opts) == "table" and opts.trigger_kind or nil
     local trigger_character = type(opts) == "table" and opts.trigger_character or nil
 
@@ -550,6 +571,12 @@ function M.patch_blink_show()
     M.configure_blink_sources()
 
     local bufnr = vim.api.nvim_get_current_buf()
+    if not console_completion_allowed(bufnr) then
+      close_blink_docs()
+      hide_visible_blink_menu()
+      return false
+    end
+
     if in_ark_filetype(bufnr) then
       close_blink_docs()
     end
@@ -710,7 +737,15 @@ function M.maybe_show_after_pair(bufnr, trigger_character)
     return
   end
 
+  if vim.api.nvim_get_current_buf() ~= bufnr then
+    return
+  end
+
   if vim.api.nvim_get_mode().mode ~= "i" then
+    return
+  end
+
+  if not console_completion_allowed(bufnr) then
     return
   end
 
