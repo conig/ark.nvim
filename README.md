@@ -640,8 +640,15 @@ require("ark").setup({
 The `nvim-console` frontend keeps the editable input region as a normal R
 buffer, so Blink's regular `lsp` source works without a separate completion
 source. Ark draws the prompt virtually, preserves submitted input as R code, and
-records R output as `#>` transcript comments. The raw launcher remains the
-default fallback.
+records R output as `#>` transcript comments. Its standalone init also loads a
+lazy-installed `nvim-autopairs` when available, so normal quote and bracket
+pairing works in the REPL. The raw launcher remains the default fallback.
+
+The standalone REPL sources optional user configuration from
+`~/.config/ark.nvim/ark-repl/init.lua` by default. That directory is added to
+the REPL Neovim runtimepath first, so modules under its `lua/` directory are
+available to `require()`. Set `ARK_NVIM_REPL_CONFIG_DIR` to use a different
+directory.
 
 ## Environment Knobs
 
@@ -659,6 +666,8 @@ The main overrides are:
 - `ARK_NVIM_CONSOLE_COMMAND` (default: `Ark console`)
 - `ARK_NVIM_CONSOLE_INIT` (optional `-u` init file for the standalone
   `ark-console` Neovim process)
+- `ARK_NVIM_REPL_CONFIG_DIR` (optional user config directory for the standalone
+  `nvim-console` process; default: `~/.config/ark.nvim/ark-repl`)
 - `ARK_NVIM_ARK_TERMINAL_BIN`
 - `ARK_NVIM_ARK_TERMINAL_TRACE_LOG`
 - `ARK_NVIM_SESSION_PKG_PATH`
