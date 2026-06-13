@@ -136,7 +136,6 @@ local ok, err = xpcall(function()
     "ARK_STATUS_DIR=" .. vim.fn.shellescape(status_dir),
     "ARK_NVIM_CONSOLE_FRONTEND=nvim-console",
     "ARK_NVIM_CONSOLE_BIN=" .. vim.fn.shellescape(repo_root .. "/scripts/ark-console"),
-    "ARK_NVIM_CONSOLE_INIT=" .. vim.fn.shellescape(init_path),
     "ARK_TMUX_SOCKET=" .. vim.fn.shellescape(vim.env.ARK_TMUX_SOCKET or ""),
     "env -u ARK_TMUX_ANCHOR_PANE -u ARK_TMUX_SESSION",
     "nvim",
@@ -189,7 +188,13 @@ local ok, err = xpcall(function()
     local bufnr = vim.api.nvim_get_current_buf()
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "mtcars$" })
     vim.api.nvim_win_set_cursor(0, { 1, 7 })
+    vim.wait(10000, function()
+      return #(vim.lsp.get_clients({ bufnr = bufnr, name = "ark_lsp", method = "textDocument/completion" }) or {}) >= 1
+    end, 50, false)
     vim.cmd("startinsert")
+    vim.wait(4000, function()
+      return vim.fn.mode():sub(1, 1) == "i"
+    end, 20, false)
     local ok_blink, blink = pcall(require, "blink.cmp")
     if not ok_blink then
       return {
@@ -200,10 +205,18 @@ local ok, err = xpcall(function()
         normal_windows = 0,
       }
     end
-    blink.show()
+    local show_result = blink.show({ providers = { "lsp" } })
     vim.wait(5000, function()
-      return blink.is_visible()
+      local ok_list, list = pcall(require, "blink.cmp.completion.list")
+      return blink.is_visible() or (ok_list and type(list.items) == "table" and #list.items > 0)
     end, 50, false)
+    local ok_list, list = pcall(require, "blink.cmp.completion.list")
+    local item_labels = {}
+    if ok_list and type(list.items) == "table" then
+      for _, item in ipairs(list.items) do
+        item_labels[#item_labels + 1] = item.label
+      end
+    end
     local normal_windows = 0
     for _, winid in ipairs(vim.api.nvim_list_wins()) do
       if vim.api.nvim_win_get_config(winid).relative == "" then
@@ -212,9 +225,25 @@ local ok, err = xpcall(function()
     end
     return {
       ok = blink.is_visible(),
+      show_result = show_result,
+      item_labels = item_labels,
       clients = #(vim.lsp.get_clients({ bufnr = bufnr, name = "ark_lsp" }) or {}),
+      completion_clients = #(vim.lsp.get_clients({ bufnr = bufnr, name = "ark_lsp", method = "textDocument/completion" }) or {}),
       line = vim.api.nvim_get_current_line(),
+      mode = vim.fn.mode(),
       normal_windows = normal_windows,
+      buflisted = vim.bo[bufnr].buflisted,
+      filetype = vim.bo[bufnr].filetype,
+      syntax = vim.bo[bufnr].syntax,
+      showtabline = vim.o.showtabline,
+      laststatus = vim.o.laststatus,
+      cmdheight = vim.o.cmdheight,
+      winbar = vim.wo[0].winbar,
+      statusline = vim.wo[0].statusline,
+      number = vim.wo[0].number,
+      relativenumber = vim.wo[0].relativenumber,
+      signcolumn = vim.wo[0].signcolumn,
+      conceallevel = vim.wo[0].conceallevel,
     }
   ]], {})
   pcall(vim.fn.chanclose, rpc_chan)
@@ -226,6 +255,21 @@ local ok, err = xpcall(function()
   end
   if tonumber(blink_result.normal_windows or 0) ~= 1 then
     ark_test.fail("managed nvim-console should not create an internal horizontal split: " .. vim.inspect(blink_result))
+  end
+  if blink_result.buflisted ~= false
+    or blink_result.filetype ~= "r"
+    or blink_result.syntax ~= "r"
+    or tonumber(blink_result.showtabline) ~= 0
+    or tonumber(blink_result.laststatus) ~= 0
+    or tonumber(blink_result.cmdheight) ~= 0
+    or blink_result.winbar ~= ""
+    or blink_result.statusline ~= " "
+    or blink_result.number ~= false
+    or blink_result.relativenumber ~= false
+    or blink_result.signcolumn ~= "no"
+    or tonumber(blink_result.conceallevel) ~= 2
+  then
+    ark_test.fail("managed nvim-console should use terminal-like REPL UI: " .. vim.inspect(blink_result))
   end
 
   local direct_output = vim.fn.system({

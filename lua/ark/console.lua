@@ -4,6 +4,7 @@ local session_runtime = require("ark.session_runtime")
 local M = {}
 
 local prompt_ns = vim.api.nvim_create_namespace("ArkConsole")
+local transcript_prompt_ns = vim.api.nvim_create_namespace("ArkConsoleTranscriptPrompt")
 local input_ns = vim.api.nvim_create_namespace("ArkConsoleInput")
 local console_server_fn = "__ark_console_rpc_send"
 local job_running
@@ -237,19 +238,73 @@ local function prompt_label(info)
 end
 
 local input_start_line
+local place_prompt
 
-local function place_prompt(bufnr)
+local function setup_highlights()
+  pcall(vim.api.nvim_set_hl, 0, "ArkConsolePrompt", { link = "Question", default = true })
+  pcall(vim.api.nvim_set_hl, 0, "ArkConsoleOutputPrefix", { link = "Comment", default = true })
+end
+
+local function place_prompt_extmark(bufnr, ns, line, label)
+  vim.api.nvim_buf_set_extmark(bufnr, ns, line, 0, {
+    virt_text = { { label, "ArkConsolePrompt" } },
+    virt_text_pos = "inline",
+    right_gravity = false,
+  })
+end
+
+local function snapshot_transcript_prompts(bufnr)
+  local prompts = {}
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, transcript_prompt_ns, 0, -1, { details = true })) do
+    local details = mark[4]
+    local virt_text = type(details) == "table" and details.virt_text or nil
+    local chunk = type(virt_text) == "table" and virt_text[1] or nil
+    local label = type(chunk) == "table" and chunk[1] or nil
+    if type(label) == "string" then
+      prompts[#prompts + 1] = {
+        line = mark[2],
+        label = label,
+      }
+    end
+  end
+  return prompts
+end
+
+local function restore_transcript_prompts(bufnr, prompts)
+  vim.api.nvim_buf_clear_namespace(bufnr, transcript_prompt_ns, 0, -1)
+  if type(prompts) ~= "table" then
+    return
+  end
+
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  for _, prompt in ipairs(prompts) do
+    local line = tonumber(prompt.line)
+    if line and line >= 0 and line < line_count and type(prompt.label) == "string" then
+      place_prompt_extmark(bufnr, transcript_prompt_ns, line, prompt.label)
+    end
+  end
+end
+
+local function place_transcript_prompts(bufnr, start_line, line_count, first_prompt)
+  line_count = tonumber(line_count) or 0
+  if line_count <= 0 then
+    return
+  end
+
+  for offset = 0, line_count - 1 do
+    local label = offset == 0 and first_prompt or "+ "
+    place_prompt_extmark(bufnr, transcript_prompt_ns, start_line + offset, label)
+  end
+end
+
+place_prompt = function(bufnr)
   local info = state.buffers[bufnr]
   if type(info) ~= "table" or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
 
   vim.api.nvim_buf_clear_namespace(bufnr, prompt_ns, 0, -1)
-  vim.api.nvim_buf_set_extmark(bufnr, prompt_ns, input_start_line(bufnr, info), 0, {
-    virt_text = { { prompt_label(info), "Question" } },
-    virt_text_pos = "inline",
-    right_gravity = false,
-  })
+  place_prompt_extmark(bufnr, prompt_ns, input_start_line(bufnr, info), prompt_label(info))
 end
 
 input_start_line = function(bufnr, info)
@@ -287,6 +342,7 @@ local function refresh_valid_snapshot(bufnr, info)
 
   info.valid_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   info.valid_input_start = tonumber(info.input_start) or input_start_line(bufnr, info)
+  info.valid_transcript_prompts = snapshot_transcript_prompts(bufnr)
 end
 
 local function restore_valid_snapshot(bufnr, info)
@@ -301,6 +357,7 @@ local function restore_valid_snapshot(bufnr, info)
   vim.bo[bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
   set_input_start(bufnr, info, tonumber(info.valid_input_start) or vim.api.nvim_buf_line_count(bufnr) - 1)
+  restore_transcript_prompts(bufnr, info.valid_transcript_prompts)
   info.reverting_protected_edit = false
 
   if vim.api.nvim_buf_is_valid(bufnr) then
@@ -360,6 +417,23 @@ local function set_current_input(bufnr, info, text)
   if type(winid) == "number" and winid > 0 and vim.api.nvim_win_is_valid(winid) then
     vim.api.nvim_win_set_cursor(winid, { last_line, last_col })
   end
+  place_prompt(bufnr)
+end
+
+local function append_submitted_input_before_input(bufnr, lines, first_prompt)
+  local info = state.buffers[bufnr]
+  if type(info) ~= "table" or #lines == 0 or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+
+  with_internal_edit(bufnr, info, function()
+    vim.bo[bufnr].modifiable = true
+    local start_line = input_start_line(bufnr, info)
+    vim.api.nvim_buf_set_lines(bufnr, start_line, start_line, false, lines)
+    place_transcript_prompts(bufnr, start_line, #lines, first_prompt or "> ")
+    set_input_start(bufnr, info, start_line + #lines)
+    vim.bo[bufnr].modified = false
+  end)
   place_prompt(bufnr)
 end
 
@@ -517,6 +591,52 @@ local function standalone_console(opts)
     or vim.env.ARK_NVIM_CONSOLE_STANDALONE == "1"
 end
 
+local function terminal_ui_enabled(opts)
+  return standalone_console(opts or {})
+    or vim.g.ark_console_terminal_ui == true
+    or vim.env.ARK_NVIM_CONSOLE_TERMINAL_UI == "1"
+end
+
+local function apply_console_window_options(winid)
+  if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
+    return
+  end
+
+  vim.wo[winid].number = false
+  vim.wo[winid].relativenumber = false
+  vim.wo[winid].signcolumn = "no"
+  vim.wo[winid].foldcolumn = "0"
+  vim.wo[winid].colorcolumn = ""
+  vim.wo[winid].cursorline = false
+  vim.wo[winid].list = false
+  vim.wo[winid].wrap = true
+  vim.wo[winid].winbar = ""
+  vim.wo[winid].statusline = " "
+  vim.wo[winid].conceallevel = 2
+  vim.wo[winid].concealcursor = "nvic"
+end
+
+local function apply_terminal_ui(bufnr, opts)
+  setup_highlights()
+  vim.bo[bufnr].buflisted = false
+  vim.bo[bufnr].syntax = "r"
+  vim.api.nvim_buf_call(bufnr, function()
+    pcall(vim.cmd, "syntax match ArkConsoleOutputPrefix /^#> / conceal containedin=ALL")
+  end)
+
+  local winid = vim.fn.bufwinid(bufnr)
+  apply_console_window_options(winid)
+
+  if terminal_ui_enabled(opts or {}) then
+    vim.o.showtabline = 0
+    vim.o.laststatus = 0
+    vim.o.statusline = " "
+    vim.o.ruler = false
+    vim.o.showcmd = false
+    pcall(vim.api.nvim_set_option_value, "cmdheight", 0, { scope = "global" })
+  end
+end
+
 local function console_info(bufnr)
   bufnr = bufnr == 0 and vim.api.nvim_get_current_buf() or bufnr
   local info = state.buffers[bufnr]
@@ -625,7 +745,7 @@ local function create_buffer(opts)
   vim.b[bufnr].ark_console = true
   vim.bo[bufnr].buftype = ""
   vim.bo[bufnr].bufhidden = "hide"
-  vim.bo[bufnr].buflisted = true
+  vim.bo[bufnr].buflisted = false
   vim.bo[bufnr].swapfile = false
   vim.bo[bufnr].filetype = "r"
   vim.api.nvim_buf_set_name(bufnr, "ark-console://" .. tostring(vim.fn.getpid()) .. "/" .. tostring(bufnr) .. "/console.R")
@@ -658,6 +778,7 @@ function M.start(opts)
   end
 
   local bufnr = create_buffer(opts)
+  apply_terminal_ui(bufnr, opts)
   local session_id = session_id_for_buffer(bufnr)
   local runtime = opts.terminal or opts.tmux or {}
   local socket_path = rpc_socket_path(runtime, session_id)
@@ -816,11 +937,13 @@ function M.submit(bufnr)
     return true
   end
 
+  local submitted_prompt = prompt_label(info)
   send_to_job(info, text)
 
   with_internal_edit(bufnr, info, function()
     vim.bo[bufnr].modifiable = true
     vim.api.nvim_buf_set_lines(bufnr, end_line, end_line, false, { "" })
+    place_transcript_prompts(bufnr, input_start_line(bufnr, info), #lines, submitted_prompt)
     set_input_start(bufnr, info, end_line)
     vim.api.nvim_win_set_cursor(0, { input_start_line(bufnr, info) + 1, 0 })
     vim.bo[bufnr].modified = false
@@ -885,7 +1008,7 @@ function M.send_text(bufnr, text)
   info.last_send = text
   info.last_send_ms = math.floor(vim.loop.hrtime() / 1e6)
   publish_status(bufnr)
-  append_before_input(bufnr, vim.split(text, "\n", { plain = true }))
+  append_submitted_input_before_input(bufnr, vim.split(text, "\n", { plain = true }), prompt_label(info))
   send_to_job(info, text)
   place_prompt(bufnr)
   return true

@@ -51,6 +51,32 @@ if not vim.api.nvim_buf_get_name(bufnr):find("ark%-console://", 1, false)
 then
   ark_test.fail("standalone console should use a console.R virtual URI: " .. vim.api.nvim_buf_get_name(bufnr))
 end
+if vim.bo[bufnr].buflisted ~= false
+  or vim.bo[bufnr].filetype ~= "r"
+  or vim.bo[bufnr].syntax ~= "r"
+  or vim.o.showtabline ~= 0
+  or vim.o.laststatus ~= 0
+  or vim.o.cmdheight ~= 0
+  or vim.o.statusline ~= " "
+  or vim.wo[0].number ~= false
+  or vim.wo[0].relativenumber ~= false
+  or vim.wo[0].signcolumn ~= "no"
+  or vim.wo[0].conceallevel ~= 2
+then
+  ark_test.fail("standalone console should use terminal-like REPL UI: " .. vim.inspect({
+    buflisted = vim.bo[bufnr].buflisted,
+    filetype = vim.bo[bufnr].filetype,
+    syntax = vim.bo[bufnr].syntax,
+    showtabline = vim.o.showtabline,
+    laststatus = vim.o.laststatus,
+    cmdheight = vim.o.cmdheight,
+    statusline = vim.o.statusline,
+    number = vim.wo[0].number,
+    relativenumber = vim.wo[0].relativenumber,
+    signcolumn = vim.wo[0].signcolumn,
+    conceallevel = vim.wo[0].conceallevel,
+  }))
+end
 
 ark_test.wait_for("standalone fake prompt", 10000, function()
   local status = require("ark.console").status(bufnr)

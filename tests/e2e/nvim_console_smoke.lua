@@ -110,6 +110,25 @@ local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 if lines[1] ~= "mtcars$mpg" then
   ark_test.fail("submitted input should remain as R code: " .. vim.inspect(lines))
 end
+local namespaces = vim.api.nvim_get_namespaces()
+local transcript_prompt_ns = namespaces.ArkConsoleTranscriptPrompt
+local transcript_prompt_marks = type(transcript_prompt_ns) == "number"
+    and vim.api.nvim_buf_get_extmarks(bufnr, transcript_prompt_ns, 0, -1, { details = true })
+  or {}
+local saw_submitted_prompt = false
+for _, mark in ipairs(transcript_prompt_marks) do
+  if mark[2] == 0 then
+    local details = mark[4]
+    local chunk = type(details) == "table" and type(details.virt_text) == "table" and details.virt_text[1] or nil
+    if type(chunk) == "table" and chunk[1] == "> " then
+      saw_submitted_prompt = true
+      break
+    end
+  end
+end
+if not saw_submitted_prompt then
+  ark_test.fail("submitted input should render with an R console prompt extmark: " .. vim.inspect(transcript_prompt_marks))
+end
 if not vim.tbl_contains(lines, "#> console saw: mtcars$mpg") then
   ark_test.fail("console output should be recorded as R comments: " .. vim.inspect(lines))
 end

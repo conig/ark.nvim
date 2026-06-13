@@ -32,6 +32,7 @@ local function nvim_console_config(config)
     bin = nested.bin or config.nvim_console_bin or vim.v.progpath or "nvim",
     command = nested.command or "Ark console",
     add_repo_to_rtp = nested.add_repo_to_rtp ~= false,
+    init = nested.init or config.nvim_console_init or vim.env.ARK_NVIM_CONSOLE_INIT or (repo_root() .. "/scripts/ark-console-init.lua"),
   }
 end
 
@@ -61,7 +62,16 @@ function M.argv(config, backend, session_id)
 
   if frontend == "nvim-console" then
     local nvim_console = nvim_console_config(config)
-    local argv = { nvim_console.bin, "--cmd", "let g:ark_console_standalone = v:true" }
+    local argv = {
+      nvim_console.bin,
+      "-n",
+      "--cmd",
+      "let g:ark_console_standalone = v:true",
+      "--cmd",
+      "let g:ark_console_terminal_ui = v:true",
+      "-u",
+      nvim_console.init,
+    }
     if nvim_console.add_repo_to_rtp then
       vim.list_extend(argv, {
         "-c",

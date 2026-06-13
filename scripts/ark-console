@@ -4,18 +4,18 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 command=${ARK_NVIM_CONSOLE_COMMAND:-Ark console}
+init=${ARK_NVIM_CONSOLE_INIT:-"$repo_root/scripts/ark-console-init.lua"}
 
 export ARK_NVIM_CONSOLE_STANDALONE=1
+export ARK_NVIM_CONSOLE_TERMINAL_UI=1
 
-set --
-if [ "${ARK_NVIM_CONSOLE_INIT:-}" ]; then
-  set -- "$@" -u "$ARK_NVIM_CONSOLE_INIT"
+if [ "$#" -eq 0 ]; then
+  set -- \
+    -n \
+    --cmd "let g:ark_console_standalone = v:true" \
+    --cmd "let g:ark_console_terminal_ui = v:true" \
+    -u "$init" \
+    -c "$command"
 fi
 
-exec "${ARK_NVIM_CONSOLE_NVIM:-nvim}" \
-  "$@" \
-  --cmd "let g:ark_console_standalone = v:true" \
-  -c "set rtp^=$repo_root" \
-  -c "if exists(':Ark') != 2 | runtime plugin/ark.lua | endif" \
-  -c "$command" \
-  "$@"
+exec "${ARK_NVIM_CONSOLE_NVIM:-nvim}" "$@"

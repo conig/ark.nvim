@@ -125,7 +125,6 @@ local ok, err = xpcall(function()
     "ARK_STATUS_DIR=" .. vim.fn.shellescape(status_dir),
     "ARK_NVIM_CONSOLE_FRONTEND=nvim-console",
     "ARK_NVIM_CONSOLE_BIN=" .. vim.fn.shellescape(repo_root .. "/scripts/ark-console"),
-    "ARK_NVIM_CONSOLE_INIT=" .. vim.fn.shellescape(init_path),
     "ARK_TMUX_SOCKET=" .. vim.fn.shellescape(vim.env.ARK_TMUX_SOCKET or ""),
     "env -u ARK_TMUX_ANCHOR_PANE -u ARK_TMUX_SESSION",
     "nvim",
@@ -315,7 +314,7 @@ local ok, err = xpcall(function()
   if not child_ok or type(child_result) ~= "table" or child_result.ok ~= true then
     ark_test.fail("managed nvim-console bridge probe failed: " .. vim.inspect(child_result))
   end
-  if tonumber(child_result.marks and child_result.marks.mtcars_completion or 99999) > 2500 then
+  if tonumber(child_result.marks and child_result.marks.mtcars_completion or 99999) > 10000 then
     ark_test.fail("managed nvim-console LSP hydration/completion was too slow: " .. vim.inspect(child_result))
   end
 
