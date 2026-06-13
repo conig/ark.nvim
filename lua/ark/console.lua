@@ -615,7 +615,7 @@ local function clamp_insert_cursor_to_input(bufnr)
     return
   end
   if cursor_before_input(bufnr, info) then
-    focus_input(bufnr, info, { insert = true })
+    focus_input(bufnr, info)
   end
 end
 
@@ -1131,6 +1131,16 @@ function M.start(opts)
   vim.keymap.set("i", "<Down>", function()
     M.history_next(bufnr)
   end, { buffer = bufnr, desc = "Next Ark console input" })
+  for _, key in ipairs({ "i", "a", "I", "A" }) do
+    vim.keymap.set("n", key, function()
+      local info = state.buffers[bufnr]
+      if type(info) == "table" and cursor_before_input(bufnr, info) then
+        focus_input(bufnr, info)
+      end
+
+      return key
+    end, { buffer = bufnr, desc = "Enter insert mode in Ark console input", expr = true })
+  end
   vim.keymap.set("n", "o", function()
     focus_input_for_normal_edit(bufnr, "o")
   end, { buffer = bufnr, desc = "Open line in Ark console input" })
@@ -1165,7 +1175,7 @@ function M.start(opts)
     desc = "Stop Ark console resources when its buffer is wiped",
   })
 
-  vim.api.nvim_create_autocmd("CursorMovedI", {
+  vim.api.nvim_create_autocmd({ "InsertEnter", "CursorMovedI" }, {
     buffer = bufnr,
     group = vim.api.nvim_create_augroup("ArkConsoleInputCursor" .. tostring(bufnr), { clear = true }),
     callback = function()

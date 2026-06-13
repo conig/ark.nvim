@@ -98,8 +98,13 @@ before = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 -- edit commands must not be able to mutate them. The active input line is the
 -- only writable region.
 vim.api.nvim_win_set_cursor(0, { 1, 0 })
-feed("A_MUTATE<Esc>")
+vim.api.nvim_exec_autocmds("InsertEnter", { buffer = bufnr })
 wait_for_line_text(1, before[1])
+ark_test.wait_for("insert entry from transcript should land in active input", 4000, function()
+  local current_status = require("ark.console").status(bufnr)
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  return cursor[1] >= current_status.input_start + 1
+end)
 
 vim.api.nvim_win_set_cursor(0, { 1, 0 })
 feed("dd")
