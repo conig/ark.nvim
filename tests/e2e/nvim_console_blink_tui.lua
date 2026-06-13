@@ -186,13 +186,31 @@ local ok, err = xpcall(function()
     end) ~= nil
   end)
 
-  tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceSnapshot console-ready", "Enter" })
+  local function monotonic_ms()
+    return math.floor(vim.uv.hrtime() / 1e6)
+  end
+
+  local last_snapshot_ms = 0
+  local function request_console_ready_snapshot()
+    local now = monotonic_ms()
+    if now - last_snapshot_ms < 500 then
+      return
+    end
+    last_snapshot_ms = now
+    tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceSnapshot console-ready", "Enter" })
+  end
+
+  request_console_ready_snapshot()
   ark_test.wait_for("console ark_lsp attached", 15000, function()
-    return latest_matching(function(candidate)
+    local ready = latest_matching(function(candidate)
       return candidate.label == "ArkTraceSnapshot"
         and candidate.args == "console-ready"
         and tonumber(candidate.ark_clients or 0) >= 1
     end) ~= nil
+    if not ready then
+      request_console_ready_snapshot()
+    end
+    return ready
   end)
 
   local function type_console_input(text)

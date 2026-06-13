@@ -36,7 +36,10 @@ local client_status_payloads = {}
 local client_status_attempt_ms = {}
 local managed_client_ids = {}
 local pending_startup_bootstraps = {}
+local startup_bootstrap_requests = {}
 local bootstrap_client_session
+local bootstrap_client_session_async
+local start_pending_bootstrap_async
 local session_watch_finished
 local session_poll_finished
 local startup_ready_callback = nil
@@ -291,10 +294,6 @@ local function root_dir(bufnr, markers)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local cwd = vim.loop.cwd()
   if vim.b[bufnr].ark_console == true or path:match("^ark%-console://") then
-    local cwd_root = project_root_for_path(cwd, markers)
-    if cwd_root and not ad_hoc_directory(cwd_root) then
-      return cwd_root
-    end
     return unnamed_workspace_root()
   end
 
@@ -683,6 +682,7 @@ local function set_startup_bootstrap_pending(bufnr, pending)
   end
 
   pending_startup_bootstraps[bufnr] = nil
+  startup_bootstrap_requests[bufnr] = nil
 end
 
 local function notify_startup_ready(bufnr, payload)
@@ -904,22 +904,7 @@ local function bootstrap_pending_startups(opts, watch, payload, source)
       goto continue
     end
 
-    local hydrated, bootstrap_err = bootstrap_client_session(client, opts, bufnr, payload)
-    if bootstrap_err then
-      vim.notify("ark.nvim session bootstrap failed: " .. bootstrap_err, vim.log.levels.WARN, {
-        title = "ark.nvim",
-      })
-      goto continue
-    end
-    if not hydrated then
-      goto continue
-    end
-
-    cache_client_session(client, payload)
-    set_startup_bootstrap_pending(bufnr, false)
-    notify_startup_ready(bufnr, {
-      source = source or STARTUP_READY_SOURCES.watch,
-    })
+    start_pending_bootstrap_async(client, opts, bufnr, payload, source or STARTUP_READY_SOURCES.watch, false)
 
     ::continue::
   end
@@ -939,37 +924,36 @@ local function schedule_session_syncs(opts, bufnr, client_id)
     end
 
     local payload = session_payload(opts, { fast = true })
+    local function schedule_next()
+      if session_watch_finished(opts, bufnr, payload) or session_poll_finished(opts, bufnr, payload) then
+        return
+      end
+
+      local next_index = index + 1
+      if next_index > #delays then
+        return
+      end
+
+      vim.defer_fn(function()
+        attempt(next_index)
+      end, delays[next_index])
+    end
+
     if live_client(client) then
       notify_client_session(client, payload)
 
       if startup_bootstrap_pending(bufnr) and payload.status == "ready" and payload.replReady == true then
-        local hydrated, bootstrap_err = bootstrap_client_session(client, opts, bufnr, payload)
-        if bootstrap_err then
-          vim.notify("ark.nvim session bootstrap failed: " .. bootstrap_err, vim.log.levels.WARN, {
-            title = "ark.nvim",
-          })
-        elseif hydrated then
-          cache_client_session(client, payload)
-          set_startup_bootstrap_pending(bufnr, false)
-          notify_startup_ready(bufnr, {
-            source = STARTUP_READY_SOURCES.retry,
-          })
+        local notify_on_error = index >= #delays
+        local started = start_pending_bootstrap_async(client, opts, bufnr, payload, STARTUP_READY_SOURCES.retry, notify_on_error, function()
+          schedule_next()
+        end)
+        if started then
+          return
         end
       end
     end
 
-    if session_watch_finished(opts, bufnr, payload) or session_poll_finished(opts, bufnr, payload) then
-      return
-    end
-
-    local next_index = index + 1
-    if next_index > #delays then
-      return
-    end
-
-    vim.defer_fn(function()
-      attempt(next_index)
-    end, delays[next_index])
+    schedule_next()
   end
 
   vim.defer_fn(function()
@@ -1011,6 +995,96 @@ bootstrap_client_session = function(client, opts, bufnr, payload)
   end
 
   return result.hydrated == true, nil
+end
+
+bootstrap_client_session_async = function(client, opts, bufnr, payload, callback)
+  if not live_client(client) then
+    callback(false, "ark_lsp client unavailable")
+    return false
+  end
+  if not payload_present(payload) then
+    callback(false, "session payload unavailable")
+    return false
+  end
+
+  if type(client.request) ~= "function" then
+    local hydrated, err = bootstrap_client_session(client, opts, bufnr, payload)
+    callback(hydrated, err)
+    return true
+  end
+
+  return request_result_async(
+    client,
+    SESSION_BOOTSTRAP_METHOD,
+    payload,
+    bootstrap_timeout_ms(opts),
+    bufnr,
+    function(result, err)
+      if err then
+        callback(false, err)
+        return
+      end
+      if type(result) ~= "table" then
+        callback(false, "invalid bootstrap response")
+        return
+      end
+      if result.hydrated == true then
+        clear_client_status(client)
+      end
+
+      callback(result.hydrated == true, nil)
+    end
+  )
+end
+
+start_pending_bootstrap_async = function(client, opts, bufnr, payload, source, notify_on_error, callback)
+  if type(bufnr) ~= "number" then
+    if type(callback) == "function" then
+      callback(false, "invalid buffer")
+    end
+    return false
+  end
+  if startup_bootstrap_requests[bufnr] == true then
+    return false
+  end
+
+  startup_bootstrap_requests[bufnr] = true
+  bootstrap_client_session_async(client, opts, bufnr, payload, function(hydrated, bootstrap_err)
+    startup_bootstrap_requests[bufnr] = nil
+
+    if not vim.api.nvim_buf_is_valid(bufnr) or not live_client(client) then
+      if type(callback) == "function" then
+        callback(false, "ark_lsp client unavailable")
+      end
+      return
+    end
+
+    if bootstrap_err then
+      if notify_on_error == true then
+        vim.notify("ark.nvim session bootstrap failed: " .. bootstrap_err, vim.log.levels.WARN, {
+          title = "ark.nvim",
+        })
+      end
+      if type(callback) == "function" then
+        callback(false, bootstrap_err)
+      end
+      return
+    end
+
+    if hydrated then
+      cache_client_session(client, payload)
+      set_startup_bootstrap_pending(bufnr, false)
+      notify_startup_ready(bufnr, {
+        source = source or STARTUP_READY_SOURCES.retry,
+      })
+    end
+
+    if type(callback) == "function" then
+      callback(hydrated, nil)
+    end
+  end)
+
+  return true
 end
 
 local function watch_status_file(status_path, on_change)
@@ -1063,11 +1137,29 @@ session_watch_finished = function(opts, bufnr, payload)
 end
 
 session_poll_finished = function(opts, bufnr, payload)
-  return payload.status == "ready" and session_payload_delivered(opts, bufnr, payload)
+  return payload.status == "ready"
+    and not startup_bootstrap_pending(bufnr)
+    and session_payload_delivered(opts, bufnr, payload)
+end
+
+local function watch_startup_bootstrap_pending(watch)
+  if type(watch) ~= "table" then
+    return false
+  end
+
+  for bufnr, _ in pairs(watch.bufnrs or {}) do
+    if startup_bootstrap_pending(bufnr) then
+      return true
+    end
+  end
+
+  return false
 end
 
 local function watch_poll_finished(opts, watch, payload)
-  return payload.status == "ready" and watch_payload_delivered(opts, watch, payload)
+  return payload.status == "ready"
+    and not watch_startup_bootstrap_pending(watch)
+    and watch_payload_delivered(opts, watch, payload)
 end
 
 local function start_session_watch_poll(opts, status_path)

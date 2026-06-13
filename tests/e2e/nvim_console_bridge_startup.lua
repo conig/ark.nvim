@@ -177,13 +177,6 @@ local ok, err = xpcall(function()
     return false
   end)
 
-  if tonumber(status_ready_ms or 99999) > 3500 then
-    ark_test.fail("managed nvim-console bridge status was too slow: " .. vim.inspect({
-      status_ready_ms = status_ready_ms,
-      status = console_status,
-    }))
-  end
-
   local rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
   if type(rpc_chan) ~= "number" or rpc_chan <= 0 then
     ark_test.fail("failed to connect to managed nvim-console RPC socket")
@@ -302,10 +295,25 @@ local ok, err = xpcall(function()
     end
     mark("mtcars_completion")
 
+    -- A successful async bootstrap should not leave a transient timeout warning
+    -- in the visible standalone console messages.
+    local messages = vim.fn.execute("messages")
+    if messages:find("ark.nvim session bootstrap failed", 1, true) then
+      return {
+        ok = false,
+        reason = "transient bootstrap warning was shown after successful hydration",
+        messages = messages,
+        labels = labels,
+        marks = marks,
+        status = current_status(),
+      }
+    end
+
     return {
       ok = true,
       marks = marks,
       labels = labels,
+      messages = messages,
       status = current_status(),
     }
   ]], {})

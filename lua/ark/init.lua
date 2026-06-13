@@ -1081,6 +1081,13 @@ is_ark_buffer = function(bufnr)
     and vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype)
 end
 
+local function is_ark_completion_buffer(bufnr)
+  return bufnr ~= nil
+    and vim.api.nvim_buf_is_valid(bufnr)
+    and options ~= nil
+    and (vim.b[bufnr].ark_console == true or vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype))
+end
+
 local function notify(message, level)
   vim.notify(message, level or vim.log.levels.INFO, { title = "ark.nvim" })
 end
@@ -1376,7 +1383,7 @@ function M.setup(opts)
     group = group,
     pattern = "*",
     callback = function(args)
-      if not is_ark_buffer(args.buf) then
+      if not is_ark_completion_buffer(args.buf) then
         return
       end
       vim.schedule(function()
@@ -1392,7 +1399,7 @@ function M.setup(opts)
     group = group,
     pattern = "*",
     callback = function(args)
-      if not is_ark_buffer(args.buf) then
+      if not is_ark_completion_buffer(args.buf) then
         return
       end
       if not startup_unlocked(args.buf) then

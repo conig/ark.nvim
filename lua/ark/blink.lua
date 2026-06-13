@@ -668,6 +668,15 @@ function M.handle_insert_char_pre(bufnr, char)
 
   if (char == "$" or char == "@") and active_ark_client(bufnr) then
     hide_visible_blink_menu()
+    vim.defer_fn(function()
+      if not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+      end
+      if vim.api.nvim_get_current_buf() ~= bufnr then
+        return
+      end
+      M.maybe_show_after_pair(bufnr, char)
+    end, 20)
   end
 
   if char == "(" or char == "[" or char == "'" then
