@@ -444,6 +444,12 @@ local function resize_job_to_window(bufnr)
   pcall(vim.fn.jobresize, info.jobid, width, height)
 end
 
+local function standalone_console(opts)
+  return opts.standalone == true
+    or vim.g.ark_console_standalone == true
+    or vim.env.ARK_NVIM_CONSOLE_STANDALONE == "1"
+end
+
 local function console_info(bufnr)
   bufnr = bufnr == 0 and vim.api.nvim_get_current_buf() or bufnr
   local info = state.buffers[bufnr]
@@ -493,18 +499,27 @@ local function start_job(bufnr, opts, session_id, status_path)
   return jobid, nil
 end
 
-local function create_buffer()
-  vim.cmd("botright split")
-  local bufnr = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_win_set_buf(0, bufnr)
+local function create_buffer(opts)
+  local bufnr
+  if standalone_console(opts or {}) then
+    pcall(vim.cmd, "silent! only")
+    bufnr = vim.api.nvim_get_current_buf()
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "" })
+  else
+    vim.cmd("botright split")
+    bufnr = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_win_set_buf(0, bufnr)
+  end
   vim.b[bufnr].ark_console = true
   vim.bo[bufnr].buftype = ""
   vim.bo[bufnr].bufhidden = "hide"
   vim.bo[bufnr].buflisted = true
   vim.bo[bufnr].swapfile = false
   vim.bo[bufnr].filetype = "r"
-  vim.api.nvim_buf_set_name(bufnr, "ark-console://" .. tostring(vim.fn.getpid()) .. "/" .. tostring(bufnr) .. "/input.R")
+  vim.api.nvim_buf_set_name(bufnr, "ark-console://" .. tostring(vim.fn.getpid()) .. "/" .. tostring(bufnr) .. "/console.R")
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "" })
+  vim.bo[bufnr].modified = false
   return bufnr
 end
 
@@ -531,7 +546,7 @@ function M.start(opts)
     return existing
   end
 
-  local bufnr = create_buffer()
+  local bufnr = create_buffer(opts)
   local session_id = session_id_for_buffer(bufnr)
   local runtime = opts.terminal or opts.tmux or {}
   local socket_path = rpc_socket_path(runtime, session_id)

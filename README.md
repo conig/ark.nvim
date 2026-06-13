@@ -657,6 +657,8 @@ The main overrides are:
 - `ARK_NVIM_CONSOLE_FRONTEND` (`raw`, `ark-terminal`, or `nvim-console`)
 - `ARK_NVIM_CONSOLE_BIN` (default: repo-local `scripts/ark-console`, then Neovim)
 - `ARK_NVIM_CONSOLE_COMMAND` (default: `Ark console`)
+- `ARK_NVIM_CONSOLE_INIT` (optional `-u` init file for the standalone
+  `ark-console` Neovim process)
 - `ARK_NVIM_ARK_TERMINAL_BIN`
 - `ARK_NVIM_ARK_TERMINAL_TRACE_LOG`
 - `ARK_NVIM_SESSION_PKG_PATH`

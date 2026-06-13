@@ -80,7 +80,13 @@ local nvim_console_argv, nvim_console_err = console_frontend.argv({
 if not nvim_console_argv then
   error(nvim_console_err, 0)
 end
-if vim.inspect(nvim_console_argv) ~= vim.inspect({ "/tmp/nvim", "-c", "Ark console" }) then
+if vim.inspect(nvim_console_argv) ~= vim.inspect({
+  "/tmp/nvim",
+  "--cmd",
+  "let g:ark_console_standalone = v:true",
+  "-c",
+  "Ark console",
+}) then
   error("unexpected nvim-console argv: " .. vim.inspect(nvim_console_argv), 0)
 end
 
@@ -172,6 +178,6 @@ ark_nvim_console.setup({
 })
 
 local nvim_console_cmd = ark_nvim_console.pane_command()
-if nvim_console_cmd:find("exec '/tmp/nvim' '%-c' 'Ark console'", 1, false) == nil then
+if nvim_console_cmd:find("exec '/tmp/nvim' '%-%-cmd' 'let g:ark_console_standalone = v:true' '%-c' 'Ark console'", 1, false) == nil then
   error("session.console_frontend did not propagate to nvim-console pane command: " .. nvim_console_cmd, 0)
 end

@@ -60,10 +60,15 @@ vim.fn.writefile({
   "    if message is None:",
   "        break",
   "    request_id = message.get('id')",
+  "    method = message.get('method')",
+  "    if method == 'textDocument/didOpen' or method == 'textDocument/didChange':",
+  "        continue",
   "    if request_id is None:",
   "        continue",
-  "    if message.get('method') == 'initialize':",
-  "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'capabilities': {}}})",
+  "    if method == 'initialize':",
+  "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'capabilities': {'textDocumentSync': 1, 'completionProvider': {'triggerCharacters': ['$']}}}})",
+  "    elif method == 'textDocument/completion':",
+  "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'isIncomplete': False, 'items': [{'label': 'managed_console_blink_item', 'kind': 6}]}})",
   "    else:",
   "        send({'jsonrpc': '2.0', 'id': request_id, 'result': None})",
 }, fake_lsp)
@@ -131,6 +136,7 @@ local ok, err = xpcall(function()
     "ARK_STATUS_DIR=" .. vim.fn.shellescape(status_dir),
     "ARK_NVIM_CONSOLE_FRONTEND=nvim-console",
     "ARK_NVIM_CONSOLE_BIN=" .. vim.fn.shellescape(repo_root .. "/scripts/ark-console"),
+    "ARK_NVIM_CONSOLE_INIT=" .. vim.fn.shellescape(init_path),
     "ARK_TMUX_SOCKET=" .. vim.fn.shellescape(vim.env.ARK_TMUX_SOCKET or ""),
     "env -u ARK_TMUX_ANCHOR_PANE -u ARK_TMUX_SESSION",
     "nvim",
@@ -174,6 +180,53 @@ local ok, err = xpcall(function()
     end
     return false
   end)
+
+  local rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
+  if type(rpc_chan) ~= "number" or rpc_chan <= 0 then
+    ark_test.fail("failed to connect to managed nvim-console RPC socket for Blink probe")
+  end
+  local blink_ok, blink_result = pcall(vim.rpcrequest, rpc_chan, "nvim_exec_lua", [[
+    local bufnr = vim.api.nvim_get_current_buf()
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "mtcars$" })
+    vim.api.nvim_win_set_cursor(0, { 1, 7 })
+    vim.cmd("startinsert")
+    local ok_blink, blink = pcall(require, "blink.cmp")
+    if not ok_blink then
+      return {
+        ok = false,
+        reason = "blink.cmp unavailable",
+        clients = #(vim.lsp.get_clients({ bufnr = bufnr, name = "ark_lsp" }) or {}),
+        line = vim.api.nvim_get_current_line(),
+        normal_windows = 0,
+      }
+    end
+    blink.show()
+    vim.wait(5000, function()
+      return blink.is_visible()
+    end, 50, false)
+    local normal_windows = 0
+    for _, winid in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_get_config(winid).relative == "" then
+        normal_windows = normal_windows + 1
+      end
+    end
+    return {
+      ok = blink.is_visible(),
+      clients = #(vim.lsp.get_clients({ bufnr = bufnr, name = "ark_lsp" }) or {}),
+      line = vim.api.nvim_get_current_line(),
+      normal_windows = normal_windows,
+    }
+  ]], {})
+  pcall(vim.fn.chanclose, rpc_chan)
+  if not blink_ok or type(blink_result) ~= "table" or blink_result.ok ~= true then
+    ark_test.fail("managed nvim-console Blink probe failed: " .. vim.inspect(blink_result))
+  end
+  if tonumber(blink_result.clients or 0) < 1 then
+    ark_test.fail("managed nvim-console Blink probe did not have ark_lsp attached: " .. vim.inspect(blink_result))
+  end
+  if tonumber(blink_result.normal_windows or 0) ~= 1 then
+    ark_test.fail("managed nvim-console should not create an internal horizontal split: " .. vim.inspect(blink_result))
+  end
 
   local direct_output = vim.fn.system({
     "nvim",

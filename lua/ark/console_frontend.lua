@@ -61,9 +61,14 @@ function M.argv(config, backend, session_id)
 
   if frontend == "nvim-console" then
     local nvim_console = nvim_console_config(config)
-    local argv = { nvim_console.bin }
+    local argv = { nvim_console.bin, "--cmd", "let g:ark_console_standalone = v:true" }
     if nvim_console.add_repo_to_rtp then
-      vim.list_extend(argv, { "--cmd", "set rtp^=" .. repo_root() })
+      vim.list_extend(argv, {
+        "-c",
+        "set rtp^=" .. repo_root(),
+        "-c",
+        "if exists(':Ark') != 2 | runtime plugin/ark.lua | endif",
+      })
     end
     vim.list_extend(argv, { "-c", nvim_console.command })
     return argv, nil
