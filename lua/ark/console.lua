@@ -27,12 +27,24 @@ local function tmux_session_id()
     return nil
   end
 
-  local output = vim.fn.systemlist({
-    "tmux",
-    "display-message",
-    "-p",
-    "#{socket_path}\n#{session_name}\n#{pane_id}",
-  })
+  local command = { "tmux" }
+  local explicit_socket = vim.env.ARK_TMUX_SOCKET
+  if type(explicit_socket) == "string" and explicit_socket ~= "" then
+    vim.list_extend(command, { "-S", explicit_socket })
+  else
+    local socket = vim.split(vim.env.TMUX, ",", { plain = true })[1]
+    if type(socket) == "string" and socket ~= "" then
+      vim.list_extend(command, { "-S", socket })
+    end
+  end
+
+  vim.list_extend(command, { "display-message", "-p" })
+  if type(vim.env.TMUX_PANE) == "string" and vim.env.TMUX_PANE ~= "" then
+    vim.list_extend(command, { "-t", vim.env.TMUX_PANE })
+  end
+  command[#command + 1] = "#{socket_path}\n#{session_name}\n#{pane_id}"
+
+  local output = vim.fn.systemlist(command)
   if vim.v.shell_error ~= 0 or type(output) ~= "table" or #output < 3 then
     return nil
   end
@@ -51,12 +63,12 @@ local function tmux_session_id()
   }, "__")
 end
 
-local function shell_env(config, session_id, status_path)
+local function shell_env(config, session_id, status_path, backend)
   local env = {
     ARK_STATUS_DIR = config.startup_status_dir,
     ARK_NVIM_SESSION_PKG_PATH = config.session_pkg_path,
     ARK_SESSION_KIND = config.session_kind or "ark",
-    ARK_SESSION_BACKEND = "nvim-console",
+    ARK_SESSION_BACKEND = backend or "nvim-console",
     ARK_SESSION_ID = session_id,
     ARK_SESSION_STATUS_FILE = status_path,
     ARK_SESSION_TIMEOUT_MS = tostring(config.session_timeout_ms or 1000),
@@ -461,6 +473,15 @@ end
 
 local function start_job(bufnr, opts, session_id, status_path)
   local runtime = opts.terminal or opts.tmux or {}
+  local session_opts = type(opts.session) == "table" and opts.session or {}
+  local backend = "nvim-console"
+  if type(vim.env.TMUX) == "string"
+    and vim.env.TMUX ~= ""
+    and type(session_id) == "string"
+    and not vim.startswith(session_id, "nvim_console__")
+  then
+    backend = type(session_opts.backend) == "string" and session_opts.backend or "tmux"
+  end
   local launcher = runtime.launcher
   if type(launcher) ~= "string" or launcher == "" then
     return nil, "ark.nvim console requires a launcher"
@@ -468,7 +489,7 @@ local function start_job(bufnr, opts, session_id, status_path)
 
   local jobid = vim.fn.jobstart({ launcher }, {
     cwd = vim.fn.getcwd(),
-    env = shell_env(runtime, session_id, status_path),
+    env = shell_env(runtime, session_id, status_path, backend),
     pty = true,
     on_stdout = function(...)
       on_output(bufnr, ...)
@@ -595,6 +616,7 @@ function M.start(opts)
     return nil, err
   end
   state.buffers[bufnr].jobid = jobid
+  publish_status(bufnr)
 
   _G[console_server_fn] = function(text)
     local ok, send_err = M.send_text(bufnr, text)

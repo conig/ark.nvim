@@ -42,6 +42,7 @@ local session_poll_finished
 local startup_ready_callback = nil
 local STATUS_CACHE_TTL_MS = 250
 local STATUS_THROTTLE_MS = 100
+local SESSION_WATCH_POLL_MS = 50
 local STARTUP_READY_SOURCES = {
   immediate = "LspBootstrapImmediate",
   poll = "LspBootstrapPoll",
@@ -1069,6 +1070,48 @@ local function watch_poll_finished(opts, watch, payload)
   return payload.status == "ready" and watch_payload_delivered(opts, watch, payload)
 end
 
+local function start_session_watch_poll(opts, status_path)
+  local watch = session_watches[status_path]
+  if type(watch) ~= "table" then
+    return nil
+  end
+  if watch.poll_token ~= nil then
+    return watch
+  end
+
+  local token = (tonumber(watch.poll_token) or 0) + 1
+  watch.poll_token = token
+
+  local function poll()
+    local current_watch = session_watches[status_path]
+    if type(current_watch) ~= "table" or current_watch.poll_token ~= token then
+      return
+    end
+
+    local current = session_payload(opts, { fast = true })
+    if current.statusFile ~= status_path then
+      stop_session_watch(status_path)
+      return
+    end
+
+    notify_watch_sessions(opts, current_watch, current)
+    bootstrap_pending_startups(opts, current_watch, current, STARTUP_READY_SOURCES.poll)
+    if session_watch_finished(opts, nil, current) then
+      stop_session_watch(status_path)
+      return
+    end
+    if watch_poll_finished(opts, current_watch, current) then
+      current_watch.poll_token = nil
+      return
+    end
+
+    vim.defer_fn(poll, SESSION_WATCH_POLL_MS)
+  end
+
+  vim.defer_fn(poll, SESSION_WATCH_POLL_MS)
+  return watch
+end
+
 local function ensure_session_watch(opts, bufnr, payload, watch_opts)
   bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   watch_opts = watch_opts or {}
@@ -1120,6 +1163,8 @@ local function ensure_session_watch(opts, bufnr, payload, watch_opts)
         stop_session_watch(watch_key)
       elseif watch_poll_finished(opts, current_watch, current) then
         current_watch.poll_token = nil
+      else
+        start_session_watch_poll(opts, watch_key)
       end
     end)
     if watcher then
@@ -1131,41 +1176,7 @@ local function ensure_session_watch(opts, bufnr, payload, watch_opts)
     return watch
   end
 
-  if watch.poll_token ~= nil then
-    return watch
-  end
-
-  local token = (tonumber(watch.poll_token) or 0) + 1
-  watch.poll_token = token
-
-  local function poll()
-    local current_watch = session_watches[status_path]
-    if type(current_watch) ~= "table" or current_watch.poll_token ~= token then
-      return
-    end
-
-    local current = session_payload(opts, { fast = true })
-    if current.statusFile ~= status_path then
-      stop_session_watch(status_path)
-      return
-    end
-
-    notify_watch_sessions(opts, current_watch, current)
-    bootstrap_pending_startups(opts, current_watch, current, STARTUP_READY_SOURCES.poll)
-    if session_watch_finished(opts, nil, current) then
-      stop_session_watch(status_path)
-      return
-    end
-    if watch_poll_finished(opts, current_watch, current) then
-      current_watch.poll_token = nil
-      return
-    end
-
-    vim.defer_fn(poll, 250)
-  end
-
-  vim.defer_fn(poll, 250)
-  return watch
+  return start_session_watch_poll(opts, status_path)
 end
 
 function M.config(opts, bufnr, _config_opts)
@@ -1252,6 +1263,7 @@ local function start_client(opts, bufnr, start_opts)
     if same_server(client.config, desired) then
       if not wait_for_client_sync then
         if background_session_updates then
+          set_startup_bootstrap_pending(bufnr, true)
           ensure_session_watch(opts, bufnr)
           notify_sessions(opts, bufnr)
         end
@@ -1294,6 +1306,7 @@ local function start_client(opts, bufnr, start_opts)
 
   if not wait_for_client_sync then
     if background_session_updates then
+      set_startup_bootstrap_pending(bufnr, true)
       vim.defer_fn(function()
         if not vim.api.nvim_buf_is_valid(bufnr) then
           return

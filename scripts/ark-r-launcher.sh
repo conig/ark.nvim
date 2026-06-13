@@ -261,6 +261,34 @@ local({
     invisible(path)
   }
 
+  .read_json_file <- function(path) {
+    if (!nzchar(path) || !file.exists(path)) {
+      return(NULL)
+    }
+
+    tryCatch(
+      jsonlite::fromJSON(
+        paste(readLines(path, warn = FALSE), collapse = "\n"),
+        simplifyVector = FALSE
+      ),
+      error = function(e) NULL
+    )
+  }
+
+  .preserved_status_fields <- function(path) {
+    .existing <- .read_json_file(path)
+    if (!is.list(.existing)) {
+      return(list())
+    }
+
+    .names <- names(.existing)
+    if (is.null(.names)) {
+      return(list())
+    }
+
+    .existing[startsWith(.names, "nvim_console")]
+  }
+
   .write_bootstrap_cache <- function(cache) {
     if (!is.list(cache)) {
       return(invisible(""))
@@ -299,6 +327,7 @@ local({
       ),
       fields
     )
+    .payload <- utils::modifyList(.preserved_status_fields(.path), .payload)
     .write_json_file(.path, .payload, "ark-status-")
 
     .log_line(

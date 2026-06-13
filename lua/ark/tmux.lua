@@ -282,6 +282,10 @@ local function tmux_context_available()
     or (type(vim.env.TMUX) == "string" and vim.env.TMUX ~= "")
 end
 
+local function standalone_console_context()
+  return vim.g.ark_console_standalone == true or vim.env.ARK_NVIM_CONSOLE_STANDALONE == "1"
+end
+
 local function session_from_parts(pane_id, socket_path, session_name)
   if type(pane_id) ~= "string" or pane_id == "" then
     return nil
@@ -1143,6 +1147,9 @@ local function active_startup_session()
   prune_dead_tabs()
   local current = active_tab()
   if not current or current.visible ~= true or not current.pane_id or not pane_exists(current.pane_id) then
+    if standalone_console_context() then
+      return M.session()
+    end
     return nil
   end
 
@@ -1181,6 +1188,10 @@ function M.session()
   prune_dead_tabs()
   local current = active_tab()
   if not current or current.visible ~= true or not pane_exists(current.pane_id) then
+    if standalone_console_context() then
+      local session = current_session()
+      return session and vim.deepcopy(session) or nil
+    end
     return nil
   end
 
