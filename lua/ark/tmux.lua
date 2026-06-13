@@ -167,19 +167,48 @@ end
 sync_compat_state()
 
 local function resolve_pane_percent(config)
-  for _, key in ipairs(config.pane_width_env_keys or {}) do
-    local from_format = run_tmux({ "display-message", "-p", "#{" .. key .. "}" })
-    local pct = parse_percent(from_format)
+  local keys = config.pane_width_env_keys or {}
+  if #keys == 0 then
+    return nil
+  end
+
+  for _, key in ipairs(keys) do
+    local pct = parse_percent(vim.env[key])
     if pct then
       return pct
     end
+  end
 
-    local env_out = run_tmux({ "show-environment", "-g", key })
-    if env_out then
-      local raw_value = env_out:match("^[^=]+=([^\r\n]+)$")
-      pct = parse_percent(raw_value)
+  local formats = {}
+  for _, key in ipairs(keys) do
+    formats[#formats + 1] = "#{" .. key .. "}"
+  end
+
+  local from_format = run_tmux({ "display-message", "-p", table.concat(formats, "\t") })
+  if from_format then
+    local values = vim.split(from_format, "\t", { plain = true, trimempty = false })
+    for _, value in ipairs(values) do
+      local pct = parse_percent(value)
       if pct then
         return pct
+      end
+    end
+  end
+
+  local env_out = run_tmux({ "show-environment", "-g" })
+  if env_out then
+    local wanted = {}
+    for _, key in ipairs(keys) do
+      wanted[key] = true
+    end
+
+    for line in (env_out .. "\n"):gmatch("(.-)\n") do
+      local key, raw_value = line:match("^([^=]+)=([^\r\n]+)$")
+      if key and wanted[key] then
+        local pct = parse_percent(raw_value)
+        if pct then
+          return pct
+        end
       end
     end
   end
@@ -214,7 +243,7 @@ end
 
 local function current_tmux_pane()
   local explicit_anchor = vim.env.ARK_TMUX_ANCHOR_PANE
-  if type(explicit_anchor) == "string" and explicit_anchor ~= "" and pane_exists(explicit_anchor) then
+  if type(explicit_anchor) == "string" and explicit_anchor ~= "" then
     return explicit_anchor, nil
   end
 
@@ -715,6 +744,37 @@ local function pane_layout(name)
   }
 end
 
+local function resolve_pane_layout_from_size(config, width, height)
+  local layout_name = normalize_pane_layout(config.pane_layout)
+  if not layout_name then
+    return nil, "invalid ark.nvim tmux.pane_layout: " .. tostring(config.pane_layout)
+  end
+
+  if layout_name ~= "auto" then
+    return pane_layout(layout_name), nil
+  end
+
+  width = tonumber(width)
+  height = tonumber(height)
+  if not width or width <= 0 then
+    return nil, "failed to resolve tmux window width"
+  end
+  if not height or height <= 0 then
+    return nil, "failed to resolve tmux window height"
+  end
+
+  local stacked_max_width = tonumber(config.stacked_max_width)
+  if stacked_max_width and stacked_max_width > 0 and width <= stacked_max_width then
+    return pane_layout("stacked"), nil
+  end
+
+  if height > width then
+    return pane_layout("stacked"), nil
+  end
+
+  return pane_layout("side_by_side"), nil
+end
+
 local function resolve_pane_layout(target, config)
   local layout_name = normalize_pane_layout(config.pane_layout)
   if not layout_name then
@@ -795,9 +855,8 @@ local function active_pane_layout(pane_id, config)
   return resolve_pane_layout(pane_id, config)
 end
 
-local function existing_side_split_target(anchor_pane_id)
-  local panes = list_window_panes(anchor_pane_id)
-  local anchor = panes and find_listed_pane(panes, anchor_pane_id) or nil
+local function existing_side_split_target_from_panes(panes, anchor_pane_id)
+  local anchor = find_listed_pane(panes, anchor_pane_id)
   if not anchor or #panes < 2 or not pane_spans_window_height(anchor) then
     return nil
   end
@@ -826,8 +885,27 @@ local function existing_side_split_target(anchor_pane_id)
   return nil
 end
 
+local function existing_side_split_target(anchor_pane_id)
+  local panes = list_window_panes(anchor_pane_id)
+  if not panes then
+    return nil
+  end
+
+  return existing_side_split_target_from_panes(panes, anchor_pane_id)
+end
+
 local function visible_pane_placement(anchor_pane_id, config)
-  local layout, layout_err = resolve_pane_layout(anchor_pane_id, config)
+  local panes, panes_err = list_window_panes(anchor_pane_id)
+  if not panes then
+    return nil, panes_err
+  end
+
+  local anchor = find_listed_pane(panes, anchor_pane_id)
+  if not anchor then
+    return nil, "failed to find tmux anchor pane: " .. tostring(anchor_pane_id)
+  end
+
+  local layout, layout_err = resolve_pane_layout_from_size(config, anchor.window_width, anchor.window_height)
   if not layout then
     return nil, layout_err
   end
@@ -840,7 +918,7 @@ local function visible_pane_placement(anchor_pane_id, config)
   }
 
   if layout.name == "side_by_side" then
-    local side_target = existing_side_split_target(anchor_pane_id)
+    local side_target = existing_side_split_target_from_panes(panes, anchor_pane_id)
     if side_target then
       placement.layout = pane_layout("stacked")
       placement.target_pane_id = side_target
