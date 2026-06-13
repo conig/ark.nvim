@@ -364,6 +364,47 @@ local function startup_status_path(session, config)
   return session_runtime.status_file_path(config or {}, session_id(session))
 end
 
+local function nvim_console_socket(status)
+  local socket = type(status) == "table" and status.nvim_console_rpc_socket or nil
+  if type(socket) ~= "string" or socket == "" then
+    return nil
+  end
+
+  return socket
+end
+
+local function nvim_console_status(config, session)
+  config = config or {}
+  local current_session_id = session_id(session)
+  local exact_path = startup_status_path(session, config)
+  local exact_status = exact_path and session_runtime.read_status_file(exact_path) or nil
+  if nvim_console_socket(exact_status) then
+    return exact_status
+  end
+
+  local root = session_runtime.status_root(config)
+  local paths = vim.fn.glob(root .. "/*.json", false, true)
+  local live_console_statuses = {}
+  for _, path in ipairs(paths) do
+    local status = session_runtime.read_status_file(path)
+    if type(status) == "table" and status.nvim_console == true and nvim_console_socket(status) then
+      if type(current_session_id) == "string"
+        and current_session_id ~= ""
+        and status.nvim_console_session_id == current_session_id
+      then
+        return status
+      end
+      live_console_statuses[#live_console_statuses + 1] = status
+    end
+  end
+
+  if #live_console_statuses == 1 then
+    return live_console_statuses[1]
+  end
+
+  return exact_status
+end
+
 local function bridge_session(session)
   return {
     backend = "tmux",
@@ -1287,11 +1328,9 @@ local function nvim_console_send(config, session, text)
     return nil
   end
 
-  local status_path = startup_status_path(session, config or {})
-  local status = status_path and session_runtime.read_status_file(status_path) or nil
-  local socket = type(status) == "table" and status.nvim_console_rpc_socket or nil
-  local socket_stat = type(socket) == "string" and socket ~= "" and uv.fs_stat(socket) or nil
-  if type(socket_stat) ~= "table" then
+  local status = nvim_console_status(config or {}, session)
+  local socket = nvim_console_socket(status)
+  if not socket then
     return nil
   end
 

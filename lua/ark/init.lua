@@ -2931,6 +2931,7 @@ function M.status(opts)
   status.lsp_cmd = options.lsp.cmd
   local runtime_config = session_backend.runtime_config(options) or {}
   status.backend = session_backend.backend_name(options)
+  status.console_frontend = runtime_config.console_frontend
   status.launcher = runtime_config.launcher
   if opts.include_lsp == true then
     status.lsp_status = lsp.status(options)

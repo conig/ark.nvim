@@ -280,6 +280,57 @@ local function set_input_start(bufnr, info, line)
   info.input_mark_id = vim.api.nvim_buf_set_extmark(bufnr, input_ns, line, 0, opts)
 end
 
+local function refresh_valid_snapshot(bufnr, info)
+  if type(info) ~= "table" or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+
+  info.valid_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  info.valid_input_start = tonumber(info.input_start) or input_start_line(bufnr, info)
+end
+
+local function restore_valid_snapshot(bufnr, info)
+  if type(info) ~= "table" or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+
+  info.protected_edit_reject_pending = false
+  info.reverting_protected_edit = true
+
+  local lines = type(info.valid_lines) == "table" and vim.deepcopy(info.valid_lines) or { "" }
+  vim.bo[bufnr].modifiable = true
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+  set_input_start(bufnr, info, tonumber(info.valid_input_start) or vim.api.nvim_buf_line_count(bufnr) - 1)
+  info.reverting_protected_edit = false
+
+  if vim.api.nvim_buf_is_valid(bufnr) then
+    vim.bo[bufnr].modified = false
+    refresh_valid_snapshot(bufnr, info)
+    place_prompt(bufnr)
+  end
+
+  return true
+end
+
+local function restore_pending_protected_edit(bufnr, info)
+  if type(info) == "table" and info.protected_edit_reject_pending == true then
+    restore_valid_snapshot(bufnr, info)
+  end
+end
+
+local function with_internal_edit(bufnr, info, callback)
+  restore_pending_protected_edit(bufnr, info)
+  info.internal_edit = (tonumber(info.internal_edit) or 0) + 1
+  local results = { pcall(callback) }
+  info.internal_edit = math.max(0, (tonumber(info.internal_edit) or 1) - 1)
+  if not results[1] then
+    error(results[2], 0)
+  end
+
+  refresh_valid_snapshot(bufnr, info)
+  return unpack(results, 2)
+end
+
 local function current_input_lines(bufnr, info)
   local end_line = vim.api.nvim_buf_line_count(bufnr)
   return vim.api.nvim_buf_get_lines(bufnr, input_start_line(bufnr, info), end_line, false)
@@ -296,10 +347,12 @@ local function set_current_input(bufnr, info, text)
   end
 
   local start_line = input_start_line(bufnr, info)
-  vim.bo[bufnr].modifiable = true
-  vim.api.nvim_buf_set_lines(bufnr, start_line, -1, false, lines)
-  set_input_start(bufnr, info, start_line)
-  vim.bo[bufnr].modified = false
+  with_internal_edit(bufnr, info, function()
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, start_line, -1, false, lines)
+    set_input_start(bufnr, info, start_line)
+    vim.bo[bufnr].modified = false
+  end)
 
   local last_line = start_line + #lines
   local last_col = #lines[#lines]
@@ -316,11 +369,13 @@ local function append_before_input(bufnr, lines)
     return
   end
 
-  vim.bo[bufnr].modifiable = true
-  local start_line = input_start_line(bufnr, info)
-  vim.api.nvim_buf_set_lines(bufnr, start_line, start_line, false, lines)
-  set_input_start(bufnr, info, start_line + #lines)
-  vim.bo[bufnr].modified = false
+  with_internal_edit(bufnr, info, function()
+    vim.bo[bufnr].modifiable = true
+    local start_line = input_start_line(bufnr, info)
+    vim.api.nvim_buf_set_lines(bufnr, start_line, start_line, false, lines)
+    set_input_start(bufnr, info, start_line + #lines)
+    vim.bo[bufnr].modified = false
+  end)
   place_prompt(bufnr)
 end
 
@@ -471,6 +526,41 @@ local function console_info(bufnr)
   return info, nil, bufnr
 end
 
+local function reject_protected_edit(bufnr, info)
+  if info.protected_edit_reject_pending == true then
+    return
+  end
+
+  info.protected_edit_reject_pending = true
+  vim.schedule(function()
+    info.protected_edit_reject_pending = false
+    if type(state.buffers[bufnr]) ~= "table" or not vim.api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+    restore_valid_snapshot(bufnr, info)
+  end)
+end
+
+local function protect_transcript_edit(bufnr, firstline)
+  local info = state.buffers[bufnr]
+  if type(info) ~= "table" then
+    return
+  end
+  if (tonumber(info.internal_edit) or 0) > 0 or info.reverting_protected_edit == true then
+    return
+  end
+  if info.protected_edit_reject_pending == true then
+    return
+  end
+
+  local input_start = tonumber(info.input_start) or 0
+  if tonumber(firstline) and tonumber(firstline) < input_start then
+    reject_protected_edit(bufnr, info)
+  else
+    refresh_valid_snapshot(bufnr, info)
+  end
+end
+
 local function start_job(bufnr, opts, session_id, status_path)
   local runtime = opts.terminal or opts.tmux or {}
   local session_opts = type(opts.session) == "table" and opts.session or {}
@@ -593,6 +683,7 @@ function M.start(opts)
   }
   set_input_start(bufnr, state.buffers[bufnr], 0)
   place_prompt(bufnr)
+  refresh_valid_snapshot(bufnr, state.buffers[bufnr])
 
   local ok_server, server_result = pcall(vim.fn.serverstart, state.buffers[bufnr].rpc_socket)
   if ok_server and type(server_result) == "string" and server_result ~= "" then
@@ -667,6 +758,9 @@ function M.start(opts)
   })
 
   vim.api.nvim_buf_attach(bufnr, false, {
+    on_lines = function(_, changed_bufnr, _, firstline)
+      protect_transcript_edit(changed_bufnr, firstline)
+    end,
     on_detach = function()
       vim.schedule(function()
         close_resources(bufnr, {
@@ -714,6 +808,7 @@ function M.submit(bufnr)
     return nil, "Ark console R process is not running"
   end
 
+  restore_pending_protected_edit(bufnr, info)
   local end_line = vim.api.nvim_buf_line_count(bufnr)
   local lines = current_input_lines(bufnr, info)
   local text = table.concat(lines, "\n")
@@ -723,11 +818,13 @@ function M.submit(bufnr)
 
   send_to_job(info, text)
 
-  vim.bo[bufnr].modifiable = true
-  vim.api.nvim_buf_set_lines(bufnr, end_line, end_line, false, { "" })
-  set_input_start(bufnr, info, end_line)
-  vim.api.nvim_win_set_cursor(0, { input_start_line(bufnr, info) + 1, 0 })
-  vim.bo[bufnr].modified = false
+  with_internal_edit(bufnr, info, function()
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, end_line, end_line, false, { "" })
+    set_input_start(bufnr, info, end_line)
+    vim.api.nvim_win_set_cursor(0, { input_start_line(bufnr, info) + 1, 0 })
+    vim.bo[bufnr].modified = false
+  end)
   place_prompt(bufnr)
   return true
 end
@@ -738,6 +835,7 @@ function M.insert_newline(bufnr)
     return nil, err
   end
   bufnr = resolved_bufnr
+  restore_pending_protected_edit(bufnr, info)
 
   local winid = vim.fn.bufwinid(bufnr)
   if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
@@ -756,10 +854,12 @@ function M.insert_newline(bufnr)
   local before = line:sub(1, col)
   local after = line:sub(col + 1)
 
-  vim.bo[bufnr].modifiable = true
-  vim.api.nvim_buf_set_lines(bufnr, row, row + 1, false, { before, after })
-  vim.bo[bufnr].modified = false
-  vim.api.nvim_win_set_cursor(winid, { row + 2, 0 })
+  with_internal_edit(bufnr, info, function()
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, row, row + 1, false, { before, after })
+    vim.bo[bufnr].modified = false
+    vim.api.nvim_win_set_cursor(winid, { row + 2, 0 })
+  end)
   place_prompt(bufnr)
   return true
 end
@@ -801,6 +901,7 @@ function M.history_prev(bufnr)
     return true
   end
 
+  restore_pending_protected_edit(bufnr, info)
   if info.history_index == nil then
     info.draft_input = current_input_text(bufnr, info)
     info.history_index = #info.history

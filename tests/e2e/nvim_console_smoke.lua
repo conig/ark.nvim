@@ -65,6 +65,11 @@ ark_test.wait_for("console transcript output", 10000, function()
   return table.concat(lines, "\n"):find("#> console saw: mtcars%$mpg") ~= nil
 end)
 
+ark_test.wait_for("console top-level prompt after initial input", 10000, function()
+  local current = require("ark.console").status(bufnr)
+  return type(current) == "table" and current.prompt_state == "top-level"
+end)
+
 local status = require("ark.console").status(bufnr)
 if type(status) ~= "table" or status.running ~= true or type(status.session_id) ~= "string" then
   ark_test.fail("unexpected console status: " .. vim.inspect(status))
@@ -116,25 +121,6 @@ if transcript:find("^#> >") or transcript:find("^#> %+", 1, false) then
   ark_test.fail("console prompts should be suppressed from transcript: " .. vim.inspect(lines))
 end
 
-local shifted_status = require("ark.console").status(bufnr)
-vim.api.nvim_buf_set_lines(bufnr, 0, 0, false, { "# user note above active input" })
-local shifted_after_insert = require("ark.console").status(bufnr)
-if shifted_after_insert.input_start ~= shifted_status.input_start + 1 then
-  ark_test.fail("console input boundary should track edits above it: before="
-    .. vim.inspect(shifted_status)
-    .. " after="
-    .. vim.inspect(shifted_after_insert))
-end
-vim.api.nvim_buf_set_lines(bufnr, shifted_after_insert.input_start, -1, false, { "after_shift()" })
-local shifted_ok, shifted_err = require("ark.console").submit(bufnr)
-if not shifted_ok then
-  ark_test.fail("failed to submit shifted console input: " .. tostring(shifted_err))
-end
-ark_test.wait_for("console shifted-boundary transcript output", 10000, function()
-  local current_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  return table.concat(current_lines, "\n"):find("#> console saw: after_shift%(%)") ~= nil
-end)
-
 status = require("ark.console").status(bufnr)
 vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "draft_call()" })
 local prev_ok, prev_err = require("ark.console").history_prev(bufnr)
@@ -142,7 +128,7 @@ if not prev_ok then
   ark_test.fail("failed to navigate to previous console history item: " .. tostring(prev_err))
 end
 local history_prev_lines = vim.api.nvim_buf_get_lines(bufnr, status.input_start, -1, false)
-if table.concat(history_prev_lines, "\n") ~= "after_shift()" then
+if table.concat(history_prev_lines, "\n") ~= "rpc_call()" then
   ark_test.fail("previous history should restore submitted R code: " .. vim.inspect(history_prev_lines))
 end
 
@@ -151,8 +137,8 @@ if not prev_ok then
   ark_test.fail("failed to navigate to older console history item: " .. tostring(prev_err))
 end
 history_prev_lines = vim.api.nvim_buf_get_lines(bufnr, status.input_start, -1, false)
-if table.concat(history_prev_lines, "\n") ~= "rpc_call()" then
-  ark_test.fail("second previous history should restore newer remote R code: " .. vim.inspect(history_prev_lines))
+if table.concat(history_prev_lines, "\n") ~= "mtcars$mpg" then
+  ark_test.fail("second previous history should restore oldest R code: " .. vim.inspect(history_prev_lines))
 end
 
 prev_ok, prev_err = require("ark.console").history_prev(bufnr)
@@ -178,8 +164,8 @@ if not next_ok then
   ark_test.fail("failed to navigate to newest console history item: " .. tostring(next_err))
 end
 history_next_lines = vim.api.nvim_buf_get_lines(bufnr, status.input_start, -1, false)
-if table.concat(history_next_lines, "\n") ~= "after_shift()" then
-  ark_test.fail("second next history should restore newest R code: " .. vim.inspect(history_next_lines))
+if table.concat(history_next_lines, "\n") ~= "draft_call()" then
+  ark_test.fail("second next history should restore the active draft input: " .. vim.inspect(history_next_lines))
 end
 
 next_ok, next_err = require("ark.console").history_next(bufnr)
@@ -188,7 +174,7 @@ if not next_ok then
 end
 history_next_lines = vim.api.nvim_buf_get_lines(bufnr, status.input_start, -1, false)
 if table.concat(history_next_lines, "\n") ~= "draft_call()" then
-  ark_test.fail("leaving history should restore the active draft input: " .. vim.inspect(history_next_lines))
+  ark_test.fail("staying past newest history should keep the active draft input: " .. vim.inspect(history_next_lines))
 end
 
 status = require("ark.console").status(bufnr)

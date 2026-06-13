@@ -246,6 +246,70 @@ local ok, err = xpcall(function()
     return table.concat(vim.fn.readfile(fake_r_log), "\n"):find("direct_socket_send%(%)") ~= nil
   end)
 
+  rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
+  if type(rpc_chan) ~= "number" or rpc_chan <= 0 then
+    ark_test.fail("failed to reconnect to managed nvim-console RPC socket for edit protection probe")
+  end
+  local edit_ok, edit_result = pcall(vim.rpcrequest, rpc_chan, "nvim_exec_lua", [[
+    local function stop_insert()
+      if vim.fn.mode():sub(1, 1) == "i" then
+        vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "xt", false)
+        vim.wait(4000, function()
+          return vim.fn.mode() == "n"
+        end, 20, false)
+      end
+    end
+
+    local bufnr = vim.api.nvim_get_current_buf()
+    local found = vim.wait(10000, function()
+      local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      return table.concat(lines, "\n"):find("#> console saw: direct_socket_send%(%)") ~= nil
+    end, 50, false)
+    if not found then
+      return {
+        ok = false,
+        reason = "console transcript did not contain direct_socket_send() output",
+        lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false),
+      }
+    end
+
+    stop_insert()
+    local before = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local row = nil
+    for index, line in ipairs(before) do
+      if line:find("direct_socket_send()", 1, true) then
+        row = index
+        break
+      end
+    end
+    if row == nil then
+      return {
+        ok = false,
+        reason = "failed to locate protected direct_socket_send() row",
+        lines = before,
+      }
+    end
+
+    vim.api.nvim_win_set_cursor(0, { row, 0 })
+    vim.api.nvim_feedkeys(vim.keycode("A_MUTATE<Esc>"), "xt", false)
+    vim.wait(1000, function()
+      local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+      return vim.inspect(lines) == vim.inspect(before)
+    end, 20, false)
+
+    local after = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    return {
+      ok = vim.inspect(after) == vim.inspect(before),
+      before = before,
+      after = after,
+      row = row,
+    }
+  ]], {})
+  pcall(vim.fn.chanclose, rpc_chan)
+  if not edit_ok or type(edit_result) ~= "table" or edit_result.ok ~= true then
+    ark_test.fail("managed nvim-console protected edit probe failed: " .. vim.inspect(edit_result))
+  end
+
   tmux({
     "send-keys",
     "-t",
