@@ -796,13 +796,70 @@ local function terminal_ui_enabled(opts)
     or vim.env.ARK_NVIM_CONSOLE_TERMINAL_UI == "1"
 end
 
+local function console_relative_numbers_enabled()
+  local mode = vim.api.nvim_get_mode().mode
+  if type(mode) ~= "string" or mode == "" then
+    return false
+  end
+
+  local first = mode:sub(1, 1)
+  return first == "n" or first == "v" or first == "V" or first == "\22"
+end
+
+local function apply_console_number_options(winid, enabled)
+  if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
+    return
+  end
+
+  if enabled == nil then
+    enabled = console_relative_numbers_enabled()
+  end
+  vim.wo[winid].number = enabled
+  vim.wo[winid].relativenumber = enabled
+end
+
+local function refresh_console_number_options(bufnr, enabled)
+  if type(bufnr) ~= "number" or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+
+  for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
+    apply_console_number_options(winid, enabled)
+  end
+end
+
+local function install_console_number_autocmds(bufnr)
+  local group = vim.api.nvim_create_augroup("ArkConsoleNumbers" .. tostring(bufnr), { clear = true })
+  vim.api.nvim_create_autocmd("InsertEnter", {
+    group = group,
+    callback = function()
+      if not vim.api.nvim_buf_is_valid(bufnr) then
+        return true
+      end
+
+      refresh_console_number_options(bufnr, false)
+    end,
+    desc = "Hide Ark console relative line numbers in insert mode",
+  })
+  vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter", "InsertLeave", "ModeChanged" }, {
+    group = group,
+    callback = function()
+      if not vim.api.nvim_buf_is_valid(bufnr) then
+        return true
+      end
+
+      refresh_console_number_options(bufnr)
+    end,
+    desc = "Toggle Ark console relative line numbers by mode",
+  })
+end
+
 local function apply_console_window_options(winid)
   if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
     return
   end
 
-  vim.wo[winid].number = false
-  vim.wo[winid].relativenumber = false
+  apply_console_number_options(winid)
   vim.wo[winid].signcolumn = "no"
   vim.wo[winid].foldcolumn = "0"
   vim.wo[winid].colorcolumn = ""
@@ -973,7 +1030,10 @@ function M.start(opts)
     else
       vim.cmd("botright split")
       vim.api.nvim_win_set_buf(0, existing)
+      winid = vim.api.nvim_get_current_win()
     end
+    apply_console_window_options(winid)
+    refresh_console_number_options(existing)
     return existing
   end
 
@@ -1003,6 +1063,7 @@ function M.start(opts)
     status_timer = nil,
   }
   install_paste_handler()
+  install_console_number_autocmds(bufnr)
   set_input_start(bufnr, state.buffers[bufnr], 0)
   place_prompt(bufnr)
   refresh_valid_snapshot(bufnr, state.buffers[bufnr])
