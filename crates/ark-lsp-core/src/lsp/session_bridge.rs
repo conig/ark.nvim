@@ -3463,6 +3463,10 @@ fn completion_request_from_search_path(
     context: &DocumentContext,
 ) -> anyhow::Result<Option<CompletionRequest>> {
     let prefix = symbol_prefix(context)?;
+    if prefix.is_none() && empty_call_paren_trigger_is_argument_slot(context)? {
+        return Ok(None);
+    }
+
     let allow_empty_prefix = empty_inline_r_space_autotrigger_is_allowed(context);
     if prefix.is_none() && !allow_empty_prefix {
         match context.trigger.as_deref() {
@@ -3486,6 +3490,18 @@ fn completion_request_from_search_path(
         quote_insert: false,
         subset_kind: None,
     }))
+}
+
+fn empty_call_paren_trigger_is_argument_slot(context: &DocumentContext) -> anyhow::Result<bool> {
+    if context.trigger.as_deref() != Some("(") {
+        return Ok(false);
+    }
+
+    if call_text_argument_slot(context)?.is_some() {
+        return Ok(true);
+    }
+
+    Ok(analyze_call_context(context)?.is_some())
 }
 
 fn empty_inline_r_space_autotrigger_is_allowed(context: &DocumentContext) -> bool {
@@ -4824,6 +4840,17 @@ mod tests {
         let context = DocumentContext::new(&document, point, None);
 
         let request = completion_request_from_call(&context).unwrap();
+
+        assert!(request.is_none());
+    }
+
+    #[test]
+    fn test_search_path_completion_is_suppressed_for_empty_call_paren_trigger() {
+        let (text, point) = point_from_cursor("corx::corx(@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, Some(String::from("(")));
+
+        let request = completion_request_from_search_path(&context).unwrap();
 
         assert!(request.is_none());
     }
