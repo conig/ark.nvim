@@ -106,9 +106,23 @@ local function merge_status_file(path, patch)
     return
   end
 
-  local payload = session_runtime.read_status_file(path) or {}
+  local payload = {}
+  if vim.fn.filereadable(path) == 1 then
+    local ok, decoded = pcall(function()
+      return vim.json.decode(table.concat(vim.fn.readfile(path), "\n"))
+    end)
+    if ok and type(decoded) == "table" then
+      payload = decoded
+    end
+  end
+
+  local before = vim.deepcopy(payload)
   for key, value in pairs(patch) do
     payload[key] = value
+  end
+
+  if vim.deep_equal(payload, before) then
+    return
   end
 
   local dir = vim.fs.dirname(path)
@@ -244,6 +258,7 @@ local focus_input
 
 local function setup_highlights()
   pcall(vim.api.nvim_set_hl, 0, "ArkConsolePrompt", { link = "Question", default = true })
+  pcall(vim.api.nvim_set_hl, 0, "ArkConsoleOutput", { link = "Normal", default = true })
   pcall(vim.api.nvim_set_hl, 0, "ArkConsoleOutputPrefix", { link = "Comment", default = true })
 end
 
@@ -805,7 +820,8 @@ local function apply_terminal_ui(bufnr, opts)
   vim.bo[bufnr].buflisted = false
   vim.bo[bufnr].syntax = "r"
   vim.api.nvim_buf_call(bufnr, function()
-    pcall(vim.cmd, "syntax match ArkConsoleOutputPrefix /^#> / conceal containedin=ALL")
+    pcall(vim.cmd, "syntax match ArkConsoleOutput /^#>.*$/ contains=ArkConsoleOutputPrefix containedin=ALL")
+    pcall(vim.cmd, "syntax match ArkConsoleOutputPrefix /^#> / conceal contained containedin=ArkConsoleOutput")
   end)
 
   local winid = vim.fn.bufwinid(bufnr)
@@ -1001,12 +1017,6 @@ function M.start(opts)
   end
   state.buffers[bufnr].status_timer = start_status_publisher(bufnr)
 
-  if opts.auto_start_lsp ~= false then
-    lsp.start(opts, bufnr, {
-      wait_for_client = false,
-    })
-  end
-
   local jobid, err = start_job(bufnr, opts, session_id, state.buffers[bufnr].status_path)
   if not jobid then
     append_before_input(bufnr, { "#> " .. tostring(err) })
@@ -1014,6 +1024,12 @@ function M.start(opts)
   end
   state.buffers[bufnr].jobid = jobid
   publish_status(bufnr)
+
+  if opts.auto_start_lsp ~= false then
+    lsp.start(opts, bufnr, {
+      wait_for_client = false,
+    })
+  end
 
   _G[console_server_fn] = function(text)
     local ok, send_err = M.send_text(bufnr, text)
