@@ -289,6 +289,14 @@ end
 local function root_dir(bufnr, markers)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local cwd = vim.loop.cwd()
+  if vim.b[bufnr].ark_console == true or path:match("^ark%-console://") then
+    local cwd_root = project_root_for_path(cwd, markers)
+    if cwd_root and not ad_hoc_directory(cwd_root) then
+      return cwd_root
+    end
+    return unnamed_workspace_root()
+  end
+
   if path == "" then
     if type(cwd) == "string" and cwd ~= "" and ad_hoc_directory(cwd) then
       return unnamed_workspace_root()

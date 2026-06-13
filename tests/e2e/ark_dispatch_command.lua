@@ -6,6 +6,18 @@ package.loaded["ark"] = {
   close_tab = function()
     calls[#calls + 1] = { name = "close_tab" }
   end,
+  console = function()
+    calls[#calls + 1] = { name = "console" }
+  end,
+  console_eof = function(bufnr)
+    calls[#calls + 1] = { name = "console_eof", bufnr = bufnr }
+  end,
+  console_interrupt = function(bufnr)
+    calls[#calls + 1] = { name = "console_interrupt", bufnr = bufnr }
+  end,
+  console_stop = function(bufnr)
+    calls[#calls + 1] = { name = "console_stop", bufnr = bufnr }
+  end,
   go_tab = function(index)
     calls[#calls + 1] = { name = "go_tab", index = index }
   end,
@@ -125,6 +137,10 @@ vim.api.nvim_create_user_command("ArkBuildBridge", function()
 end, {})
 
 vim.cmd("Ark")
+vim.cmd("Ark console")
+vim.cmd("Ark console interrupt")
+vim.cmd("Ark console eof")
+vim.cmd("Ark console stop")
 vim.cmd("Ark status")
 vim.cmd("Ark refresh")
 vim.cmd("Ark snippets")
@@ -173,6 +189,10 @@ vim.cmd("Ark targets log clean_data")
 
 local expected = {
   { name = "status", include_lsp = true },
+  { name = "console" },
+  { name = "console_interrupt", bufnr = 0 },
+  { name = "console_eof", bufnr = 0 },
+  { name = "console_stop", bufnr = 0 },
   { name = "status", include_lsp = true },
   { name = "refresh", bufnr = 0 },
   { name = "snippets", bufnr = 0 },
@@ -232,4 +252,13 @@ end
 local package_completions = vim.fn.getcompletion("Ark packages i", "cmdline")
 if not vim.tbl_contains(package_completions, "packages install-missing") then
   error("expected Ark dispatcher completion to include packages install-missing, got " .. vim.inspect(package_completions), 0)
+end
+
+local console_completions = vim.fn.getcompletion("Ark con", "cmdline")
+if not vim.tbl_contains(console_completions, "console") then
+  error("expected Ark dispatcher completion to include console, got " .. vim.inspect(console_completions), 0)
+end
+
+if not vim.tbl_contains(console_completions, "console interrupt") then
+  error("expected Ark dispatcher completion to include console interrupt, got " .. vim.inspect(console_completions), 0)
 end

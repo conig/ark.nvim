@@ -1,6 +1,7 @@
 local blink = require("ark.blink")
 local bridge = require("ark.bridge")
 local config = require("ark.config")
+local console = require("ark.console")
 local dev = require("ark.dev")
 local expression = require("ark.expression")
 local keymaps = require("ark.keymaps")
@@ -1076,6 +1077,7 @@ is_ark_buffer = function(bufnr)
   return bufnr ~= nil
     and vim.api.nvim_buf_is_valid(bufnr)
     and options ~= nil
+    and vim.b[bufnr].ark_console ~= true
     and vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype)
 end
 
@@ -1251,6 +1253,9 @@ local function start_managed_buffer(bufnr)
   if not options or type(bufnr) ~= "number" then
     return
   end
+  if vim.b[bufnr].ark_console == true then
+    return
+  end
 
   local token = (startup_tokens[bufnr] or 0) + 1
   startup_tokens[bufnr] = token
@@ -1417,7 +1422,10 @@ function M.setup(opts)
   did_setup = true
 
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_valid(bufnr) and vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype) then
+    if vim.api.nvim_buf_is_valid(bufnr)
+      and vim.b[bufnr].ark_console ~= true
+      and vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype)
+    then
       start_managed_buffer(bufnr)
     end
   end
@@ -1445,6 +1453,26 @@ function M.setup(opts)
   end, { desc = "Rebuild the pane-side arkbridge runtime used by ark.nvim" })
 
   return options
+end
+
+function M.console()
+  ensure_setup()
+  return console.start(options)
+end
+
+function M.console_interrupt(bufnr)
+  ensure_setup()
+  return console.interrupt(bufnr or 0)
+end
+
+function M.console_eof(bufnr)
+  ensure_setup()
+  return console.eof(bufnr or 0)
+end
+
+function M.console_stop(bufnr)
+  ensure_setup()
+  return console.stop(bufnr or 0)
 end
 
 function M.options()

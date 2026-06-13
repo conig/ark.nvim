@@ -59,6 +59,13 @@ function M.defaults()
     root .. "/target/release/ark-terminal",
     "ark-terminal"
   )) or "ark-terminal"
+  local nvim_console_bin = first_executable(compact(
+    vim.env.ARK_NVIM_CONSOLE_BIN,
+    root .. "/scripts/ark-console",
+    vim.env.ARK_NVIM_CONSOLE_NVIM,
+    vim.v.progpath,
+    "nvim"
+  )) or "nvim"
   local session_lib_path = expand_candidate(vim.env.ARK_NVIM_SESSION_LIB)
     or (vim.fn.stdpath("data") .. "/ark/r-lib")
 
@@ -70,6 +77,11 @@ function M.defaults()
     raw = vim.env.ARK_NVIM_ARK_TERMINAL_RAW ~= "0",
     trace_log = expand_candidate(vim.env.ARK_NVIM_ARK_TERMINAL_TRACE_LOG),
     print_status_json = vim.env.ARK_NVIM_ARK_TERMINAL_PRINT_STATUS_JSON == "1",
+  }
+  local nvim_console = {
+    bin = nvim_console_bin,
+    command = vim.env.ARK_NVIM_CONSOLE_COMMAND or "Ark console",
+    add_repo_to_rtp = vim.env.ARK_NVIM_CONSOLE_ADD_REPO_RTP ~= "0",
   }
 
   return {
@@ -100,6 +112,7 @@ function M.defaults()
       launcher = launcher,
       console_frontend = console_frontend,
       ark_terminal = ark_terminal,
+      nvim_console = nvim_console,
       lsp_bin = lsp_bin,
       pane_layout = "auto",
       stacked_max_width = 100,
@@ -121,6 +134,7 @@ function M.defaults()
       launcher = launcher,
       console_frontend = console_frontend,
       ark_terminal = ark_terminal,
+      nvim_console = nvim_console,
       lsp_bin = lsp_bin,
       split_direction = vim.env.ARK_NVIM_TERMINAL_SPLIT_DIRECTION or "horizontal",
       split_position = vim.env.ARK_NVIM_TERMINAL_SPLIT_POSITION or "botright",

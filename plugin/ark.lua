@@ -72,6 +72,10 @@ end
 local ark_command_completions = {
   "build-bridge",
   "build-lsp",
+  "console",
+  "console eof",
+  "console interrupt",
+  "console stop",
   "help",
   "help pane",
   "lsp start",
@@ -186,6 +190,19 @@ local function dispatch_ark_command(args)
 
   if top == nil or top == "" or top == "status" then
     print_result(ark.status({ include_lsp = true }))
+  elseif top == "console" then
+    local subcommand = args[2]
+    if subcommand == nil or subcommand == "" or subcommand == "open" then
+      ark.console()
+    elseif subcommand == "interrupt" then
+      ark.console_interrupt(0)
+    elseif subcommand == "eof" then
+      ark.console_eof(0)
+    elseif subcommand == "stop" then
+      ark.console_stop(0)
+    else
+      unknown_ark_command(args)
+    end
   elseif top == "refresh" then
     ark.refresh(0)
   elseif top == "snippets" then
@@ -263,6 +280,22 @@ end, {
 vim.api.nvim_create_user_command("ArkPaneStart", function()
   require("ark").start_pane()
 end, { desc = "Start or reuse the managed ark.nvim R session" })
+
+vim.api.nvim_create_user_command("ArkConsole", function()
+  require("ark").console()
+end, { desc = "Open an Ark Neovim-buffer R console" })
+
+vim.api.nvim_create_user_command("ArkConsoleInterrupt", function()
+  require("ark").console_interrupt(0)
+end, { desc = "Interrupt the current Ark Neovim-buffer R console" })
+
+vim.api.nvim_create_user_command("ArkConsoleEof", function()
+  require("ark").console_eof(0)
+end, { desc = "Send EOF to the current Ark Neovim-buffer R console" })
+
+vim.api.nvim_create_user_command("ArkConsoleStop", function()
+  require("ark").console_stop(0)
+end, { desc = "Stop the current Ark Neovim-buffer R console process" })
 
 vim.api.nvim_create_user_command("ArkPaneRestart", function()
   require("ark").restart_pane()

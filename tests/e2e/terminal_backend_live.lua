@@ -22,9 +22,11 @@ ark.setup({
   configure_slime = true,
   session = {
     backend = "terminal",
+    console_frontend = "raw",
     kind = "ark",
   },
   terminal = {
+    console_frontend = "raw",
     launcher = vim.fs.normalize(repo_root .. "/scripts/ark-r-launcher.sh"),
     split_direction = "horizontal",
     split_position = "botright",
@@ -37,6 +39,14 @@ ark.setup({
     session_timeout_ms = 1000,
   },
 })
+
+local pane_command = ark.pane_command()
+if pane_command:find("exec '.*ark%-console", 1, false) ~= nil
+  or pane_command:find("exec '.*ark%-terminal", 1, false) ~= nil
+then
+  stop_watchdog()
+  ark_test.fail("raw terminal fallback should exec launcher directly, got " .. pane_command)
+end
 
 local pane_id, pane_err = ark.start_pane()
 if not pane_id then

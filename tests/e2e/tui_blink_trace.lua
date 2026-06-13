@@ -112,6 +112,34 @@ vim.api.nvim_create_user_command("ArkTraceSnapshot", function(opts)
   snapshot("ArkTraceSnapshot", { args = opts.args })
 end, { nargs = "*" })
 
+vim.api.nvim_create_user_command("ArkTraceClearInput", function()
+  local input_start = 0
+  local ok_console, console = pcall(require, "ark.console")
+  if ok_console and console and type(console.status) == "function" then
+    local status = console.status(0)
+    input_start = type(status) == "table" and tonumber(status.input_start) or 0
+  end
+  vim.api.nvim_buf_set_lines(0, input_start or 0, -1, false, { "" })
+  vim.api.nvim_win_set_cursor(0, { (input_start or 0) + 1, 0 })
+  snapshot("ArkTraceClearInput")
+  vim.cmd("startinsert")
+end, {})
+
+vim.api.nvim_create_user_command("ArkTraceSend", function(opts)
+  local ok_ark, ark = pcall(require, "ark")
+  local sent, err = nil, nil
+  if ok_ark and ark and type(ark.send) == "function" then
+    sent, err = ark.send(opts.args)
+  else
+    err = "ark.nvim send API is unavailable"
+  end
+  snapshot("ArkTraceSend", {
+    args = opts.args,
+    sent = sent == true,
+    err = err,
+  })
+end, { nargs = "+" })
+
 vim.api.nvim_create_user_command("ArkTraceAccept", function(opts)
   local ok_blink, blink = pcall(require, "blink.cmp")
   local index = tonumber(opts.args)
@@ -206,8 +234,27 @@ local function trace_show_trigger(trigger_character)
   end, 20)
 end
 
+vim.api.nvim_create_user_command("ArkTraceShowTrigger", function(opts)
+  vim.cmd("startinsert")
+  vim.defer_fn(function()
+    trace_show_trigger(opts.args)
+  end, 20)
+end, { nargs = 1 })
+
 vim.keymap.set("i", "<C-Q>", function()
   trace_show_trigger('"')
+end, { buffer = 0 })
+
+vim.keymap.set("i", "<C-X>", function()
+  trace_show_trigger("/")
+end, { buffer = 0 })
+
+vim.keymap.set("i", "<F5>", function()
+  trace_show_trigger('"')
+end, { buffer = 0 })
+
+vim.keymap.set("i", "<F6>", function()
+  trace_show_trigger("/")
 end, { buffer = 0 })
 
 snapshot("loaded")

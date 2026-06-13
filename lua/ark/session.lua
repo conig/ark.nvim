@@ -142,7 +142,7 @@ function M.pane_command(opts)
 end
 
 function M.send_text(opts, text)
-  return call_with_opts(opts, "send_text", text)
+  return call_with_config(opts, "send_text", text)
 end
 
 function M.tab_new(opts)

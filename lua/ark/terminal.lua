@@ -117,6 +117,8 @@ end
 
 local function launcher_env(config, session_id)
   local env = {
+    ARK_NVIM_LAUNCHER = config.launcher,
+    ARK_NVIM_CONSOLE_FRONTEND = config.console_frontend or "raw",
     ARK_STATUS_DIR = config.startup_status_dir,
     ARK_NVIM_SESSION_PKG_PATH = config.session_pkg_path,
     ARK_SESSION_BACKEND = "terminal",
@@ -128,6 +130,10 @@ local function launcher_env(config, session_id)
     TMUX_PANE = "",
   }
 
+  if type(config.lsp_bin) == "string" and config.lsp_bin ~= "" then
+    env.ARK_NVIM_LSP_BIN = config.lsp_bin
+  end
+
   if type(config.session_lib_path) == "string" and config.session_lib_path ~= "" then
     env.ARK_NVIM_SESSION_LIB = config.session_lib_path
   end
@@ -137,6 +143,8 @@ end
 
 local function pane_command_exports(config, session_id)
   local exports = {
+    "ARK_NVIM_LAUNCHER=" .. shellescape(config.launcher),
+    "ARK_NVIM_CONSOLE_FRONTEND=" .. shellescape(config.console_frontend or "raw"),
     "ARK_STATUS_DIR=" .. shellescape(config.startup_status_dir),
     "ARK_NVIM_SESSION_PKG_PATH=" .. shellescape(config.session_pkg_path),
     "ARK_SESSION_BACKEND=terminal",
@@ -147,6 +155,10 @@ local function pane_command_exports(config, session_id)
     "TMUX=''",
     "TMUX_PANE=''",
   }
+
+  if type(config.lsp_bin) == "string" and config.lsp_bin ~= "" then
+    table.insert(exports, "ARK_NVIM_LSP_BIN=" .. shellescape(config.lsp_bin))
+  end
 
   if type(config.session_lib_path) == "string" and config.session_lib_path ~= "" then
     table.insert(exports, "ARK_NVIM_SESSION_LIB=" .. shellescape(config.session_lib_path))
@@ -437,7 +449,12 @@ function M.bridge_env(config, snapshot)
   return current and current.cmd_env or nil
 end
 
-function M.send_text(text)
+function M.send_text(config_or_text, maybe_text)
+  local text = maybe_text
+  if text == nil then
+    text = config_or_text
+  end
+
   local session = current_session()
   if not session or type(session.terminal_jobid) ~= "number" then
     return nil, "ark.nvim has no active managed terminal"

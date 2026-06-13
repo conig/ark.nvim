@@ -123,8 +123,8 @@ host terminal or tmux pane
       -> optional Ark Terminal local IPC for Neovim control
 ```
 
-The console input line should be represented as a normal R document from the LSP
-point of view:
+The Rust terminal console input line should be represented as a normal R
+document from the LSP point of view:
 
 ```text
 ark-console://<session-id>/input.R
@@ -141,8 +141,15 @@ Ark Terminal owns edits to that document and sends:
 - optional hover/help requests
 
 The same `ark-lsp` completion planner and detached session bridge used by
-Neovim buffers must serve the console. Blink is not involved; Ark Terminal
-renders its own menu.
+Neovim buffers must serve the console. Blink is not involved in this standalone
+Rust frontend; Ark Terminal renders its own menu.
+
+There is a separate `nvim-console` frontend for users who want the console UI to
+be a normal Neovim buffer. That frontend uses Blink and Neovim's LSP client
+directly, draws prompts virtually, records submitted input as R code, and
+records output as transcript comments or virtual transcript lines. It can run
+in-process as `:Ark console`, or in a tmux split by launching a Neovim process
+that runs that command.
 
 ## Design Principles
 
@@ -325,6 +332,16 @@ Phase the integration behind configuration:
 require("ark").setup({
   session = {
     console_frontend = "ark-terminal",
+  },
+})
+```
+
+The Neovim-buffer console frontend uses the same option with a different value:
+
+```lua
+require("ark").setup({
+  session = {
+    console_frontend = "nvim-console",
   },
 })
 ```

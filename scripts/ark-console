@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+
+exec "${ARK_NVIM_CONSOLE_NVIM:-nvim}" \
+  --cmd "set rtp^=$repo_root" \
+  -c "if exists(':Ark') != 2 | runtime plugin/ark.lua | endif" \
+  -c "Ark console" \
+  "$@"

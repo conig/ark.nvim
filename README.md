@@ -607,8 +607,17 @@ The terminal backend is useful when you want the same detached LSP and bridge
 model without running Neovim inside tmux. It intentionally does not implement
 tmux-only tab parking commands.
 
-Ark Terminal is available as an opt-in raw PTY wrapper while the enhanced console
-track is being built:
+Ark has three managed-console frontend modes:
+
+- `raw`, the default, runs the launcher directly in the managed tmux pane or
+  Neovim terminal split.
+- `ark-terminal` runs the standalone Rust PTY frontend. It preserves terminal
+  behavior and renders its own completion UI.
+- `nvim-console` runs a Neovim-buffer R console. In-process, open it with
+  `:Ark console`; in a managed tmux split, Ark launches the `scripts/ark-console`
+  wrapper, which starts Neovim and runs `:Ark console`.
+
+To use Ark Terminal:
 
 ```lua
 require("ark").setup({
@@ -618,8 +627,21 @@ require("ark").setup({
 })
 ```
 
-This wraps the existing managed R launcher with `ark-terminal --raw`, preserving
-the current bridge and REPL readiness path. The raw launcher remains the default.
+To use the Neovim-buffer console frontend:
+
+```lua
+require("ark").setup({
+  session = {
+    console_frontend = "nvim-console",
+  },
+})
+```
+
+The `nvim-console` frontend keeps the editable input region as a normal R
+buffer, so Blink's regular `lsp` source works without a separate completion
+source. Ark draws the prompt virtually, preserves submitted input as R code, and
+records R output as `#>` transcript comments. The raw launcher remains the
+default fallback.
 
 ## Environment Knobs
 
@@ -632,7 +654,9 @@ The main overrides are:
 - `ARK_NVIM_SESSION_LIB` (optional override for a dedicated bridge library)
 - `ARK_NVIM_SESSION_BACKEND` (`tmux` or `terminal`)
 - `ARK_NVIM_SESSION_KIND`
-- `ARK_NVIM_CONSOLE_FRONTEND` (`raw` or `ark-terminal`)
+- `ARK_NVIM_CONSOLE_FRONTEND` (`raw`, `ark-terminal`, or `nvim-console`)
+- `ARK_NVIM_CONSOLE_BIN` (default: repo-local `scripts/ark-console`, then Neovim)
+- `ARK_NVIM_CONSOLE_COMMAND` (default: `Ark console`)
 - `ARK_NVIM_ARK_TERMINAL_BIN`
 - `ARK_NVIM_ARK_TERMINAL_TRACE_LOG`
 - `ARK_NVIM_SESSION_PKG_PATH`

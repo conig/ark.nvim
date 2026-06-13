@@ -1158,9 +1158,15 @@ function M.pane_command(config)
   end
 
   local exports = {
+    "ARK_NVIM_LAUNCHER=" .. vim.fn.shellescape(config.launcher),
+    "ARK_NVIM_CONSOLE_FRONTEND=" .. vim.fn.shellescape(config.console_frontend or "raw"),
     "ARK_STATUS_DIR=" .. vim.fn.shellescape(config.startup_status_dir),
     "ARK_NVIM_SESSION_PKG_PATH=" .. vim.fn.shellescape(config.session_pkg_path),
   }
+
+  if type(config.lsp_bin) == "string" and config.lsp_bin ~= "" then
+    table.insert(exports, "ARK_NVIM_LSP_BIN=" .. vim.fn.shellescape(config.lsp_bin))
+  end
 
   if type(config.session_lib_path) == "string" and config.session_lib_path ~= "" then
     table.insert(exports, "ARK_NVIM_SESSION_LIB=" .. vim.fn.shellescape(config.session_lib_path))
@@ -1263,7 +1269,45 @@ function M.bridge_env(config, snapshot)
   return current and current.cmd_env or nil
 end
 
-function M.send_text(text)
+local function nvim_console_send(config, session, text)
+  if console_frontend.normalize(config and config.console_frontend) ~= "nvim-console" then
+    return nil
+  end
+
+  local status_path = startup_status_path(session, config or {})
+  local status = status_path and session_runtime.read_status_file(status_path) or nil
+  local socket = type(status) == "table" and status.nvim_console_rpc_socket or nil
+  local socket_stat = type(socket) == "string" and socket ~= "" and uv.fs_stat(socket) or nil
+  if type(socket_stat) ~= "table" then
+    return nil
+  end
+
+  local nvim_bin = vim.env.ARK_NVIM_CONSOLE_NVIM or vim.v.progpath or "nvim"
+  local expr = "v:lua.__ark_console_rpc_send(" .. vim.fn.string(text) .. ")"
+  local output = vim.fn.system({
+    nvim_bin,
+    "--server",
+    socket,
+    "--remote-expr",
+    expr,
+  })
+  if vim.v.shell_error ~= 0 then
+    return nil, vim.trim(output)
+  end
+  if vim.trim(output) ~= "ok" then
+    return nil, "nvim-console RPC send returned unexpected response: " .. vim.trim(output)
+  end
+
+  return true, nil
+end
+
+function M.send_text(config_or_text, maybe_text)
+  local config = type(config_or_text) == "table" and config_or_text or {}
+  local text = maybe_text
+  if text == nil then
+    text = config_or_text
+  end
+
   local session = active_startup_session()
   if not session or type(session.tmux_pane) ~= "string" or session.tmux_pane == "" then
     return nil, "ark.nvim has no active managed pane"
@@ -1271,6 +1315,14 @@ function M.send_text(text)
 
   if type(text) ~= "string" or text == "" then
     return nil, "ark.nvim send_text() requires non-empty text"
+  end
+
+  local console_ok, console_err = nvim_console_send(config, session, text)
+  if console_ok then
+    return true, nil
+  end
+  if console_err and console_err ~= "" then
+    return nil, console_err
   end
 
   if text:sub(-1) ~= "\n" then

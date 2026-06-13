@@ -1,5 +1,10 @@
 local M = {}
 
+local function repo_root()
+  local source = debug.getinfo(1, "S").source:sub(2)
+  return vim.fs.dirname(vim.fs.dirname(vim.fs.dirname(source)))
+end
+
 local function shellescape(value)
   return vim.fn.shellescape(tostring(value or ""))
 end
@@ -21,13 +26,22 @@ local function ark_terminal_config(config)
   }
 end
 
+local function nvim_console_config(config)
+  local nested = type(config.nvim_console) == "table" and config.nvim_console or {}
+  return {
+    bin = nested.bin or config.nvim_console_bin or vim.v.progpath or "nvim",
+    command = nested.command or "Ark console",
+    add_repo_to_rtp = nested.add_repo_to_rtp ~= false,
+  }
+end
+
 function M.normalize(value)
   return normalize(value)
 end
 
 function M.validate(value)
   local frontend = normalize(value)
-  if frontend == "raw" or frontend == "ark-terminal" then
+  if frontend == "raw" or frontend == "ark-terminal" or frontend == "nvim-console" then
     return frontend, nil
   end
 
@@ -43,6 +57,16 @@ function M.argv(config, backend, session_id)
 
   if frontend == "raw" then
     return { config.launcher }, nil
+  end
+
+  if frontend == "nvim-console" then
+    local nvim_console = nvim_console_config(config)
+    local argv = { nvim_console.bin }
+    if nvim_console.add_repo_to_rtp then
+      vim.list_extend(argv, { "--cmd", "set rtp^=" .. repo_root() })
+    end
+    vim.list_extend(argv, { "-c", nvim_console.command })
+    return argv, nil
   end
 
   local ark_terminal = ark_terminal_config(config)
@@ -92,6 +116,10 @@ end
 
 function M.ark_terminal_bin(config)
   return ark_terminal_config(config or {}).bin
+end
+
+function M.nvim_console_bin(config)
+  return nvim_console_config(config or {}).bin
 end
 
 return M

@@ -123,6 +123,13 @@ function M.check()
     else
       report.error("Ark Terminal frontend is configured but binary is unavailable: " .. ark_terminal_bin)
     end
+  elseif frontend == "nvim-console" then
+    local nvim_console_bin = console_frontend.nvim_console_bin(runtime)
+    if executable(nvim_console_bin) then
+      report.ok("Neovim console frontend executable is available: " .. nvim_console_bin)
+    else
+      report.error("Neovim console frontend is configured but executable is unavailable: " .. nvim_console_bin)
+    end
   elseif frontend ~= "raw" then
     report.error("Configured console frontend is not supported by this ark.nvim build: " .. frontend)
   end

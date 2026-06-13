@@ -215,23 +215,33 @@ part of the default supported path.
 - R Markdown / Quarto inline `` `r ...` `` completion
 - Safety-oriented E2E runner for tmux-backed and Blink-backed tests
 
-## Future Product Track: Ark Terminal
+## Future Product Tracks: Ark Console Frontends
 
-Ark Terminal is the planned product track for replacing the raw managed `R`
-prompt with an Ark-owned terminal console that preserves normal Linux terminal
-behavior while adding Ark LSP completions, docs, signature help, and
-Neovim-managed control. The detailed sub-project plan lives in
+Ark now has two related, but deliberately separate, console-frontend tracks.
+
+`ark-terminal` is the standalone Rust PTY frontend. It preserves normal Linux
+terminal behavior while adding Ark LSP completions, docs, signature help, and
+Ark-managed control with a self-rendered completion UI. The detailed
+sub-project plan lives in
 [ark-terminal-todo.md](/home/marine/repos/ark.nvim/ark-terminal-todo.md).
 
-This track must not degrade the current raw-terminal R experience. It remains
-separate from the active v1 workflow until parity, fallback behavior, and
-tmux-backed verification are proven.
+`nvim-console` is the Neovim-buffer console frontend. It uses a normal
+Neovim R buffer for the editable input region so Blink and Neovim's LSP client
+can provide completion UI, while Ark owns the PTY-backed R process and renders
+the prompt virtually. Submitted input is preserved as R code, and R output is
+recorded as transcript comments so the buffer remains a valid R document.
+Console history and draft editing are buffer-native interactions on the current
+input region, not terminal escape-sequence emulation.
 
-The initial implementation substrate is present as the opt-in `ark-terminal`
-binary and `session.console_frontend = "ark-terminal"` launcher wrapper. It
-currently runs the existing managed R launcher through transparent PTY
-pass-through; prompt-owned editing and Ark LSP console UI remain gated behind
-the Ark Terminal track.
+Both tracks must preserve raw-terminal fallback behavior. Neither should
+degrade the current raw managed `R` experience until parity, fallback behavior,
+and tmux-backed verification are proven.
+
+The initial `ark-terminal` implementation substrate is present as the opt-in
+`ark-terminal` binary and `session.console_frontend = "ark-terminal"` launcher
+wrapper. The `nvim-console` track is an additive frontend selected with
+`session.console_frontend = "nvim-console"` or opened in-process with
+`:Ark console`.
 
 ## Named Future Version: v1.1 Target Lens
 
