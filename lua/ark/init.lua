@@ -2,6 +2,7 @@ local blink = require("ark.blink")
 local bridge = require("ark.bridge")
 local config = require("ark.config")
 local console = require("ark.console")
+local console_frontend = require("ark.console_frontend")
 local dev = require("ark.dev")
 local expression = require("ark.expression")
 local keymaps = require("ark.keymaps")
@@ -1224,6 +1225,11 @@ local function default_slime_send(config_arg, text)
   return result == nil and true or result, nil
 end
 
+local function using_nvim_console_frontend()
+  local runtime_config = session_backend.runtime_config(options)
+  return console_frontend.normalize(runtime_config and runtime_config.console_frontend) == "nvim-console"
+end
+
 local function install_slime_override()
   _G.__ark_slime_override_send = function(config_arg, text)
     local ok, err = M._slime_override_send(config_arg, text)
@@ -1682,6 +1688,14 @@ function M._slime_override_send(config_arg, text, delegate)
   local ready, ready_err = M._slime_before_send()
   if not ready then
     return nil, ready_err
+  end
+
+  if using_nvim_console_frontend() and type(delegate) ~= "function" then
+    local backend_ok, backend_err = session_backend.send_text(options, text)
+    if backend_ok then
+      return true, nil
+    end
+    return nil, backend_err or "ark.nvim nvim-console send failed"
   end
 
   local send = type(delegate) == "function" and delegate or default_slime_send

@@ -8,6 +8,7 @@ local transcript_prompt_ns = vim.api.nvim_create_namespace("ArkConsoleTranscript
 local input_ns = vim.api.nvim_create_namespace("ArkConsoleInput")
 local console_server_fn = "__ark_console_rpc_send"
 local job_running
+local install_paste_handler
 local state = _G.__ark_nvim_console_state
 if type(state) ~= "table" then
   state = {
@@ -479,6 +480,97 @@ local function set_current_input(bufnr, info, text)
   place_prompt(bufnr)
 end
 
+local function hide_blink_completion()
+  local ok_trigger, trigger = pcall(require, "blink.cmp.completion.trigger")
+  if ok_trigger and type(trigger.hide) == "function" then
+    pcall(trigger.hide)
+  end
+
+  local ok_menu, menu = pcall(require, "blink.cmp.completion.windows.menu")
+  if ok_menu and type(menu) == "table" and type(menu.close) == "function" then
+    pcall(menu.close)
+  end
+end
+
+local function paste_lines_text(lines)
+  if type(lines) == "table" then
+    return table.concat(lines, "\n")
+  end
+  if type(lines) == "string" then
+    return lines
+  end
+  return ""
+end
+
+local function paste_is_complete_input(lines, text)
+  if type(lines) == "table" and lines[#lines] == "" then
+    return true
+  end
+  return type(text) == "string" and text:sub(-1) == "\n"
+end
+
+local function console_paste_buffer()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local info = state.buffers[bufnr]
+  if type(info) ~= "table" or vim.b[bufnr].ark_console ~= true then
+    return nil, nil
+  end
+  return bufnr, info
+end
+
+local function insert_paste_text(text)
+  local lines = vim.split(text or "", "\n", { plain = true })
+  if #lines == 0 then
+    lines = { "" }
+  end
+  vim.api.nvim_put(lines, "c", true, true)
+end
+
+install_paste_handler = function()
+  if state.console_paste_handler_installed == true then
+    return
+  end
+
+  local base_paste = vim.paste
+  state.console_base_paste = state.console_base_paste or base_paste
+  state.console_paste_handler_installed = true
+
+  vim.paste = function(lines, phase)
+    local bufnr, info = console_paste_buffer()
+    if not bufnr then
+      return state.console_base_paste(lines, phase)
+    end
+
+    local text = paste_lines_text(lines)
+    if phase == 1 then
+      info.pending_paste_text = text
+      return true
+    elseif phase == 2 then
+      info.pending_paste_text = (info.pending_paste_text or "") .. text
+      return true
+    elseif phase == 3 then
+      text = (info.pending_paste_text or "") .. text
+      info.pending_paste_text = nil
+    end
+
+    if phase == -1 then
+      info.pending_paste_text = nil
+    end
+
+    if paste_is_complete_input(lines, text) then
+      hide_blink_completion()
+      local ok, err = M.send_text(bufnr, text)
+      if not ok then
+        vim.notify(err or "failed to paste into Ark console", vim.log.levels.ERROR)
+      end
+      return true
+    end
+
+    insert_paste_text(text)
+    return true
+  end
+end
+
 local function cursor_before_input(bufnr, info)
   local winid = vim.fn.bufwinid(bufnr)
   if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
@@ -894,6 +986,7 @@ function M.start(opts)
     status_path = session_runtime.status_file_path(runtime, session_id),
     status_timer = nil,
   }
+  install_paste_handler()
   set_input_start(bufnr, state.buffers[bufnr], 0)
   place_prompt(bufnr)
   refresh_valid_snapshot(bufnr, state.buffers[bufnr])
@@ -1122,6 +1215,7 @@ function M.send_text(bufnr, text)
   info.last_send_ms = math.floor(vim.loop.hrtime() / 1e6)
   publish_status(bufnr)
   restore_pending_protected_edit(bufnr, info)
+  set_current_input(bufnr, info, "")
   append_submitted_input_before_input(bufnr, vim.split(text, "\n", { plain = true }), prompt_label(info))
   send_to_job(info, text)
   place_prompt(bufnr)

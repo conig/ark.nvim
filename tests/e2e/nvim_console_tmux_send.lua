@@ -6,6 +6,8 @@ local trace_path = vim.fs.normalize(ark_test.run_tmpdir() .. "/nvim_console_send
 local state_home = vim.fs.normalize(ark_test.run_tmpdir() .. "/nvim_console_send_state")
 local run_tmpdir = vim.fs.normalize(ark_test.run_tmpdir() .. "/nvim_console_send")
 local fake_lsp = vim.fs.normalize(run_tmpdir .. "/fake-lsp")
+local fake_slime_rtp = vim.fs.normalize(run_tmpdir .. "/fake-slime")
+local fake_slime_tmux = vim.fs.normalize(fake_slime_rtp .. "/autoload/slime/targets/tmux.vim")
 local fake_r = vim.fs.normalize(run_tmpdir .. "/fake-r")
 local fake_r_log = vim.fs.normalize(run_tmpdir .. "/fake-r.log")
 local status_dir = vim.fs.normalize(run_tmpdir .. "/status")
@@ -18,6 +20,7 @@ end
 
 vim.fn.mkdir(run_tmpdir, "p")
 vim.fn.mkdir(status_dir, "p")
+vim.fn.mkdir(vim.fs.dirname(fake_slime_tmux), "p")
 vim.fn.writefile({
   "#!/usr/bin/env bash",
   "printf '> '",
@@ -28,6 +31,22 @@ vim.fn.writefile({
   "done",
 }, fake_r)
 vim.fn.setfperm(fake_r, "rwxr-xr-x")
+
+vim.fn.writefile({
+  "function! slime#targets#tmux#send(config, text) abort",
+  "  let l:cmd = ['tmux']",
+  "  if has_key(a:config, 'socket_name') && type(a:config.socket_name) == v:t_string && a:config.socket_name !=# ''",
+  "    call extend(l:cmd, ['-S', a:config.socket_name])",
+  "  endif",
+  "  let l:buffer = 'ark-fake-slime-' . reltimefloat(reltime())",
+  "  call system(l:cmd + ['set-buffer', '-b', l:buffer, a:text])",
+  "  if v:shell_error != 0",
+  "    return 0",
+  "  endif",
+  "  call system(l:cmd + ['paste-buffer', '-d', '-b', l:buffer, '-t', a:config.target_pane])",
+  "  return v:shell_error == 0 ? 1 : 0",
+  "endfunction",
+}, fake_slime_tmux)
 
 vim.fn.writefile({
   "#!/usr/bin/env python3",
@@ -66,9 +85,9 @@ vim.fn.writefile({
   "    if request_id is None:",
   "        continue",
   "    if method == 'initialize':",
-  "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'capabilities': {'textDocumentSync': 1, 'completionProvider': {'triggerCharacters': ['$']}}}})",
+  "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'capabilities': {'textDocumentSync': 1, 'completionProvider': {'triggerCharacters': ['$', '(', ')']}}}})",
   "    elif method == 'textDocument/completion':",
-  "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'isIncomplete': False, 'items': [{'label': 'managed_console_blink_item', 'kind': 6}]}})",
+  "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'isIncomplete': False, 'items': [{'label': 'managed_console_blink_item', 'kind': 6}, {'label': 'ggplot2', 'kind': 9}]}})",
   "    else:",
   "        send({'jsonrpc': '2.0', 'id': request_id, 'result': None})",
 }, fake_lsp)
@@ -123,6 +142,47 @@ local function status_files()
   return vim.fn.glob(status_dir .. "/*.json", false, true)
 end
 
+local function fake_r_log_lines()
+  if vim.fn.filereadable(fake_r_log) ~= 1 then
+    return {}
+  end
+  return vim.fn.readfile(fake_r_log)
+end
+
+local function fake_r_log_text()
+  return table.concat(fake_r_log_lines(), "\n")
+end
+
+local function fake_r_log_contains_line(line)
+  for _, logged in ipairs(fake_r_log_lines()) do
+    if logged == line then
+      return true
+    end
+  end
+  return false
+end
+
+local function fake_r_log_has_ordered_lines(first, second)
+  local saw_first = false
+  for _, logged in ipairs(fake_r_log_lines()) do
+    if logged == first then
+      saw_first = true
+    elseif saw_first and logged == second then
+      return true
+    end
+  end
+  return false
+end
+
+local function slime_send_payload(nvim_pane, label, lines)
+  local payload_path = vim.fs.normalize(run_tmpdir .. "/" .. label .. ".R")
+  vim.fn.writefile(lines, payload_path)
+  local command = ":lua require('ark')._slime_override_send(vim.b.slime_config, table.concat(vim.fn.readfile("
+    .. vim.fn.string(payload_path)
+    .. "), '\\n') .. '\\n')"
+  tmux({ "send-keys", "-t", nvim_pane, "Escape", command, "Enter" })
+end
+
 local ok, err = xpcall(function()
   cleanup()
   vim.fn.delete(trace_path)
@@ -142,6 +202,8 @@ local ok, err = xpcall(function()
     "-n",
     "-u",
     vim.fn.shellescape(init_path),
+    "-c",
+    "'set rtp^=" .. fake_slime_rtp .. "'",
     "-c",
     "'set shadafile=NONE'",
     "-c",
@@ -179,6 +241,25 @@ local ok, err = xpcall(function()
     end
     return false
   end)
+
+  local panes_after_console_start = tmux({
+    "list-panes",
+    "-t",
+    session_name,
+    "-F",
+    "#{pane_id}\t#{pane_active}\t#{pane_current_command}",
+  })
+  local console_pane = nil
+  for line in panes_after_console_start:gmatch("[^\n]+") do
+    local pane_id, active = line:match("^([^\t]+)\t([^\t]+)")
+    if pane_id and pane_id ~= nvim_pane and active == "0" then
+      console_pane = pane_id
+      break
+    end
+  end
+  if not console_pane then
+    ark_test.fail("failed to identify managed nvim-console pane: " .. panes_after_console_start)
+  end
 
   local rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
   if type(rpc_chan) ~= "number" or rpc_chan <= 0 then
@@ -272,6 +353,122 @@ local ok, err = xpcall(function()
     ark_test.fail("managed nvim-console should use terminal-like REPL UI: " .. vim.inspect(blink_result))
   end
 
+  -- Regression coverage for the real vim-slime/nvim-slimetree style path.
+  -- The fake vim-slime tmux target performs the same raw pane paste that
+  -- exposed this bug. For the nvim-console frontend, Ark's slime override must
+  -- route the text through the console RPC send path instead: no completion
+  -- menu should appear after a complete call, and multiline R code must reach
+  -- the backend as separate lines.
+  rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
+  if type(rpc_chan) ~= "number" or rpc_chan <= 0 then
+    ark_test.fail("failed to reconnect to managed nvim-console RPC socket for raw paste setup")
+  end
+  local raw_paste_setup_ok, raw_paste_setup = pcall(vim.rpcrequest, rpc_chan, "nvim_exec_lua", [[
+    local bufnr = vim.api.nvim_get_current_buf()
+    local status = require("ark.console").status(bufnr)
+    local ok_trigger, trigger = pcall(require, "blink.cmp.completion.trigger")
+    if ok_trigger and type(trigger.hide) == "function" then
+      pcall(trigger.hide)
+    end
+    vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "" })
+    vim.api.nvim_win_set_cursor(0, { status.input_start + 1, 0 })
+    vim.cmd("startinsert")
+    return {
+      ok = true,
+      line = vim.api.nvim_get_current_line(),
+      mode = vim.fn.mode(),
+      input_start = status.input_start,
+    }
+  ]], {})
+  pcall(vim.fn.chanclose, rpc_chan)
+  if not raw_paste_setup_ok or type(raw_paste_setup) ~= "table" or raw_paste_setup.ok ~= true then
+    ark_test.fail("managed nvim-console raw paste setup failed: " .. vim.inspect(raw_paste_setup))
+  end
+
+  slime_send_payload(nvim_pane, "raw-library", { "library(ggplot2)" })
+  ark_test.wait_for("raw tmux paste delivered library call", 10000, function()
+    return fake_r_log_contains_line("library(ggplot2)")
+  end)
+
+  rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
+  if type(rpc_chan) ~= "number" or rpc_chan <= 0 then
+    ark_test.fail("failed to reconnect to managed nvim-console RPC socket for raw paste assertion")
+  end
+  local raw_library_ok, raw_library_result = pcall(vim.rpcrequest, rpc_chan, "nvim_exec_lua", [[
+    vim.wait(1000, function()
+      local ok_blink, blink = pcall(require, "blink.cmp")
+      return ok_blink and blink.is_visible()
+    end, 20, false)
+    local ok_blink, blink = pcall(require, "blink.cmp")
+    local ok_list, list = pcall(require, "blink.cmp.completion.list")
+    local labels = {}
+    if ok_list and type(list.items) == "table" then
+      for _, item in ipairs(list.items) do
+        labels[#labels + 1] = item.label
+      end
+    end
+    local status = require("ark.console").status(0)
+    return {
+      visible = ok_blink and blink.is_visible() or false,
+      labels = labels,
+      line = vim.api.nvim_get_current_line(),
+      mode = vim.fn.mode(),
+      current_input = type(status) == "table"
+          and table.concat(vim.api.nvim_buf_get_lines(0, status.input_start, -1, false), "\n")
+        or nil,
+    }
+  ]], {})
+  pcall(vim.fn.chanclose, rpc_chan)
+  if not raw_library_ok or type(raw_library_result) ~= "table" then
+    ark_test.fail("managed nvim-console raw library paste assertion failed: " .. vim.inspect(raw_library_result))
+  end
+
+  rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
+  if type(rpc_chan) ~= "number" or rpc_chan <= 0 then
+    ark_test.fail("failed to reconnect to managed nvim-console RPC socket for multiline raw paste setup")
+  end
+  local raw_multiline_setup_ok, raw_multiline_setup = pcall(vim.rpcrequest, rpc_chan, "nvim_exec_lua", [[
+    local status = require("ark.console").status(0)
+    local ok_trigger, trigger = pcall(require, "blink.cmp.completion.trigger")
+    if ok_trigger and type(trigger.hide) == "function" then
+      pcall(trigger.hide)
+    end
+    vim.api.nvim_buf_set_lines(0, status.input_start, -1, false, { "" })
+    vim.api.nvim_win_set_cursor(0, { status.input_start + 1, 0 })
+    vim.cmd("startinsert")
+    return {
+      ok = true,
+      line = vim.api.nvim_get_current_line(),
+      mode = vim.fn.mode(),
+    }
+  ]], {})
+  pcall(vim.fn.chanclose, rpc_chan)
+  if not raw_multiline_setup_ok or type(raw_multiline_setup) ~= "table" or raw_multiline_setup.ok ~= true then
+    ark_test.fail("managed nvim-console raw multiline setup failed: " .. vim.inspect(raw_multiline_setup))
+  end
+
+  local raw_pipe_first = "lm(mpg ~ wt, data = mtcars) |>"
+  local raw_pipe_second = "    summary()"
+  slime_send_payload(nvim_pane, "raw-pipe", { raw_pipe_first, raw_pipe_second })
+  vim.wait(1000, function()
+    return fake_r_log_has_ordered_lines(raw_pipe_first, raw_pipe_second)
+      or fake_r_log_contains_line(raw_pipe_first .. raw_pipe_second:gsub("^%s*", ""))
+      or fake_r_log_contains_line(raw_pipe_first .. raw_pipe_second)
+  end, 20, false)
+
+  local raw_paste_failures = {}
+  if raw_library_result.visible == true then
+    raw_paste_failures[#raw_paste_failures + 1] = "library(ggplot2) raw paste opened Blink: "
+      .. vim.inspect(raw_library_result)
+  end
+  if not fake_r_log_has_ordered_lines(raw_pipe_first, raw_pipe_second) then
+    raw_paste_failures[#raw_paste_failures + 1] = "multiline raw paste did not reach R as separate lines: "
+      .. vim.inspect(fake_r_log_lines())
+  end
+  if #raw_paste_failures > 0 then
+    ark_test.fail(table.concat(raw_paste_failures, "\n"))
+  end
+
   local direct_output = vim.fn.system({
     "nvim",
     "--server",
@@ -284,10 +481,7 @@ local ok, err = xpcall(function()
   end
 
   ark_test.wait_for("managed nvim-console direct socket send", 20000, function()
-    if vim.fn.filereadable(fake_r_log) ~= 1 then
-      return false
-    end
-    return table.concat(vim.fn.readfile(fake_r_log), "\n"):find("direct_socket_send%(%)") ~= nil
+    return fake_r_log_text():find("direct_socket_send%(%)") ~= nil
   end)
 
   rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
@@ -360,10 +554,7 @@ local ok, err = xpcall(function()
   end
 
   ark_test.wait_for("managed nvim-console R process received normal-cursor send", 20000, function()
-    if vim.fn.filereadable(fake_r_log) ~= 1 then
-      return false
-    end
-    return table.concat(vim.fn.readfile(fake_r_log), "\n"):find("send_after_normal_cursor%(%)") ~= nil
+    return fake_r_log_text():find("send_after_normal_cursor%(%)") ~= nil
   end)
 
   rpc_chan = vim.fn.sockconnect("pipe", console_status.nvim_console_rpc_socket, { rpc = true })
@@ -531,10 +722,7 @@ local ok, err = xpcall(function()
   end
 
   ark_test.wait_for("managed nvim-console R process received direct send", 20000, function()
-    if vim.fn.filereadable(fake_r_log) ~= 1 then
-      return false
-    end
-    return table.concat(vim.fn.readfile(fake_r_log), "\n"):find("rpc_tmux_send%(%)") ~= nil
+    return fake_r_log_text():find("rpc_tmux_send%(%)") ~= nil
   end)
 
   if type(console_status) ~= "table" then
