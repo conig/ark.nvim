@@ -9,6 +9,12 @@ pub struct Cli {
     pub ark_lsp: Option<PathBuf>,
     pub status_dir: Option<PathBuf>,
     pub session_id: Option<String>,
+    pub session_kind: Option<String>,
+    pub session_status_file: Option<PathBuf>,
+    pub session_timeout_ms: Option<u64>,
+    pub session_tmux_socket: Option<String>,
+    pub session_tmux_session: Option<String>,
+    pub session_tmux_pane: Option<String>,
     pub backend: String,
     pub raw: bool,
     pub no_lsp: bool,
@@ -28,6 +34,13 @@ impl Cli {
         let mut ark_lsp = env_path("ARK_NVIM_LSP_BIN");
         let mut status_dir = env_path("ARK_STATUS_DIR");
         let mut session_id = env_string("ARK_SESSION_ID");
+        let session_kind =
+            env_string("ARK_SESSION_KIND").or_else(|| env_string("ARK_NVIM_SESSION_KIND"));
+        let session_status_file = env_path("ARK_SESSION_STATUS_FILE");
+        let session_timeout_ms = env_u64("ARK_SESSION_TIMEOUT_MS");
+        let session_tmux_socket = env_string("ARK_SESSION_TMUX_SOCKET");
+        let session_tmux_session = env_string("ARK_SESSION_TMUX_SESSION");
+        let session_tmux_pane = env_string("ARK_SESSION_TMUX_PANE");
         let mut backend = env_string("ARK_SESSION_BACKEND").unwrap_or_else(|| "tmux".to_string());
         let mut raw = false;
         let mut no_lsp = false;
@@ -79,6 +92,12 @@ impl Cli {
             ark_lsp,
             status_dir,
             session_id,
+            session_kind,
+            session_status_file,
+            session_timeout_ms,
+            session_tmux_socket,
+            session_tmux_session,
+            session_tmux_pane,
             backend,
             raw,
             no_lsp,
@@ -141,6 +160,10 @@ fn env_path(name: &str) -> Option<PathBuf> {
 
 fn env_string(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+fn env_u64(name: &str) -> Option<u64> {
+    env_string(name).and_then(|value| value.parse::<u64>().ok())
 }
 
 fn default_child_command() -> Vec<OsString> {

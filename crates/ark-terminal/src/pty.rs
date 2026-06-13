@@ -10,6 +10,7 @@ use std::os::fd::FromRawFd;
 use std::os::fd::IntoRawFd;
 use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::Child;
 use std::process::Command;
 use std::process::ExitStatus;
@@ -39,6 +40,7 @@ use crate::enhanced::InputEffect;
 use crate::lsp_client::apply_completion_item;
 use crate::lsp_runtime::TerminalLspEvent;
 use crate::lsp_runtime::TerminalLspHandle;
+use crate::lsp_runtime::TerminalLspSession;
 use crate::prompt::PromptDetector;
 use crate::prompt::PromptState;
 use crate::raw_terminal::RawTerminal;
@@ -97,11 +99,12 @@ pub fn run(cli: Cli) -> anyhow::Result<i32> {
     let master_for_output = openpty_result.master;
     let slave = openpty_result.slave;
 
-    let mut child = spawn_child(&cli, &slave).context("failed to spawn child command")?;
+    let session = resolve_terminal_session(&cli);
+    let mut child = spawn_child(&cli, &session, &slave).context("failed to spawn child command")?;
     drop(slave);
 
     if cli.print_status_json {
-        StartupStatus::from_child(&cli, &child).print_json()?;
+        StartupStatus::from_child(&cli, &session, &child).print_json()?;
     }
 
     trace.event(
@@ -110,10 +113,11 @@ pub fn run(cli: Cli) -> anyhow::Result<i32> {
             "pid": child.id(),
             "mode": if enhanced_mode { "enhanced" } else { "raw" },
             "backend": cli.backend,
-            "session_id": cli.session_id,
+            "session_id": session.session_id,
+            "status_file": session.status_file.as_ref(),
         }),
     );
-    let lsp = start_terminal_lsp(&cli, enhanced_mode, child.id(), &trace);
+    let lsp = start_terminal_lsp(&cli, &session, enhanced_mode, &trace);
 
     let _raw_terminal = if stdin_is_tty {
         Some(RawTerminal::enter(stdin.as_fd()).context("failed to enter raw terminal mode")?)
@@ -152,7 +156,7 @@ pub fn run(cli: Cli) -> anyhow::Result<i32> {
     Ok(exit_status_code(status))
 }
 
-fn spawn_child(cli: &Cli, slave: &OwnedFd) -> anyhow::Result<Child> {
+fn spawn_child(cli: &Cli, session: &TerminalLspSession, slave: &OwnedFd) -> anyhow::Result<Child> {
     let stdin_fd = dup(slave)?;
     let stdout_fd = dup(slave)?;
     let stderr_fd = dup(slave)?;
@@ -167,10 +171,22 @@ fn spawn_child(cli: &Cli, slave: &OwnedFd) -> anyhow::Result<Child> {
     if let Some(status_dir) = &cli.status_dir {
         command.env("ARK_STATUS_DIR", status_dir);
     }
-    if let Some(session_id) = &cli.session_id {
-        command.env("ARK_SESSION_ID", session_id);
+    command.env("ARK_SESSION_KIND", &session.kind);
+    command.env("ARK_SESSION_BACKEND", &session.backend);
+    command.env("ARK_SESSION_ID", &session.session_id);
+    command.env("ARK_SESSION_TIMEOUT_MS", session.timeout_ms.to_string());
+    if let Some(status_file) = &session.status_file {
+        command.env("ARK_SESSION_STATUS_FILE", status_file);
     }
-    command.env("ARK_SESSION_BACKEND", &cli.backend);
+    if !session.tmux_socket.is_empty() {
+        command.env("ARK_SESSION_TMUX_SOCKET", &session.tmux_socket);
+    }
+    if !session.tmux_session.is_empty() {
+        command.env("ARK_SESSION_TMUX_SESSION", &session.tmux_session);
+    }
+    if !session.tmux_pane.is_empty() {
+        command.env("ARK_SESSION_TMUX_PANE", &session.tmux_pane);
+    }
     if let Some(ark_lsp) = &cli.ark_lsp {
         command.env("ARK_NVIM_LSP_BIN", ark_lsp);
     }
@@ -414,8 +430,8 @@ fn accept_completion_if_requested(
 
 fn start_terminal_lsp(
     cli: &Cli,
+    session: &TerminalLspSession,
     enhanced_mode: bool,
-    child_id: u32,
     trace: &TraceLog,
 ) -> Option<TerminalLspHandle> {
     if !enhanced_mode || cli.no_lsp {
@@ -426,17 +442,15 @@ fn start_terminal_lsp(
         trace.event("lsp_disabled", json!({ "reason": "missing ark-lsp path" }));
         return None;
     };
-    let session_id = cli
-        .session_id
-        .clone()
-        .unwrap_or_else(|| format!("ark-terminal-{child_id}"));
 
-    match TerminalLspHandle::spawn_ark_lsp(ark_lsp, session_id.clone()) {
+    match TerminalLspHandle::spawn_ark_lsp(ark_lsp, session.clone()) {
         Ok(lsp) => {
             trace.event(
                 "lsp_worker_spawned",
                 json!({
-                    "session_id": session_id,
+                    "session_id": session.session_id,
+                    "status_file": session.status_file.as_ref(),
+                    "backend": session.backend,
                 }),
             );
             Some(lsp)
@@ -451,6 +465,122 @@ fn start_terminal_lsp(
             None
         },
     }
+}
+
+fn resolve_terminal_session(cli: &Cli) -> TerminalLspSession {
+    let tmux_socket = cli
+        .session_tmux_socket
+        .clone()
+        .or_else(tmux_socket_from_env)
+        .unwrap_or_default();
+    let tmux_pane = cli
+        .session_tmux_pane
+        .clone()
+        .or_else(|| env_non_empty("TMUX_PANE"))
+        .unwrap_or_default();
+    let tmux_session = cli
+        .session_tmux_session
+        .clone()
+        .or_else(|| tmux_session_name(&tmux_socket, &tmux_pane))
+        .unwrap_or_default();
+
+    let session_id = cli
+        .session_id
+        .clone()
+        .or_else(|| tmux_session_id(&tmux_socket, &tmux_session, &tmux_pane))
+        .unwrap_or_else(|| format!("ark-terminal-{}", std::process::id()));
+
+    let mut session = TerminalLspSession::new(session_id);
+    session.kind = cli
+        .session_kind
+        .clone()
+        .unwrap_or_else(|| String::from("ark"));
+    session.backend = cli.backend.clone();
+    session.timeout_ms = cli.session_timeout_ms.unwrap_or(1000);
+    session.tmux_socket = tmux_socket;
+    session.tmux_session = tmux_session;
+    session.tmux_pane = tmux_pane;
+    session.status_file = cli
+        .session_status_file
+        .clone()
+        .or_else(|| status_file_from_dir(cli.status_dir.as_deref(), &session.session_id));
+
+    session
+}
+
+fn env_non_empty(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+fn tmux_socket_from_env() -> Option<String> {
+    env_non_empty("ARK_TMUX_SOCKET").or_else(|| {
+        env_non_empty("TMUX").and_then(|value| value.split(',').next().map(ToString::to_string))
+    })
+}
+
+fn tmux_session_name(socket: &str, pane: &str) -> Option<String> {
+    if socket.is_empty() || pane.is_empty() {
+        return None;
+    }
+
+    let output = Command::new("tmux")
+        .arg("-S")
+        .arg(socket)
+        .arg("display-message")
+        .arg("-p")
+        .arg("-t")
+        .arg(pane)
+        .arg("#{session_name}")
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn tmux_session_id(socket: &str, session: &str, pane: &str) -> Option<String> {
+    if socket.is_empty() || session.is_empty() || pane.is_empty() {
+        return None;
+    }
+
+    Some(
+        [socket, session, pane]
+            .into_iter()
+            .map(encode_status_component)
+            .collect::<Vec<_>>()
+            .join("__"),
+    )
+}
+
+fn encode_status_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-' => {
+                encoded.push(char::from(byte));
+            },
+            _ => {
+                encoded.push_str(&format!("%{byte:02X}"));
+            },
+        }
+    }
+    encoded
+}
+
+fn status_file_from_dir(status_dir: Option<&Path>, session_id: &str) -> Option<std::path::PathBuf> {
+    if session_id.is_empty() {
+        return None;
+    }
+
+    let mut path = status_dir?.to_path_buf();
+    path.push(format!("{session_id}.json"));
+    Some(path)
 }
 
 fn drain_lsp_events(
@@ -745,5 +875,14 @@ mod tests {
             ],
         });
         assert_eq!(menu.selected_item().unwrap()["label"], "mpg");
+    }
+
+    #[test]
+    fn tmux_session_id_matches_launcher_status_encoding() {
+        let session_id = tmux_session_id("/tmp/tmux-60349/default", "repos_ark_nvim", "%195");
+        assert_eq!(
+            session_id.as_deref(),
+            Some("%2Ftmp%2Ftmux-60349%2Fdefault__repos_ark_nvim__%25195")
+        );
     }
 }

@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc;
@@ -7,6 +8,7 @@ use std::sync::mpsc::TryRecvError;
 use std::thread;
 
 use anyhow::anyhow;
+use serde_json::json;
 use serde_json::Value;
 
 use crate::input::EditorSnapshot;
@@ -41,6 +43,18 @@ pub struct TerminalLspHandle {
     next_completion_sequence: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalLspSession {
+    pub kind: String,
+    pub backend: String,
+    pub session_id: String,
+    pub status_file: Option<PathBuf>,
+    pub tmux_socket: String,
+    pub tmux_session: String,
+    pub tmux_pane: String,
+    pub timeout_ms: u64,
+}
+
 #[derive(Debug)]
 enum TerminalLspCommand {
     Sync(EditorSnapshot),
@@ -55,11 +69,12 @@ enum TerminalLspCommand {
 impl TerminalLspHandle {
     pub fn spawn_ark_lsp(
         ark_lsp: impl Into<PathBuf>,
-        session_id: impl Into<String>,
+        session: TerminalLspSession,
     ) -> anyhow::Result<Self> {
         let mut command = Command::new(ark_lsp.into());
         command.arg("--runtime-mode").arg("detached");
-        Self::spawn(command, session_id)
+        session.apply_env(&mut command);
+        Self::spawn(command, session.session_id)
     }
 
     pub fn spawn(command: Command, session_id: impl Into<String>) -> anyhow::Result<Self> {
@@ -124,6 +139,48 @@ impl TerminalLspHandle {
             }
         }
         events
+    }
+}
+
+impl TerminalLspSession {
+    pub fn new(session_id: impl Into<String>) -> Self {
+        Self {
+            kind: String::from("ark"),
+            backend: String::from("tmux"),
+            session_id: session_id.into(),
+            status_file: None,
+            tmux_socket: String::new(),
+            tmux_session: String::new(),
+            tmux_pane: String::new(),
+            timeout_ms: 1000,
+        }
+    }
+
+    pub fn with_status_dir(mut self, status_dir: impl AsRef<Path>) -> Self {
+        let mut path = status_dir.as_ref().to_path_buf();
+        path.push(format!("{}.json", self.session_id));
+        self.status_file = Some(path);
+        self
+    }
+
+    fn apply_env(&self, command: &mut Command) {
+        command.env("ARK_SESSION_KIND", &self.kind);
+        command.env("ARK_SESSION_BACKEND", &self.backend);
+        command.env("ARK_SESSION_ID", &self.session_id);
+        command.env("ARK_SESSION_TIMEOUT_MS", self.timeout_ms.to_string());
+
+        if let Some(status_file) = &self.status_file {
+            command.env("ARK_SESSION_STATUS_FILE", status_file);
+        }
+        if !self.tmux_socket.is_empty() {
+            command.env("ARK_SESSION_TMUX_SOCKET", &self.tmux_socket);
+        }
+        if !self.tmux_session.is_empty() {
+            command.env("ARK_SESSION_TMUX_SESSION", &self.tmux_session);
+        }
+        if !self.tmux_pane.is_empty() {
+            command.env("ARK_SESSION_TMUX_PANE", &self.tmux_pane);
+        }
     }
 }
 
@@ -227,8 +284,11 @@ fn handle_completion(
 fn read_message_with_id(transport: &mut LspTransport, id: u64) -> anyhow::Result<Value> {
     loop {
         let message = transport.read_message()?;
-        if message_id(&message) == Some(id) {
+        if message_id(&message) == Some(id) && !is_server_request(&message) {
             return Ok(message);
+        }
+        if is_server_request(&message) {
+            transport.send(&server_request_response(&message))?;
         }
     }
 }
@@ -239,6 +299,24 @@ fn message_id(message: &Value) -> Option<u64> {
 
 fn is_completion_request(message: &Value) -> bool {
     message.get("method").and_then(Value::as_str) == Some("textDocument/completion")
+}
+
+fn is_server_request(message: &Value) -> bool {
+    message_id(message).is_some() && message.get("method").and_then(Value::as_str).is_some()
+}
+
+fn server_request_response(message: &Value) -> Value {
+    let id = message.get("id").cloned().unwrap_or(Value::Null);
+    let result = match message.get("method").and_then(Value::as_str) {
+        Some("workspace/configuration") => json!([]),
+        _ => Value::Null,
+    };
+
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result,
+    })
 }
 
 #[cfg(test)]
@@ -278,6 +356,36 @@ mod tests {
     }
 
     #[test]
+    fn server_request_response_acknowledges_dynamic_registration() {
+        assert_eq!(
+            server_request_response(&json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "client/registerCapability",
+                "params": {}
+            })),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "result": null
+            })
+        );
+        assert_eq!(
+            server_request_response(&json!({
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "workspace/configuration",
+                "params": {}
+            })),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 8,
+                "result": []
+            })
+        );
+    }
+
+    #[test]
     fn worker_initializes_and_reports_completion_responses() {
         let mut handle = TerminalLspHandle::spawn(Command::new("cat"), "session-1").unwrap();
 
@@ -305,5 +413,14 @@ mod tests {
             },
             other => panic!("unexpected terminal LSP event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn lsp_session_status_dir_matches_session_id() {
+        let session = TerminalLspSession::new("session-1").with_status_dir("/tmp/ark-status");
+        assert_eq!(
+            session.status_file.as_deref(),
+            Some(std::path::Path::new("/tmp/ark-status/session-1.json"))
+        );
     }
 }

@@ -3,6 +3,7 @@ use std::process::Child;
 
 use serde::Serialize;
 
+use crate::lsp_runtime::TerminalLspSession;
 use crate::Cli;
 
 #[derive(Debug, Serialize)]
@@ -19,7 +20,7 @@ pub struct StartupStatus {
 }
 
 impl StartupStatus {
-    pub fn from_child(cli: &Cli, child: &Child) -> Self {
+    pub fn from_child(cli: &Cli, session: &TerminalLspSession, child: &Child) -> Self {
         Self {
             status: "started",
             mode: if cli.raw || cli.no_lsp {
@@ -29,7 +30,7 @@ impl StartupStatus {
             },
             child_pid: child.id(),
             backend: cli.backend.clone(),
-            session_id: cli.session_id.clone(),
+            session_id: Some(session.session_id.clone()),
             status_dir: cli.status_dir.as_ref().map(path_to_string),
             ark_lsp: cli.ark_lsp.as_ref().map(path_to_string),
             no_lsp: cli.no_lsp,
@@ -63,6 +64,12 @@ mod tests {
             ark_lsp: Some("/tmp/ark-lsp".into()),
             status_dir: Some("/tmp/ark-status".into()),
             session_id: Some("session-1".into()),
+            session_kind: None,
+            session_status_file: None,
+            session_timeout_ms: None,
+            session_tmux_socket: None,
+            session_tmux_session: None,
+            session_tmux_pane: None,
             backend: "terminal".into(),
             raw: true,
             no_lsp: true,
