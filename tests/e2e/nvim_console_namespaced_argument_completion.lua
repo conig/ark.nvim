@@ -65,29 +65,30 @@ ark_test.wait_for("console LSP session hydration", 20000, function()
     and type(detached_status.lastBootstrapSuccessMs) == "number"
 end)
 
-local status = require("ark.console").status(bufnr)
-local input_start = status.input_start
-vim.api.nvim_buf_set_lines(bufnr, input_start, -1, false, { "corx::corx(" })
-vim.api.nvim_win_set_buf(0, bufnr)
-vim.api.nvim_win_set_cursor(0, { input_start + 1, #"corx::corx(" })
-vim.wait(250, function()
-  return false
-end, 250, false)
+local function completion_at_input(text, context)
+  local status = require("ark.console").status(bufnr)
+  local input_start = status.input_start
+  vim.api.nvim_buf_set_lines(bufnr, input_start, -1, false, { text })
+  vim.api.nvim_win_set_buf(0, bufnr)
+  vim.api.nvim_win_set_cursor(0, { input_start + 1, #text })
+  vim.wait(250, function()
+    return false
+  end, 250, false)
 
-local line = vim.api.nvim_buf_get_lines(bufnr, input_start, input_start + 1, false)[1]
-local result = ark_test.request(client, "textDocument/completion", {
-  textDocument = vim.lsp.util.make_text_document_params(bufnr),
-  position = {
-    line = input_start,
-    character = #line,
-  },
-  context = {
-    triggerKind = 2,
-    triggerCharacter = "(",
-  },
-}, 10000)
+  return ark_test.completion_items(ark_test.request(client, "textDocument/completion", {
+    textDocument = vim.lsp.util.make_text_document_params(bufnr),
+    position = {
+      line = input_start,
+      character = #text,
+    },
+    context = context,
+  }, 10000))
+end
 
-local items = ark_test.completion_items(result)
+local items = completion_at_input("corx::corx(", {
+  triggerKind = 2,
+  triggerCharacter = "(",
+})
 local random_seed = ark_test.find_item(items, ".Random.seed")
 if random_seed then
   ark_test.fail("corx::corx( console completion unexpectedly included .Random.seed: " .. vim.inspect(ark_test.item_labels(items)))
@@ -101,6 +102,21 @@ for _, label in ipairs({ "data", "x", "method" }) do
   if ark_test.insert_text(item) ~= label .. " = " then
     ark_test.fail("corx::corx( console completion inserted unexpected text for " .. label .. ": " .. vim.inspect(item))
   end
+end
+
+-- Regression for completing an object name in a named argument value. This is
+-- the user-visible console shape `corx::corx(data = mtca`, which should offer
+-- `mtcars` from the live R search path rather than staying in argument-name
+-- completion.
+local value_items = completion_at_input("corx::corx(data = mtca", {
+  triggerKind = 1,
+})
+local mtcars = ark_test.find_item(value_items, "mtcars")
+if not mtcars then
+  ark_test.fail("corx::corx(data = mtca console completion missing mtcars: " .. vim.inspect(ark_test.item_labels(value_items)))
+end
+if ark_test.insert_text(mtcars) ~= "mtcars" then
+  ark_test.fail("corx::corx(data = mtca console completion inserted unexpected text: " .. vim.inspect(mtcars))
 end
 
 vim.print({

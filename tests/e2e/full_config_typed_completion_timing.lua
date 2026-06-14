@@ -190,6 +190,7 @@ mark("main_buffer_unlocked")
 local startup = ark_test.startup_status(0) or {}
 local library_completion = probe_completion("libr", "library")
 local dollar_completion = probe_completion("mtcars$", "mpg")
+local named_arg_value_completion = probe_completion("corx::corx(data = mtca", "mtcars")
 
 vim.print({
   marks = marks,
@@ -197,5 +198,6 @@ vim.print({
   startup_elapsed_ms = tonumber(startup.main_buffer_unlock_elapsed_ms) or elapsed_ms(),
   library_completion = library_completion,
   mtcars_dollar_completion = dollar_completion,
+  named_arg_value_completion = named_arg_value_completion,
   status = current_status(),
 })

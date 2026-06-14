@@ -78,7 +78,7 @@ vim.fn.writefile({
   "    if method == 'initialize':",
   "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'capabilities': {'textDocumentSync': 1, 'completionProvider': {'triggerCharacters': ['$', ':', '\"', '[', '/', '@']}}}})",
   "    elif method == 'textDocument/completion':",
-  "        labels = ['console_blink_item', 'console_library_item', 'console_namespace_item', 'console_subset_item', 'console_comparison_item', 'console_path_item']",
+  "        labels = ['console_blink_item', 'console_library_item', 'console_namespace_item', 'console_subset_item', 'console_comparison_item', 'src/console_path_item', 'mtcars']",
   "        send({'jsonrpc': '2.0', 'id': request_id, 'result': {'isIncomplete': False, 'items': [{'label': label, 'kind': 6} for label in labels]}})",
   "    else:",
   "        send({'jsonrpc': '2.0', 'id': request_id, 'result': None})",
@@ -256,7 +256,8 @@ local ok, err = xpcall(function()
     { name = "console Blink namespace completion", text = "pkg::", label = "console_namespace_item" },
     { name = "console Blink subset string completion", text = 'mtcars[, c("', trigger = '"', label = "console_subset_item" },
     { name = "console Blink comparison string completion", text = 'species == "', trigger = '"', label = "console_comparison_item" },
-    { name = "console Blink path completion", text = 'read.csv("src/', trigger = "/", label = "console_path_item" },
+    { name = "console Blink path completion", text = 'read.csv("src/', trigger = "/", label = "src/console_path_item" },
+    { name = "console Blink named argument value completion", text = "corx::corx(data = mtca", label = "mtcars" },
   }
 
   local completion_shows = {}

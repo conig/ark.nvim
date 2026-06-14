@@ -15,6 +15,7 @@ local function snapshot(label, extra)
   local menu_lines = {}
   local menu_open = false
   local diagnostics = {}
+  local ark_status = {}
 
   if ok_list and list and list.items then
     for _, item in ipairs(list.items) do
@@ -49,12 +50,28 @@ local function snapshot(label, extra)
     }
   end
 
+  local ok_ark, ark = pcall(require, "ark")
+  if ok_ark and ark and type(ark.status) == "function" then
+    local ok_status, status = pcall(ark.status, { include_lsp = true })
+    if ok_status and type(status) == "table" then
+      local lsp_status = type(status.lsp_status) == "table" and status.lsp_status or {}
+      ark_status = {
+        bridge_ready = status.bridge_ready == true,
+        repl_ready = status.repl_ready == true,
+        lsp_available = lsp_status.available == true,
+        console_scope_count = tonumber(lsp_status.consoleScopeCount or 0) or 0,
+        library_path_count = tonumber(lsp_status.libraryPathCount or 0) or 0,
+      }
+    end
+  end
+
   append(vim.tbl_extend("force", {
     label = label,
     mode = vim.api.nvim_get_mode().mode,
     line = vim.api.nvim_get_current_line(),
     cursor = vim.api.nvim_win_get_cursor(0),
     ark_clients = #(vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" }) or {}),
+    ark_status = ark_status,
     visible = ok_blink and blink.is_visible() or false,
     menu_open = menu_open,
     menu_lines = menu_lines,
