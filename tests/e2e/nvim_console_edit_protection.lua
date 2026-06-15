@@ -126,6 +126,22 @@ if vim.inspect(after_o) ~= vim.inspect(before) then
 end
 stop_insert_mode()
 
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+feed("O")
+ark_test.wait_for("normal-mode O to keep cursor in active input", 4000, function()
+  local current_status = require("ark.console").status(bufnr)
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  return type(current_status) == "table" and cursor[1] >= current_status.input_start + 1
+end)
+local after_O = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+if vim.inspect(after_O) ~= vim.inspect(before) then
+  ark_test.fail("normal-mode O on protected transcript changed console text: " .. vim.inspect({
+    before = before,
+    after = after_O,
+  }))
+end
+stop_insert_mode()
+
 local after_invalid_edits = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
 if vim.inspect(after_invalid_edits) ~= vim.inspect(before) then
   ark_test.fail("protected transcript changed after old-output edits: " .. vim.inspect({
@@ -168,26 +184,43 @@ if after_input_i_cursor[1] ~= status.input_start + 1 then
 end
 stop_insert_mode()
 
--- Regression: normal-mode `o` in the active REPL input must behave like `i`.
--- It should enter insert mode on the input line, not open a new line below it.
+-- Regression: normal-mode `o` and `O` in the active REPL input should support
+-- legitimate multi-line input editing. They may open rows inside the input
+-- region, but the same keys above the input must still protect the transcript.
 status = require("ark.console").status(bufnr)
 vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "draft_o()" })
 vim.api.nvim_win_set_cursor(0, { status.input_start + 1, 0 })
-local before_active_o_line_count = vim.api.nvim_buf_line_count(bufnr)
 feed("o")
-vim.wait(200)
-local after_active_o_status = require("ark.console").status(bufnr)
-local after_active_o_input =
-  vim.api.nvim_buf_get_lines(bufnr, after_active_o_status.input_start, -1, false)
-if
-  vim.inspect(after_active_o_input) ~= vim.inspect({ "draft_o()" })
-  or vim.api.nvim_buf_line_count(bufnr) ~= before_active_o_line_count
-then
-  ark_test.fail("normal-mode o in active input should not open a new input line: " .. vim.inspect({
-    input = after_active_o_input,
-    line_count_before = before_active_o_line_count,
-    line_count_after = vim.api.nvim_buf_line_count(bufnr),
-    cursor = vim.api.nvim_win_get_cursor(0),
+ark_test.wait_for("normal-mode o in active input to open line below", 4000, function()
+  local current_status = require("ark.console").status(bufnr)
+  local current_input = vim.api.nvim_buf_get_lines(bufnr, current_status.input_start, -1, false)
+  return vim.inspect(current_input) == vim.inspect({ "draft_o()", "" })
+end)
+local after_active_o_cursor = vim.api.nvim_win_get_cursor(0)
+if after_active_o_cursor[1] ~= status.input_start + 2 or after_active_o_cursor[2] ~= 0 then
+  ark_test.fail("normal-mode o in active input should move to opened row: " .. vim.inspect({
+    cursor = after_active_o_cursor,
+    status = status,
+    input = vim.api.nvim_buf_get_lines(bufnr, status.input_start, -1, false),
+  }))
+end
+stop_insert_mode()
+
+status = require("ark.console").status(bufnr)
+vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "draft_O()" })
+vim.api.nvim_win_set_cursor(0, { status.input_start + 1, 0 })
+feed("O")
+ark_test.wait_for("normal-mode O in active input to open line above", 4000, function()
+  local current_status = require("ark.console").status(bufnr)
+  local current_input = vim.api.nvim_buf_get_lines(bufnr, current_status.input_start, -1, false)
+  return vim.inspect(current_input) == vim.inspect({ "", "draft_O()" })
+end)
+local after_active_O_cursor = vim.api.nvim_win_get_cursor(0)
+if after_active_O_cursor[1] ~= status.input_start + 1 or after_active_O_cursor[2] ~= 0 then
+  ark_test.fail("normal-mode O in active input should move to opened row: " .. vim.inspect({
+    cursor = after_active_O_cursor,
+    status = status,
+    input = vim.api.nvim_buf_get_lines(bufnr, status.input_start, -1, false),
   }))
 end
 stop_insert_mode()

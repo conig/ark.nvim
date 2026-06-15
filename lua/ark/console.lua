@@ -1243,6 +1243,44 @@ local function focus_input_for_normal_edit(bufnr)
   vim.api.nvim_feedkeys(vim.keycode("i"), "n", false)
 end
 
+local function open_input_line_for_normal_edit(bufnr, opts)
+  opts = opts or {}
+  local info = state.buffers[bufnr]
+  if type(info) ~= "table" then
+    local key = opts.above == true and "O" or "o"
+    vim.api.nvim_feedkeys(vim.keycode(key), "n", false)
+    return false
+  end
+
+  if not cursor_on_or_after_input(bufnr, info) then
+    focus_input(bufnr, info, { insert = true })
+    return true
+  end
+
+  local winid = vim.fn.bufwinid(bufnr)
+  if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
+    return false
+  end
+
+  local start_line = input_start_line(bufnr, info)
+  local cursor = vim.api.nvim_win_get_cursor(winid)
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  local row = math.max(start_line, math.min(cursor[1] - 1, line_count - 1))
+  local insert_row = opts.above == true and row or row + 1
+
+  with_internal_edit(bufnr, info, function()
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, insert_row, insert_row, false, { "" })
+    set_input_start(bufnr, info, start_line)
+    vim.bo[bufnr].modified = false
+  end)
+  place_prompt(bufnr)
+  pcall(vim.api.nvim_win_set_cursor, winid, { insert_row + 1, 0 })
+  pcall(vim.cmd, "startinsert")
+
+  return true
+end
+
 local function clear_current_input_line(bufnr, opts)
   opts = opts or {}
   local info = state.buffers[bufnr]
@@ -1957,10 +1995,10 @@ function M.start(opts)
     end, { buffer = bufnr, desc = "Enter insert mode in Ark console input", expr = true })
   end
   vim.keymap.set("n", "o", function()
-    focus_input_for_normal_edit(bufnr)
+    open_input_line_for_normal_edit(bufnr)
   end, { buffer = bufnr, desc = "Open line in Ark console input" })
   vim.keymap.set("n", "O", function()
-    focus_input_for_normal_edit(bufnr)
+    open_input_line_for_normal_edit(bufnr, { above = true })
   end, { buffer = bufnr, desc = "Open line above in Ark console input" })
   vim.keymap.set("n", "dd", function()
     clear_current_input_line(bufnr)
