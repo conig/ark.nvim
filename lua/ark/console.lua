@@ -1029,6 +1029,56 @@ local function hide_blink_completion()
   end
 end
 
+local function blink_completion_visible_for_signature_help()
+  local ok, cmp = pcall(require, "blink.cmp")
+  if not ok or type(cmp) ~= "table" then
+    return false
+  end
+
+  if type(cmp.is_menu_visible) == "function" then
+    local visible_ok, visible = pcall(cmp.is_menu_visible)
+    if visible_ok and visible == true then
+      return true
+    end
+  end
+
+  if type(cmp.is_visible) == "function" then
+    local visible_ok, visible = pcall(cmp.is_visible)
+    return visible_ok and visible == true
+  end
+
+  return false
+end
+
+local function close_lsp_info_floats()
+  for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local config = vim.api.nvim_win_get_config(winid)
+    if type(config) == "table" and type(config.relative) == "string" and config.relative ~= "" then
+      local has_lsp_float_var = false
+      for _, var in ipairs({ "textDocument/signatureHelp", "textDocument/hover", "lsp_floating_bufnr" }) do
+        local ok = pcall(vim.api.nvim_win_get_var, winid, var)
+        if ok then
+          has_lsp_float_var = true
+          break
+        end
+      end
+
+      if has_lsp_float_var then
+        pcall(vim.api.nvim_win_close, winid, true)
+      end
+    end
+  end
+end
+
+local function suppress_lsp_info_for_blink_completion()
+  if not blink_completion_visible_for_signature_help() then
+    return false
+  end
+
+  close_lsp_info_floats()
+  return true
+end
+
 local signature_help_trigger_chars = {
   ["("] = true,
   [","] = true,
@@ -1103,6 +1153,10 @@ local function maybe_show_signature_help(bufnr)
     return
   end
 
+  if suppress_lsp_info_for_blink_completion() then
+    return
+  end
+
   local trigger = signature_help_trigger_before_cursor(bufnr, info)
   if not trigger or not has_signature_help_client(bufnr) then
     return
@@ -1120,6 +1174,9 @@ local function maybe_show_signature_help(bufnr)
       return
     end
     if not signature_help_trigger_before_cursor(bufnr, info) then
+      return
+    end
+    if suppress_lsp_info_for_blink_completion() then
       return
     end
     pcall(vim.lsp.buf.signature_help, {

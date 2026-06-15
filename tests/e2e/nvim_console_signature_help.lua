@@ -6,6 +6,18 @@ local stop_watchdog = ark_test.start_watchdog(30000, "nvim_console_signature_hel
 local run_tmpdir = vim.fn.tempname()
 vim.fn.mkdir(run_tmpdir, "p")
 
+local blink_menu_visible = false
+package.preload["blink.cmp"] = function()
+  return {
+    is_visible = function()
+      return blink_menu_visible
+    end,
+    is_menu_visible = function()
+      return blink_menu_visible
+    end,
+  }
+end
+
 local launcher = vim.fs.normalize(run_tmpdir .. "/fake-r")
 vim.fn.writefile({
   "#!/usr/bin/env bash",
@@ -101,15 +113,25 @@ vim.api.nvim_exec_autocmds("TextChangedI", {
   buffer = bufnr,
 })
 
-ark_test.wait_for("console signature help request", 10000, function()
+local function signature_help_request_count()
   if vim.fn.filereadable(seen_log) ~= 1 then
-    return false
+    return 0
   end
-  local text = table.concat(vim.fn.readfile(seen_log), "\n")
-  return text:find('"event": "signatureHelp"', 1, true) ~= nil
+
+  local count = 0
+  for _, line in ipairs(vim.fn.readfile(seen_log)) do
+    if line:find('"event": "signatureHelp"', 1, true) then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+ark_test.wait_for("console signature help request", 10000, function()
+  return signature_help_request_count() == 1
 end)
 
-ark_test.wait_for("console signature help float", 10000, function()
+local function signature_help_float_visible()
   for _, winid in ipairs(vim.api.nvim_list_wins()) do
     local config = vim.api.nvim_win_get_config(winid)
     if config.relative ~= "" then
@@ -121,6 +143,29 @@ ark_test.wait_for("console signature help float", 10000, function()
     end
   end
   return false
+end
+
+ark_test.wait_for("console signature help float", 10000, function()
+  return signature_help_float_visible()
 end)
+
+blink_menu_visible = true
+vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "fake_sig(x =" })
+vim.api.nvim_win_set_cursor(0, { 1, #"fake_sig(x =" })
+vim.api.nvim_exec_autocmds("TextChangedI", {
+  buffer = bufnr,
+})
+
+ark_test.wait_for("console signature help float closes while Blink menu is visible", 4000, function()
+  return not signature_help_float_visible()
+end)
+
+vim.wait(500)
+if signature_help_request_count() ~= 1 then
+  ark_test.fail("Blink-visible console edit should not request another signature help: " .. vim.inspect({
+    count = signature_help_request_count(),
+    log = vim.fn.filereadable(seen_log) == 1 and vim.fn.readfile(seen_log) or {},
+  }))
+end
 
 stop_watchdog()
