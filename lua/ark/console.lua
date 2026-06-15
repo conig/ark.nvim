@@ -762,6 +762,7 @@ end
 local input_start_line
 local place_prompt
 local focus_input
+local paste_text_at_input_cursor
 
 local function setup_highlights()
   pcall(vim.api.nvim_set_hl, 0, "ArkConsolePrompt", { link = "Question", default = true })
@@ -1028,6 +1029,106 @@ local function hide_blink_completion()
   end
 end
 
+local signature_help_trigger_chars = {
+  ["("] = true,
+  [","] = true,
+  ["="] = true,
+}
+
+local function cursor_in_input(bufnr, info)
+  local winid = vim.fn.bufwinid(bufnr)
+  if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
+    return nil
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(winid)
+  local row = tonumber(cursor[1])
+  if not row or (row - 1) < input_start_line(bufnr, info) then
+    return nil
+  end
+
+  return cursor
+end
+
+local function signature_help_trigger_before_cursor(bufnr, info)
+  local cursor = cursor_in_input(bufnr, info)
+  if not cursor then
+    return nil
+  end
+
+  local col = tonumber(cursor[2])
+  if not col or col <= 0 then
+    return nil
+  end
+
+  local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1] or ""
+  local char = line:sub(col, col)
+  if signature_help_trigger_chars[char] then
+    return char
+  end
+
+  return nil
+end
+
+local function has_signature_help_client(bufnr)
+  local ok, clients = pcall(vim.lsp.get_clients, {
+    bufnr = bufnr,
+    name = "ark_lsp",
+    method = "textDocument/signatureHelp",
+  })
+  if ok and type(clients) == "table" then
+    return clients[1] ~= nil
+  end
+
+  for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr, name = "ark_lsp" }) or {}) do
+    local provider = client.server_capabilities and client.server_capabilities.signatureHelpProvider
+    if provider then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function maybe_show_signature_help(bufnr)
+  if type(bufnr) ~= "number" or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  if vim.api.nvim_get_current_buf() ~= bufnr then
+    return
+  end
+
+  local info = state.buffers[bufnr]
+  if type(info) ~= "table" or vim.b[bufnr].ark_console ~= true then
+    return
+  end
+
+  local trigger = signature_help_trigger_before_cursor(bufnr, info)
+  if not trigger or not has_signature_help_client(bufnr) then
+    return
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local key = table.concat({ cursor[1], cursor[2], trigger }, ":")
+  if info.last_signature_help_trigger == key then
+    return
+  end
+  info.last_signature_help_trigger = key
+
+  vim.schedule(function()
+    if not vim.api.nvim_buf_is_valid(bufnr) or vim.api.nvim_get_current_buf() ~= bufnr then
+      return
+    end
+    if not signature_help_trigger_before_cursor(bufnr, info) then
+      return
+    end
+    pcall(vim.lsp.buf.signature_help, {
+      focusable = false,
+      silent = true,
+    })
+  end)
+end
+
 local function paste_lines_text(lines)
   if type(lines) == "table" then
     return table.concat(lines, "\n")
@@ -1038,13 +1139,6 @@ local function paste_lines_text(lines)
   return ""
 end
 
-local function paste_is_complete_input(lines, text)
-  if type(lines) == "table" and lines[#lines] == "" then
-    return true
-  end
-  return type(text) == "string" and text:sub(-1) == "\n"
-end
-
 local function console_paste_buffer()
   local bufnr = vim.api.nvim_get_current_buf()
   local info = state.buffers[bufnr]
@@ -1052,14 +1146,6 @@ local function console_paste_buffer()
     return nil, nil
   end
   return bufnr, info
-end
-
-local function insert_paste_text(text)
-  local lines = vim.split(text or "", "\n", { plain = true })
-  if #lines == 0 then
-    lines = { "" }
-  end
-  vim.api.nvim_put(lines, "c", true, true)
 end
 
 install_paste_handler = function()
@@ -1093,16 +1179,11 @@ install_paste_handler = function()
       info.pending_paste_text = nil
     end
 
-    if paste_is_complete_input(lines, text) then
-      hide_blink_completion()
-      local ok, err = M.send_text(bufnr, text)
-      if not ok then
-        vim.notify(err or "failed to paste into Ark console", vim.log.levels.ERROR)
-      end
-      return true
+    hide_blink_completion()
+    local ok, err = paste_text_at_input_cursor(bufnr, info, text)
+    if not ok then
+      vim.notify(err or "failed to paste into Ark console", vim.log.levels.ERROR)
     end
-
-    insert_paste_text(text)
     return true
   end
 end
@@ -1117,14 +1198,180 @@ local function cursor_before_input(bufnr, info)
   return type(cursor) == "table" and tonumber(cursor[1]) ~= nil and (cursor[1] - 1) < input_start_line(bufnr, info)
 end
 
-local function focus_input_for_normal_edit(bufnr, keys)
+local function cursor_on_or_after_input(bufnr, info)
+  local winid = vim.fn.bufwinid(bufnr)
+  if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
+    return false
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(winid)
+  return type(cursor) == "table" and tonumber(cursor[1]) ~= nil and (cursor[1] - 1) >= input_start_line(bufnr, info)
+end
+
+local function cursor_on_input_line(bufnr, info)
+  local winid = vim.fn.bufwinid(bufnr)
+  if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
+    return false
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(winid)
+  return type(cursor) == "table" and tonumber(cursor[1]) ~= nil and (cursor[1] - 1) == input_start_line(bufnr, info)
+end
+
+local function enter_insert_from_normal_i(bufnr)
   local info = state.buffers[bufnr]
-  if type(info) == "table" and cursor_before_input(bufnr, info) then
+  if type(info) ~= "table" then
+    vim.api.nvim_feedkeys(vim.keycode("i"), "n", false)
+    return
+  end
+
+  if cursor_on_input_line(bufnr, info) then
+    pcall(vim.cmd, "startinsert")
+    return
+  end
+
+  focus_input(bufnr, info, { insert = true, position = "start" })
+end
+
+local function focus_input_for_normal_edit(bufnr)
+  local info = state.buffers[bufnr]
+  if type(info) == "table" then
     focus_input(bufnr, info, { insert = true })
     return
   end
 
-  vim.api.nvim_feedkeys(vim.keycode(keys), "n", false)
+  vim.api.nvim_feedkeys(vim.keycode("i"), "n", false)
+end
+
+local function clear_current_input_line(bufnr, opts)
+  opts = opts or {}
+  local info = state.buffers[bufnr]
+  if type(info) ~= "table" then
+    return false
+  end
+  if not cursor_on_or_after_input(bufnr, info) then
+    return false
+  end
+
+  local winid = vim.fn.bufwinid(bufnr)
+  local cursor = vim.api.nvim_win_get_cursor(winid)
+  local row = math.max(input_start_line(bufnr, info), cursor[1] - 1)
+
+  with_internal_edit(bufnr, info, function()
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, row, row + 1, false, { "" })
+    vim.bo[bufnr].modified = false
+  end)
+  place_prompt(bufnr)
+  pcall(vim.api.nvim_win_set_cursor, winid, { row + 1, 0 })
+
+  if opts.insert == true then
+    focus_input(bufnr, info, { insert = true, position = "start" })
+  end
+
+  return true
+end
+
+local function normal_paste_register_text()
+  local register = vim.v.register
+  if type(register) ~= "string" or register == "" then
+    register = '"'
+  end
+
+  local ok, text = pcall(vim.fn.getreg, register)
+  if not ok or type(text) ~= "string" then
+    return nil, "failed to read register " .. tostring(register)
+  end
+
+  return text, nil
+end
+
+paste_text_at_input_cursor = function(bufnr, info, text, opts)
+  opts = opts or {}
+  if type(text) ~= "string" or text == "" then
+    return true
+  end
+
+  local winid = vim.fn.bufwinid(bufnr)
+  if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
+    return nil, "Ark console buffer is not visible"
+  end
+
+  if cursor_before_input(bufnr, info) then
+    focus_input(bufnr, info)
+  end
+
+  local start_line = input_start_line(bufnr, info)
+  local cursor = vim.api.nvim_win_get_cursor(winid)
+  local row = math.max(start_line, cursor[1] - 1)
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  row = math.min(row, math.max(start_line, line_count - 1))
+
+  local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1] or ""
+  local col = math.max(0, math.min(cursor[2], #line))
+  if opts.after == true and line ~= "" then
+    col = math.min(#line, col + 1)
+  end
+
+  text = text:gsub("\n+$", "")
+  if text == "" then
+    return true
+  end
+
+  local pasted_lines = vim.split(text, "\n", { plain = true })
+  if #pasted_lines == 0 then
+    pasted_lines = { "" }
+  end
+
+  local before = line:sub(1, col)
+  local after = line:sub(col + 1)
+  local replacement = {}
+  if #pasted_lines == 1 then
+    replacement[1] = before .. pasted_lines[1] .. after
+  else
+    replacement[1] = before .. pasted_lines[1]
+    for index = 2, #pasted_lines - 1 do
+      replacement[#replacement + 1] = pasted_lines[index]
+    end
+    replacement[#replacement + 1] = pasted_lines[#pasted_lines] .. after
+  end
+
+  with_internal_edit(bufnr, info, function()
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, row, row + 1, false, replacement)
+    vim.bo[bufnr].modified = false
+  end)
+  place_prompt(bufnr)
+
+  local target_row = row + #pasted_lines
+  local target_col = #pasted_lines[#pasted_lines]
+  if #pasted_lines == 1 then
+    target_col = #before + #pasted_lines[1]
+  end
+  pcall(vim.api.nvim_win_set_cursor, winid, { target_row, target_col })
+
+  return true
+end
+
+local function paste_register_into_input(bufnr, opts)
+  local info = state.buffers[bufnr]
+  if type(info) ~= "table" then
+    return false
+  end
+
+  local text, err = normal_paste_register_text()
+  if not text then
+    vim.notify(err or "failed to paste into Ark console", vim.log.levels.ERROR)
+    return false
+  end
+
+  hide_blink_completion()
+  local ok, paste_err = paste_text_at_input_cursor(bufnr, info, text, opts)
+  if not ok then
+    vim.notify(paste_err or "failed to paste into Ark console", vim.log.levels.ERROR)
+    return false
+  end
+  return true
 end
 
 local function clamp_insert_cursor_to_input(bufnr)
@@ -1366,10 +1613,6 @@ local function refresh_console_number_options(bufnr, enabled)
     return
   end
 
-  if vim.b[bufnr].ark_console_terminal_ui == true then
-    enabled = false
-  end
-
   for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
     apply_console_number_options(winid, enabled)
   end
@@ -1418,12 +1661,7 @@ local function apply_console_window_options(winid, bufnr)
     return
   end
 
-  local numbers_enabled = nil
-  if type(bufnr) == "number" and vim.b[bufnr].ark_console_terminal_ui == true then
-    numbers_enabled = false
-  end
-
-  apply_console_number_options(winid, numbers_enabled)
+  apply_console_number_options(winid)
   vim.wo[winid].signcolumn = "no"
   vim.wo[winid].foldcolumn = "0"
   vim.wo[winid].colorcolumn = ""
@@ -1537,6 +1775,9 @@ local function start_job(bufnr, opts, session_id, status_path)
           close_resources(bufnr, { closed = true })
         end
         append_before_input(bufnr, { "#> [ark console exited: " .. tostring(code) .. "]" })
+        if standalone_console(opts or {}) then
+          vim.cmd("qa!")
+        end
       end)
     end,
   })
@@ -1685,7 +1926,10 @@ function M.start(opts)
   vim.keymap.set("i", "<Down>", function()
     M.history_next(bufnr)
   end, { buffer = bufnr, desc = "Next Ark console input" })
-  for _, key in ipairs({ "i", "a", "I", "A" }) do
+  vim.keymap.set("n", "i", function()
+    enter_insert_from_normal_i(bufnr)
+  end, { buffer = bufnr, desc = "Enter insert mode in Ark console input" })
+  for _, key in ipairs({ "a", "I", "A" }) do
     vim.keymap.set("n", key, function()
       local info = state.buffers[bufnr]
       if type(info) == "table" and cursor_before_input(bufnr, info) then
@@ -1696,11 +1940,23 @@ function M.start(opts)
     end, { buffer = bufnr, desc = "Enter insert mode in Ark console input", expr = true })
   end
   vim.keymap.set("n", "o", function()
-    focus_input_for_normal_edit(bufnr, "o")
+    focus_input_for_normal_edit(bufnr)
   end, { buffer = bufnr, desc = "Open line in Ark console input" })
   vim.keymap.set("n", "O", function()
-    focus_input_for_normal_edit(bufnr, "O")
+    focus_input_for_normal_edit(bufnr)
   end, { buffer = bufnr, desc = "Open line above in Ark console input" })
+  vim.keymap.set("n", "dd", function()
+    clear_current_input_line(bufnr)
+  end, { buffer = bufnr, desc = "Clear Ark console input line" })
+  vim.keymap.set("n", "cc", function()
+    clear_current_input_line(bufnr, { insert = true })
+  end, { buffer = bufnr, desc = "Change Ark console input line" })
+  vim.keymap.set("n", "p", function()
+    paste_register_into_input(bufnr, { after = true })
+  end, { buffer = bufnr, desc = "Paste into Ark console input" })
+  vim.keymap.set("n", "P", function()
+    paste_register_into_input(bufnr, { after = false })
+  end, { buffer = bufnr, desc = "Paste before cursor in Ark console input" })
   vim.keymap.set({ "n", "i" }, "<C-c>", function()
     M.interrupt(bufnr)
   end, { buffer = bufnr, desc = "Interrupt Ark console R process" })
@@ -1736,6 +1992,15 @@ function M.start(opts)
       clamp_insert_cursor_to_input(bufnr)
     end,
     desc = "Keep Ark console insert cursor in the active input",
+  })
+
+  vim.api.nvim_create_autocmd("TextChangedI", {
+    buffer = bufnr,
+    group = vim.api.nvim_create_augroup("ArkConsoleSignatureHelp" .. tostring(bufnr), { clear = true }),
+    callback = function()
+      maybe_show_signature_help(bufnr)
+    end,
+    desc = "Show Ark console signature help after argument triggers",
   })
 
   vim.api.nvim_buf_attach(bufnr, false, {

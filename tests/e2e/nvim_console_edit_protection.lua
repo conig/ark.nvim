@@ -134,6 +134,133 @@ if vim.inspect(after_invalid_edits) ~= vim.inspect(before) then
   }))
 end
 
+-- Regression: normal-mode `i` from outside the active input line should jump to
+-- the first editable column after the virtual prompt. When already on the input
+-- line, `i` should keep the user's current column.
+status = require("ark.console").status(bufnr)
+vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "draft_i()" })
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+feed("i")
+vim.wait(200)
+local after_transcript_i_status = require("ark.console").status(bufnr)
+local after_transcript_i_cursor = vim.api.nvim_win_get_cursor(0)
+if
+  after_transcript_i_cursor[1] ~= after_transcript_i_status.input_start + 1
+  or after_transcript_i_cursor[2] ~= 0
+then
+  ark_test.fail("normal-mode i outside active input should jump to input start: " .. vim.inspect({
+    cursor = after_transcript_i_cursor,
+    status = after_transcript_i_status,
+  }))
+end
+stop_insert_mode()
+
+status = require("ark.console").status(bufnr)
+vim.api.nvim_win_set_cursor(0, { status.input_start + 1, 5 })
+feed("i")
+vim.wait(200)
+local after_input_i_cursor = vim.api.nvim_win_get_cursor(0)
+if after_input_i_cursor[1] ~= status.input_start + 1 then
+  ark_test.fail("normal-mode i on active input should stay on the active input row: " .. vim.inspect({
+    before = { status.input_start + 1, 5 },
+    after = after_input_i_cursor,
+  }))
+end
+stop_insert_mode()
+
+-- Regression: normal-mode `o` in the active REPL input must behave like `i`.
+-- It should enter insert mode on the input line, not open a new line below it.
+status = require("ark.console").status(bufnr)
+vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "draft_o()" })
+vim.api.nvim_win_set_cursor(0, { status.input_start + 1, 0 })
+local before_active_o_line_count = vim.api.nvim_buf_line_count(bufnr)
+feed("o")
+vim.wait(200)
+local after_active_o_status = require("ark.console").status(bufnr)
+local after_active_o_input =
+  vim.api.nvim_buf_get_lines(bufnr, after_active_o_status.input_start, -1, false)
+if
+  vim.inspect(after_active_o_input) ~= vim.inspect({ "draft_o()" })
+  or vim.api.nvim_buf_line_count(bufnr) ~= before_active_o_line_count
+then
+  ark_test.fail("normal-mode o in active input should not open a new input line: " .. vim.inspect({
+    input = after_active_o_input,
+    line_count_before = before_active_o_line_count,
+    line_count_after = vim.api.nvim_buf_line_count(bufnr),
+    cursor = vim.api.nvim_win_get_cursor(0),
+  }))
+end
+stop_insert_mode()
+
+-- Regression: normal-mode `dd` and `cc` in the active input should clear text
+-- without deleting the REPL input buffer row that carries the prompt.
+status = require("ark.console").status(bufnr)
+vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "draft_dd()" })
+vim.api.nvim_win_set_cursor(0, { status.input_start + 1, 0 })
+local before_active_dd_line_count = vim.api.nvim_buf_line_count(bufnr)
+feed("dd")
+ark_test.wait_for("normal-mode dd in active input to clear text", 4000, function()
+  local current_status = require("ark.console").status(bufnr)
+  local current_input = vim.api.nvim_buf_get_lines(bufnr, current_status.input_start, -1, false)
+  return vim.inspect(current_input) == vim.inspect({ "" })
+end)
+local after_active_dd_status = require("ark.console").status(bufnr)
+if vim.api.nvim_buf_line_count(bufnr) ~= before_active_dd_line_count then
+  ark_test.fail("normal-mode dd in active input deleted the prompt row: " .. vim.inspect({
+    input = vim.api.nvim_buf_get_lines(bufnr, after_active_dd_status.input_start, -1, false),
+    line_count_before = before_active_dd_line_count,
+    line_count_after = vim.api.nvim_buf_line_count(bufnr),
+    cursor = vim.api.nvim_win_get_cursor(0),
+  }))
+end
+
+status = require("ark.console").status(bufnr)
+vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "draft_cc()" })
+vim.api.nvim_win_set_cursor(0, { status.input_start + 1, 0 })
+local before_active_cc_line_count = vim.api.nvim_buf_line_count(bufnr)
+feed("cc")
+ark_test.wait_for("normal-mode cc in active input to clear text", 4000, function()
+  local current_status = require("ark.console").status(bufnr)
+  local current_input = vim.api.nvim_buf_get_lines(bufnr, current_status.input_start, -1, false)
+  return vim.inspect(current_input) == vim.inspect({ "" })
+end)
+local after_active_cc_status = require("ark.console").status(bufnr)
+if vim.api.nvim_buf_line_count(bufnr) ~= before_active_cc_line_count then
+  ark_test.fail("normal-mode cc in active input deleted the prompt row: " .. vim.inspect({
+    input = vim.api.nvim_buf_get_lines(bufnr, after_active_cc_status.input_start, -1, false),
+    line_count_before = before_active_cc_line_count,
+    line_count_after = vim.api.nvim_buf_line_count(bufnr),
+    cursor = vim.api.nvim_win_get_cursor(0),
+  }))
+end
+stop_insert_mode()
+
+-- Regression: yanking a prior transcript line and pasting it into the active
+-- input should edit the prompt row. A linewise normal-mode put must not create
+-- a second buffer row below the visible REPL input, because that row is outside
+-- the prompt model users expect to submit.
+status = require("ark.console").status(bufnr)
+vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "" })
+vim.api.nvim_win_set_cursor(0, { status.input_start + 1, 0 })
+local before_active_p_line_count = vim.api.nvim_buf_line_count(bufnr)
+vim.fn.setreg('"', "pasted_from_history()", "V")
+feed("p")
+ark_test.wait_for("normal-mode p in active input to paste onto prompt row", 4000, function()
+  local current_status = require("ark.console").status(bufnr)
+  local current_input = vim.api.nvim_buf_get_lines(bufnr, current_status.input_start, -1, false)
+  return vim.inspect(current_input) == vim.inspect({ "pasted_from_history()" })
+end)
+local after_active_p_status = require("ark.console").status(bufnr)
+if vim.api.nvim_buf_line_count(bufnr) ~= before_active_p_line_count then
+  ark_test.fail("normal-mode p in active input created a row below the prompt: " .. vim.inspect({
+    input = vim.api.nvim_buf_get_lines(bufnr, after_active_p_status.input_start, -1, false),
+    line_count_before = before_active_p_line_count,
+    line_count_after = vim.api.nvim_buf_line_count(bufnr),
+    cursor = vim.api.nvim_win_get_cursor(0),
+  }))
+end
+vim.api.nvim_buf_set_lines(bufnr, after_active_p_status.input_start, -1, false, { "" })
+
 vim.api.nvim_win_set_cursor(0, { 1, 0 })
 feed("Vjy")
 ark_test.wait_for("visual yank from protected output", 4000, function()

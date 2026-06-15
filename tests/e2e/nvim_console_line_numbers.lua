@@ -16,6 +16,8 @@ vim.fn.writefile({
 }, launcher)
 vim.fn.setfperm(launcher, "rwxr-xr-x")
 
+vim.g.ark_console_terminal_ui = true
+
 local ark = require("ark")
 ark.setup({
   auto_start_pane = false,
@@ -44,13 +46,33 @@ local function wait_for_numbers(label, number, relativenumber)
   end)
 end
 
-wait_for_numbers("console normal mode shows relative line numbers", true, true)
+local function wait_for_mode(label, predicate)
+  ark_test.wait_for(label, 5000, function()
+    local mode = vim.api.nvim_get_mode().mode
+    return type(mode) == "string" and predicate(mode)
+  end)
+end
 
-vim.api.nvim_exec_autocmds("InsertEnter", {})
-wait_for_numbers("console insert mode hides line numbers", false, false)
+wait_for_numbers("terminal console normal mode shows relative line numbers", true, true)
 
-vim.api.nvim_exec_autocmds("InsertLeave", {})
-wait_for_numbers("console normal mode restores relative line numbers", true, true)
+vim.api.nvim_exec_autocmds("InsertEnter", { buffer = bufnr })
+wait_for_numbers("terminal console insert mode hides line numbers", false, false)
+
+vim.api.nvim_exec_autocmds("InsertLeave", { buffer = bufnr })
+wait_for_numbers("terminal console normal mode restores relative line numbers", true, true)
+
+-- Visual selection in the terminal transcript should keep line numbers available.
+vim.api.nvim_feedkeys("v", "nx", false)
+wait_for_mode("terminal console enters visual mode", function(mode)
+  return mode == "v" or mode == "V" or mode == "\22"
+end)
+wait_for_numbers("terminal console visual mode shows relative line numbers", true, true)
+
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+wait_for_mode("terminal console exits visual mode", function(mode)
+  return mode:sub(1, 1) == "n"
+end)
+wait_for_numbers("terminal console normal mode keeps relative line numbers", true, true)
 
 vim.print({
   nvim_console_line_numbers = "ok",

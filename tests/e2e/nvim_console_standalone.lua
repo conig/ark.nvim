@@ -58,8 +58,8 @@ if vim.bo[bufnr].buflisted ~= false
   or vim.o.laststatus ~= 0
   or vim.o.cmdheight ~= 0
   or vim.o.statusline ~= " "
-  or vim.wo[0].number ~= false
-  or vim.wo[0].relativenumber ~= false
+  or vim.wo[0].number ~= true
+  or vim.wo[0].relativenumber ~= true
   or vim.wo[0].signcolumn ~= "no"
   or vim.wo[0].conceallevel ~= 2
 then
