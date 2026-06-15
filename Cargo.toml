@@ -13,7 +13,6 @@ members = [
     "crates/aether_url",
     "crates/amalthea",
     "crates/ark",
-    "crates/ark-terminal",
     "crates/ark-lsp",
     "crates/ark-lsp-support",
     "crates/ark_macros",
@@ -138,8 +137,6 @@ tracing-error = "0.2.1"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tree-sitter = "0.24.7"
 tree-sitter-r = { git = "https://github.com/r-lib/tree-sitter-r", rev = "95aff097aa927a66bb357f715b58cde821be8867" }
-unicode-segmentation = "1.13.2"
-unicode-width = "0.2.2"
 ureq = "3.3.0"
 url = "2.5.8"
 uuid = { version = "1.23.1", features = ["v4"] }

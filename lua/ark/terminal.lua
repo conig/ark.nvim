@@ -393,7 +393,7 @@ local function close_terminal_windows(bufnr)
 end
 
 function M.pane_command(config)
-  local session_id = state.session_id or "ark-terminal-session"
+  local session_id = state.session_id or "ark-nvim-terminal-session"
   local command, command_err = console_frontend.shell_command(config, "terminal", session_id)
   if not command then
     return "printf "

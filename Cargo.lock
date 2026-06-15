@@ -554,20 +554,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ark-terminal"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "libc",
- "nix",
- "serde",
- "serde_json",
- "tempfile",
- "unicode-segmentation",
- "unicode-width 0.2.2",
-]
-
-[[package]]
 name = "ark_macros"
 version = "0.1.0"
 dependencies = [

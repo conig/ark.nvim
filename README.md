@@ -607,25 +607,13 @@ The terminal backend is useful when you want the same detached LSP and bridge
 model without running Neovim inside tmux. It intentionally does not implement
 tmux-only tab parking commands.
 
-Ark has three managed-console frontend modes:
+Ark has two managed-console frontend modes:
 
 - `raw`, the default, runs the launcher directly in the managed tmux pane or
   Neovim terminal split.
-- `ark-terminal` runs the standalone Rust PTY frontend. It preserves terminal
-  behavior and renders its own completion UI.
 - `nvim-console` runs a Neovim-buffer R console. In-process, open it with
   `:Ark console`; in a managed tmux split, Ark launches the `scripts/ark-console`
   wrapper, which starts Neovim and runs `:Ark console`.
-
-To use Ark Terminal:
-
-```lua
-require("ark").setup({
-  session = {
-    console_frontend = "ark-terminal",
-  },
-})
-```
 
 To use the Neovim-buffer console frontend:
 
@@ -661,15 +649,13 @@ The main overrides are:
 - `ARK_NVIM_SESSION_LIB` (optional override for a dedicated bridge library)
 - `ARK_NVIM_SESSION_BACKEND` (`tmux` or `terminal`)
 - `ARK_NVIM_SESSION_KIND`
-- `ARK_NVIM_CONSOLE_FRONTEND` (`raw`, `ark-terminal`, or `nvim-console`)
+- `ARK_NVIM_CONSOLE_FRONTEND` (`raw` or `nvim-console`)
 - `ARK_NVIM_CONSOLE_BIN` (default: repo-local `scripts/ark-console`, then Neovim)
 - `ARK_NVIM_CONSOLE_COMMAND` (default: `Ark console`)
 - `ARK_NVIM_CONSOLE_INIT` (optional `-u` init file for the standalone
   `ark-console` Neovim process)
 - `ARK_NVIM_REPL_CONFIG_DIR` (optional user config directory for the standalone
   `nvim-console` process; default: `~/.config/ark.nvim/ark-repl`)
-- `ARK_NVIM_ARK_TERMINAL_BIN`
-- `ARK_NVIM_ARK_TERMINAL_TRACE_LOG`
 - `ARK_NVIM_SESSION_PKG_PATH`
 - `ARK_NVIM_TERMINAL_SPLIT_DIRECTION`
 - `ARK_NVIM_TERMINAL_SPLIT_POSITION`

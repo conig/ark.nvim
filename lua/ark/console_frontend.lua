@@ -16,16 +16,6 @@ local function normalize(value)
   return value
 end
 
-local function ark_terminal_config(config)
-  local nested = type(config.ark_terminal) == "table" and config.ark_terminal or {}
-  return {
-    bin = nested.bin or config.ark_terminal_bin or "ark-terminal",
-    raw = nested.raw ~= false,
-    trace_log = nested.trace_log or config.ark_terminal_trace_log,
-    print_status_json = nested.print_status_json == true or config.ark_terminal_print_status_json == true,
-  }
-end
-
 local function nvim_console_config(config)
   local nested = type(config.nvim_console) == "table" and config.nvim_console or {}
   return {
@@ -42,7 +32,7 @@ end
 
 function M.validate(value)
   local frontend = normalize(value)
-  if frontend == "raw" or frontend == "ark-terminal" or frontend == "nvim-console" then
+  if frontend == "raw" or frontend == "nvim-console" then
     return frontend, nil
   end
 
@@ -84,35 +74,7 @@ function M.argv(config, backend, session_id)
     return argv, nil
   end
 
-  local ark_terminal = ark_terminal_config(config)
-  local argv = {
-    ark_terminal.bin,
-    "--backend",
-    backend,
-  }
-  if ark_terminal.raw then
-    argv[#argv + 1] = "--raw"
-  end
-
-  if type(config.startup_status_dir) == "string" and config.startup_status_dir ~= "" then
-    vim.list_extend(argv, { "--status-dir", config.startup_status_dir })
-  end
-  if type(session_id) == "string" and session_id ~= "" then
-    vim.list_extend(argv, { "--session-id", session_id })
-  end
-  if type(config.lsp_bin) == "string" and config.lsp_bin ~= "" then
-    vim.list_extend(argv, { "--ark-lsp", config.lsp_bin })
-  end
-  if type(ark_terminal.trace_log) == "string" and ark_terminal.trace_log ~= "" then
-    vim.list_extend(argv, { "--trace-log", ark_terminal.trace_log })
-  end
-  if ark_terminal.print_status_json then
-    argv[#argv + 1] = "--print-status-json"
-  end
-
-  argv[#argv + 1] = "--"
-  argv[#argv + 1] = config.launcher
-  return argv, nil
+  return nil, "unsupported ark.nvim console frontend: " .. tostring(frontend)
 end
 
 function M.shell_command(config, backend, session_id)
@@ -127,10 +89,6 @@ function M.shell_command(config, backend, session_id)
   end
 
   return table.concat(escaped, " "), nil
-end
-
-function M.ark_terminal_bin(config)
-  return ark_terminal_config(config or {}).bin
 end
 
 function M.nvim_console_bin(config)

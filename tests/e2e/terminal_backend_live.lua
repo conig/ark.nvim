@@ -41,9 +41,7 @@ ark.setup({
 })
 
 local pane_command = ark.pane_command()
-if pane_command:find("exec '.*ark%-console", 1, false) ~= nil
-  or pane_command:find("exec '.*ark%-terminal", 1, false) ~= nil
-then
+if pane_command:find("exec '.*ark%-console", 1, false) ~= nil then
   stop_watchdog()
   ark_test.fail("raw terminal fallback should exec launcher directly, got " .. pane_command)
 end
@@ -107,7 +105,7 @@ then
   ark_test.fail("expected source buffer slime config to target managed terminal: " .. vim.inspect(vim.b[source_bufnr].slime_config))
 end
 
-local send_ok, send_err = require("ark.terminal").send_text([[cat("ark-terminal-send-ok\n"); flush.console()]])
+local send_ok, send_err = require("ark.terminal").send_text([[cat("ark-nvim-terminal-backend-send-ok\n"); flush.console()]])
 if not send_ok then
   stop_watchdog()
   ark_test.fail("failed to send text to managed terminal: " .. tostring(send_err))
@@ -115,7 +113,7 @@ end
 
 ark_test.wait_for("terminal send output", 10000, function()
   local lines = vim.api.nvim_buf_get_lines(status.terminal_bufnr, 0, -1, false)
-  return table.concat(lines, "\n"):find("ark%-terminal%-send%-ok") ~= nil
+  return table.concat(lines, "\n"):find("ark%-nvim%-terminal%-backend%-send%-ok") ~= nil
 end)
 
 local ark_send_ok, ark_send_err = ark.send([[cat("ark-send-api-ok\n"); flush.console()]])
