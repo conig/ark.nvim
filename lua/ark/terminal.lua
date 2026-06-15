@@ -119,6 +119,7 @@ local function launcher_env(config, session_id)
   local env = {
     ARK_NVIM_LAUNCHER = config.launcher,
     ARK_NVIM_CONSOLE_FRONTEND = config.console_frontend or "raw",
+    ARK_NVIM_MANAGED_PANE = "1",
     ARK_STATUS_DIR = config.startup_status_dir,
     ARK_NVIM_SESSION_PKG_PATH = config.session_pkg_path,
     ARK_SESSION_BACKEND = "terminal",
@@ -145,6 +146,7 @@ local function pane_command_exports(config, session_id)
   local exports = {
     "ARK_NVIM_LAUNCHER=" .. shellescape(config.launcher),
     "ARK_NVIM_CONSOLE_FRONTEND=" .. shellescape(config.console_frontend or "raw"),
+    "ARK_NVIM_MANAGED_PANE=1",
     "ARK_STATUS_DIR=" .. shellescape(config.startup_status_dir),
     "ARK_NVIM_SESSION_PKG_PATH=" .. shellescape(config.session_pkg_path),
     "ARK_SESSION_BACKEND=terminal",

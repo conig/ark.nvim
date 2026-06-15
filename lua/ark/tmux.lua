@@ -1286,6 +1286,7 @@ function M.pane_command(config)
   local exports = {
     "ARK_NVIM_LAUNCHER=" .. vim.fn.shellescape(config.launcher),
     "ARK_NVIM_CONSOLE_FRONTEND=" .. vim.fn.shellescape(config.console_frontend or "raw"),
+    "ARK_NVIM_MANAGED_PANE=1",
     "ARK_STATUS_DIR=" .. vim.fn.shellescape(config.startup_status_dir),
     "ARK_NVIM_SESSION_PKG_PATH=" .. vim.fn.shellescape(config.session_pkg_path),
   }

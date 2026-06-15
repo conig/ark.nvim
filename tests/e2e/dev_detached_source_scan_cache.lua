@@ -39,14 +39,14 @@ local ok, err = pcall(function()
   local _, first_err = dev.ensure_current_detached_lsp_cmd(probe_cmd, {})
   local _, second_err = dev.ensure_current_detached_lsp_cmd(probe_cmd, {})
   if type(first_err) ~= "string" or type(second_err) ~= "string" then
-    error("expected stale detached binary checks to fail without cargo, got " .. vim.inspect({
+    error("expected missing detached binary checks to fail without auto-build, got " .. vim.inspect({
       first_err = first_err,
       second_err = second_err,
     }), 0)
   end
 
-  if rg_calls ~= 1 then
-    error("expected detached source scan to be cached across immediate retries, saw " .. tostring(rg_calls), 0)
+  if rg_calls ~= 0 then
+    error("missing detached binary checks should not scan sources for auto-build, saw " .. tostring(rg_calls), 0)
   end
 end)
 

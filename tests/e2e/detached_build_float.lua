@@ -6,23 +6,17 @@ local uv = vim.uv or vim.loop
 local root = vim.fn.getcwd()
 local target_dir = root .. "/target/debug"
 local built_binary = target_dir .. "/ark-lsp"
-local probe_binary = target_dir .. "/ark-lsp-float-probe"
-local source_probe = vim.fn.tempname()
 
 vim.fn.mkdir(target_dir, "p")
 local built_binary_existed = vim.fn.filereadable(built_binary) == 1
 if not built_binary_existed then
   vim.fn.writefile({ "# fake ark-lsp binary for build-float test" }, built_binary)
 end
-vim.fn.writefile({ "# stale binary probe" }, probe_binary)
-vim.fn.writefile({ "// newer source probe" }, source_probe)
 
 local now = os.time()
-pcall(uv.fs_utime, probe_binary, now - 200, now - 200)
-pcall(uv.fs_utime, source_probe, now, now)
+pcall(uv.fs_utime, built_binary, now - 200, now - 200)
 
 local original_executable = vim.fn.executable
-local original_systemlist = vim.fn.systemlist
 local original_jobstart = vim.fn.jobstart
 
 local job_opts = nil
@@ -33,13 +27,6 @@ vim.fn.executable = function(cmd)
     return 1
   end
   return original_executable(cmd)
-end
-
-vim.fn.systemlist = function(cmd)
-  if type(cmd) == "table" and cmd[1] == "rg" then
-    return { source_probe }
-  end
-  return original_systemlist(cmd)
 end
 
 vim.fn.jobstart = function(cmd, opts)
@@ -78,25 +65,21 @@ end
 
 local ok, err = pcall(function()
   local dev = require("ark.dev")
-  local cmd = { probe_binary, "--runtime-mode", "detached" }
 
-  local resolved, resolve_err = dev.ensure_current_detached_lsp_cmd(vim.deepcopy(cmd), {
-    on_build_complete = function(result)
+  local started_build, build_err = dev.build_detached_lsp({
+    on_complete = function(result)
       completed = result
     end,
   })
-  if resolve_err ~= nil then
-    error("unexpected stale binary resolution error: " .. vim.inspect(resolve_err), 0)
-  end
-  if not vim.deep_equal(resolved, cmd) then
-    error("expected stale-but-usable detached binary to be returned immediately", 0)
+  if not started_build then
+    error("expected explicit detached ark-lsp build to start: " .. vim.inspect(build_err), 0)
   end
 
   local started = vim.wait(1000, function()
     return job_opts ~= nil
   end, 20, false)
   if not started then
-    error("timed out waiting for background detached ark-lsp rebuild to start", 0)
+    error("timed out waiting for explicit detached ark-lsp rebuild to start", 0)
   end
 
   local win, buf, text = build_float()
@@ -157,10 +140,7 @@ local ok, err = pcall(function()
 end)
 
 vim.fn.executable = original_executable
-vim.fn.systemlist = original_systemlist
 vim.fn.jobstart = original_jobstart
-vim.fn.delete(probe_binary)
-vim.fn.delete(source_probe)
 if not built_binary_existed then
   vim.fn.delete(built_binary)
 end

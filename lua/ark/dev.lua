@@ -35,6 +35,14 @@ local build_state = {
   user_initiated = false,
 }
 
+local function rebuilds_disabled()
+  return vim.env.ARK_NVIM_MANAGED_PANE == "1"
+end
+
+local function rebuild_disabled_message()
+  return "ark.nvim managed panes cannot rebuild detached ark-lsp; rebuild from the parent editor"
+end
+
 local function normalize_path(path)
   if type(path) ~= "string" or path == "" then
     return nil
@@ -527,7 +535,7 @@ local function maybe_schedule_freshness_probe(binary, opts)
         run_freshness_listeners(listeners, result)
       end,
       background = true,
-      show_output = not (opts and opts.show_build_output == false),
+      show_output = false,
       user_initiated = opts and opts.user_initiated == true,
     })
     if not ok then
@@ -568,8 +576,9 @@ local function maybe_schedule_freshness_probe(binary, opts)
       return
     end
 
+    local listeners = take_freshness_listeners(current_state)
     if type(newest_mtime) ~= "number" or newest_mtime <= current_binary_mtime then
-      run_freshness_listeners(take_freshness_listeners(current_state), {
+      run_freshness_listeners(listeners, {
         ok = true,
         background_check = true,
         binary_path = binary,
@@ -578,13 +587,12 @@ local function maybe_schedule_freshness_probe(binary, opts)
       return
     end
 
-    local listeners = take_freshness_listeners(current_state)
     local ok, build_err = start_build({
       on_complete = function(result)
         run_freshness_listeners(listeners, result)
       end,
       background = true,
-      show_output = not (opts and opts.show_build_output == false),
+      show_output = false,
       user_initiated = opts and opts.user_initiated == true,
     })
     if ok then
@@ -630,27 +638,24 @@ function M.ensure_current_detached_lsp_cmd(cmd, opts)
   end
 
   if binary_mtime == 0 then
-    local _, newest_path = newest_source_mtime()
+    if rebuilds_disabled() then
+      return nil, rebuild_disabled_message()
+    end
+
     local ok, build_err = start_build({
       on_complete = opts.on_build_complete,
-      background = false,
-      show_output = opts.show_build_output ~= false,
+      background = true,
+      show_output = false,
       user_initiated = opts.user_initiated == true,
     })
     if not ok then
-      return nil, string.format(
-        "detached ark-lsp binary is stale relative to %s and rebuild failed to start: %s",
-        newest_path or "Rust sources",
-        build_err
-      )
+      return nil, string.format("detached ark-lsp binary is missing and rebuild failed to start: %s", build_err)
     end
 
-    if binary_mtime == 0 then
-      return nil, {
-        kind = "build_pending",
-        message = "Rebuilding detached ark-lsp...",
-      }
-    end
+    return nil, {
+      kind = "build_pending",
+      message = "Rebuilding detached ark-lsp...",
+    }
   end
 
   checked[cache_key] = true
@@ -673,6 +678,10 @@ end
 
 function M.build_detached_lsp(opts)
   opts = opts or {}
+  if rebuilds_disabled() then
+    return false, rebuild_disabled_message()
+  end
+
   return start_build({
     on_complete = opts.on_complete,
     show_output = opts.show_output ~= false,
