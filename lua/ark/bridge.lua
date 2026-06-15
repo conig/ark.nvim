@@ -28,6 +28,14 @@ local install_state = {
   started_at = nil,
 }
 
+local function installs_disabled()
+  return vim.env.ARK_NVIM_MANAGED_PANE == "1"
+end
+
+local function install_disabled_message()
+  return "ark.nvim managed panes cannot install pane-side arkbridge; rebuild from the parent editor"
+end
+
 local function normalize_path(path)
   if type(path) ~= "string" or path == "" then
     return nil
@@ -352,6 +360,10 @@ local function start_install(config, opts)
 end
 
 local function maybe_schedule_freshness_probe(config, opts, installed_source_mtime)
+  if installs_disabled() then
+    return
+  end
+
   local lib_path = runtime_lib_path(config)
   if not lib_path then
     return
@@ -369,6 +381,7 @@ local function maybe_schedule_freshness_probe(config, opts, installed_source_mti
 
   if install_state.running then
     start_install(config, {
+      on_complete = opts and opts.on_build_complete or nil,
       background = true,
       user_initiated = opts and opts.user_initiated == true,
     })
@@ -407,6 +420,7 @@ local function maybe_schedule_freshness_probe(config, opts, installed_source_mti
 
     local ok, install_err = start_install(config, {
       source_mtime = newest_mtime,
+      on_complete = opts and opts.on_build_complete or nil,
       background = true,
       user_initiated = opts and opts.user_initiated == true,
     })
@@ -454,6 +468,10 @@ function M.ensure_current_runtime(config, opts)
     return true, nil
   end
 
+  if installs_disabled() then
+    return nil, install_disabled_message()
+  end
+
   local newest_mtime, newest_path = newest_source_state()
   local ok, install_err = start_install(config, {
     source_mtime = newest_mtime,
@@ -495,6 +513,10 @@ end
 
 function M.build_session_runtime(config, opts)
   opts = opts or {}
+  if installs_disabled() then
+    return false, install_disabled_message()
+  end
+
   local newest_mtime = select(1, newest_source_state())
   return start_install(config, {
     source_mtime = newest_mtime,

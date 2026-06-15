@@ -9,15 +9,19 @@ local stamp_path = runtime_root .. "/.arkbridge-install.json"
 vim.fn.mkdir(installed_dir, "p")
 vim.fn.writefile({
   vim.json.encode({
-    source_mtime = 4102444800,
+    source_mtime = 1,
   }),
 }, stamp_path)
 
 local deferred = {}
 local rg_calls = 0
+local jobstart_calls = 0
+local callbacks = {}
 
 local original_defer_fn = vim.defer_fn
 local original_executable = vim.fn.executable
+local original_jobstart = vim.fn.jobstart
+local original_schedule = vim.schedule
 local original_systemlist = vim.fn.systemlist
 
 vim.defer_fn = function(fn, timeout_ms)
@@ -36,6 +40,35 @@ vim.fn.executable = function(cmd)
   return original_executable(cmd)
 end
 
+vim.fn.jobstart = function(cmd, opts)
+  jobstart_calls = jobstart_calls + 1
+
+  if type(cmd) ~= "table" then
+    error("expected bridge install job command table", 0)
+  end
+
+  local source_mtime = tonumber(cmd[#cmd])
+  if type(source_mtime) ~= "number" or source_mtime <= 1 then
+    error("expected bridge install job to receive fresh source mtime, got " .. vim.inspect(cmd), 0)
+  end
+
+  vim.fn.writefile({
+    vim.json.encode({
+      source_mtime = source_mtime,
+    }),
+  }, stamp_path)
+
+  if type(opts) == "table" and type(opts.on_exit) == "function" then
+    opts.on_exit(1, 0)
+  end
+
+  return 1
+end
+
+vim.schedule = function(fn)
+  fn()
+end
+
 vim.fn.systemlist = function(cmd)
   if type(cmd) == "table" and cmd[1] == "rg" then
     rg_calls = rg_calls + 1
@@ -50,9 +83,14 @@ local ok, err = pcall(function()
     session_lib_path = runtime_root,
     session_pkg_path = vim.fn.getcwd() .. "/packages/arkbridge",
   }
+  local opts = {
+    on_build_complete = function(result)
+      callbacks[#callbacks + 1] = result
+    end,
+  }
 
-  local ready_one, err_one = bridge.ensure_current_runtime(config, {})
-  local ready_two, err_two = bridge.ensure_current_runtime(config, {})
+  local ready_one, err_one = bridge.ensure_current_runtime(config, opts)
+  local ready_two, err_two = bridge.ensure_current_runtime(config, opts)
 
   if ready_one ~= true or ready_two ~= true or err_one ~= nil or err_two ~= nil then
     error("expected existing bridge runtime to return immediately: " .. vim.inspect({
@@ -77,10 +115,18 @@ local ok, err = pcall(function()
   if rg_calls == 0 then
     error("expected deferred bridge freshness probe to scan sources", 0)
   end
+  if jobstart_calls ~= 1 then
+    error("expected stale existing bridge runtime to start one background install, got " .. tostring(jobstart_calls), 0)
+  end
+  if #callbacks ~= 1 or callbacks[1].ok ~= true then
+    error("expected deferred bridge install to notify build completion listener: " .. vim.inspect(callbacks), 0)
+  end
 end)
 
 vim.defer_fn = original_defer_fn
 vim.fn.executable = original_executable
+vim.fn.jobstart = original_jobstart
+vim.schedule = original_schedule
 vim.fn.systemlist = original_systemlist
 vim.fn.delete(runtime_root, "rf")
 

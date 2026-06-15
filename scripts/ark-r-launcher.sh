@@ -428,6 +428,21 @@ local({
   }
 
   .ensure_default_search_path()
+  .user_first <- if (exists(".First", envir = .GlobalEnv, inherits = FALSE)) {
+    get(".First", envir = .GlobalEnv, inherits = FALSE)
+  } else {
+    NULL
+  }
+  if (is.function(.user_first)) {
+    .user_first()
+  }
+  assign(
+    ".First",
+    function() {
+      invisible(NULL)
+    },
+    envir = .GlobalEnv
+  )
 
   .has_runtime <- function(lib_path = "") {
     .lib_loc <- if (nzchar(lib_path)) lib_path else NULL
@@ -522,31 +537,20 @@ local({
       )
       .write_bootstrap_cache(.bootstrap_cache)
       .write_bridge_ready_status(.svc\$port, .auth_token)
-      .user_first <- if (exists(".First", envir = .GlobalEnv, inherits = FALSE)) {
-        get(".First", envir = .GlobalEnv, inherits = FALSE)
-      } else {
-        NULL
-      }
       assign(
         ".First",
-        local({
-          .original_first <- .user_first
-          function() {
-            if (is.function(.original_first)) {
-              .original_first()
+        function() {
+          .bootstrap_cache <<- tryCatch(
+            .collect_bootstrap_cache(),
+            error = function(e) {
+              .log_line("[bootstrap] post-startup cache generation failed: ", conditionMessage(e))
+              .bootstrap_cache
             }
-            .bootstrap_cache <<- tryCatch(
-              .collect_bootstrap_cache(),
-              error = function(e) {
-                .log_line("[bootstrap] post-startup cache generation failed: ", conditionMessage(e))
-                .bootstrap_cache
-              }
-            )
-            .write_bootstrap_cache(.bootstrap_cache)
-            .write_repl_ready_status(.svc\$port, .auth_token)
-            invisible(NULL)
-          }
-        }),
+          )
+          .write_bootstrap_cache(.bootstrap_cache)
+          .write_repl_ready_status(.svc\$port, .auth_token)
+          invisible(NULL)
+        },
         envir = .GlobalEnv
       )
       addTaskCallback(function(expr, value, ok, visible) {

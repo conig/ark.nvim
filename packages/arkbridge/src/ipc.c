@@ -19,6 +19,8 @@ static SEXP rscope_request_callback = NULL;
 static void (*rscope_prev_polled_events)(void) = NULL;
 static int rscope_prev_wait_usec = 0;
 static int rscope_poll_hook_active = 0;
+static int rscope_poll_hook_running = 0;
+static int rscope_server_ready_active = 0;
 static size_t rscope_max_request_bytes = 65536;
 static int rscope_read_timeout_ms = 250;
 static int rscope_last_read_error = 0;
@@ -60,7 +62,12 @@ static void rscope_write_all(int fd, const char *buf, size_t len) {
   size_t offset = 0;
 
   while (offset < len) {
-    ssize_t wrote = write(fd, buf + offset, len - offset);
+    ssize_t wrote;
+#ifdef MSG_NOSIGNAL
+    wrote = send(fd, buf + offset, len - offset, MSG_NOSIGNAL);
+#else
+    wrote = write(fd, buf + offset, len - offset);
+#endif
     if (wrote > 0) {
       offset += (size_t) wrote;
       continue;
@@ -226,6 +233,11 @@ static void rscope_process_client(int client_fd) {
 static void rscope_server_ready(void *data) {
   (void) data;
 
+  if (rscope_server_ready_active) {
+    return;
+  }
+  rscope_server_ready_active = 1;
+
   for (;;) {
     int client_fd = accept(rscope_server_fd, NULL, NULL);
     if (client_fd < 0) {
@@ -241,9 +253,16 @@ static void rscope_server_ready(void *data) {
     rscope_process_client(client_fd);
     (void) close(client_fd);
   }
+
+  rscope_server_ready_active = 0;
 }
 
 static void rscope_poll_hook(void) {
+  if (rscope_poll_hook_running) {
+    return;
+  }
+  rscope_poll_hook_running = 1;
+
   if (rscope_prev_polled_events != NULL) {
     rscope_prev_polled_events();
   }
@@ -251,6 +270,8 @@ static void rscope_poll_hook(void) {
   if (rscope_server_fd >= 0) {
     rscope_server_ready(NULL);
   }
+
+  rscope_poll_hook_running = 0;
 }
 
 static void rscope_ipc_stop_internal(void) {

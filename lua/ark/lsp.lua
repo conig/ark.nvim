@@ -1619,12 +1619,15 @@ function M.sync_sessions(opts, bufnr, sync_opts)
     local payload = session_payload(opts, payload_opts, buffer)
     local watch = ensure_session_watch(opts, buffer, payload)
     if type(watch) == "table" then
-      touched_watches[watch.key] = watch
+      touched_watches[watch.key] = {
+        watch = watch,
+        payload = payload,
+      }
     end
   end
 
-  for _, watch in pairs(touched_watches) do
-    notify_watch_sessions(opts, watch)
+  for _, entry in pairs(touched_watches) do
+    notify_watch_sessions(opts, entry.watch, entry.payload)
   end
 end
 

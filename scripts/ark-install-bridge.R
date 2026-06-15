@@ -16,6 +16,13 @@ if (!nzchar(lib_path)) {
 dir.create(lib_path, recursive = TRUE, showWarnings = FALSE)
 
 lock_dir <- file.path(lib_path, "00LOCK-arkbridge")
+install_succeeded <- FALSE
+on.exit({
+  if (!isTRUE(install_succeeded) && dir.exists(lock_dir)) {
+    unlink(lock_dir, recursive = TRUE, force = TRUE)
+  }
+}, add = TRUE)
+
 if (dir.exists(lock_dir)) {
   info <- tryCatch(file.info(lock_dir), error = function(e) NULL)
   lock_age_seconds <- if (!is.null(info) && nrow(info) > 0L && !is.na(info$mtime[[1]])) {
@@ -30,7 +37,19 @@ if (dir.exists(lock_dir)) {
 }
 
 .libPaths(unique(c(lib_path, .libPaths())))
-utils::install.packages(pkg_path, repos = NULL, type = "source", lib = lib_path, quiet = TRUE)
+
+old_warn <- getOption("warn")
+options(warn = 2)
+on.exit(options(warn = old_warn), add = TRUE)
+utils::install.packages(
+  pkg_path,
+  repos = NULL,
+  type = "source",
+  lib = lib_path,
+  quiet = TRUE,
+  INSTALL_opts = "--preclean"
+)
+install_succeeded <- TRUE
 
 installed_path <- tryCatch(find.package("arkbridge", lib.loc = lib_path), error = function(e) "")
 if (!nzchar(installed_path)) {

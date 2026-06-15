@@ -24,6 +24,7 @@ local help_float_ns = vim.api.nvim_create_namespace("ArkHelpFloat")
 local help_filetype = "arkhelp"
 local is_ark_buffer
 local ensure_bridge_runtime
+local start_or_recover_pane_after_runtime_ready
 
 local function monotonic_ms()
   local clock = (uv and uv.hrtime) and uv.hrtime or vim.loop.hrtime
@@ -1060,7 +1061,9 @@ local function ensure_runtime_ready(bufnr, label)
     return nil, bridge_err
   end
 
-  local _, pane_err = session_backend.start(options)
+  local _, pane_err = start_or_recover_pane_after_runtime_ready({
+    recover_bridge_failure = true,
+  })
   if pane_err then
     return nil, pane_err
   end
@@ -1230,6 +1233,29 @@ local function using_nvim_console_frontend()
   return console_frontend.normalize(runtime_config and runtime_config.console_frontend) == "nvim-console"
 end
 
+local function status_has_bridge_runtime_failure(status)
+  if type(status) ~= "table" or status.pane_exists ~= true or status.bridge_ready == true then
+    return false
+  end
+
+  local startup = type(status.startup_status) == "table" and status.startup_status or nil
+  return type(startup) == "table" and startup.status == "error" and startup.error_code == "E_BRIDGE_MISSING"
+end
+
+start_or_recover_pane_after_runtime_ready = function(opts)
+  opts = opts or {}
+  if opts.recover_bridge_failure ~= true then
+    return session_backend.start(options)
+  end
+
+  local status = session_backend.status(options)
+  if status_has_bridge_runtime_failure(status) then
+    return session_backend.restart(options)
+  end
+
+  return session_backend.start(options)
+end
+
 local function install_slime_override()
   _G.__ark_slime_override_send = function(config_arg, text)
     local ok, err = M._slime_override_send(config_arg, text)
@@ -1303,12 +1329,14 @@ local function start_managed_buffer(bufnr)
     lsp.start_async(options, bufnr)
   end
 
-  local function start_pane_and_sync()
+  local function start_pane_and_sync(start_opts)
     if not can_start_buffer() then
       return
     end
 
-    local _, pane_err = session_backend.start(options)
+    local _, pane_err = start_or_recover_pane_after_runtime_ready({
+      recover_bridge_failure = type(start_opts) == "table" and start_opts.recover_bridge_failure == true,
+    })
     if pane_err then
       notify(pane_err, vim.log.levels.WARN)
       return
@@ -1334,7 +1362,9 @@ local function start_managed_buffer(bufnr)
           end
 
           vim.schedule(function()
-            start_pane_and_sync()
+            start_pane_and_sync({
+              recover_bridge_failure = true,
+            })
           end)
         end,
       })
@@ -1524,7 +1554,9 @@ function M.start_pane()
   if not bridge_ok then
     return nil, bridge_err
   end
-  local pane_id, err = session_backend.start(options)
+  local pane_id, err = start_or_recover_pane_after_runtime_ready({
+    recover_bridge_failure = true,
+  })
   if not pane_id then
     notify(err, vim.log.levels.ERROR)
     return nil, err
@@ -1675,7 +1707,9 @@ function M._slime_before_send()
     return nil, bridge_err
   end
 
-  local pane_id, pane_err = session_backend.start(options)
+  local pane_id, pane_err = start_or_recover_pane_after_runtime_ready({
+    recover_bridge_failure = true,
+  })
   if not pane_id then
     return nil, pane_err
   end
@@ -1729,7 +1763,9 @@ function M.send(text)
     return nil, bridge_err
   end
 
-  local pane_id, pane_err = session_backend.start(options)
+  local pane_id, pane_err = start_or_recover_pane_after_runtime_ready({
+    recover_bridge_failure = true,
+  })
   if not pane_id then
     notify(pane_err, vim.log.levels.ERROR)
     return nil, pane_err
@@ -1775,7 +1811,9 @@ local function show_help_page(bufnr, topic)
     return nil, bridge_err
   end
 
-  local _, pane_err = session_backend.start(options)
+  local _, pane_err = start_or_recover_pane_after_runtime_ready({
+    recover_bridge_failure = true,
+  })
   if pane_err then
     notify(pane_err, vim.log.levels.ERROR)
     return nil, pane_err
@@ -1833,7 +1871,9 @@ function M.help_pane(bufnr)
     return nil, bridge_err
   end
 
-  local pane_id, pane_err = session_backend.start(options)
+  local pane_id, pane_err = start_or_recover_pane_after_runtime_ready({
+    recover_bridge_failure = true,
+  })
   if not pane_id then
     notify(pane_err, vim.log.levels.ERROR)
     return nil, pane_err
@@ -2890,7 +2930,9 @@ function M.refresh(bufnr)
   if options.auto_start_pane then
     local bridge_ok = ensure_bridge_runtime({})
     if bridge_ok then
-      local _, pane_err = session_backend.start(options)
+      local _, pane_err = start_or_recover_pane_after_runtime_ready({
+        recover_bridge_failure = true,
+      })
       if pane_err then
         notify(pane_err, vim.log.levels.WARN)
       end
