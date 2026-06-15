@@ -11,6 +11,10 @@ end
 
 local root = vim.fs.normalize(ark_test.run_tmpdir() .. "/targets-tmux-live")
 vim.fn.mkdir(root, "p")
+vim.fn.writefile({
+  "main:",
+  "  store: cache/targets",
+}, root .. "/_targets.yaml")
 
 local function rebuild_bridge_runtime()
   local bridge = require("ark.bridge")
@@ -36,7 +40,6 @@ end
 rebuild_bridge_runtime()
 
 vim.fn.writefile({
-  "targets::tar_config_set(store = 'cache/targets')",
   "list(",
   "  targets::tar_target(raw_data, data.frame(id = 1:3, value = c('a', 'b', 'c'), indigenous = c('yes', 'no', 'yes'))),",
   "  targets::tar_target(clean_data, raw_data),",

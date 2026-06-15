@@ -78,7 +78,11 @@ package.loaded["ark.view"] = {
 local root = vim.fn.tempname()
 vim.fn.mkdir(root, "p")
 vim.fn.writefile({
-  "targets::tar_config_set(store = 'cache/targets')",
+  "main:",
+  "  store: cache/targets",
+}, root .. "/_targets.yaml")
+vim.fn.writefile({
+  "targets::tar_config_set(store = 'wrong/future')",
   "list()",
 }, root .. "/_targets.R")
 

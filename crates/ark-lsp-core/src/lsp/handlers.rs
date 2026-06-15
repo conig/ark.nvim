@@ -8,13 +8,10 @@
 #![allow(clippy::items_after_test_module)]
 
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
 use anyhow::anyhow;
-use regex::Regex;
 use serde_json::Value;
 use stdext::result::ResultExt;
 use stdext::unwrap;
@@ -1095,8 +1092,7 @@ fn target_project_paths(
         .or_else(|| find_open_targets_root(state))
         .or_else(|| path.parent().map(Path::to_path_buf))?;
     let script = targets_project::targets_script_for_root(root.as_path());
-    let store = target_store_path(root.as_path(), script.as_path(), state)
-        .unwrap_or_else(|| root.join("_targets"));
+    let store = target_store_path(root.as_path()).unwrap_or_else(|| root.join("_targets"));
 
     Some((
         root.to_string_lossy().to_string(),
@@ -1105,47 +1101,9 @@ fn target_project_paths(
     ))
 }
 
-fn target_store_path(root: &Path, script: &Path, state: &WorldState) -> Option<PathBuf> {
-    if let Some(store) = targets_project::targets_config_value(root, "store")
+fn target_store_path(root: &Path) -> Option<PathBuf> {
+    targets_project::targets_config_value(root, "store")
         .and_then(|store| targets_project::targets_resolve_project_path(root, &store))
-    {
-        return Some(store);
-    }
-
-    let contents =
-        open_targets_script_contents(script, state).or_else(|| fs::read_to_string(script).ok())?;
-    let store = PathBuf::from(target_store_config(contents.as_str())?);
-
-    if store.is_absolute() {
-        Some(store)
-    } else {
-        Some(root.join(store))
-    }
-}
-
-fn open_targets_script_contents(script: &Path, state: &WorldState) -> Option<String> {
-    state.documents.iter().find_map(|(uri, document)| {
-        let path = uri.to_file_path().ok()?;
-        if path == script {
-            Some(document.source_contents.clone())
-        } else {
-            None
-        }
-    })
-}
-
-fn target_store_config(contents: &str) -> Option<String> {
-    static STORE_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r#"(?s)(?:[A-Za-z.][A-Za-z0-9._]*(?:::|::))?tar_config_set\s*\([^)]*?\bstore\s*=\s*["'](?P<store>[^"']+)["']"#,
-        )
-        .unwrap()
-    });
-
-    STORE_RE
-        .captures(contents)
-        .and_then(|captures| captures.name("store"))
-        .map(|capture| capture.as_str().to_string())
 }
 
 fn find_open_targets_root(state: &WorldState) -> Option<PathBuf> {
@@ -1801,7 +1759,7 @@ mod tests {
     }
 
     #[test]
-    fn test_target_project_paths_uses_open_tar_config_store() {
+    fn test_target_project_paths_ignores_script_tar_config_store_before_targets_config() {
         let tempdir = tempdir().expect("expected tempdir");
         let targets_uri =
             Url::from_file_path(tempdir.path().join("_targets.R")).expect("expected targets uri");
@@ -1826,7 +1784,7 @@ list()
 
         assert_eq!(
             PathBuf::from(store),
-            tempdir.path().join("cache").join("targets")
+            tempdir.path().join("_targets")
         );
     }
 

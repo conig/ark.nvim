@@ -1910,29 +1910,6 @@ function M.view_close()
   return view.close()
 end
 
-local function targets_project_store(root, script)
-  if vim.fn.filereadable(script) ~= 1 then
-    return nil
-  end
-
-  local ok, lines = pcall(vim.fn.readfile, script, "", 2000)
-  if not ok or type(lines) ~= "table" then
-    return nil
-  end
-
-  for _, line in ipairs(lines) do
-    local store = line:match("tar_config_set%s*%([^)]-store%s*=%s*[\"']([^\"']+)[\"']")
-    if type(store) == "string" and store ~= "" then
-      if store:sub(1, 1) == "/" then
-        return vim.fs.normalize(store)
-      end
-      return vim.fs.normalize(root .. "/" .. store)
-    end
-  end
-
-  return nil
-end
-
 local function targets_trim(value)
   return (value:gsub("^%s+", ""):gsub("%s+$", ""))
 end
@@ -2015,9 +1992,8 @@ local function targets_project_script(root)
     or vim.fs.normalize(root .. "/_targets.R")
 end
 
-local function targets_project_store_path(root, script)
+local function targets_project_store_path(root)
   return targets_resolve_project_path(root, targets_config_value(root, "store"))
-    or targets_project_store(root, script)
     or vim.fs.normalize(root .. "/_targets")
 end
 
@@ -2028,7 +2004,7 @@ local function targets_project(bufnr)
   local root = vim.fs.root(anchor, { "_targets.R", "_targets.yaml", ".git" }) or vim.loop.cwd()
   root = vim.fs.normalize(root)
   local script = targets_project_script(root)
-  local store = targets_project_store_path(root, script)
+  local store = targets_project_store_path(root)
 
   return {
     root = root,

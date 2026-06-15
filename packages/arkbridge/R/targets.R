@@ -18,46 +18,49 @@
   root <- normalizePath(root, winslash = "/", mustWork = FALSE)
 
   if (!is.character(script) || length(script) != 1L || !nzchar(script)) {
-    script <- file.path(root, "_targets.R")
+    script <- .ark_targets_config_path(root, "script") %||% "_targets.R"
+    if (!grepl("^(/|[A-Za-z]:[/\\\\])", script)) {
+      script <- file.path(root, script)
+    }
   }
   script <- normalizePath(script, winslash = "/", mustWork = FALSE)
 
   if (!is.character(store) || length(store) != 1L || !nzchar(store)) {
-    store <- file.path(root, "_targets")
+    store <- .ark_targets_config_path(root, "store") %||% "_targets"
+    if (!grepl("^(/|[A-Za-z]:[/\\\\])", store)) {
+      store <- file.path(root, store)
+    }
   }
   store <- normalizePath(store, winslash = "/", mustWork = FALSE)
 
   list(root = root, script = script, store = store)
 }
 
-.ark_targets_store_config <- function(script = "_targets.R") {
-  if (!file.exists(script)) {
+.ark_targets_config_path <- function(root, name) {
+  if (!.ark_targets_package_available()) {
     return(NULL)
   }
 
-  contents <- paste(readLines(script, warn = FALSE), collapse = "\n")
-  match <- regexec(
-    "(?s)(?:[A-Za-z.][A-Za-z0-9._]*(?:::|::))?tar_config_set\\s*\\([^)]*?\\bstore\\s*=\\s*[\"']([^\"']+)[\"']",
-    contents,
-    perl = TRUE
+  old <- getwd()
+  on.exit(setwd(old), add = TRUE)
+  if (dir.exists(root)) {
+    setwd(root)
+  }
+
+  value <- tryCatch(
+    targets::tar_config_get(name),
+    error = function(e) NULL
   )
-  captures <- regmatches(contents, match)[[1L]]
-  if (length(captures) < 2L || !nzchar(captures[[2L]])) {
+  if (!is.character(value) || length(value) != 1L || !nzchar(value)) {
     return(NULL)
   }
 
-  captures[[2L]]
+  value
 }
 
 .ark_targets_project_from_cwd <- function() {
   root <- normalizePath(getwd(), winslash = "/", mustWork = FALSE)
-  script <- file.path(root, "_targets.R")
-  store <- .ark_targets_store_config(script) %||% "_targets"
-  if (!grepl("^(/|[A-Za-z]:[/\\\\])", store)) {
-    store <- file.path(root, store)
-  }
-
-  .ark_targets_project(root, script, store)
+  .ark_targets_project(root)
 }
 
 .ark_targets_read_for_completion <- function(name) {
@@ -93,7 +96,10 @@
     stop("the targets package is not installed in the managed R session", call. = FALSE)
   }
 
-  fun <- getExportedValue("targets", name)
+  fun <- tryCatch(
+    getExportedValue("targets", name),
+    error = function(e) get(name, envir = asNamespace("targets"), inherits = FALSE)
+  )
   formals <- names(formals(fun))
   args <- args[names(args) %in% formals]
   do.call(fun, args)
@@ -468,12 +474,19 @@
 
     result <- .ark_targets_with_project(project, {
       if (identical(action, "make") || identical(action, "make_downstream")) {
-        .ark_targets_call_export("tar_make", list(names = resolved_names, script = project$script, store = project$store))
+        invisible(.ark_targets_call_export("tar_make", list(
+          names = resolved_names,
+          script = project$script,
+          store = project$store,
+          callr_function = NULL
+        )))
+        list(completed = TRUE)
       } else if (identical(action, "invalidate")) {
         invalidated_names <<- names
         .ark_targets_invalidate(names, project$store)
       } else {
-        .ark_targets_call_export("tar_load", list(names = names, store = project$store))
+        invisible(.ark_targets_call_export("tar_load", list(names = names, store = project$store)))
+        list(loaded = TRUE)
       }
     })
 

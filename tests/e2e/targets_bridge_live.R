@@ -30,8 +30,12 @@ dir.create(root, recursive = TRUE)
 script <- file.path(root, "_targets.R")
 store <- file.path(root, "cache", "targets")
 
+old <- setwd(root)
+on.exit(setwd(old), add = TRUE)
+targets::tar_config_set(store = "cache/targets")
+setwd(old)
+
 writeLines(c(
-  "targets::tar_config_set(store = 'cache/targets')",
   "list(",
   "  targets::tar_target(raw_data, data.frame(id = 1:3, value = c('a', 'b', 'c'))),",
   "  targets::tar_target(clean_data, raw_data),",
