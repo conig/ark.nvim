@@ -191,6 +191,21 @@ ark_test.wait_for("console signature help float remains visible after Blink menu
   return signature_help_float_visible()
 end)
 
+blink_menu_visible = true
+vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "fake_sig(x = mt" })
+vim.api.nvim_win_set_cursor(0, { 1, #"fake_sig(x = mt" })
+vim.api.nvim_exec_autocmds("TextChangedI", {
+  buffer = bufnr,
+})
+
+-- Regression: after signature help is already visible, a keyword completion
+-- refresh inside the same call must not close the signature float. The normal
+-- Ark/Blink collision handler owns any menu repositioning or hiding.
+vim.wait(300)
+if not signature_help_float_visible() then
+  ark_test.fail("console signature help disappeared when Blink completion appeared")
+end
+
 if signature_help_request_count() ~= 2 then
   ark_test.fail("Blink-visible console signature trigger should request signature help: " .. vim.inspect({
     count = signature_help_request_count(),

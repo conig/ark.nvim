@@ -1050,26 +1050,6 @@ local function blink_completion_visible_for_signature_help()
   return false
 end
 
-local function close_lsp_info_floats()
-  for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-    local config = vim.api.nvim_win_get_config(winid)
-    if type(config) == "table" and type(config.relative) == "string" and config.relative ~= "" then
-      local has_lsp_float_var = false
-      for _, var in ipairs({ "textDocument/signatureHelp", "textDocument/hover", "lsp_floating_bufnr" }) do
-        local ok = pcall(vim.api.nvim_win_get_var, winid, var)
-        if ok then
-          has_lsp_float_var = true
-          break
-        end
-      end
-
-      if has_lsp_float_var then
-        pcall(vim.api.nvim_win_close, winid, true)
-      end
-    end
-  end
-end
-
 local function handle_blink_completion_for_signature_help(has_trigger)
   if not blink_completion_visible_for_signature_help() then
     return true
@@ -1080,8 +1060,7 @@ local function handle_blink_completion_for_signature_help(has_trigger)
     return true
   end
 
-  close_lsp_info_floats()
-  return false
+  return true
 end
 
 local signature_help_trigger_chars = {
