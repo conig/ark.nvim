@@ -258,6 +258,20 @@ vim.api.nvim_create_user_command("ArkTraceShowTrigger", function(opts)
   end, 20)
 end, { nargs = 1 })
 
+vim.api.nvim_create_user_command("ArkTraceShowManual", function()
+  vim.cmd("startinsert")
+  vim.defer_fn(function()
+    local ok_blink, blink = pcall(require, "blink.cmp")
+    snapshot("ArkTraceShowManual:before")
+    if ok_blink and blink and type(blink.show) == "function" then
+      blink.show()
+    end
+    vim.defer_fn(function()
+      snapshot("ArkTraceShowManual:after")
+    end, 20)
+  end, 20)
+end, {})
+
 vim.keymap.set("i", "<C-Q>", function()
   trace_show_trigger('"')
 end, { buffer = 0 })

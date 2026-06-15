@@ -1394,6 +1394,11 @@ function M.setup(opts)
       record_startup_unlock(bufnr, type(payload) == "table" and payload.source or "LspBootstrap", {
         post_lsp_bootstrap_unlock_ms = 0,
       })
+      if type(blink.maybe_show_after_startup) == "function" then
+        vim.defer_fn(function()
+          blink.maybe_show_after_startup(bufnr)
+        end, 20)
+      end
     end)
   end
   if type(blink.ensure_integration) == "function" then

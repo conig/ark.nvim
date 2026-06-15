@@ -145,6 +145,7 @@ local ok, err = xpcall(function()
 
   local nvim_cmd = table.concat({
     "XDG_STATE_HOME=" .. vim.fn.shellescape(state_home),
+    "XDG_DATA_HOME=" .. vim.fn.shellescape(vim.env.XDG_DATA_HOME or vim.fn.stdpath("data")),
     "ARK_TUI_TRACE_LOG=" .. vim.fn.shellescape(trace_path),
     "ARK_REPO_ROOT=" .. vim.fn.shellescape(repo_root),
     "ARK_NVIM_LSP_BIN=" .. vim.fn.shellescape(fake_lsp),
@@ -222,10 +223,16 @@ local ok, err = xpcall(function()
     tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceShowTrigger " .. trigger, "Enter" })
   end
 
+  local function trigger_manual_completion()
+    tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceShowManual", "Enter" })
+  end
+
   local function assert_console_completion(case)
     type_console_input(case.text)
     if case.trigger then
       trigger_completion(case.trigger)
+    elseif case.manual then
+      trigger_manual_completion()
     end
 
     local completion_show = nil
@@ -253,11 +260,11 @@ local ok, err = xpcall(function()
   local completion_cases = {
     { name = "console Blink mtcars dollar completion", text = "mtcars$", label = "console_blink_item" },
     { name = "console Blink library quote completion", text = 'library("', trigger = '"', label = "console_library_item" },
-    { name = "console Blink namespace completion", text = "pkg::", label = "console_namespace_item" },
+    { name = "console Blink namespace completion", text = "pkg::", trigger = ":", label = "console_namespace_item" },
     { name = "console Blink subset string completion", text = 'mtcars[, c("', trigger = '"', label = "console_subset_item" },
     { name = "console Blink comparison string completion", text = 'species == "', trigger = '"', label = "console_comparison_item" },
     { name = "console Blink path completion", text = 'read.csv("src/', trigger = "/", label = "src/console_path_item" },
-    { name = "console Blink named argument value completion", text = "corx::corx(data = mtca", label = "mtcars" },
+    { name = "console Blink named argument value completion", text = "corx::corx(data = mtca", manual = true, label = "mtcars" },
   }
 
   local completion_shows = {}

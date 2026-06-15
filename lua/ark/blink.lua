@@ -49,6 +49,33 @@ local function current_insert_col()
   return col
 end
 
+local function keyword_prefix_before_cursor()
+  local col = current_insert_col()
+  if type(col) ~= "number" or col <= 0 then
+    return nil
+  end
+
+  local line = vim.api.nvim_get_current_line()
+  local before_cursor = line:sub(1, col)
+  local prefix = before_cursor:match("([%w_.]+)$")
+  if type(prefix) ~= "string" or prefix == "" then
+    return nil
+  end
+
+  return prefix
+end
+
+local function keyword_after_assignment_before_cursor()
+  local col = current_insert_col()
+  if type(col) ~= "number" or col <= 0 then
+    return false
+  end
+
+  local line = vim.api.nvim_get_current_line()
+  local before_cursor = line:sub(1, col)
+  return before_cursor:find("=%s*[%w_.]*$") ~= nil
+end
+
 local function hide_visible_blink_menu()
   local ok_blink, blink = pcall(require, "blink.cmp")
   if not ok_blink or not blink.is_visible() then
@@ -485,7 +512,7 @@ function M.patch_blink_trigger()
       -- keyword character can inherit the empty cache instead of issuing a new
       -- LSP request. Reset the hidden trigger-character context so Ark gets a
       -- fresh keyword query on the first real identifier character.
-      if (not ok_blink or not blink.is_visible())
+      if ((not ok_blink or not blink.is_visible()) or keyword_after_assignment_before_cursor())
         and type(live_trigger) == "table"
         and live_trigger.initial_kind == "trigger_character"
       then
@@ -762,6 +789,45 @@ function M.maybe_show_after_pair(bufnr, trigger_character)
   trigger.show({
     trigger_kind = "trigger_character",
     trigger_character = trigger_character,
+  })
+end
+
+function M.maybe_show_after_startup(bufnr)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  if vim.api.nvim_get_current_buf() ~= bufnr then
+    return
+  end
+  if vim.api.nvim_get_mode().mode ~= "i" then
+    return
+  end
+  if not console_completion_allowed(bufnr) then
+    return
+  end
+  if not in_ark_filetype(bufnr) then
+    return
+  end
+  if not active_ark_client(bufnr) then
+    return
+  end
+  if not keyword_prefix_before_cursor() then
+    return
+  end
+
+  local ok_blink, blink = pcall(require, "blink.cmp")
+  if not ok_blink or blink.is_visible() then
+    return
+  end
+  local ok_trigger, trigger = pcall(require, "blink.cmp.completion.trigger")
+  if not ok_trigger or type(trigger.show) ~= "function" then
+    return
+  end
+
+  M.ensure_integration()
+  trigger.context = nil
+  trigger.show({
+    trigger_kind = "keyword",
   })
 end
 
