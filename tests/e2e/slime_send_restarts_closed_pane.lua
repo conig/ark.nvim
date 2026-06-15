@@ -4,10 +4,14 @@ local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test
 
 local original_tmux = vim.env.TMUX
 local original_tmux_pane = vim.env.TMUX_PANE
+local original_ark_tmux_anchor_pane = vim.env.ARK_TMUX_ANCHOR_PANE
+local original_ark_tmux_session = vim.env.ARK_TMUX_SESSION
 local original_system = vim.fn.system
 
 vim.env.TMUX = "/tmp/ark-test,456,0"
 vim.env.TMUX_PANE = "%anchor"
+vim.env.ARK_TMUX_ANCHOR_PANE = nil
+vim.env.ARK_TMUX_SESSION = nil
 
 _G.__ark_nvim_state = {}
 package.loaded["ark"] = nil
@@ -247,6 +251,8 @@ end)
 vim.fn.system = original_system
 vim.env.TMUX = original_tmux
 vim.env.TMUX_PANE = original_tmux_pane
+vim.env.ARK_TMUX_ANCHOR_PANE = original_ark_tmux_anchor_pane
+vim.env.ARK_TMUX_SESSION = original_ark_tmux_session
 
 if not ok then
   error(err, 0)

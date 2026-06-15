@@ -51,6 +51,10 @@ local manifest_cmd = string.format(
 local manifest_output = vim.fn.system(manifest_cmd)
 if vim.v.shell_error ~= 0 then
   vim.fn.delete(tmp, "rf")
+  if manifest_output:find("key_path must point to the remote decryption key", 1, true) then
+    vim.print({ skipped = "devine targets manifest requires unavailable remote decryption key" })
+    return
+  end
   error("failed to generate devine target manifest: " .. manifest_output, 0)
 end
 

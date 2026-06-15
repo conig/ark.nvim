@@ -5,8 +5,12 @@ package.loaded["ark.tmux"] = nil
 
 local original_system = vim.fn.system
 local original_tmux = vim.env.TMUX
+local original_ark_tmux_anchor_pane = vim.env.ARK_TMUX_ANCHOR_PANE
+local original_ark_tmux_session = vim.env.ARK_TMUX_SESSION
 
 vim.env.TMUX = "/tmp/ark-test,789,0"
+vim.env.ARK_TMUX_ANCHOR_PANE = nil
+vim.env.ARK_TMUX_SESSION = nil
 
 local socket_path = "/tmp/ark.sock"
 local main_session = "project"
@@ -340,6 +344,8 @@ end)
 
 vim.fn.system = original_system
 vim.env.TMUX = original_tmux
+vim.env.ARK_TMUX_ANCHOR_PANE = original_ark_tmux_anchor_pane
+vim.env.ARK_TMUX_SESSION = original_ark_tmux_session
 
 if not ok then
   error(err, 0)

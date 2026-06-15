@@ -189,6 +189,7 @@ local ok, err = xpcall(function()
 
   local nvim_cmd = table.concat({
     "XDG_STATE_HOME=" .. vim.fn.shellescape(state_home),
+    "XDG_DATA_HOME=" .. vim.fn.shellescape(vim.env.XDG_DATA_HOME or vim.fn.stdpath("data")),
     "ARK_TUI_TRACE_LOG=" .. vim.fn.shellescape(trace_path),
     "ARK_REPO_ROOT=" .. vim.fn.shellescape(repo_root),
     "ARK_NVIM_LSP_BIN=" .. vim.fn.shellescape(fake_lsp),

@@ -77,6 +77,7 @@ local ok, err = xpcall(function()
 
   local nvim_cmd = table.concat({
     "XDG_STATE_HOME=" .. vim.fn.shellescape(state_home),
+    "XDG_DATA_HOME=" .. vim.fn.shellescape(vim.env.XDG_DATA_HOME or vim.fn.stdpath("data")),
     "ARK_TUI_TRACE_LOG=" .. vim.fn.shellescape(trace_path),
     "ARK_REPO_ROOT=" .. vim.fn.shellescape(repo_root),
     "ARK_TMUX_SOCKET=" .. vim.fn.shellescape(vim.env.ARK_TMUX_SOCKET or ""),
@@ -130,18 +131,26 @@ local ok, err = xpcall(function()
     return false
   end, 50, false)
 
-  tmux({
-    "send-keys",
-    "-t",
-    nvim_pane,
-    "Escape",
-    ":call setline(1, ['mtcars'])",
-    "Enter",
-    "1G",
-    "$",
-    "A",
-    "[",
-  })
+  tmux({ "send-keys", "-t", nvim_pane, "Escape", ":call setline(1, 'mtcars') | call cursor(1, 6)", "Enter" })
+  tmux({ "send-keys", "-t", nvim_pane, "A" })
+
+  ark_test.wait_for("insert mode at mtcars", 5000, function()
+    local event = latest_matching(function(candidate)
+      return candidate.label == "InsertEnter" and candidate.line == "mtcars"
+    end)
+    return event ~= nil
+  end)
+
+  tmux({ "send-keys", "-t", nvim_pane, "[" })
+
+  ark_test.wait_for("typed subset bracket", 5000, function()
+    local event = latest_matching(function(candidate)
+      return (candidate.label == "TextChangedI" or candidate.label == "CursorMovedI" or candidate.label == "InsertCharPre")
+        and type(candidate.line) == "string"
+        and candidate.line:find("mtcars[", 1, true) == 1
+    end)
+    return event ~= nil
+  end)
 
   local completion_show = nil
   ark_test.wait_for("subset bracket completion", 10000, function()

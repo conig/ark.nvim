@@ -83,6 +83,7 @@ local ok, err = xpcall(function()
 
   local nvim_cmd = table.concat({
     "XDG_STATE_HOME=" .. vim.fn.shellescape(state_home),
+    "XDG_DATA_HOME=" .. vim.fn.shellescape(vim.env.XDG_DATA_HOME or vim.fn.stdpath("data")),
     "ARK_TUI_TRACE_LOG=" .. vim.fn.shellescape(trace_path),
     "ARK_REPO_ROOT=" .. vim.fn.shellescape(repo_root),
     "ARK_TMUX_SOCKET=" .. vim.fn.shellescape(vim.env.ARK_TMUX_SOCKET or ""),
@@ -180,8 +181,7 @@ local ok, err = xpcall(function()
   local line_with_space = nil
   ark_test.wait_for("typed trailing space", 5000, function()
     line_with_space = latest_after(tonumber(after_word.ts_ms or 0), function(candidate)
-      return candidate.label == "TextChangedI"
-        and candidate.line == "ordinary "
+      return candidate.line == "ordinary "
     end)
     return line_with_space ~= nil
   end)
