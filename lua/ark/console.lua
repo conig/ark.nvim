@@ -1165,6 +1165,7 @@ local function maybe_show_signature_help(bufnr)
       return
     end
     pcall(vim.lsp.buf.signature_help, {
+      close_events = { "CursorMoved", "InsertLeave", "BufHidden", "BufLeave" },
       focusable = false,
       silent = true,
     })

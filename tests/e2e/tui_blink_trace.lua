@@ -6,6 +6,43 @@ local function append(value)
   vim.fn.writefile({ vim.json.encode(value) }, log_path, "a")
 end
 
+local function float_windows()
+  local floats = {}
+  for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local config = vim.api.nvim_win_get_config(winid)
+    if type(config) == "table" and type(config.relative) == "string" and config.relative ~= "" then
+      local bufnr = vim.api.nvim_win_get_buf(winid)
+      local lines = {}
+      if vim.api.nvim_buf_is_valid(bufnr) then
+        lines = vim.api.nvim_buf_get_lines(bufnr, 0, math.min(6, vim.api.nvim_buf_line_count(bufnr)), false)
+      end
+
+      local markers = {}
+      for _, var in ipairs({ "textDocument/signatureHelp", "textDocument/hover", "lsp_floating_bufnr" }) do
+        local ok = pcall(vim.api.nvim_win_get_var, winid, var)
+        if ok then
+          markers[#markers + 1] = var
+        end
+      end
+
+      floats[#floats + 1] = {
+        win = winid,
+        buf = bufnr,
+        filetype = vim.bo[bufnr].filetype,
+        relative = config.relative,
+        row = config.row,
+        col = config.col,
+        width = config.width,
+        height = config.height,
+        zindex = config.zindex,
+        markers = markers,
+        lines = lines,
+      }
+    end
+  end
+  return floats
+end
+
 local function snapshot(label, extra)
   local ok_blink, blink = pcall(require, "blink.cmp")
   local ok_list, list = pcall(require, "blink.cmp.completion.list")
@@ -78,6 +115,7 @@ local function snapshot(label, extra)
     trigger = ok_trigger and trigger and trigger.context and trigger.context.trigger or nil,
     items = items,
     diagnostics = diagnostics,
+    floats = float_windows(),
   }, extra or {}))
 end
 
@@ -128,6 +166,10 @@ vim.api.nvim_create_autocmd("User", {
 vim.api.nvim_create_user_command("ArkTraceSnapshot", function(opts)
   snapshot("ArkTraceSnapshot", { args = opts.args })
 end, { nargs = "*" })
+
+vim.keymap.set({ "i", "n" }, "<F9>", function()
+  snapshot("ArkTraceKeySnapshot")
+end, { desc = "Record Ark TUI trace snapshot" })
 
 vim.api.nvim_create_user_command("ArkTraceClearInput", function()
   local input_start = 0
