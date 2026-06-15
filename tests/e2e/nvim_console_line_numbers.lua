@@ -40,9 +40,13 @@ if type(winid) ~= "number" or winid <= 0 then
 end
 vim.api.nvim_set_current_win(winid)
 
-local function wait_for_numbers(label, number, relativenumber)
+local function wait_for_window_state(label, opts)
   ark_test.wait_for(label, 5000, function()
-    return vim.wo[winid].number == number and vim.wo[winid].relativenumber == relativenumber
+    local concealcursor = vim.wo[winid].concealcursor or ""
+    return vim.wo[winid].number == opts.number
+      and vim.wo[winid].relativenumber == opts.relativenumber
+      and vim.wo[winid].conceallevel == opts.conceallevel
+      and concealcursor:find("i", 1, true) == nil
   end)
 end
 
@@ -53,26 +57,46 @@ local function wait_for_mode(label, predicate)
   end)
 end
 
-wait_for_numbers("terminal console normal mode shows relative line numbers", true, true)
+wait_for_window_state("terminal console normal mode shows line numbers and output prefixes", {
+  number = true,
+  relativenumber = true,
+  conceallevel = 0,
+})
 
 vim.api.nvim_exec_autocmds("InsertEnter", { buffer = bufnr })
-wait_for_numbers("terminal console insert mode hides line numbers", false, false)
+wait_for_window_state("terminal console insert mode hides line numbers and prior output prefixes", {
+  number = false,
+  relativenumber = false,
+  conceallevel = 2,
+})
 
 vim.api.nvim_exec_autocmds("InsertLeave", { buffer = bufnr })
-wait_for_numbers("terminal console normal mode restores relative line numbers", true, true)
+wait_for_window_state("terminal console normal mode restores line numbers and output prefixes", {
+  number = true,
+  relativenumber = true,
+  conceallevel = 0,
+})
 
 -- Visual selection in the terminal transcript should keep line numbers available.
 vim.api.nvim_feedkeys("v", "nx", false)
 wait_for_mode("terminal console enters visual mode", function(mode)
   return mode == "v" or mode == "V" or mode == "\22"
 end)
-wait_for_numbers("terminal console visual mode shows relative line numbers", true, true)
+wait_for_window_state("terminal console visual mode shows line numbers and output prefixes", {
+  number = true,
+  relativenumber = true,
+  conceallevel = 0,
+})
 
 vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
 wait_for_mode("terminal console exits visual mode", function(mode)
   return mode:sub(1, 1) == "n"
 end)
-wait_for_numbers("terminal console normal mode keeps relative line numbers", true, true)
+wait_for_window_state("terminal console normal mode keeps line numbers and output prefixes", {
+  number = true,
+  relativenumber = true,
+  conceallevel = 0,
+})
 
 vim.print({
   nvim_console_line_numbers = "ok",

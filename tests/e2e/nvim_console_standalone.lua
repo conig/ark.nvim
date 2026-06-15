@@ -61,7 +61,7 @@ if vim.bo[bufnr].buflisted ~= false
   or vim.wo[0].number ~= true
   or vim.wo[0].relativenumber ~= true
   or vim.wo[0].signcolumn ~= "no"
-  or vim.wo[0].conceallevel ~= 2
+  or vim.wo[0].conceallevel ~= 0
 then
   ark_test.fail("standalone console should use terminal-like REPL UI: " .. vim.inspect({
     buflisted = vim.bo[bufnr].buflisted,
@@ -75,6 +75,7 @@ then
     relativenumber = vim.wo[0].relativenumber,
     signcolumn = vim.wo[0].signcolumn,
     conceallevel = vim.wo[0].conceallevel,
+    concealcursor = vim.wo[0].concealcursor,
   }))
 end
 
