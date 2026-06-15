@@ -1139,29 +1139,6 @@ local function paste_lines_text(lines)
   return ""
 end
 
-local function strip_transcript_output_prefixes(text)
-  if type(text) ~= "string" or not text:find("#>", 1, true) then
-    return text
-  end
-
-  local lines = vim.split(text, "\n", { plain = true })
-  local changed = false
-  for index, line in ipairs(lines) do
-    if line == "#>" then
-      lines[index] = ""
-      changed = true
-    elseif line:sub(1, 3) == "#> " then
-      lines[index] = line:sub(4)
-      changed = true
-    end
-  end
-
-  if not changed then
-    return text
-  end
-  return table.concat(lines, "\n")
-end
-
 local function console_paste_buffer()
   local bufnr = vim.api.nvim_get_current_buf()
   local info = state.buffers[bufnr]
@@ -1314,8 +1291,6 @@ paste_text_at_input_cursor = function(bufnr, info, text, opts)
   if type(text) ~= "string" or text == "" then
     return true
   end
-
-  text = strip_transcript_output_prefixes(text)
 
   local winid = vim.fn.bufwinid(bufnr)
   if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
