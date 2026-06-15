@@ -248,6 +248,33 @@ if vim.api.nvim_buf_line_count(bufnr) ~= before_active_dd_line_count then
 end
 
 status = require("ark.console").status(bufnr)
+vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, {
+  "lm(mpg) |>",
+  "",
+  "summary()",
+})
+vim.api.nvim_win_set_cursor(0, { status.input_start + 2, 0 })
+local before_multiline_dd_line_count = vim.api.nvim_buf_line_count(bufnr)
+feed("dd")
+ark_test.wait_for("normal-mode dd in multiline input to delete current row", 4000, function()
+  local current_status = require("ark.console").status(bufnr)
+  local current_input = vim.api.nvim_buf_get_lines(bufnr, current_status.input_start, -1, false)
+  return vim.inspect(current_input) == vim.inspect({
+    "lm(mpg) |>",
+    "summary()",
+  })
+end)
+local after_multiline_dd_status = require("ark.console").status(bufnr)
+if vim.api.nvim_buf_line_count(bufnr) ~= before_multiline_dd_line_count - 1 then
+  ark_test.fail("normal-mode dd in multiline input should delete one row: " .. vim.inspect({
+    input = vim.api.nvim_buf_get_lines(bufnr, after_multiline_dd_status.input_start, -1, false),
+    line_count_before = before_multiline_dd_line_count,
+    line_count_after = vim.api.nvim_buf_line_count(bufnr),
+    cursor = vim.api.nvim_win_get_cursor(0),
+  }))
+end
+
+status = require("ark.console").status(bufnr)
 vim.api.nvim_buf_set_lines(bufnr, status.input_start, -1, false, { "draft_cc()" })
 vim.api.nvim_win_set_cursor(0, { status.input_start + 1, 0 })
 local before_active_cc_line_count = vim.api.nvim_buf_line_count(bufnr)

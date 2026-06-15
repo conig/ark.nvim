@@ -1293,15 +1293,25 @@ local function clear_current_input_line(bufnr, opts)
 
   local winid = vim.fn.bufwinid(bufnr)
   local cursor = vim.api.nvim_win_get_cursor(winid)
-  local row = math.max(input_start_line(bufnr, info), cursor[1] - 1)
+  local input_start = input_start_line(bufnr, info)
+  local input_lines = current_input_lines(bufnr, info)
+  local row = math.max(input_start, cursor[1] - 1)
+  local delete_row = opts.delete == true and #input_lines > 1
+  local target_row = row
 
   with_internal_edit(bufnr, info, function()
     vim.bo[bufnr].modifiable = true
-    vim.api.nvim_buf_set_lines(bufnr, row, row + 1, false, { "" })
+    if delete_row then
+      vim.api.nvim_buf_set_lines(bufnr, row, row + 1, false, {})
+      target_row = math.min(row, input_start + #input_lines - 2)
+    else
+      vim.api.nvim_buf_set_lines(bufnr, row, row + 1, false, { "" })
+    end
+    set_input_start(bufnr, info, input_start)
     vim.bo[bufnr].modified = false
   end)
   place_prompt(bufnr)
-  pcall(vim.api.nvim_win_set_cursor, winid, { row + 1, 0 })
+  pcall(vim.api.nvim_win_set_cursor, winid, { target_row + 1, 0 })
 
   if opts.insert == true then
     focus_input(bufnr, info, { insert = true, position = "start" })
@@ -2001,7 +2011,7 @@ function M.start(opts)
     open_input_line_for_normal_edit(bufnr, { above = true })
   end, { buffer = bufnr, desc = "Open line above in Ark console input" })
   vim.keymap.set("n", "dd", function()
-    clear_current_input_line(bufnr)
+    clear_current_input_line(bufnr, { delete = true })
   end, { buffer = bufnr, desc = "Clear Ark console input line" })
   vim.keymap.set("n", "cc", function()
     clear_current_input_line(bufnr, { insert = true })
