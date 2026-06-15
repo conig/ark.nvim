@@ -229,6 +229,14 @@ Console history and draft editing are buffer-native interactions on the current
 input region, not terminal escape-sequence emulation. It is selected with
 `session.console_frontend = "nvim-console"` or opened in-process with
 `:Ark console`.
+Its completion key policy uses `Enter` or `Tab` to accept a visible Blink
+completion, uses `Enter` to submit when no completion menu is visible, uses
+`Alt-Enter` to insert a newline without accepting completion, and uses
+`Shift-Tab` as the visible-menu bypass for inserting a literal tab without
+accepting completion.
+For R plotting and pipe workflows, the console also maps `<leader>\` to append
+`|>` and `<leader>=` to append `+`, each opening a new editable continuation
+line in the current console input.
 
 The raw launcher remains the default fallback and must not degrade.
 

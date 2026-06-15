@@ -1018,6 +1018,11 @@ local function set_current_input(bufnr, info, text)
 end
 
 local function hide_blink_completion()
+  local ok_list, list = pcall(require, "blink.cmp.completion.list")
+  if ok_list and type(list) == "table" and type(list.undo_preview) == "function" then
+    pcall(list.undo_preview)
+  end
+
   local ok_trigger, trigger = pcall(require, "blink.cmp.completion.trigger")
   if ok_trigger and type(trigger.hide) == "function" then
     pcall(trigger.hide)
@@ -1027,6 +1032,36 @@ local function hide_blink_completion()
   if ok_menu and type(menu) == "table" and type(menu.close) == "function" then
     pcall(menu.close)
   end
+end
+
+local function feed_insert_key(lhs)
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(lhs, true, false, true), "n", false)
+end
+
+local function blink_cmp()
+  local ok, cmp = pcall(require, "blink.cmp")
+  if not ok or type(cmp) ~= "table" then
+    return nil
+  end
+  return cmp
+end
+
+local function blink_menu_visible(cmp)
+  if type(cmp) ~= "table" or type(cmp.is_menu_visible) ~= "function" then
+    return false
+  end
+
+  local ok, visible = pcall(cmp.is_menu_visible)
+  return ok and visible == true
+end
+
+local function blink_snippet_active(cmp, direction)
+  if type(cmp) ~= "table" or type(cmp.snippet_active) ~= "function" then
+    return false
+  end
+
+  local ok, active = pcall(cmp.snippet_active, { direction = direction })
+  return ok and active == true
 end
 
 local function blink_completion_visible_for_signature_help()
@@ -1331,16 +1366,6 @@ local function cursor_on_or_after_input(bufnr, info)
   return type(cursor) == "table" and tonumber(cursor[1]) ~= nil and (cursor[1] - 1) >= input_start_line(bufnr, info)
 end
 
-local function cursor_on_input_line(bufnr, info)
-  local winid = vim.fn.bufwinid(bufnr)
-  if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
-    return false
-  end
-
-  local cursor = vim.api.nvim_win_get_cursor(winid)
-  return type(cursor) == "table" and tonumber(cursor[1]) ~= nil and (cursor[1] - 1) == input_start_line(bufnr, info)
-end
-
 local function enter_insert_from_normal_i(bufnr)
   local info = state.buffers[bufnr]
   if type(info) ~= "table" then
@@ -1348,7 +1373,7 @@ local function enter_insert_from_normal_i(bufnr)
     return
   end
 
-  if cursor_on_input_line(bufnr, info) then
+  if cursor_on_or_after_input(bufnr, info) then
     pcall(vim.cmd, "startinsert")
     return
   end
@@ -1536,7 +1561,7 @@ local function paste_register_into_input(bufnr, opts)
     return false
   end
 
-  hide_blink_completion()
+  M.cancel_completion_for_submit()
   local ok, paste_err = paste_text_at_input_cursor(bufnr, info, text, opts)
   if not ok then
     vim.notify(paste_err or "failed to paste into Ark console", vim.log.levels.ERROR)
@@ -2098,10 +2123,22 @@ function M.start(opts)
 
   vim.keymap.set({ "n", "i" }, "<CR>", function()
     M.submit_or_accept_completion(bufnr)
-  end, { buffer = bufnr, desc = "Submit Ark console input" })
+  end, { buffer = bufnr, desc = "Accept Ark console completion or submit input" })
+  vim.keymap.set("i", "<Tab>", function()
+    M.accept_completion_or_insert_tab()
+  end, { buffer = bufnr, desc = "Accept Ark console completion or insert tab" })
+  vim.keymap.set("i", "<S-Tab>", function()
+    M.bypass_completion_or_shift_tab()
+  end, { buffer = bufnr, desc = "Insert tab without accepting Ark console completion" })
   vim.keymap.set({ "n", "i" }, "<M-CR>", function()
-    M.insert_newline(bufnr)
+    M.insert_newline_ignoring_completion(bufnr)
   end, { buffer = bufnr, desc = "Insert newline in Ark console input" })
+  vim.keymap.set("n", "<leader>\\", function()
+    return M.append_pipe_newline(bufnr)
+  end, { buffer = bufnr, desc = "Append '|>' and open Ark console continuation line" })
+  vim.keymap.set("n", "<leader>=", function()
+    return M.append_plus_newline(bufnr)
+  end, { buffer = bufnr, desc = "Append '+' and open Ark console continuation line" })
   vim.keymap.set({ "n", "i" }, "<C-p>", function()
     M.history_prev(bufnr)
   end, { buffer = bufnr, desc = "Previous Ark console input" })
@@ -2211,25 +2248,136 @@ function M.start(opts)
 end
 
 function M.submit_or_accept_completion(bufnr)
-  local ok, cmp = pcall(require, "blink.cmp")
-  if ok and type(cmp) == "table" and type(cmp.accept) == "function" and type(cmp.is_visible) == "function" then
-    local visible_ok, visible = pcall(cmp.is_visible)
-    if visible_ok and visible then
-      local accepted_ok, accepted = pcall(cmp.accept)
-      if accepted_ok and accepted then
+  local cmp = blink_cmp()
+  if blink_menu_visible(cmp) then
+    if type(cmp.select_and_accept) == "function" then
+      local ok, accepted = pcall(cmp.select_and_accept)
+      if ok and accepted then
         return true
       end
-      if type(cmp.select_and_accept) == "function" then
-        accepted_ok, accepted = pcall(cmp.select_and_accept)
-        if accepted_ok and accepted then
-          return true
-        end
+    end
+    if type(cmp.accept) == "function" then
+      local ok, accepted = pcall(cmp.accept)
+      if ok and accepted then
+        return true
       end
+    end
+    return true
+  end
+
+  return M.submit(bufnr)
+end
+
+function M.cancel_completion_for_submit()
+  hide_blink_completion()
+  return true
+end
+
+function M.accept_completion_or_insert_tab()
+  local cmp = blink_cmp()
+  if blink_snippet_active(cmp, 1) and type(cmp.snippet_forward) == "function" then
+    local ok, jumped = pcall(cmp.snippet_forward)
+    if ok and jumped then
       return true
     end
   end
 
-  return M.submit(bufnr)
+  if blink_menu_visible(cmp) then
+    if type(cmp.select_and_accept) == "function" then
+      local ok, accepted = pcall(cmp.select_and_accept)
+      if ok and accepted then
+        return true
+      end
+    end
+    if type(cmp.accept) == "function" then
+      local ok, accepted = pcall(cmp.accept)
+      if ok and accepted then
+        return true
+      end
+    end
+    return true
+  end
+
+  feed_insert_key("<Tab>")
+  return true
+end
+
+function M.bypass_completion_or_shift_tab()
+  local cmp = blink_cmp()
+  if blink_menu_visible(cmp) then
+    if type(cmp.cancel) == "function" then
+      local ok, cancelled = pcall(cmp.cancel, {
+        callback = function()
+          feed_insert_key("<Tab>")
+        end,
+      })
+      if ok and cancelled then
+        return true
+      end
+    end
+
+    hide_blink_completion()
+    feed_insert_key("<Tab>")
+    return true
+  end
+
+  if blink_snippet_active(cmp, -1) and type(cmp.snippet_backward) == "function" then
+    local ok, jumped = pcall(cmp.snippet_backward)
+    if ok and jumped then
+      return true
+    end
+  end
+
+  feed_insert_key("<S-Tab>")
+  return true
+end
+
+function M.insert_newline_ignoring_completion(bufnr)
+  M.cancel_completion_for_submit()
+  return M.insert_newline(bufnr)
+end
+
+local function append_input_operator_newline(bufnr, operator)
+  local info, err, resolved_bufnr = console_info(bufnr)
+  if not info then
+    return nil, err
+  end
+  bufnr = resolved_bufnr
+  restore_pending_protected_edit(bufnr, info)
+
+  local winid = vim.fn.bufwinid(bufnr)
+  if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
+    return nil, "Ark console buffer is not visible"
+  end
+
+  local input_start = input_start_line(bufnr, info)
+  local cursor = vim.api.nvim_win_get_cursor(winid)
+  local row = cursor[1] - 1
+  if row < input_start then
+    focus_input(bufnr, info)
+    cursor = vim.api.nvim_win_get_cursor(winid)
+    row = cursor[1] - 1
+  end
+
+  row = math.max(row, input_start)
+  local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1] or ""
+  with_internal_edit(bufnr, info, function()
+    vim.bo[bufnr].modifiable = true
+    vim.api.nvim_buf_set_lines(bufnr, row, row + 1, false, { line .. operator, "" })
+    vim.bo[bufnr].modified = false
+    vim.api.nvim_win_set_cursor(winid, { row + 2, 0 })
+  end)
+  place_prompt(bufnr)
+  pcall(vim.cmd, "startinsert")
+  return true
+end
+
+function M.append_pipe_newline(bufnr)
+  return append_input_operator_newline(bufnr, " |> ")
+end
+
+function M.append_plus_newline(bufnr)
+  return append_input_operator_newline(bufnr, " + ")
 end
 
 function M.submit(bufnr)
@@ -2242,6 +2390,7 @@ function M.submit(bufnr)
     return nil, "Ark console R process is not running"
   end
 
+  M.cancel_completion_for_submit()
   restore_pending_protected_edit(bufnr, info)
   local end_line = vim.api.nvim_buf_line_count(bufnr)
   local lines = current_input_lines(bufnr, info)
@@ -2375,12 +2524,34 @@ function M.history_next(bufnr)
 end
 
 function M.interrupt(bufnr)
-  local info, err = console_info(bufnr)
+  local info, err, resolved_bufnr = console_info(bufnr)
   if not info then
     return nil, err
   end
+  bufnr = resolved_bufnr
   if not job_running(info.jobid) then
     return nil, "Ark console R process is not running"
+  end
+
+  hide_blink_completion()
+  restore_pending_protected_edit(bufnr, info)
+
+  local lines = current_input_lines(bufnr, info)
+  local text = table.concat(lines, "\n")
+  if text ~= "" then
+    local end_line = vim.api.nvim_buf_line_count(bufnr)
+    local interrupted_prompt = prompt_label(info)
+    with_internal_edit(bufnr, info, function()
+      vim.bo[bufnr].modifiable = true
+      vim.api.nvim_buf_set_lines(bufnr, end_line, end_line, false, { "" })
+      place_transcript_prompts(bufnr, input_start_line(bufnr, info), #lines, interrupted_prompt)
+      set_input_start(bufnr, info, end_line)
+      vim.api.nvim_win_set_cursor(0, { input_start_line(bufnr, info) + 1, 0 })
+      vim.bo[bufnr].modified = false
+    end)
+    info.history_index = nil
+    info.draft_input = nil
+    place_prompt(bufnr)
   end
 
   vim.api.nvim_chan_send(info.jobid, "\003")

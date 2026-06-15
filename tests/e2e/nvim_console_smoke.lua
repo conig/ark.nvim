@@ -133,7 +133,7 @@ if not vim.tbl_contains(lines, "#> console saw: mtcars$mpg") then
   ark_test.fail("console output should be recorded as R comments: " .. vim.inspect(lines))
 end
 local transcript = table.concat(lines, "\n")
-if not transcript:find("#> backend=nvim%-console session=", 1, false) then
+if not transcript:find("#> backend=[^ ]+ session=[^ ]+ status=[^\n]+") then
   ark_test.fail("console child did not receive Ark session env: " .. vim.inspect(lines))
 end
 if transcript:find("^#> >") or transcript:find("^#> %+", 1, false) then
