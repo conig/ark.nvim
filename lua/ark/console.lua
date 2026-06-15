@@ -1070,13 +1070,18 @@ local function close_lsp_info_floats()
   end
 end
 
-local function suppress_lsp_info_for_blink_completion()
+local function handle_blink_completion_for_signature_help(has_trigger)
   if not blink_completion_visible_for_signature_help() then
-    return false
+    return true
+  end
+
+  if has_trigger then
+    hide_blink_completion()
+    return true
   end
 
   close_lsp_info_floats()
-  return true
+  return false
 end
 
 local signature_help_trigger_chars = {
@@ -1153,11 +1158,11 @@ local function maybe_show_signature_help(bufnr)
     return
   end
 
-  if suppress_lsp_info_for_blink_completion() then
+  local trigger = signature_help_trigger_before_cursor(bufnr, info)
+  if not handle_blink_completion_for_signature_help(trigger ~= nil) then
     return
   end
 
-  local trigger = signature_help_trigger_before_cursor(bufnr, info)
   if not trigger or not has_signature_help_client(bufnr) then
     return
   end
@@ -1173,10 +1178,11 @@ local function maybe_show_signature_help(bufnr)
     if not vim.api.nvim_buf_is_valid(bufnr) or vim.api.nvim_get_current_buf() ~= bufnr then
       return
     end
-    if not signature_help_trigger_before_cursor(bufnr, info) then
+    local scheduled_trigger = signature_help_trigger_before_cursor(bufnr, info)
+    if not scheduled_trigger then
       return
     end
-    if suppress_lsp_info_for_blink_completion() then
+    if not handle_blink_completion_for_signature_help(true) then
       return
     end
     pcall(vim.lsp.buf.signature_help, {

@@ -17,6 +17,25 @@ package.preload["blink.cmp"] = function()
     end,
   }
 end
+package.preload["blink.cmp.completion.list"] = function()
+  return {
+    undo_preview = function() end,
+  }
+end
+package.preload["blink.cmp.completion.trigger"] = function()
+  return {
+    hide = function()
+      blink_menu_visible = false
+    end,
+  }
+end
+package.preload["blink.cmp.completion.windows.menu"] = function()
+  return {
+    close = function()
+      blink_menu_visible = false
+    end,
+  }
+end
 
 local launcher = vim.fs.normalize(run_tmpdir .. "/fake-r")
 vim.fn.writefile({
@@ -156,13 +175,24 @@ vim.api.nvim_exec_autocmds("TextChangedI", {
   buffer = bufnr,
 })
 
-ark_test.wait_for("console signature help float closes while Blink menu is visible", 4000, function()
-  return not signature_help_float_visible()
+-- Regression: when a completion menu is visible at a signature trigger, the
+-- console should prefer signature help, close completion, and still request
+-- the LSP signature. Suppressing the request makes signature help feel flaky
+-- compared with a normal R buffer.
+ark_test.wait_for("console signature help request wins over visible Blink menu", 10000, function()
+  return signature_help_request_count() == 2
 end)
 
-vim.wait(500)
-if signature_help_request_count() ~= 1 then
-  ark_test.fail("Blink-visible console edit should not request another signature help: " .. vim.inspect({
+ark_test.wait_for("console hides Blink before showing trigger signature help", 4000, function()
+  return blink_menu_visible == false
+end)
+
+ark_test.wait_for("console signature help float remains visible after Blink menu closes", 10000, function()
+  return signature_help_float_visible()
+end)
+
+if signature_help_request_count() ~= 2 then
+  ark_test.fail("Blink-visible console signature trigger should request signature help: " .. vim.inspect({
     count = signature_help_request_count(),
     log = vim.fn.filereadable(seen_log) == 1 and vim.fn.readfile(seen_log) or {},
   }))
