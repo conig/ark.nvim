@@ -1084,6 +1084,80 @@ local function cursor_in_input(bufnr, info)
   return cursor
 end
 
+local function close_signature_help_floats()
+  for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local config = vim.api.nvim_win_get_config(winid)
+    if type(config) == "table" and type(config.relative) == "string" and config.relative ~= "" then
+      local ok = pcall(vim.api.nvim_win_get_var, winid, "textDocument/signatureHelp")
+      if ok then
+        pcall(vim.api.nvim_win_close, winid, true)
+      end
+    end
+  end
+end
+
+local function console_input_before_cursor(bufnr, info)
+  local cursor = cursor_in_input(bufnr, info)
+  if not cursor then
+    return nil
+  end
+
+  local start_line = input_start_line(bufnr, info)
+  local cursor_line = cursor[1] - 1
+  local cursor_col = tonumber(cursor[2])
+  if not cursor_col or cursor_line < start_line then
+    return nil
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(bufnr, start_line, cursor_line + 1, false)
+  if #lines == 0 then
+    return ""
+  end
+
+  lines[#lines] = (lines[#lines] or ""):sub(1, cursor_col)
+  return table.concat(lines, "\n")
+end
+
+local function cursor_has_signature_help_context(bufnr, info)
+  local text = console_input_before_cursor(bufnr, info)
+  if type(text) ~= "string" or text == "" then
+    return false
+  end
+
+  local depth = 0
+  local quote = nil
+  local escaped = false
+  local index = 1
+
+  while index <= #text do
+    local char = text:sub(index, index)
+    if quote ~= nil then
+      if escaped then
+        escaped = false
+      elseif char == "\\" then
+        escaped = true
+      elseif char == quote then
+        quote = nil
+      end
+    elseif char == "'" or char == '"' or char == "`" then
+      quote = char
+    elseif char == "#" then
+      local newline = text:find("\n", index + 1, true)
+      if not newline then
+        break
+      end
+      index = newline
+    elseif char == "(" then
+      depth = depth + 1
+    elseif char == ")" and depth > 0 then
+      depth = depth - 1
+    end
+    index = index + 1
+  end
+
+  return depth > 0
+end
+
 local function signature_help_trigger_before_cursor(bufnr, info)
   local cursor = cursor_in_input(bufnr, info)
   if not cursor then
@@ -1134,6 +1208,12 @@ local function maybe_show_signature_help(bufnr)
 
   local info = state.buffers[bufnr]
   if type(info) ~= "table" or vim.b[bufnr].ark_console ~= true then
+    return
+  end
+
+  if not cursor_has_signature_help_context(bufnr, info) then
+    info.last_signature_help_trigger = nil
+    close_signature_help_floats()
     return
   end
 
@@ -2102,7 +2182,7 @@ function M.start(opts)
     desc = "Keep Ark console insert cursor in the active input",
   })
 
-  vim.api.nvim_create_autocmd("TextChangedI", {
+  vim.api.nvim_create_autocmd({ "TextChangedI", "CursorMovedI" }, {
     buffer = bufnr,
     group = vim.api.nvim_create_augroup("ArkConsoleSignatureHelp" .. tostring(bufnr), { clear = true }),
     callback = function()

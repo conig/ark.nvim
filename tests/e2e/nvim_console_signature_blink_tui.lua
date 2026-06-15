@@ -234,6 +234,17 @@ local ok, err = xpcall(function()
   if not has_signature_float(blink_show) then
     ark_test.fail("signature help disappeared after key-driven completion appeared: " .. vim.inspect(blink_show))
   end
+
+  tmux({ "send-keys", "-l", "-t", nvim_pane, ")" })
+
+  local after_close = nil
+  ark_test.wait_for("signature help closes after leaving function bounds", 15000, function()
+    tmux({ "send-keys", "-t", nvim_pane, "F9" })
+    after_close = latest_matching(function(candidate)
+      return candidate.label == "ArkTraceKeySnapshot" and candidate.line == "fake_sig(m)"
+    end)
+    return after_close ~= nil and not has_signature_float(after_close)
+  end)
 end, debug.traceback)
 
 cleanup()
