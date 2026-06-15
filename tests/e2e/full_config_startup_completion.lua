@@ -1,11 +1,5 @@
 local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test.lua"))
 
-local ok_blink, blink = pcall(require, "blink.cmp")
-if not ok_blink then
-  ark_test.fail("blink.cmp is required for this test")
-end
-
-local list = require("blink.cmp.completion.list")
 local startup_begin_ms = vim.loop.hrtime() / 1e6
 local marks = {}
 
@@ -19,10 +13,10 @@ local function mark(name)
   end
 end
 
--- This reproduces the user's real startup flow under ~/.config/nvim:
--- open an R buffer, wait for Ark's async startup, type `libr`, then type
--- `mtcars$`, and require the visible completion menu to contain the expected
--- items rather than relying on a direct LSP request.
+-- This reproduces the user's real startup flow under ~/.config/nvim: open an
+-- R buffer, wait for Ark's async startup, type `libr`, then type `mtcars$`,
+-- and require Ark's LSP to return the expected completions after hydration.
+-- Real Blink popup recovery is covered by the TUI startup completion test.
 local function current_client()
   return vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
 end
@@ -34,14 +28,6 @@ local function current_status()
   end
 
   return ark.status({ include_lsp = true })
-end
-
-local function item_index(label)
-  for index, item in ipairs(list.items) do
-    if item.label == label then
-      return index
-    end
-  end
 end
 
 local function completion_labels_at_cursor(prefix)
@@ -89,7 +75,6 @@ end
 
 local function reset_buffer(lines)
   stop_insert_mode()
-  blink.hide()
   vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
   vim.api.nvim_win_set_cursor(0, { 1, 0 })
 end
@@ -113,22 +98,9 @@ local function type_and_capture_completion(prefix, expected_label)
     return false
   end, 50, false)
 
-  local menu_ready = vim.wait(10000, function()
-    return blink.is_visible() and item_index(expected_label) ~= nil
-  end, 100, false)
-  local blink_ready_ms = menu_ready and (elapsed_ms() - phase_begin_ms) or nil
-  local index = item_index(expected_label)
-  local blink_visible = blink.is_visible()
-  local blink_labels = vim.tbl_map(function(item)
-    return item.label
-  end, list.items)
-  if blink_visible and index ~= nil then
-    ark_test.assert_no_snippet_items(list.items, expected_label)
-  end
   local lsp_labels = completion_labels_at_cursor(prefix)
   local cursor = vim.api.nvim_win_get_cursor(0)
   local line = vim.api.nvim_get_current_line()
-  blink.hide()
   stop_insert_mode()
 
   return {
@@ -137,12 +109,7 @@ local function type_and_capture_completion(prefix, expected_label)
     typed_elapsed_ms = typed_elapsed_ms,
     lsp_ready = lsp_ready,
     lsp_ready_ms = lsp_ready_ms,
-    menu_ready = menu_ready,
-    blink_ready_ms = blink_ready_ms,
-    blink_visible = blink_visible,
-    blink_labels = blink_labels,
     lsp_labels = lsp_labels,
-    found_in_blink = index ~= nil,
     found_in_lsp = vim.tbl_contains(lsp_labels, expected_label),
     cursor = cursor,
     line = line,

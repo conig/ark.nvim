@@ -1,11 +1,11 @@
 local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test.lua"))
 
 local repo_root = vim.fs.normalize(vim.fn.getcwd())
-local session_name = ark_test.register_tmux_session(ark_test.tmux_session_name("rmd_inline_function_kinds"))
-local trace_path = vim.fs.normalize(ark_test.run_tmpdir() .. "/rmd_inline_function_kinds_trace.log")
-local state_home = vim.fs.normalize(ark_test.run_tmpdir() .. "/rmd_inline_function_kinds_state")
-local buffer_path = vim.fs.normalize(ark_test.run_tmpdir() .. "/rmd_inline_function_kinds.Rmd")
-local stop_watchdog = ark_test.start_watchdog(90000, "full_config_rmd_inline_function_kinds_tui")
+local session_name = ark_test.register_tmux_session(ark_test.tmux_session_name("rmd_inline_completion"))
+local trace_path = vim.fs.normalize(ark_test.run_tmpdir() .. "/rmd_inline_completion_trace.log")
+local state_home = vim.fs.normalize(ark_test.run_tmpdir() .. "/rmd_inline_completion_state")
+local buffer_path = vim.fs.normalize(ark_test.run_tmpdir() .. "/rmd_inline_completion.Rmd")
+local stop_watchdog = ark_test.start_watchdog(90000, "full_config_rmd_inline_completion_tui")
 local init_path = vim.env.ARK_TEST_NVIM_INIT
 
 if type(init_path) ~= "string" or init_path == "" or init_path == "NONE" then
@@ -71,12 +71,42 @@ local function pane_contains(pane_id, pattern)
   return capture:find(pattern, 1, true) ~= nil
 end
 
+local function wait_for_completion(case)
+  local completion_show = nil
+  ark_test.wait_for(case.label, 10000, function()
+    completion_show = latest_matching(function(candidate)
+      if candidate.label ~= "BlinkCmpShow" or candidate.line ~= case.expected_line then
+        return false
+      end
+
+      local trigger = type(candidate.trigger) == "table" and candidate.trigger or nil
+      if type(trigger) == "table" and trigger.initial_kind == "manual" then
+        return false
+      end
+
+      for _, item in ipairs(candidate.items or {}) do
+        local from_ark = item.client_name == "ark_lsp" or item.source_id == "ark_lsp"
+        local kind_ok = case.kind == nil or item.kind == case.kind
+        if item.label == case.item and from_ark and kind_ok then
+          return true
+        end
+      end
+
+      return false
+    end)
+    return completion_show ~= nil
+  end)
+
+  return completion_show
+end
+
 local ok, err = xpcall(function()
   cleanup()
   vim.fn.delete(trace_path)
 
   local nvim_cmd = table.concat({
     "XDG_STATE_HOME=" .. vim.fn.shellescape(state_home),
+    "XDG_DATA_HOME=" .. vim.fn.shellescape(vim.env.XDG_DATA_HOME or vim.fn.stdpath("data")),
     "ARK_TUI_TRACE_LOG=" .. vim.fn.shellescape(trace_path),
     "ARK_REPO_ROOT=" .. vim.fn.shellescape(repo_root),
     "ARK_TMUX_SOCKET=" .. vim.fn.shellescape(vim.env.ARK_TMUX_SOCKET or ""),
@@ -120,8 +150,7 @@ local ok, err = xpcall(function()
   tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceSnapshot ready", "Enter" })
   ark_test.wait_for("ark lsp attached", 15000, function()
     local event = latest_matching(function(candidate)
-      return candidate.label == "ArkTraceSnapshot"
-        and candidate.args == "ready"
+      return candidate.label == "ArkTraceSnapshot" and candidate.args == "ready"
     end)
     return event ~= nil and tonumber(event.ark_clients or 0) >= 1
   end)
@@ -130,56 +159,68 @@ local ok, err = xpcall(function()
     return false
   end, 50, false)
 
-  tmux({
-    "send-keys",
-    "-t",
-    nvim_pane,
-    "Escape",
-    ":call setline(1, ['---', 'title: \"Inline\"', '---', '', 'The call is `r `.'])",
-    "Enter",
-  })
-  vim.wait(750, function()
-    return false
-  end, 50, false)
+  local cases = {
+    {
+      label = "inline mtcars completion",
+      initial_line = "The data is `r`.",
+      keys = { "Space" },
+      expected_line = "The data is `r `.",
+      item = "mtcars",
+    },
+    {
+      label = "inline nrow completion",
+      initial_line = "The row count is `r `.",
+      keys = { "n" },
+      expected_line = "The row count is `r n`.",
+      item = "nrow",
+      kind = vim.lsp.protocol.CompletionItemKind.Function,
+    },
+  }
 
-  tmux({
-    "send-keys",
-    "-t",
-    nvim_pane,
-    "5G",
-    "$",
-    "h",
-    "i",
-    "l",
-    "a",
-  })
+  local completion_shows = {}
 
-  local function_kind = vim.lsp.protocol.CompletionItemKind.Function
-  local completion_show = nil
-  ark_test.wait_for("inline lapply completion", 10000, function()
-    completion_show = latest_matching(function(candidate)
-      if candidate.label ~= "BlinkCmpShow" or candidate.line ~= "The call is `r la`." then
-        return false
-      end
-
-      local trigger = type(candidate.trigger) == "table" and candidate.trigger or nil
-      if type(trigger) == "table" and trigger.initial_kind == "manual" then
-        return false
-      end
-
-      for _, item in ipairs(candidate.items or {}) do
-        if item.label == "lapply" and item.client_name == "ark_lsp" and item.kind == function_kind then
-          return true
-        end
-      end
-
+  for _, case in ipairs(cases) do
+    tmux({
+      "send-keys",
+      "-t",
+      nvim_pane,
+      "Escape",
+      ":call setline(1, ['---', 'title: \"Inline\"', '---', '', " .. vim.fn.string(case.initial_line) .. "])",
+      "Enter",
+    })
+    vim.wait(750, function()
       return false
+    end, 50, false)
+
+    tmux({
+      "send-keys",
+      "-t",
+      nvim_pane,
+      "5G",
+      "$",
+      "h",
+      "i",
+    })
+
+    ark_test.wait_for("insert mode for " .. case.label, 5000, function()
+      return latest_matching(function(candidate)
+        return candidate.label == "InsertEnter" and candidate.line == case.initial_line
+      end) ~= nil
     end)
-    return completion_show ~= nil
-  end)
+
+    local type_keys = {
+      "send-keys",
+      "-t",
+      nvim_pane,
+    }
+    vim.list_extend(type_keys, case.keys)
+    tmux(type_keys)
+
+    completion_shows[case.label] = wait_for_completion(case)
+  end
 
   vim.print({
-    completion_show = completion_show,
+    completion_shows = completion_shows,
   })
 end, debug.traceback)
 

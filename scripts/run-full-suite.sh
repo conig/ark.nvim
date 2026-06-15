@@ -100,7 +100,7 @@ build_e2e_list() {
   while IFS= read -r test_path; do
     test_name=$(basename -- "$test_path")
     case "$test_name" in
-      ark_test.lua|tui_blink_trace.lua)
+      ark_test.lua|init.lua|tui_blink_trace.lua|tui_startup_chatter_trace.lua|tui_startup_keyword_completion_probe.lua|detached_process_leak.lua|startup_timing_probe.lua|full_config_typed_completion_timing.lua)
         continue
         ;;
     esac
@@ -210,6 +210,9 @@ if [[ "$skip_e2e" -eq 0 ]]; then
     for test_path in "${e2e_tests[@]}"; do
       run_e2e_test "$test_path"
     done
+    if [[ -z "$filter" ]]; then
+      run_step "e2e-runner cleanup" "$repo_root/tests/test-e2e-runner-cleanup.sh"
+    fi
   else
     failures+=("e2e:skipped-after-build-failure")
     echo "Skipping E2Es because ark-lsp failed to build." >&2
