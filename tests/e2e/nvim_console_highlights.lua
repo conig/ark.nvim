@@ -10,6 +10,7 @@ local launcher = vim.fs.normalize(run_tmpdir .. "/fake-r-highlights")
 vim.fn.writefile({
   "#!/usr/bin/env bash",
   "printf '*** startup banner\\n'",
+  "printf '\\033[31mARK_RED_OUTPUT\\033[0m\\n'",
   "printf '> '",
   "while IFS= read -r line; do",
   "  printf 'saw: %s\\n' \"$line\"",
@@ -66,6 +67,7 @@ ark_test.wait_for("highlight fake prompt", 10000, function()
     and status.running == true
     and status.prompt_state == "top-level"
     and find_line(lines, "#> *** startup banner") ~= nil
+    and find_line(lines, "#> ARK_RED_OUTPUT") ~= nil
 end)
 
 local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -93,6 +95,40 @@ if prefix_group ~= "ArkConsoleOutputPrefix" then
     line = output_line,
     group = prefix_group,
     stack = syntax_stack_at(output_index, 1),
+  }))
+end
+
+local ansi_index, ansi_line = find_line(lines, "#> ARK_RED_OUTPUT")
+if not ansi_index then
+  ark_test.fail("expected ANSI-styled console output line: " .. vim.inspect(lines))
+end
+if ansi_line:find("\27", 1, true) then
+  ark_test.fail("console output should not expose raw ANSI escape bytes: " .. vim.inspect(ansi_line))
+end
+
+local ansi_ns = vim.api.nvim_get_namespaces().ArkConsoleAnsi
+if type(ansi_ns) ~= "number" then
+  ark_test.fail("ANSI-styled console output should create ArkConsoleAnsi highlight extmarks")
+end
+
+local ansi_col = (ansi_line:find("ARK_RED_OUTPUT", 1, true) or 1) - 1
+local ansi_marks = vim.api.nvim_buf_get_extmarks(bufnr, ansi_ns, { ansi_index - 1, ansi_col }, {
+  ansi_index - 1,
+  ansi_col + #"ARK_RED_OUTPUT",
+}, { details = true })
+local saw_ansi_highlight = false
+for _, mark in ipairs(ansi_marks) do
+  local details = mark[4]
+  local group = type(details) == "table" and details.hl_group or nil
+  if type(group) == "string" and group:find("^ArkConsoleAnsi") then
+    saw_ansi_highlight = true
+    break
+  end
+end
+if not saw_ansi_highlight then
+  ark_test.fail("ANSI-styled output should preserve SGR styling as a highlight range: " .. vim.inspect({
+    line = ansi_line,
+    marks = ansi_marks,
   }))
 end
 

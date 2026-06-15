@@ -6,6 +6,7 @@ local M = {}
 local prompt_ns = vim.api.nvim_create_namespace("ArkConsole")
 local transcript_prompt_ns = vim.api.nvim_create_namespace("ArkConsoleTranscriptPrompt")
 local input_ns = vim.api.nvim_create_namespace("ArkConsoleInput")
+local ansi_ns = vim.api.nvim_create_namespace("ArkConsoleAnsi")
 local console_server_fn = "__ark_console_rpc_send"
 local job_running
 local install_paste_handler
@@ -171,8 +172,434 @@ local function start_status_publisher(bufnr)
   return timer
 end
 
-local function strip_ansi(text)
-  return (text or ""):gsub("\27%[[0-9;?;]*[%a]", "")
+local ansi_palette = {
+  [0] = "#2e3436",
+  [1] = "#cc0000",
+  [2] = "#4e9a06",
+  [3] = "#c4a000",
+  [4] = "#3465a4",
+  [5] = "#75507b",
+  [6] = "#06989a",
+  [7] = "#d3d7cf",
+  [8] = "#555753",
+  [9] = "#ef2929",
+  [10] = "#8ae234",
+  [11] = "#fce94f",
+  [12] = "#729fcf",
+  [13] = "#ad7fa8",
+  [14] = "#34e2e2",
+  [15] = "#eeeeec",
+}
+
+local ansi_hl_cache = {}
+local ansi_hl_count = 0
+
+local function color_hex(red, green, blue)
+  red = math.max(0, math.min(255, tonumber(red) or 0))
+  green = math.max(0, math.min(255, tonumber(green) or 0))
+  blue = math.max(0, math.min(255, tonumber(blue) or 0))
+  return string.format("#%02x%02x%02x", red, green, blue)
+end
+
+local function xterm_256_color(index)
+  index = tonumber(index)
+  if not index or index < 0 or index > 255 then
+    return nil
+  end
+  if ansi_palette[index] then
+    return ansi_palette[index]
+  end
+  if index >= 16 and index <= 231 then
+    local value = index - 16
+    local levels = { 0, 95, 135, 175, 215, 255 }
+    local red = levels[math.floor(value / 36) + 1]
+    local green = levels[math.floor((value % 36) / 6) + 1]
+    local blue = levels[(value % 6) + 1]
+    return color_hex(red, green, blue)
+  end
+
+  local gray = 8 + ((index - 232) * 10)
+  return color_hex(gray, gray, gray)
+end
+
+local function reset_ansi_style(style)
+  for key, _ in pairs(style) do
+    style[key] = nil
+  end
+end
+
+local function parse_sgr_params(raw)
+  if type(raw) ~= "string" or raw == "" then
+    return { 0 }
+  end
+
+  local params = {}
+  for part in raw:gmatch("[^;:]+") do
+    params[#params + 1] = tonumber(part) or 0
+  end
+
+  if #params == 0 then
+    return { 0 }
+  end
+
+  return params
+end
+
+local function apply_sgr(style, raw)
+  local params = parse_sgr_params(raw)
+  local index = 1
+
+  while index <= #params do
+    local code = params[index]
+
+    if code == 0 then
+      reset_ansi_style(style)
+    elseif code == 1 then
+      style.bold = true
+    elseif code == 3 then
+      style.italic = true
+    elseif code == 4 then
+      style.underline = true
+    elseif code == 7 then
+      style.reverse = true
+    elseif code == 22 then
+      style.bold = nil
+    elseif code == 23 then
+      style.italic = nil
+    elseif code == 24 then
+      style.underline = nil
+    elseif code == 27 then
+      style.reverse = nil
+    elseif code == 39 then
+      style.fg = nil
+    elseif code >= 30 and code <= 37 then
+      style.fg = ansi_palette[code - 30]
+    elseif code >= 90 and code <= 97 then
+      style.fg = ansi_palette[(code - 90) + 8]
+    elseif code == 38 then
+      local mode = params[index + 1]
+      if mode == 5 then
+        style.fg = xterm_256_color(params[index + 2])
+        index = index + 2
+      elseif mode == 2 then
+        style.fg = color_hex(params[index + 2], params[index + 3], params[index + 4])
+        index = index + 4
+      end
+    end
+
+    index = index + 1
+  end
+end
+
+local function ansi_style_group(style)
+  if type(style) ~= "table" then
+    return nil
+  end
+  if not style.fg and not style.bold and not style.italic and not style.underline and not style.reverse then
+    return nil
+  end
+
+  local key = table.concat({
+    style.fg or "",
+    style.bold and "1" or "0",
+    style.italic and "1" or "0",
+    style.underline and "1" or "0",
+    style.reverse and "1" or "0",
+  }, ":")
+  if ansi_hl_cache[key] then
+    return ansi_hl_cache[key]
+  end
+
+  ansi_hl_count = ansi_hl_count + 1
+  local group = "ArkConsoleAnsi" .. tostring(ansi_hl_count)
+  local opts = {
+    bold = style.bold == true,
+    italic = style.italic == true,
+    underline = style.underline == true,
+    reverse = style.reverse == true,
+  }
+  if type(style.fg) == "string" and style.fg ~= "" then
+    opts.fg = style.fg
+  end
+  pcall(vim.api.nvim_set_hl, 0, group, opts)
+  ansi_hl_cache[key] = group
+  return group
+end
+
+local function truncate_spans(spans, max_col)
+  local out = {}
+  max_col = tonumber(max_col) or 0
+  for _, span in ipairs(spans or {}) do
+    local start_col = tonumber(span.start_col) or 0
+    local end_col = math.min(tonumber(span.end_col) or 0, max_col)
+    if end_col > start_col then
+      out[#out + 1] = {
+        start_col = start_col,
+        end_col = end_col,
+        hl_group = span.hl_group,
+      }
+    end
+  end
+  return out
+end
+
+local function offset_spans(spans, offset)
+  local out = {}
+  offset = tonumber(offset) or 0
+  for _, span in ipairs(spans or {}) do
+    out[#out + 1] = {
+      start_col = (tonumber(span.start_col) or 0) + offset,
+      end_col = (tonumber(span.end_col) or 0) + offset,
+      hl_group = span.hl_group,
+    }
+  end
+  return out
+end
+
+local function strip_span_prefix(spans, prefix_len)
+  local out = {}
+  prefix_len = tonumber(prefix_len) or 0
+  for _, span in ipairs(spans or {}) do
+    local start_col = (tonumber(span.start_col) or 0) - prefix_len
+    local end_col = (tonumber(span.end_col) or 0) - prefix_len
+    if end_col > 0 then
+      out[#out + 1] = {
+        start_col = math.max(0, start_col),
+        end_col = end_col,
+        hl_group = span.hl_group,
+      }
+    end
+  end
+  return out
+end
+
+local function set_span_range(spans, start_col, end_col, hl_group)
+  local out = {}
+
+  for _, span in ipairs(spans or {}) do
+    local span_start = tonumber(span.start_col) or 0
+    local span_end = tonumber(span.end_col) or 0
+    if span_end <= start_col or span_start >= end_col then
+      out[#out + 1] = span
+    else
+      if span_start < start_col then
+        out[#out + 1] = {
+          start_col = span_start,
+          end_col = start_col,
+          hl_group = span.hl_group,
+        }
+      end
+      if span_end > end_col then
+        out[#out + 1] = {
+          start_col = end_col,
+          end_col = span_end,
+          hl_group = span.hl_group,
+        }
+      end
+    end
+  end
+
+  if type(hl_group) == "string" and hl_group ~= "" then
+    out[#out + 1] = {
+      start_col = start_col,
+      end_col = end_col,
+      hl_group = hl_group,
+    }
+  end
+
+  table.sort(out, function(lhs, rhs)
+    if lhs.start_col == rhs.start_col then
+      return lhs.end_col < rhs.end_col
+    end
+    return lhs.start_col < rhs.start_col
+  end)
+
+  local merged = {}
+  for _, span in ipairs(out) do
+    local last = merged[#merged]
+    if last and last.hl_group == span.hl_group and last.end_col == span.start_col then
+      last.end_col = span.end_col
+    elseif span.end_col > span.start_col then
+      merged[#merged + 1] = span
+    end
+  end
+
+  return merged
+end
+
+local function line_text(item)
+  if type(item) == "table" then
+    return item.text or ""
+  end
+  return tostring(item or "")
+end
+
+local function line_spans(item)
+  if type(item) == "table" and type(item.spans) == "table" then
+    return item.spans
+  end
+  return {}
+end
+
+local function split_plain_lines(text)
+  local lines = {}
+  for line in ((text or "") .. "\n"):gmatch("(.-)\n") do
+    lines[#lines + 1] = {
+      text = line,
+      spans = {},
+    }
+  end
+  return lines
+end
+
+local function consume_terminal_output(info, chunk)
+  chunk = (info.output_escape_pending or "") .. (chunk or "")
+  info.output_escape_pending = nil
+
+  local complete = {}
+  local current = info.output_pending or ""
+  local spans = info.output_pending_spans or {}
+  local cursor = tonumber(info.output_cursor) or #current
+  local style = info.output_style or {}
+  local line_returned = info.output_line_returned == true
+  local overwrite_end = tonumber(info.output_overwrite_end)
+  local index = 1
+
+  local function clear_line()
+    current = ""
+    spans = {}
+    cursor = 0
+    line_returned = false
+    overwrite_end = nil
+  end
+
+  local function clip_current_to_overwrite(force)
+    if not line_returned then
+      return
+    end
+    if not force and (overwrite_end or 0) == 0 then
+      return
+    end
+
+    local max_col = math.max(0, math.min(overwrite_end or 0, #current))
+    current = current:sub(1, max_col)
+    spans = truncate_spans(spans, max_col)
+    cursor = math.min(cursor, #current)
+    line_returned = false
+    overwrite_end = nil
+  end
+
+  local function append_text(text)
+    if text == "" then
+      return
+    end
+
+    local start_col = cursor
+    local text_len = #text
+    if cursor < #current then
+      current = current:sub(1, cursor) .. text .. current:sub(cursor + text_len + 1)
+    elseif cursor == #current then
+      current = current .. text
+    else
+      current = current .. string.rep(" ", cursor - #current) .. text
+    end
+
+    local hl_group = ansi_style_group(style)
+    cursor = cursor + text_len
+    spans = set_span_range(spans, start_col, cursor, hl_group)
+    if line_returned then
+      overwrite_end = math.max(overwrite_end or 0, cursor)
+    end
+  end
+
+  local function csi_final_offset(start)
+    local cursor = start
+    while cursor <= #chunk do
+      local byte = chunk:byte(cursor)
+      if byte and byte >= 0x40 and byte <= 0x7e then
+        return cursor
+      end
+      cursor = cursor + 1
+    end
+    return nil
+  end
+
+  local function osc_final_offset(start)
+    local cursor = start
+    while cursor <= #chunk do
+      local byte = chunk:byte(cursor)
+      if byte == 0x07 then
+        return cursor
+      end
+      if byte == 0x1b and chunk:sub(cursor + 1, cursor + 1) == "\\" then
+        return cursor + 1
+      end
+      cursor = cursor + 1
+    end
+    return nil
+  end
+
+  while index <= #chunk do
+    local char = chunk:sub(index, index)
+    if char == "\27" then
+      local introducer = chunk:sub(index + 1, index + 1)
+      if introducer == "[" then
+        local final = csi_final_offset(index + 2)
+        if not final then
+          info.output_escape_pending = chunk:sub(index)
+          break
+        end
+
+        local final_char = chunk:sub(final, final)
+        local params = chunk:sub(index + 2, final - 1)
+        if final_char == "m" then
+          apply_sgr(style, params)
+        elseif final_char == "K" then
+          clear_line()
+        end
+        index = final
+      elseif introducer == "]" then
+        local final = osc_final_offset(index + 2)
+        if not final then
+          info.output_escape_pending = chunk:sub(index)
+          break
+        end
+        index = final
+      elseif introducer ~= "" then
+        index = index + 1
+      end
+    elseif char == "\r" then
+      local next_char = chunk:sub(index + 1, index + 1)
+      if next_char ~= "\n" then
+        clip_current_to_overwrite(false)
+        cursor = 0
+        line_returned = true
+        overwrite_end = 0
+      end
+    elseif char == "\n" then
+      clip_current_to_overwrite(true)
+      complete[#complete + 1] = {
+        text = current,
+        spans = spans,
+      }
+      clear_line()
+    else
+      local next_control = chunk:find("[\r\n\27]", index)
+      local text_end = next_control and (next_control - 1) or #chunk
+      append_text(chunk:sub(index, text_end))
+      index = text_end
+    end
+    index = index + 1
+  end
+
+  clip_current_to_overwrite(false)
+  info.output_pending = current
+  info.output_pending_spans = spans
+  info.output_cursor = cursor
+  info.output_style = style
+  info.output_line_returned = line_returned
+  info.output_overwrite_end = overwrite_end
+  return complete
 end
 
 local function prompt_suffix(text)
@@ -221,20 +648,100 @@ local function pop_echo_line(info, line)
   return true
 end
 
-local function transcript_lines_from_text(info, text)
+local function prompt_prefix_stripped(line)
+  local patterns = {
+    "^%s*Browse%[[0-9]+%]>%s*",
+    "^%s*debug>%s*",
+    "^%s*recover>%s*",
+    "^%s*>%s+",
+  }
+
+  for _, pattern in ipairs(patterns) do
+    local stripped, count = line:gsub(pattern, "", 1)
+    if count > 0 then
+      return stripped, #line - #stripped
+    end
+  end
+
+  return nil
+end
+
+local function prompt_only_line(line)
+  return line:match("^%s*Browse%[[0-9]+%]>%s*$") ~= nil
+    or line:match("^%s*debug>%s*$") ~= nil
+    or line:match("^%s*recover>%s*$") ~= nil
+    or line:match("^%s*>%s*$") ~= nil
+    or line:match("^%s*%+%s*$") ~= nil
+end
+
+local function styled_chunks(text, spans, default_hl)
+  text = text or ""
+  spans = spans or {}
+  local chunks = {}
+  local cursor = 0
+
+  for _, span in ipairs(spans) do
+    local start_col = math.max(cursor, tonumber(span.start_col) or 0)
+    local end_col = math.min(#text, tonumber(span.end_col) or 0)
+    if start_col > cursor then
+      chunks[#chunks + 1] = { text:sub(cursor + 1, start_col), default_hl }
+    end
+    if end_col > start_col then
+      chunks[#chunks + 1] = { text:sub(start_col + 1, end_col), span.hl_group or default_hl }
+      cursor = end_col
+    end
+  end
+
+  if cursor < #text then
+    chunks[#chunks + 1] = { text:sub(cursor + 1), default_hl }
+  end
+
+  if #chunks == 0 then
+    chunks[#chunks + 1] = { text, default_hl }
+  end
+
+  return chunks
+end
+
+local function transcript_lines_from_output(info, output)
+  if type(output) == "string" then
+    output = split_plain_lines(output)
+  end
+
   local lines = {}
-  for line in (text .. "\n"):gmatch("(.-)\n") do
-    line = line
-      :gsub("^%s*Browse%[[0-9]+%]>%s*", "")
-      :gsub("^%s*debug>%s*", "")
-      :gsub("^%s*recover>%s*", "")
-      :gsub("^%s*[>+]%s+", "")
-    local trimmed = line:gsub("^%s+", ""):gsub("%s+$", "")
-    if trimmed ~= "" and not pop_echo_line(info, line) then
-      lines[#lines + 1] = "#> " .. line
+  for _, item in ipairs(output or {}) do
+    local line = line_text(item)
+    local stripped, prefix_len = prompt_prefix_stripped(line)
+    local plus_stripped = line:gsub("^%s*%+%s+", "", 1)
+    local display_line = stripped or line
+    local display_spans = stripped and strip_span_prefix(line_spans(item), prefix_len) or line_spans(item)
+    local trimmed = display_line:gsub("^%s+", ""):gsub("%s+$", "")
+    local is_echo = pop_echo_line(info, line)
+      or (stripped ~= nil and pop_echo_line(info, stripped))
+      or (plus_stripped ~= line and pop_echo_line(info, plus_stripped))
+    if trimmed ~= "" and not prompt_only_line(line) and not is_echo then
+      lines[#lines + 1] = {
+        text = "#> " .. display_line,
+        spans = offset_spans(display_spans, 3),
+      }
     end
   end
   return lines
+end
+
+local function pending_output_chunks(info)
+  if type(info) ~= "table" then
+    return nil
+  end
+  local pending = info.output_pending
+  if type(pending) ~= "string" or pending == "" then
+    return nil
+  end
+  if info.prompt_state ~= "busy" and (type(job_running) ~= "function" or not job_running(info.jobid)) then
+    return nil
+  end
+
+  return styled_chunks(pending, info.output_pending_spans or {}, "ArkConsoleOutput")
 end
 
 local function prompt_label(info)
@@ -262,9 +769,17 @@ local function setup_highlights()
   pcall(vim.api.nvim_set_hl, 0, "ArkConsoleOutputPrefix", { link = "Comment", default = true })
 end
 
-local function place_prompt_extmark(bufnr, ns, line, label)
+local function place_prompt_extmark(bufnr, ns, line, label, group)
   vim.api.nvim_buf_set_extmark(bufnr, ns, line, 0, {
-    virt_text = { { label, "ArkConsolePrompt" } },
+    virt_text = { { label, group or "ArkConsolePrompt" } },
+    virt_text_pos = "inline",
+    right_gravity = false,
+  })
+end
+
+local function place_prompt_chunks_extmark(bufnr, ns, line, chunks)
+  vim.api.nvim_buf_set_extmark(bufnr, ns, line, 0, {
+    virt_text = chunks,
     virt_text_pos = "inline",
     right_gravity = false,
   })
@@ -321,7 +836,13 @@ place_prompt = function(bufnr)
   end
 
   vim.api.nvim_buf_clear_namespace(bufnr, prompt_ns, 0, -1)
-  place_prompt_extmark(bufnr, prompt_ns, input_start_line(bufnr, info), prompt_label(info))
+  local line = input_start_line(bufnr, info)
+  local pending_chunks = pending_output_chunks(info)
+  if pending_chunks then
+    place_prompt_chunks_extmark(bufnr, prompt_ns, line, pending_chunks)
+  else
+    place_prompt_extmark(bufnr, prompt_ns, line, prompt_label(info))
+  end
 end
 
 input_start_line = function(bufnr, info)
@@ -636,16 +1157,46 @@ local function append_submitted_input_before_input(bufnr, lines, first_prompt)
   place_prompt(bufnr)
 end
 
+local function text_lines(items)
+  local out = {}
+  for _, item in ipairs(items or {}) do
+    out[#out + 1] = line_text(item)
+  end
+  return out
+end
+
+local function apply_ansi_spans(bufnr, start_line, items)
+  for offset, item in ipairs(items or {}) do
+    local row = start_line + offset - 1
+    for _, span in ipairs(line_spans(item)) do
+      local hl_group = span.hl_group
+      local start_col = tonumber(span.start_col)
+      local end_col = tonumber(span.end_col)
+      if type(hl_group) == "string" and start_col and end_col and end_col > start_col then
+        vim.api.nvim_buf_set_extmark(bufnr, ansi_ns, row, start_col, {
+          end_col = end_col,
+          hl_group = hl_group,
+          priority = 140,
+          right_gravity = false,
+          end_right_gravity = false,
+        })
+      end
+    end
+  end
+end
+
 local function append_before_input(bufnr, lines)
   local info = state.buffers[bufnr]
   if type(info) ~= "table" or #lines == 0 or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
 
+  local buffer_lines = text_lines(lines)
   with_internal_edit(bufnr, info, function()
     vim.bo[bufnr].modifiable = true
     local start_line = input_start_line(bufnr, info)
-    vim.api.nvim_buf_set_lines(bufnr, start_line, start_line, false, lines)
+    vim.api.nvim_buf_set_lines(bufnr, start_line, start_line, false, buffer_lines)
+    apply_ansi_spans(bufnr, start_line, lines)
     set_input_start(bufnr, info, start_line + #lines)
     vim.bo[bufnr].modified = false
   end)
@@ -674,39 +1225,31 @@ local function parse_output(bufnr, data)
   end
 
   local chunk = table.concat(data or {}, "\n")
-  chunk = strip_ansi(chunk):gsub("\r", "")
   if chunk == "" then
     return {}
   end
 
-  local text, prompt = strip_prompt_suffix(info.output_pending .. chunk)
+  local complete = consume_terminal_output(info, chunk)
+  local text, prompt = strip_prompt_suffix(info.output_pending)
   if prompt then
     info.prompt_state = prompt.state
     info.prompt_text = prompt.text
-  end
-
-  local complete = {}
-  local last_start = 1
-  for line, newline in text:gmatch("([^\n]*)(\n?)") do
-    if newline == "" then
-      break
-    end
-    complete[#complete + 1] = line
-    last_start = last_start + #line + 1
-  end
-
-  if text:sub(-1) == "\n" then
-    info.output_pending = ""
-  else
-    info.output_pending = text:sub(last_start)
+    info.output_pending = text
+    info.output_pending_spans = truncate_spans(info.output_pending_spans or {}, #text)
+    info.output_cursor = math.min(tonumber(info.output_cursor) or #text, #text)
   end
 
   if prompt and info.output_pending ~= "" then
-    complete[#complete + 1] = info.output_pending
+    complete[#complete + 1] = {
+      text = info.output_pending,
+      spans = info.output_pending_spans or {},
+    }
     info.output_pending = ""
+    info.output_pending_spans = {}
+    info.output_cursor = 0
   end
 
-  return transcript_lines_from_text(info, table.concat(complete, "\n"))
+  return transcript_lines_from_output(info, complete)
 end
 
 local function on_output(bufnr, _, data, _)
@@ -823,6 +1366,10 @@ local function refresh_console_number_options(bufnr, enabled)
     return
   end
 
+  if vim.b[bufnr].ark_console_terminal_ui == true then
+    enabled = false
+  end
+
   for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
     apply_console_number_options(winid, enabled)
   end
@@ -866,12 +1413,17 @@ local function install_console_clipboard_keymaps(bufnr)
   vim.keymap.set("x", "Y", '"+Y', opts)
 end
 
-local function apply_console_window_options(winid)
+local function apply_console_window_options(winid, bufnr)
   if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
     return
   end
 
-  apply_console_number_options(winid)
+  local numbers_enabled = nil
+  if type(bufnr) == "number" and vim.b[bufnr].ark_console_terminal_ui == true then
+    numbers_enabled = false
+  end
+
+  apply_console_number_options(winid, numbers_enabled)
   vim.wo[winid].signcolumn = "no"
   vim.wo[winid].foldcolumn = "0"
   vim.wo[winid].colorcolumn = ""
@@ -886,6 +1438,7 @@ end
 
 local function apply_terminal_ui(bufnr, opts)
   setup_highlights()
+  vim.b[bufnr].ark_console_terminal_ui = terminal_ui_enabled(opts or {})
   vim.bo[bufnr].buflisted = false
   vim.bo[bufnr].syntax = "r"
   vim.api.nvim_buf_call(bufnr, function()
@@ -894,7 +1447,7 @@ local function apply_terminal_ui(bufnr, opts)
   end)
 
   local winid = vim.fn.bufwinid(bufnr)
-  apply_console_window_options(winid)
+  apply_console_window_options(winid, bufnr)
 
   if terminal_ui_enabled(opts or {}) then
     vim.o.showtabline = 0
@@ -1044,7 +1597,7 @@ function M.start(opts)
       vim.api.nvim_win_set_buf(0, existing)
       winid = vim.api.nvim_get_current_win()
     end
-    apply_console_window_options(winid)
+    apply_console_window_options(winid, existing)
     refresh_console_number_options(existing)
     return existing
   end
@@ -1066,6 +1619,7 @@ function M.start(opts)
     input_start = 0,
     jobid = nil,
     output_pending = "",
+    output_cursor = 0,
     pending_echo_lines = {},
     prompt_state = "top-level",
     rpc_socket = socket_path,
