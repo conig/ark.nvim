@@ -57,6 +57,18 @@ pub(crate) struct SessionBridge {
 }
 
 const VIEW_COMMAND_TIMEOUT_MS: u64 = 10_000;
+const BROWSER_CONTEXT_SENTINEL: &str = ".ark_browser_context";
+const DEBUG_COMMAND_COMPLETIONS: &[(&str, &str)] = &[
+    ("c", "continue execution"),
+    ("cont", "continue execution"),
+    ("f", "finish current loop or function"),
+    ("help", "show browser help"),
+    ("n", "step over"),
+    ("s", "step into"),
+    ("where", "show the call stack"),
+    ("r", "resume execution"),
+    ("Q", "quit browser/debug mode"),
+];
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1343,18 +1355,18 @@ impl SessionBridge {
         request: &CompletionRequest,
     ) -> anyhow::Result<Vec<CompletionItem>> {
         let payload = self.completion_payload(request)?;
-        if payload.members.is_empty() {
-            return Ok(vec![]);
-        }
-
         let object_meta = payload.object_meta.as_ref();
 
-        Ok(payload
+        let mut items = payload
             .members
             .into_iter()
             .enumerate()
             .map(|(index, member)| completion_item(member, request, object_meta, index))
-            .collect())
+            .collect::<Vec<_>>();
+
+        self.append_browser_debug_command_completion_items(request, &mut items)?;
+
+        Ok(items)
     }
 
     fn inspect(
@@ -1741,6 +1753,45 @@ impl SessionBridge {
         });
 
         Ok(payload)
+    }
+
+    fn append_browser_debug_command_completion_items(
+        &self,
+        request: &CompletionRequest,
+        items: &mut Vec<CompletionItem>,
+    ) -> anyhow::Result<()> {
+        if !matches!(request.flavor, CompletionFlavor::Symbol) {
+            return Ok(());
+        }
+
+        let Some(prefix) = request
+            .prefix
+            .as_deref()
+            .filter(|prefix| !prefix.is_empty())
+        else {
+            return Ok(());
+        };
+
+        let debug_items = debug_command_completion_items(prefix);
+        if debug_items.is_empty() {
+            return Ok(());
+        }
+
+        if !self.browser_context_active()? {
+            return Ok(());
+        }
+
+        for item in debug_items {
+            items.retain(|existing| existing.label != item.label);
+            items.push(item);
+        }
+
+        Ok(())
+    }
+
+    fn browser_context_active(&self) -> anyhow::Result<bool> {
+        let names = self.inspect_names(browser_context_completion_expr())?;
+        Ok(names.iter().any(|name| name == BROWSER_CONTEXT_SENTINEL))
     }
 
     fn inspect_names(&self, expr: &str) -> anyhow::Result<Vec<String>> {
@@ -2139,6 +2190,27 @@ fn completion_item(
     }
 
     item
+}
+
+fn debug_command_completion_items(prefix: &str) -> Vec<CompletionItem> {
+    DEBUG_COMMAND_COMPLETIONS
+        .iter()
+        .enumerate()
+        .filter(|(_, (label, _))| label.starts_with(prefix))
+        .map(|(index, (label, description))| CompletionItem {
+            label: String::from(*label),
+            detail: Some(String::from("R browser command")),
+            documentation: Some(Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: String::from(*description),
+            })),
+            filter_text: Some(String::from(*label)),
+            insert_text: Some(String::from(*label)),
+            kind: Some(CompletionItemKind::KEYWORD),
+            sort_text: Some(format!("0-debug-{index:04}")),
+            ..Default::default()
+        })
+        .collect()
 }
 
 fn runtime_completion_item_kind(member: &BridgeMember) -> CompletionItemKind {
@@ -4615,6 +4687,30 @@ fn browser_locals_completion_expr(prefix: &str) -> String {
     )
 }
 
+fn browser_context_completion_expr() -> &'static str {
+    // IPC requests at a normal prompt start in arkbridge frames. A browser
+    // prompt additionally preserves the frame being debugged before the
+    // arkbridge request handler appears on the stack.
+    concat!(
+        "local({ ",
+        ".self <- environment(); ",
+        ".ns <- tryCatch(asNamespace(\"arkbridge\"), error = function(e) NULL); ",
+        ".frames <- sys.frames(); ",
+        ".active <- FALSE; ",
+        "for (.env in .frames) { ",
+        "if (identical(.env, .self) || identical(.env, globalenv()) || ",
+        "identical(.env, baseenv()) || identical(.env, emptyenv())) next; ",
+        ".top <- topenv(.env); ",
+        "if (!is.null(.ns) && identical(.top, .ns)) break; ",
+        ".active <- TRUE; ",
+        "break ",
+        "}; ",
+        "if (.active) stats::setNames(list(TRUE), \".ark_browser_context\") ",
+        "else stats::setNames(list(), character()) ",
+        "})",
+    )
+}
+
 fn pipe_root_text_expr(context: &DocumentContext) -> Option<String> {
     static PIPE_ROOT_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r#"(?x)^\s*(?P<expr>[A-Za-z.][A-Za-z0-9._]*)\s*(?:\|>|%>%)"#).unwrap()
@@ -5930,6 +6026,22 @@ mod tests {
         );
 
         assert_eq!(item.kind, Some(CompletionItemKind::VARIABLE));
+    }
+
+    #[test]
+    fn test_debug_command_completion_items_include_uppercase_quit_command() {
+        let items = debug_command_completion_items("Q");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "Q");
+        assert_eq!(items[0].insert_text, Some(String::from("Q")));
+        assert_eq!(items[0].kind, Some(CompletionItemKind::KEYWORD));
+        assert_eq!(items[0].sort_text, Some(String::from("0-debug-0008")));
+    }
+
+    #[test]
+    fn test_debug_command_completion_items_are_case_sensitive() {
+        assert!(debug_command_completion_items("q").is_empty());
     }
 
     #[test]

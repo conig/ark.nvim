@@ -88,6 +88,7 @@ local browser_symbol = "alpha_local_browser_ark"
 
 vim.fn.writefile({
   "alpha_local_browse",
+  "Q",
 }, test_file)
 
 vim.cmd("edit " .. test_file)
@@ -109,6 +110,24 @@ if type(pane_id) ~= "string" or pane_id == "" then
   fail("managed pane id missing")
 end
 
+wait_for("ark repl ready", 15000, function()
+  return require("ark").status().repl_ready == true
+end)
+
+local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
+local quit_params = {
+  textDocument = vim.lsp.util.make_text_document_params(0),
+  position = { line = 1, character = 1 },
+}
+local top_level_quit_completion = request(client, "textDocument/completion", quit_params)
+local top_level_quit_labels = item_labels(completion_items(top_level_quit_completion))
+if contains(top_level_quit_labels, "Q") then
+  fail(
+    "top-level completion unexpectedly included browser quit command Q: "
+      .. vim.inspect(top_level_quit_labels)
+  )
+end
+
 tmux({
   "send-keys",
   "-t",
@@ -124,7 +143,6 @@ wait_for("browser() prompt", 10000, function()
   return capture:find("Browse%[", 1) ~= nil
 end)
 
-local client = vim.lsp.get_clients({ bufnr = 0, name = "ark_lsp" })[1]
 local params = {
   textDocument = vim.lsp.util.make_text_document_params(0),
   position = { line = 0, character = 18 },
@@ -132,13 +150,26 @@ local params = {
 local completion = request(client, "textDocument/completion", params)
 local labels = item_labels(completion_items(completion))
 
+local quit_completion = request(client, "textDocument/completion", quit_params)
+local quit_labels = item_labels(completion_items(quit_completion))
+
 tmux({ "send-keys", "-t", pane_id, "c", "Enter" })
 
 if not contains(labels, browser_symbol) then
   fail("browser() completion missing local symbol: " .. vim.inspect(labels))
 end
 
+-- Regression: browser/debug commands are valid inputs at a `Browse[n]>`
+-- prompt. Without an explicit `Q` candidate, accepting completion for `Q`
+-- can insert ordinary session symbols such as `Quinidine` instead of the
+-- command that quits all nested browser frames.
+if not contains(quit_labels, "Q") then
+  fail("browser() completion missing quit command Q: " .. vim.inspect(quit_labels))
+end
+
 vim.print({
   browser_symbol = browser_symbol,
   completions = labels,
+  top_level_quit_completions = top_level_quit_labels,
+  quit_completions = quit_labels,
 })
