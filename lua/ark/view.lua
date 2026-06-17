@@ -2,6 +2,9 @@ local M = {}
 
 local states = {}
 local highlight_namespace = vim.api.nvim_create_namespace("ark-view")
+local grid_column_min_width = 8
+local grid_column_max_width = 80
+local grid_column_separator_width = 3
 
 local function ensure_highlights()
   vim.api.nvim_set_hl(0, "ArkViewHeader", { link = "Title", default = true })
@@ -88,6 +91,11 @@ end
 
 local function display_width(text)
   return vim.fn.strdisplaywidth(tostring(text or ""))
+end
+
+local function clamp_width(width, min_width, max_width)
+  width = tonumber(width) or min_width
+  return math.max(min_width, math.min(max_width, width))
 end
 
 local function clip_text(text, width)
@@ -609,13 +617,112 @@ local function show_details(state, title, text)
   render_details(state, title, text)
 end
 
-local function column_width_for_rows(state, column_index)
-  local item = schema_by_index(state, column_index)
-  local width = math.max(8, math.min(24, display_width(item and item.name or "")))
-  for _, row in ipairs(state.rows or {}) do
-    width = math.max(width, math.min(24, display_width((row or {})[column_index])))
+local function desired_column_widths(state)
+  local widths = {}
+  local indices = {}
+  for _, item in ipairs(state.schema or {}) do
+    local index = tonumber(item.index) or 0
+    if index > 0 then
+      indices[#indices + 1] = index
+      widths[index] = clamp_width(display_width(item.name or ""), grid_column_min_width, grid_column_max_width)
+    end
   end
-  return width
+
+  for _, row in ipairs(state.rows or {}) do
+    for index, value in ipairs(row or {}) do
+      if widths[index] then
+        widths[index] = math.max(
+          widths[index],
+          clamp_width(display_width(value), grid_column_min_width, grid_column_max_width)
+        )
+      end
+    end
+  end
+
+  return widths, indices
+end
+
+local function available_column_width(state, row_width, column_count, win)
+  if column_count <= 0 then
+    return 0
+  end
+
+  local win_width = tonumber(vim.o.columns) or 80
+  if valid_win(win) then
+    win_width = vim.api.nvim_win_get_width(win)
+  elseif valid_win(state and state.grid_win) then
+    win_width = vim.api.nvim_win_get_width(state.grid_win)
+  end
+
+  local available = win_width - row_width - (column_count * grid_column_separator_width)
+  return math.max(column_count * grid_column_min_width, available)
+end
+
+local function fit_column_widths(widths, indices, available)
+  local total = 0
+  for _, index in ipairs(indices) do
+    widths[index] = clamp_width(widths[index], grid_column_min_width, grid_column_max_width)
+    total = total + widths[index]
+  end
+
+  while total > available do
+    local shrinkable = {}
+    for _, index in ipairs(indices) do
+      if widths[index] > grid_column_min_width then
+        shrinkable[#shrinkable + 1] = index
+      end
+    end
+    if #shrinkable == 0 then
+      break
+    end
+
+    local overflow = total - available
+    local shrink_each = math.max(1, math.floor(overflow / #shrinkable))
+    local changed = false
+    for _, index in ipairs(shrinkable) do
+      local shrink = math.min(widths[index] - grid_column_min_width, shrink_each)
+      if shrink > 0 then
+        widths[index] = widths[index] - shrink
+        total = total - shrink
+        changed = true
+      end
+      if total <= available then
+        break
+      end
+    end
+    if not changed then
+      break
+    end
+  end
+
+  return widths
+end
+
+local function grid_column_widths(state, row_width)
+  local widths, indices = desired_column_widths(state)
+  local available = available_column_width(state, row_width, #indices, state.grid_win)
+  return fit_column_widths(widths, indices, available)
+end
+
+local function column_width_for_rows(state, column_index, row_width)
+  local widths = {}
+  local indices = { column_index }
+  local item = schema_by_index(state, column_index)
+  widths[column_index] = clamp_width(display_width(item and item.name or ""), grid_column_min_width, grid_column_max_width)
+  for _, row in ipairs(state.rows or {}) do
+    widths[column_index] = math.max(
+      widths[column_index],
+      clamp_width(display_width((row or {})[column_index]), grid_column_min_width, grid_column_max_width)
+    )
+  end
+  local editor_width = tonumber(vim.o.columns) or 80
+  local pinned_width = math.max(12, math.floor(editor_width * 0.5))
+  local available = math.max(
+    grid_column_min_width,
+    pinned_width - row_width - grid_column_separator_width - 1
+  )
+  fit_column_widths(widths, indices, available)
+  return widths[column_index]
 end
 
 local function close_pinned_window(state)
@@ -685,7 +792,7 @@ local function render_pinned_column(state, row_width)
   end
 
   local win = ensure_pinned_window(state)
-  local width = column_width_for_rows(state, column_index)
+  local width = column_width_for_rows(state, column_index, row_width)
   local lines = { table.concat({ pad_text("#", row_width), pad_text(item.name or ("V" .. tostring(column_index)), width) }, " | ") }
   for row_index, row in ipairs(state.rows or {}) do
     local number = state.row_numbers and state.row_numbers[row_index] or (current_row_offset(state) + row_index)
@@ -699,7 +806,10 @@ local function render_pinned_column(state, row_width)
   apply_table_highlights(state.pinned_buf, lines, row_width)
 
   if valid_win(win) then
-    local target_width = math.min(40, math.max(12, display_width(lines[1] or "") + 1))
+    local target_width = math.min(
+      math.max(12, math.floor((tonumber(vim.o.columns) or 80) * 0.5)),
+      math.max(12, display_width(lines[1] or "") + 1)
+    )
     pcall(vim.api.nvim_win_set_width, win, target_width)
     if valid_win(state.grid_win) then
       local cursor = vim.api.nvim_win_get_cursor(state.grid_win)
@@ -765,18 +875,8 @@ end
 
 local function render_grid(state)
   local rows = state.rows or {}
-  local widths = {}
   local row_width = math.max(4, display_width(tostring(state.total_rows or 0)))
-  for _, item in ipairs(state.schema or {}) do
-    local index = tonumber(item.index) or 0
-    widths[index] = math.max(8, math.min(24, display_width(item.name or "")))
-  end
-
-  for _, row in ipairs(rows) do
-    for index, value in ipairs(row) do
-      widths[index] = math.max(widths[index] or 8, math.min(24, display_width(value)))
-    end
-  end
+  local widths = grid_column_widths(state, row_width)
 
   local header_parts = { pad_text("#", row_width) }
   local column_spans = {}
@@ -1092,8 +1192,10 @@ local function toggle_pinned_column(state)
 
   if tonumber(state.pinned_column) == column_index then
     state.pinned_column = nil
+    close_pinned_window(state)
   else
     state.pinned_column = column_index
+    ensure_pinned_window(state)
   end
 
   render_grid(state)

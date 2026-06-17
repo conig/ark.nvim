@@ -151,6 +151,10 @@ local function header_column(lines, name)
   return start_col - 1
 end
 
+local function grid_cells(line)
+  return vim.split(line or "", " | ", { plain = true })
+end
+
 local function assert_sidebar_selected(sidebar_buf, line)
   local lines = vim.api.nvim_buf_get_lines(sidebar_buf, 0, -1, false)
   for index = 3, #lines do
@@ -900,6 +904,46 @@ local ok, err = pcall(function()
     or not winbar:find("Sort none", 1, true)
   then
     error("expected clear-all to restore neutral winbar sort/filter summary, got " .. vim.inspect(winbar), 0)
+  end
+
+  -- Regression: a small-column ArkView with long strings should use available
+  -- grid width instead of cutting every value at the old fixed 24-cell cap.
+  backend.schema = {
+    { index = 1, name = "id", class = "integer", type = "integer" },
+    { index = 2, name = "description", class = "character", type = "character" },
+  }
+  backend.base_rows = {
+    { "1", string.rep("x", 70) },
+    { "2", string.rep("y", 70) },
+  }
+  backend.sort = {
+    column_index = 0,
+    direction = "",
+  }
+  backend.filters = {}
+
+  press("r")
+
+  grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
+  local long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[3] or ""))
+  if long_cell_width <= 24 then
+    error("expected long string column to expand past 24 cells, got " .. tostring(long_cell_width), 0)
+  end
+  if long_cell_width > 80 then
+    error("expected long string column to stay within the max width, got " .. tostring(long_cell_width), 0)
+  end
+  local rendered_width = vim.fn.strdisplaywidth(grid_lines[2] or "")
+  local available_width = vim.api.nvim_win_get_width(grid_win)
+  if rendered_width > available_width then
+    error(
+      "expected adaptive long-string row to fit the grid width "
+        .. tostring(available_width)
+        .. ", got rendered width "
+        .. tostring(rendered_width)
+        .. " line "
+        .. vim.inspect(grid_lines[2]),
+      0
+    )
   end
 
   -- Regression: choosing a far column with S should leave the selected grid
