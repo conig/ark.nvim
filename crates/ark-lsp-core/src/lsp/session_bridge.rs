@@ -1144,6 +1144,9 @@ impl SessionBridge {
         if let Some(request) = completion_request_from_string_subset(context)? {
             return Ok(Some(CompletionPlan::Unique(request)));
         }
+        if plain_string_quote_trigger_is_handled_empty(context) {
+            return Ok(Some(CompletionPlan::HandledEmpty));
+        }
         if let Some(request) = completion_request_from_subset(context)? {
             let call_request = completion_request_from_call(context)?;
 
@@ -3556,6 +3559,52 @@ fn completion_request_from_search_path(
         quote_insert: false,
         subset_kind: None,
     }))
+}
+
+fn plain_string_quote_trigger_is_handled_empty(context: &DocumentContext) -> bool {
+    if !matches!(context.trigger.as_deref(), Some("\"") | Some("'")) {
+        return false;
+    }
+
+    if node_find_string(&context.node).is_some() {
+        return true;
+    }
+
+    line_prefix_is_inside_string(context)
+}
+
+fn line_prefix_is_inside_string(context: &DocumentContext) -> bool {
+    let Some(line) = context.document.get_line(context.point.row) else {
+        return false;
+    };
+
+    let mut quote = None;
+    let mut escaped = false;
+
+    for ch in line.chars().take(context.point.column) {
+        let Some(active_quote) = quote else {
+            if matches!(ch, '"' | '\'') {
+                quote = Some(ch);
+            }
+            continue;
+        };
+
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+
+        if ch == active_quote {
+            quote = None;
+        }
+    }
+
+    quote.is_some()
 }
 
 fn empty_call_paren_trigger_is_argument_slot(context: &DocumentContext) -> anyhow::Result<bool> {
