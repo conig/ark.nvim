@@ -517,6 +517,7 @@ local ok, err = pcall(function()
   if
     help_lines[1] ~= "Navigation"
     or not help_text:find("zz     center cursor in the current view", 1, true)
+    or not help_text:find("H/L    previous/next column", 1, true)
     or not help_text:find("d      describe selected column", 1, true)
     or not help_text:find("p      pin/unpin selected column", 1, true)
     or not help_text:find("/      set literal text filter; empty clears", 1, true)
@@ -535,6 +536,39 @@ local ok, err = pcall(function()
   end
 
   assert_sidebar_selected(sidebar_buf, 3)
+
+  local cyl_col = header_column(grid_lines, "cyl")
+  press("L")
+  assert_sidebar_selected(sidebar_buf, 4)
+  local column_cursor = vim.api.nvim_win_get_cursor(grid_win)
+  if column_cursor[2] ~= cyl_col then
+    error(
+      "expected L to jump to next grid column at col " .. tostring(cyl_col) .. ", got " .. vim.inspect(column_cursor),
+      0
+    )
+  end
+
+  press("L")
+  column_cursor = vim.api.nvim_win_get_cursor(grid_win)
+  if column_cursor[2] ~= cyl_col then
+    error("expected L at the last column to stay on cyl, got " .. vim.inspect(column_cursor), 0)
+  end
+
+  press("H")
+  assert_sidebar_selected(sidebar_buf, 3)
+  column_cursor = vim.api.nvim_win_get_cursor(grid_win)
+  if column_cursor[2] ~= header_col then
+    error(
+      "expected H to jump to previous grid column at col " .. tostring(header_col) .. ", got " .. vim.inspect(column_cursor),
+      0
+    )
+  end
+
+  press("H")
+  column_cursor = vim.api.nvim_win_get_cursor(grid_win)
+  if column_cursor[2] ~= header_col then
+    error("expected H at the first column to stay on mpg, got " .. vim.inspect(column_cursor), 0)
+  end
 
   press("<Tab>")
   if vim.api.nvim_get_current_win() ~= sidebar_win then

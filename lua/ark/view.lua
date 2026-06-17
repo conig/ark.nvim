@@ -375,6 +375,21 @@ local function selected_column_from_grid(state)
   return state.selected_column
 end
 
+local function schema_position_for_column(state, column_index)
+  local target = tonumber(column_index)
+  if not target then
+    return nil
+  end
+
+  for position, item in ipairs(state.schema or {}) do
+    if tonumber(item.index) == target then
+      return position
+    end
+  end
+
+  return nil
+end
+
 local function update_sidebar_cursor(state)
   if not valid_win(state.sidebar_win) then
     return
@@ -518,6 +533,7 @@ local function show_help_window(state)
     "Navigation",
     "  <Tab>  toggle grid/columns focus",
     "  <CR>   inspect current grid cell or jump from columns to grid",
+    "  H/L    previous/next column",
     "  zz     center cursor in the current view",
     "  ]p     next page",
     "  [p     previous page",
@@ -842,6 +858,49 @@ local function sync_selected_column(state)
   end
 end
 
+local function move_selected_column(state, delta)
+  if not state then
+    return
+  end
+
+  local schema = state.schema or {}
+  if #schema == 0 then
+    return
+  end
+
+  local current_win = vim.api.nvim_get_current_win()
+  sync_selected_column(state)
+
+  local position = schema_position_for_column(state, state.selected_column)
+  if not position then
+    position = delta > 0 and 0 or (#schema + 1)
+  end
+
+  local target_position = math.max(1, math.min(#schema, position + delta))
+  if target_position == position then
+    return
+  end
+
+  local target = schema[target_position]
+  local target_column = tonumber(target and target.index)
+  if not target_column then
+    return
+  end
+
+  state.selected_column = target_column
+  if current_win == state.sidebar_win then
+    move_grid_cursor_to_selected_column(state)
+    render_sidebar(state)
+    if valid_win(state.sidebar_win) then
+      vim.api.nvim_set_current_win(state.sidebar_win)
+    end
+    return
+  end
+
+  focus_selected_column_in_grid(state)
+  render_sidebar(state)
+end
+
 local function toggle_grid_sidebar_focus(state)
   if not state then
     return
@@ -1158,6 +1217,14 @@ local function setup_keymaps(state)
 
   map("S", function()
     open_schema_picker(state)
+  end)
+
+  map("H", function()
+    move_selected_column(state, -1)
+  end)
+
+  map("L", function()
+    move_selected_column(state, 1)
   end)
 
   map("<Tab>", function()

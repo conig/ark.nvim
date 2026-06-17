@@ -200,6 +200,9 @@ part of the default supported path.
   policy handled in plugin code rather than a generic snippets completion source.
 - Structural code templates are exposed explicitly through the Ark Snacks picker
   command instead of ambient completion menus.
+- ArkView table navigation keeps the selected data column synchronized between
+  the grid and columns pane. Local `H` and `L` mappings move to the previous or
+  next data column and clamp at table edges.
 
 ## What Is Essentially Complete
 
