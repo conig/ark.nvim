@@ -478,7 +478,8 @@
           names = resolved_names,
           script = project$script,
           store = project$store,
-          callr_function = NULL
+          callr_function = NULL,
+          use_crew = FALSE
         )))
         list(completed = TRUE)
       } else if (identical(action, "invalidate")) {
