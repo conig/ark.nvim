@@ -9,6 +9,10 @@ local function shellescape(value)
   return vim.fn.shellescape(tostring(value or ""))
 end
 
+local function vim_string(value)
+  return "'" .. tostring(value or ""):gsub("'", "''") .. "'"
+end
+
 local function normalize(value)
   if value == nil or value == "" or value == "raw" or value == "launcher" then
     return "raw"
@@ -52,6 +56,12 @@ function M.argv(config, backend, session_id)
 
   if frontend == "nvim-console" then
     local nvim_console = nvim_console_config(config)
+    local theme_file
+    local ok_theme, theme = pcall(require, "ark.theme")
+    if ok_theme and type(theme) == "table" and type(theme.prepare_handoff) == "function" then
+      theme_file = theme.prepare_handoff()
+    end
+
     local argv = {
       nvim_console.bin,
       "-n",
@@ -59,9 +69,17 @@ function M.argv(config, backend, session_id)
       "let g:ark_console_standalone = v:true",
       "--cmd",
       "let g:ark_console_terminal_ui = v:true",
+    }
+    if type(theme_file) == "string" and theme_file ~= "" then
+      vim.list_extend(argv, {
+        "--cmd",
+        "let $ARK_NVIM_REPL_THEME_FILE = " .. vim_string(theme_file),
+      })
+    end
+    vim.list_extend(argv, {
       "-u",
       nvim_console.init,
-    }
+    })
     if nvim_console.add_repo_to_rtp then
       vim.list_extend(argv, {
         "-c",

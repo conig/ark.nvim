@@ -14,6 +14,10 @@ end
 local root = vim.fs.normalize(vim.env.ARK_REPO_ROOT or repo_root())
 vim.opt.runtimepath:prepend(root)
 
+pcall(function()
+  require("ark.theme").enable_receiver_updates()
+end)
+
 local function prepend_lazy_plugin(name)
   local path = vim.fs.normalize((vim.fn.stdpath("data") or "") .. "/lazy/" .. name)
   if vim.fn.isdirectory(path) == 1 then
@@ -107,5 +111,9 @@ end
 if type(repl_config_dir) == "string" then
   source_optional_lua(repl_config_dir .. "/init.lua")
 end
+
+pcall(function()
+  require("ark.theme").apply_from_env()
+end)
 
 vim.cmd("runtime plugin/ark.lua")

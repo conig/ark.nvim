@@ -145,6 +145,22 @@ local function current_hover_win()
   return active_hover_win
 end
 
+local function apply_signature_float_theme(win)
+  if type(win) ~= "number" or win == 0 or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+
+  pcall(function()
+    require("ark.theme").apply_from_env()
+  end)
+  vim.wo[win].winhighlight = table.concat({
+    "Normal:ArkSignatureHelpNormal",
+    "NormalFloat:ArkSignatureHelpNormal",
+    "FloatBorder:ArkSignatureHelpBorder",
+    "EndOfBuffer:ArkSignatureHelpNormal",
+  }, ",")
+end
+
 local function lsp_documentation_visible()
   return current_signature_help_win() ~= nil or current_hover_win() ~= nil
 end
@@ -669,8 +685,14 @@ function M.patch_signature_help_float()
       elseif is_hover then
         active_hover_win = fwin
       end
+      if is_signature_help then
+        apply_signature_float_theme(fwin)
+      end
       vim.schedule(function()
         close_blink_docs()
+        if is_signature_help then
+          apply_signature_float_theme(fwin)
+        end
         resolve_signature_help_menu_collision(fwin)
       end)
     end

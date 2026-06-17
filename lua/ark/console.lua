@@ -194,6 +194,14 @@ local ansi_palette = {
 local ansi_hl_cache = {}
 local ansi_hl_count = 0
 
+local function ansi_color(index)
+  local value = vim.g["terminal_color_" .. tostring(index)]
+  if type(value) == "string" and value:match("^#%x%x%x%x%x%x$") then
+    return value
+  end
+  return ansi_palette[index]
+end
+
 local function color_hex(red, green, blue)
   red = math.max(0, math.min(255, tonumber(red) or 0))
   green = math.max(0, math.min(255, tonumber(green) or 0))
@@ -206,8 +214,8 @@ local function xterm_256_color(index)
   if not index or index < 0 or index > 255 then
     return nil
   end
-  if ansi_palette[index] then
-    return ansi_palette[index]
+  if index <= 15 then
+    return ansi_color(index)
   end
   if index >= 16 and index <= 231 then
     local value = index - 16
@@ -273,9 +281,9 @@ local function apply_sgr(style, raw)
     elseif code == 39 then
       style.fg = nil
     elseif code >= 30 and code <= 37 then
-      style.fg = ansi_palette[code - 30]
+      style.fg = ansi_color(code - 30)
     elseif code >= 90 and code <= 97 then
-      style.fg = ansi_palette[(code - 90) + 8]
+      style.fg = ansi_color((code - 90) + 8)
     elseif code == 38 then
       local mode = params[index + 1]
       if mode == 5 then
@@ -674,6 +682,94 @@ local function prompt_only_line(line)
     or line:match("^%s*%+%s*$") ~= nil
 end
 
+local function transcript_output_group(line, context_group)
+  line = tostring(line or "")
+  local trimmed = line:gsub("^%s+", ""):gsub("%s+$", "")
+
+  if trimmed:match("^Error")
+    or trimmed:match("^Execution halted")
+    or trimmed:match("^Traceback")
+    or trimmed:match("^Error:")
+    or trimmed:match("^Error in ")
+  then
+    return "ArkConsoleOutputError"
+  end
+
+  if trimmed:match("^Warning")
+    or trimmed:match("^Warning message")
+    or trimmed:match("^Warning messages")
+    or trimmed:match("^There were [0-9]+ warnings")
+  then
+    return "ArkConsoleOutputWarning"
+  end
+
+  if trimmed:match("^Loading required package:")
+    or trimmed:match("^Attaching package:")
+    or trimmed:match("^The following ")
+    or trimmed:match("^Registered S3 ")
+    or trimmed:match("^Registered S3 method")
+    or trimmed:match("^Learn more ")
+    or trimmed:match("^──")
+  then
+    return "ArkConsoleOutputMessage"
+  end
+
+  if context_group == "ArkConsoleOutputMessage"
+    or context_group == "ArkConsoleOutputWarning"
+    or context_group == "ArkConsoleOutputError"
+  then
+    return context_group
+  end
+
+  return "ArkConsoleOutputValue"
+end
+
+local function classify_output_spans(display_line, spans, context_group)
+  local group = transcript_output_group(display_line, context_group)
+  if type(group) ~= "string" or group == "" or type(display_line) ~= "string" or display_line == "" then
+    return spans
+  end
+
+  local semantic_span = {
+    start_col = 0,
+    end_col = #display_line,
+    hl_group = group,
+    semantic = true,
+  }
+
+  if type(spans) == "table" and #spans > 0 then
+    if group == "ArkConsoleOutputValue" then
+      return spans
+    end
+
+    local merged = vim.deepcopy(spans)
+    merged[#merged + 1] = semantic_span
+    return merged
+  end
+
+  return { semantic_span }
+end
+
+local function submitted_output_group(text)
+  text = tostring(text or "")
+  if text:find("[;\n]") then
+    return nil
+  end
+
+  local trimmed = text:gsub("^%s+", ""):gsub("%s+$", "")
+  if trimmed:match("^message%s*%(") or trimmed:match("^[%w_.]+::message%s*%(") then
+    return "ArkConsoleOutputMessage"
+  end
+  if trimmed:match("^warning%s*%(") or trimmed:match("^[%w_.]+::warning%s*%(") then
+    return "ArkConsoleOutputWarning"
+  end
+  if trimmed:match("^stop%s*%(") or trimmed:match("^[%w_.]+::stop%s*%(") then
+    return "ArkConsoleOutputError"
+  end
+
+  return nil
+end
+
 local function styled_chunks(text, spans, default_hl)
   text = text or ""
   spans = spans or {}
@@ -720,6 +816,7 @@ local function transcript_lines_from_output(info, output)
       or (stripped ~= nil and pop_echo_line(info, stripped))
       or (plus_stripped ~= line and pop_echo_line(info, plus_stripped))
     if trimmed ~= "" and not prompt_only_line(line) and not is_echo then
+      display_spans = classify_output_spans(display_line, display_spans, info.pending_output_group)
       lines[#lines + 1] = {
         text = "#> " .. display_line,
         spans = offset_spans(display_spans, 3),
@@ -768,6 +865,24 @@ local function setup_highlights()
   pcall(vim.api.nvim_set_hl, 0, "ArkConsolePrompt", { link = "Question", default = true })
   pcall(vim.api.nvim_set_hl, 0, "ArkConsoleOutput", { link = "Normal", default = true })
   pcall(vim.api.nvim_set_hl, 0, "ArkConsoleOutputPrefix", { link = "Comment", default = true })
+
+  local ok, theme = pcall(require, "ark.theme")
+  if ok and type(theme) == "table" then
+    if type(vim.env.ARK_NVIM_REPL_THEME_FILE) == "string"
+      and vim.env.ARK_NVIM_REPL_THEME_FILE ~= ""
+      and type(theme.enable_receiver_updates) == "function"
+    then
+      pcall(theme.enable_receiver_updates)
+    elseif type(theme.snapshot) == "function" and type(theme.apply_console_palette) == "function" then
+      local ok_snapshot, palette = pcall(theme.snapshot)
+      if ok_snapshot and type(palette) == "table" then
+        pcall(theme.apply_terminal_palette, palette)
+        pcall(theme.apply_syntax_palette, palette)
+        pcall(theme.apply_blink_palette, palette)
+        pcall(theme.apply_console_palette, palette)
+      end
+    end
+  end
 end
 
 local function place_prompt_extmark(bufnr, ns, line, label, group)
@@ -1619,7 +1734,7 @@ local function apply_ansi_spans(bufnr, start_line, items)
         vim.api.nvim_buf_set_extmark(bufnr, ansi_ns, row, start_col, {
           end_col = end_col,
           hl_group = hl_group,
-          priority = 140,
+          priority = span.semantic == true and 260 or 140,
           right_gravity = false,
           end_right_gravity = false,
         })
@@ -1649,6 +1764,7 @@ end
 local function record_submission(info, text)
   info.prompt_state = "busy"
   info.pending_echo_lines = vim.split(text, "\n", { plain = true })
+  info.pending_output_group = submitted_output_group(text)
   if info.history[#info.history] ~= text then
     info.history[#info.history + 1] = text
   end
@@ -1692,7 +1808,11 @@ local function parse_output(bufnr, data)
     info.output_cursor = 0
   end
 
-  return transcript_lines_from_output(info, complete)
+  local lines = transcript_lines_from_output(info, complete)
+  if prompt then
+    info.pending_output_group = nil
+  end
+  return lines
 end
 
 local function on_output(bufnr, _, data, _)
@@ -1883,6 +2003,12 @@ local function apply_console_window_options(winid, bufnr)
   vim.wo[winid].list = false
   vim.wo[winid].wrap = true
   vim.wo[winid].winbar = ""
+  vim.wo[winid].winhighlight = table.concat({
+    "Normal:ArkConsoleNormal",
+    "NormalNC:ArkConsoleNormal",
+    "EndOfBuffer:ArkConsoleNormal",
+    "SignColumn:ArkConsoleNormal",
+  }, ",")
   vim.wo[winid].statusline = " "
   apply_console_conceal_options(winid)
 end
@@ -2039,88 +2165,7 @@ local function console_buffer()
   return nil, nil
 end
 
-function M.start(opts)
-  opts = opts or {}
-  local existing = console_buffer()
-  if existing then
-    local winid = vim.fn.bufwinid(existing)
-    if type(winid) == "number" and winid > 0 then
-      vim.api.nvim_set_current_win(winid)
-    else
-      vim.cmd("botright split")
-      vim.api.nvim_win_set_buf(0, existing)
-      winid = vim.api.nvim_get_current_win()
-    end
-    apply_console_window_options(winid, existing)
-    refresh_console_number_options(existing)
-    return existing
-  end
-
-  local bufnr = create_buffer(opts)
-  apply_terminal_ui(bufnr, opts)
-  local session_id = session_id_for_buffer(bufnr)
-  local runtime = opts.terminal or opts.tmux or {}
-  local socket_path = rpc_socket_path(runtime, session_id)
-  local socket_dir = vim.fs.dirname(socket_path)
-  if type(socket_dir) == "string" and socket_dir ~= "" then
-    vim.fn.mkdir(socket_dir, "p")
-  end
-  state.buffers[bufnr] = {
-    draft_input = nil,
-    history = {},
-    history_index = nil,
-    input_mark_id = nil,
-    input_start = 0,
-    jobid = nil,
-    output_pending = "",
-    output_cursor = 0,
-    pending_echo_lines = {},
-    prompt_state = "top-level",
-    rpc_socket = socket_path,
-    rpc_running = false,
-    session_id = session_id,
-    status_path = session_runtime.status_file_path(runtime, session_id),
-    status_timer = nil,
-  }
-  install_paste_handler()
-  install_console_number_autocmds(bufnr)
-  install_console_clipboard_keymaps(bufnr)
-  set_input_start(bufnr, state.buffers[bufnr], 0)
-  place_prompt(bufnr)
-  refresh_valid_snapshot(bufnr, state.buffers[bufnr])
-
-  local ok_server, server_result = pcall(vim.fn.serverstart, state.buffers[bufnr].rpc_socket)
-  if ok_server and type(server_result) == "string" and server_result ~= "" then
-    state.buffers[bufnr].rpc_socket = server_result
-    state.buffers[bufnr].rpc_running = true
-  else
-    state.buffers[bufnr].rpc_running = false
-    append_before_input(bufnr, { "#> failed to start Ark console RPC server: " .. tostring(server_result) })
-  end
-  state.buffers[bufnr].status_timer = start_status_publisher(bufnr)
-
-  local jobid, err = start_job(bufnr, opts, session_id, state.buffers[bufnr].status_path)
-  if not jobid then
-    append_before_input(bufnr, { "#> " .. tostring(err) })
-    return nil, err
-  end
-  state.buffers[bufnr].jobid = jobid
-  publish_status(bufnr)
-
-  if opts.auto_start_lsp ~= false then
-    lsp.start(opts, bufnr, {
-      wait_for_client = false,
-    })
-  end
-
-  _G[console_server_fn] = function(text)
-    local ok, send_err = M.send_text(bufnr, text)
-    if not ok then
-      error(send_err or "failed to send text to Ark console", 0)
-    end
-    return "ok"
-  end
-
+local function setup_keymaps(bufnr)
   vim.keymap.set({ "n", "i" }, "<CR>", function()
     M.submit_or_accept_completion(bufnr)
   end, { buffer = bufnr, desc = "Accept Ark console completion or submit input" })
@@ -2137,6 +2182,12 @@ function M.start(opts)
     return M.append_pipe_newline(bufnr)
   end, { buffer = bufnr, desc = "Append '|>' and open Ark console continuation line" })
   vim.keymap.set("n", "<leader>=", function()
+    return M.append_plus_newline(bufnr)
+  end, { buffer = bufnr, desc = "Append '+' and open Ark console continuation line" })
+  vim.keymap.set("i", "<M-\\>", function()
+    return M.append_pipe_newline(bufnr)
+  end, { buffer = bufnr, desc = "Append '|>' and open Ark console continuation line" })
+  vim.keymap.set("i", "<M-=>", function()
     return M.append_plus_newline(bufnr)
   end, { buffer = bufnr, desc = "Append '+' and open Ark console continuation line" })
   vim.keymap.set({ "n", "i" }, "<C-p>", function()
@@ -2188,6 +2239,92 @@ function M.start(opts)
   vim.keymap.set({ "n", "i" }, "<C-d>", function()
     M.eof(bufnr)
   end, { buffer = bufnr, desc = "Send EOF to Ark console R process" })
+end
+
+function M.start(opts)
+  opts = opts or {}
+  local existing = console_buffer()
+  if existing then
+    local winid = vim.fn.bufwinid(existing)
+    if type(winid) == "number" and winid > 0 then
+      vim.api.nvim_set_current_win(winid)
+    else
+      vim.cmd("botright split")
+      vim.api.nvim_win_set_buf(0, existing)
+      winid = vim.api.nvim_get_current_win()
+    end
+    apply_console_window_options(winid, existing)
+    refresh_console_number_options(existing)
+    return existing
+  end
+
+  local bufnr = create_buffer(opts)
+  apply_terminal_ui(bufnr, opts)
+  local session_id = session_id_for_buffer(bufnr)
+  local runtime = opts.terminal or opts.tmux or {}
+  local socket_path = rpc_socket_path(runtime, session_id)
+  local socket_dir = vim.fs.dirname(socket_path)
+  if type(socket_dir) == "string" and socket_dir ~= "" then
+    vim.fn.mkdir(socket_dir, "p")
+  end
+  state.buffers[bufnr] = {
+    draft_input = nil,
+    history = {},
+    history_index = nil,
+    input_mark_id = nil,
+    input_start = 0,
+    jobid = nil,
+    output_pending = "",
+    output_cursor = 0,
+    pending_output_group = nil,
+    pending_echo_lines = {},
+    prompt_state = "top-level",
+    rpc_socket = socket_path,
+    rpc_running = false,
+    session_id = session_id,
+    status_path = session_runtime.status_file_path(runtime, session_id),
+    status_timer = nil,
+  }
+  install_paste_handler()
+  install_console_number_autocmds(bufnr)
+  install_console_clipboard_keymaps(bufnr)
+  set_input_start(bufnr, state.buffers[bufnr], 0)
+  place_prompt(bufnr)
+  refresh_valid_snapshot(bufnr, state.buffers[bufnr])
+
+  local ok_server, server_result = pcall(vim.fn.serverstart, state.buffers[bufnr].rpc_socket)
+  if ok_server and type(server_result) == "string" and server_result ~= "" then
+    state.buffers[bufnr].rpc_socket = server_result
+    state.buffers[bufnr].rpc_running = true
+  else
+    state.buffers[bufnr].rpc_running = false
+    append_before_input(bufnr, { "#> failed to start Ark console RPC server: " .. tostring(server_result) })
+  end
+  state.buffers[bufnr].status_timer = start_status_publisher(bufnr)
+
+  local jobid, err = start_job(bufnr, opts, session_id, state.buffers[bufnr].status_path)
+  if not jobid then
+    append_before_input(bufnr, { "#> " .. tostring(err) })
+    return nil, err
+  end
+  state.buffers[bufnr].jobid = jobid
+  publish_status(bufnr)
+
+  if opts.auto_start_lsp ~= false then
+    lsp.start(opts, bufnr, {
+      wait_for_client = false,
+    })
+  end
+
+  _G[console_server_fn] = function(text)
+    local ok, send_err = M.send_text(bufnr, text)
+    if not ok then
+      error(send_err or "failed to send text to Ark console", 0)
+    end
+    return "ok"
+  end
+
+  setup_keymaps(bufnr)
 
   vim.api.nvim_create_autocmd("WinResized", {
     group = vim.api.nvim_create_augroup("ArkConsoleResize" .. tostring(bufnr), { clear = true }),
