@@ -1955,6 +1955,24 @@ function M.view_close()
   return view.close()
 end
 
+function M.view_column_width(width_spec, column)
+  ensure_setup()
+  local result, err = view.set_column_width(width_spec, column)
+  if err then
+    notify(err, vim.log.levels.WARN)
+  end
+  return result, err
+end
+
+function M.view_column_wrap(mode, column)
+  ensure_setup()
+  local result, err = view.set_column_wrap(mode, column)
+  if err then
+    notify(err, vim.log.levels.WARN)
+  end
+  return result, err
+end
+
 local function targets_trim(value)
   return (value:gsub("^%s+", ""):gsub("%s+$", ""))
 end

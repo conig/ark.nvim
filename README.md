@@ -383,6 +383,18 @@ objects, sort and filter columns, inspect cell values, show column profiles,
 export the current view, and display the R code used for the active view. It is
 for quick local inspection, not a replacement for a full IDE data pane.
 
+Inside ArkView, use `<` and `>` to narrow or widen the selected column, `=` to
+enter an exact width, and `w` to wrap or unwrap the selected column at its
+current width. The same controls are available as commands:
+
+```vim
+:Ark view width 60
+:Ark view width +8 column_name
+:Ark view width reset column_name
+:Ark view wrap on column_name
+:Ark view wrap off column_name
+```
+
 ## Target Workflows
 
 Ark treats `{targets}` projects as an editor workflow rather than just another

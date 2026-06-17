@@ -946,6 +946,50 @@ local ok, err = pcall(function()
     )
   end
 
+  vim.cmd("Ark view width 20 description")
+  grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
+  long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[3] or ""))
+  if long_cell_width ~= 20 then
+    error("expected :Ark view width to set description width to 20, got " .. tostring(long_cell_width), 0)
+  end
+  updated_sidebar = vim.api.nvim_buf_get_lines(sidebar_buf, 0, -1, false)
+  if not (updated_sidebar[4] or ""):find("%[w=20%]") then
+    error("expected sidebar width badge after :Ark view width, got " .. vim.inspect(updated_sidebar), 0)
+  end
+
+  vim.cmd("Ark view wrap on description")
+  grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
+  if #grid_lines <= 3 then
+    error("expected wrapped description cells to render continuation lines, got " .. vim.inspect(grid_lines), 0)
+  end
+  updated_sidebar = vim.api.nvim_buf_get_lines(sidebar_buf, 0, -1, false)
+  if not (updated_sidebar[4] or ""):find("%[w=20,wrap%]") then
+    error("expected sidebar wrap badge after :Ark view wrap, got " .. vim.inspect(updated_sidebar), 0)
+  end
+
+  local calls_before_wrap_copy = #cell_calls
+  move_cursor(grid_win, 3, header_column(grid_lines, "description"))
+  press("y")
+  if not vim.deep_equal(cell_calls[calls_before_wrap_copy + 1], {
+    row_index = 1,
+    column_index = 2,
+  }) then
+    error("expected copy from wrapped continuation line to target row 1 col 2, got " .. vim.inspect(cell_calls), 0)
+  end
+
+  vim.cmd("Ark view wrap off description")
+  grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
+  if #grid_lines ~= 3 then
+    error("expected :Ark view wrap off to restore one line per row, got " .. vim.inspect(grid_lines), 0)
+  end
+
+  vim.cmd("Ark view width reset description")
+  grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
+  long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[3] or ""))
+  if long_cell_width <= 24 then
+    error("expected :Ark view width reset to restore adaptive width above 24, got " .. tostring(long_cell_width), 0)
+  end
+
   -- Regression: choosing a far column with S should leave the selected grid
   -- cell centered, matching ArkView's local zz behavior.
   backend.schema = {}

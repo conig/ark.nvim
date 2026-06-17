@@ -118,6 +118,15 @@ local ark_command_completions = {
   "view",
   "view close",
   "view refresh",
+  "view width",
+  "view width reset",
+  "view width +8",
+  "view width -8",
+  "view wrap",
+  "view wrap on",
+  "view wrap off",
+  "view wrap toggle",
+  "view nowrap",
 }
 
 local function complete_ark_command(_, cmdline)
@@ -182,6 +191,19 @@ local function dispatch_targets_command(args)
   else
     unknown_ark_command(args)
   end
+end
+
+local function is_view_wrap_mode(value)
+  return value == nil
+    or value == ""
+    or value == "toggle"
+    or value == "on"
+    or value == "off"
+    or value == "true"
+    or value == "false"
+    or value == "yes"
+    or value == "no"
+    or value == "nowrap"
 end
 
 local function dispatch_ark_command(args)
@@ -258,6 +280,20 @@ local function dispatch_ark_command(args)
       ark.view_refresh()
     elseif args[2] == "close" then
       ark.view_close()
+    elseif args[2] == "width" then
+      local column = join_args(args, 4)
+      ark.view_column_width(args[3], column ~= "" and column or nil)
+    elseif args[2] == "wrap" then
+      local mode = args[3]
+      local column = join_args(args, 4)
+      if not is_view_wrap_mode(mode) and column == "" then
+        column = mode
+        mode = "toggle"
+      end
+      ark.view_column_wrap(mode, column ~= "" and column or nil)
+    elseif args[2] == "nowrap" then
+      local column = join_args(args, 3)
+      ark.view_column_wrap("off", column ~= "" and column or nil)
     else
       local expr = join_args(args, 2)
       ark.view(expr ~= "" and expr or nil, 0)
@@ -363,6 +399,28 @@ end, { desc = "Refresh the current Ark data explorer tab" })
 vim.api.nvim_create_user_command("ArkViewClose", function()
   require("ark").view_close()
 end, { desc = "Close the current Ark data explorer tab" })
+
+vim.api.nvim_create_user_command("ArkViewColumnWidth", function(args)
+  local width = args.fargs[1]
+  local column = join_args(args.fargs, 2)
+  require("ark").view_column_width(width, column ~= "" and column or nil)
+end, {
+  desc = "Set selected ArkView column width; accepts reset, +N, -N, or an exact width",
+  nargs = "*",
+})
+
+vim.api.nvim_create_user_command("ArkViewColumnWrap", function(args)
+  local mode = args.fargs[1]
+  local column = join_args(args.fargs, 2)
+  if not is_view_wrap_mode(mode) and column == "" then
+    column = mode
+    mode = "toggle"
+  end
+  require("ark").view_column_wrap(mode, column ~= "" and column or nil)
+end, {
+  desc = "Toggle or set wrapping for the selected ArkView column",
+  nargs = "*",
+})
 
 vim.api.nvim_create_user_command("ArkTargetsInfo", function()
   vim.print(require("ark").targets_project_info(0))
