@@ -906,15 +906,18 @@ local ok, err = pcall(function()
     error("expected clear-all to restore neutral winbar sort/filter summary, got " .. vim.inspect(winbar), 0)
   end
 
-  -- Regression: a small-column ArkView with long strings should use available
-  -- grid width instead of cutting every value at the old fixed 24-cell cap.
+  -- Regression: ArkView should size automatic columns from visible values up
+  -- to a practical per-column cap instead of squeezing every column into the
+  -- current grid viewport.
+  local moderately_long_value = string.rep("x", 120)
+  local capped_long_value = string.rep("z", 240)
   backend.schema = {
     { index = 1, name = "id", class = "integer", type = "integer" },
     { index = 2, name = "description", class = "character", type = "character" },
   }
   backend.base_rows = {
-    { "1", string.rep("x", 70) },
-    { "2", string.rep("y", 70) },
+    { "1", moderately_long_value },
+    { "2", capped_long_value },
   }
   backend.sort = {
     column_index = 0,
@@ -925,23 +928,27 @@ local ok, err = pcall(function()
   press("r")
 
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
-  local long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[3] or ""))
-  if long_cell_width <= 24 then
-    error("expected long string column to expand past 24 cells, got " .. tostring(long_cell_width), 0)
+  local id_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[2] or ""))
+  local long_cell = grid_cells(grid_lines[2])[3] or ""
+  local long_cell_width = vim.fn.strdisplaywidth(long_cell)
+  if id_cell_width ~= 8 then
+    error("expected narrow id column to keep minimum width 8, got " .. tostring(id_cell_width), 0)
   end
-  if long_cell_width > 80 then
-    error("expected long string column to stay within the max width, got " .. tostring(long_cell_width), 0)
+  if long_cell_width ~= 200 then
+    error("expected long string column to expand to 200-cell cap, got " .. tostring(long_cell_width), 0)
   end
-  local rendered_width = vim.fn.strdisplaywidth(grid_lines[2] or "")
-  local available_width = vim.api.nvim_win_get_width(grid_win)
-  if rendered_width > available_width then
+  local marker_after_moderate_value = long_cell:sub(#moderately_long_value + 1, #moderately_long_value + 1)
+  if long_cell:sub(1, #moderately_long_value) ~= moderately_long_value or marker_after_moderate_value == ">" then
+    error("expected 120-cell value to render without clipping, got " .. vim.inspect(long_cell), 0)
+  end
+  local capped_cell = grid_cells(grid_lines[3])[3] or ""
+  local capped_cell_width = vim.fn.strdisplaywidth(capped_cell)
+  if capped_cell_width ~= 200 or capped_cell:sub(-1) ~= ">" then
     error(
-      "expected adaptive long-string row to fit the grid width "
-        .. tostring(available_width)
-        .. ", got rendered width "
-        .. tostring(rendered_width)
-        .. " line "
-        .. vim.inspect(grid_lines[2]),
+      "expected very long string column to clip at 200 cells with a marker, got width "
+        .. tostring(capped_cell_width)
+        .. " cell "
+        .. vim.inspect(capped_cell),
       0
     )
   end
@@ -986,8 +993,8 @@ local ok, err = pcall(function()
   vim.cmd("Ark view width reset description")
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
   long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[3] or ""))
-  if long_cell_width <= 24 then
-    error("expected :Ark view width reset to restore adaptive width above 24, got " .. tostring(long_cell_width), 0)
+  if long_cell_width ~= 200 then
+    error("expected :Ark view width reset to restore 200-cell adaptive width, got " .. tostring(long_cell_width), 0)
   end
 
   -- Regression: choosing a far column with S should leave the selected grid

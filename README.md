@@ -385,7 +385,9 @@ for quick local inspection, not a replacement for a full IDE data pane.
 
 Inside ArkView, use `<` and `>` to narrow or widen the selected column, `=` to
 enter an exact width, and `w` to wrap or unwrap the selected column at its
-current width. The same controls are available as commands:
+current width. By default, ArkView sizes columns from the visible values up to
+200 cells per column, so wide tables may extend past the current window instead
+of clipping ordinary long strings. The same controls are available as commands:
 
 ```vim
 :Ark view width 60

@@ -3,9 +3,9 @@ local M = {}
 local states = {}
 local highlight_namespace = vim.api.nvim_create_namespace("ark-view")
 local grid_column_min_width = 8
-local grid_column_max_width = 80
 local grid_column_override_min_width = 4
 local grid_column_override_max_width = 200
+local grid_column_max_width = grid_column_override_max_width
 local grid_column_width_step = 8
 local grid_column_separator_width = 3
 
@@ -707,22 +707,6 @@ local function desired_column_widths(state)
   return widths, indices, fixed
 end
 
-local function available_column_width(state, row_width, column_count, win)
-  if column_count <= 0 then
-    return 0
-  end
-
-  local win_width = tonumber(vim.o.columns) or 80
-  if valid_win(win) then
-    win_width = vim.api.nvim_win_get_width(win)
-  elseif valid_win(state and state.grid_win) then
-    win_width = vim.api.nvim_win_get_width(state.grid_win)
-  end
-
-  local available = win_width - row_width - (column_count * grid_column_separator_width)
-  return math.max(column_count * grid_column_min_width, available)
-end
-
 local function fit_column_widths(widths, indices, available, fixed)
   fixed = fixed or {}
   local total = 0
@@ -768,10 +752,16 @@ local function fit_column_widths(widths, indices, available, fixed)
   return widths
 end
 
-local function grid_column_widths(state, row_width)
+local function grid_column_widths(state)
   local widths, indices, fixed = desired_column_widths(state)
-  local available = available_column_width(state, row_width, #indices, state.grid_win)
-  return fit_column_widths(widths, indices, available, fixed)
+  for _, index in ipairs(indices) do
+    if fixed[index] then
+      widths[index] = clamp_width(widths[index], grid_column_override_min_width, grid_column_override_max_width)
+    else
+      widths[index] = clamp_width(widths[index], grid_column_min_width, grid_column_max_width)
+    end
+  end
+  return widths
 end
 
 local function column_width_for_rows(state, column_index, row_width)
@@ -1008,7 +998,7 @@ end
 local function render_grid(state)
   local rows = state.rows or {}
   local row_width = math.max(4, display_width(tostring(state.total_rows or 0)))
-  local widths = grid_column_widths(state, row_width)
+  local widths = grid_column_widths(state)
   state.column_widths = widths
 
   local header_parts = { pad_text("#", row_width) }
