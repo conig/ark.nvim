@@ -4607,16 +4607,67 @@ fn signature_parameter_label(member: &BridgeMember) -> String {
     format!("{} = {}", member.name_display, member.summary)
 }
 
-fn search_path_completion_expr() -> String {
-    String::from(
-        "local({ .envs <- lapply(search(), as.environment); .names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); .out <- stats::setNames(vector(\"list\", length(.names)), .names); attr(.out, \"rscope_source_class\") <- \"symbol_lookup_envs\"; attr(.out, \"rscope_lookup_envs\") <- .envs; .out })",
+fn browser_aware_symbol_lookup_envs_expr() -> &'static str {
+    concat!(
+        ".self <- environment(); ",
+        ".ns <- tryCatch(asNamespace(\"arkbridge\"), error = function(e) NULL); ",
+        ".frames <- sys.frames(); ",
+        ".browser_envs <- list(); ",
+        "for (.env in .frames) { ",
+        "if (identical(.env, .self) || identical(.env, globalenv()) || ",
+        "identical(.env, baseenv()) || identical(.env, emptyenv())) next; ",
+        ".top <- topenv(.env); ",
+        "if (!is.null(.ns) && identical(.top, .ns)) break; ",
+        ".browser_envs[[length(.browser_envs) + 1L]] <- .env ",
+        "}; ",
+        "if (length(.browser_envs)) .browser_envs <- rev(.browser_envs); ",
+        ".envs <- c(.browser_envs, lapply(search(), as.environment)); ",
     )
 }
 
+fn search_path_completion_expr() -> String {
+    let mut expr = String::from("local({ ");
+    expr.push_str(browser_aware_symbol_lookup_envs_expr());
+    expr.push_str(concat!(
+        ".names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); ",
+        ".out <- stats::setNames(vector(\"list\", length(.names)), .names); ",
+        "attr(.out, \"rscope_source_class\") <- \"symbol_lookup_envs\"; ",
+        "attr(.out, \"rscope_lookup_envs\") <- .envs; ",
+        ".out ",
+        "})",
+    ));
+    expr
+}
+
 fn prioritized_empty_search_path_completion_expr() -> String {
-    String::from(
-        "local({ .envs <- lapply(search(), as.environment); .names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); .find_env <- function(.name) { for (.env in .envs) { if (exists(.name, envir = .env, inherits = FALSE)) return(.env) }; NULL }; .is_function <- vapply(.names, function(.name) { .env <- .find_env(.name); if (is.null(.env)) return(FALSE); .value <- tryCatch(get(.name, envir = .env, inherits = FALSE), error = function(e) NULL); is.function(.value) }, logical(1)); .is_hidden <- startsWith(.names, \".\") | grepl(\"rscope\", .names, fixed = TRUE); .names <- c(.names[!.is_hidden & !.is_function], .names[!.is_hidden & .is_function], .names[.is_hidden & !.is_function], .names[.is_hidden & .is_function]); .out <- stats::setNames(vector(\"list\", length(.names)), .names); attr(.out, \"rscope_source_class\") <- \"symbol_lookup_envs\"; attr(.out, \"rscope_lookup_envs\") <- .envs; .out })",
-    )
+    let mut expr = String::from("local({ ");
+    expr.push_str(browser_aware_symbol_lookup_envs_expr());
+    expr.push_str(concat!(
+        ".names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); ",
+        ".find_env <- function(.name) { ",
+        "for (.env in .envs) { ",
+        "if (exists(.name, envir = .env, inherits = FALSE)) return(.env) ",
+        "}; ",
+        "NULL ",
+        "}; ",
+        ".is_function <- vapply(.names, function(.name) { ",
+        ".env <- .find_env(.name); ",
+        "if (is.null(.env)) return(FALSE); ",
+        ".value <- tryCatch(get(.name, envir = .env, inherits = FALSE), error = function(e) NULL); ",
+        "is.function(.value) ",
+        "}, logical(1)); ",
+        ".is_hidden <- startsWith(.names, \".\") | grepl(\"rscope\", .names, fixed = TRUE); ",
+        ".names <- c(.names[!.is_hidden & !.is_function], ",
+        ".names[!.is_hidden & .is_function], ",
+        ".names[.is_hidden & !.is_function], ",
+        ".names[.is_hidden & .is_function]); ",
+        ".out <- stats::setNames(vector(\"list\", length(.names)), .names); ",
+        "attr(.out, \"rscope_source_class\") <- \"symbol_lookup_envs\"; ",
+        "attr(.out, \"rscope_lookup_envs\") <- .envs; ",
+        ".out ",
+        "})",
+    ));
+    expr
 }
 
 fn matrix_subset_completion_expr(expr: &str) -> String {

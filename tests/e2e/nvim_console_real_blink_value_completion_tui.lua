@@ -122,16 +122,17 @@ local ok, err = xpcall(function()
   end
 
   local last_snapshot_ms = 0
-  local function request_snapshot()
+  local function request_snapshot(label)
+    label = label or "console-live-ready"
     local now = monotonic_ms()
     if now - last_snapshot_ms < 500 then
       return
     end
     last_snapshot_ms = now
-    tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceSnapshot console-live-ready", "Enter" })
+    tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceSnapshot " .. label, "Enter" })
   end
 
-  request_snapshot()
+  request_snapshot("console-live-ready")
   ark_test.wait_for("console live completion runtime ready", 45000, function()
     local ready = latest_matching(function(candidate)
       local status = type(candidate.ark_status) == "table" and candidate.ark_status or {}
@@ -143,10 +144,38 @@ local ok, err = xpcall(function()
         and tonumber(status.library_path_count or 0) > 0
     end) ~= nil
     if not ready then
-      request_snapshot()
+      request_snapshot("console-live-ready")
     end
     return ready
   end)
+
+  local function run_ex_command(command)
+    tmux({ "send-keys", "-t", nvim_pane, "Escape" })
+    tmux({ "send-keys", "-l", "-t", nvim_pane, command })
+    tmux({ "send-keys", "-t", nvim_pane, "Enter" })
+  end
+
+  local function submit_console(text)
+    run_ex_command(":ArkTraceSubmit " .. text)
+  end
+
+  local function wait_for_prompt_state(label, prompt_state, timeout_ms)
+    local snapshot_label = label:gsub("[^%w_%-]", "_")
+    request_snapshot(snapshot_label)
+    ark_test.wait_for(label, timeout_ms, function()
+      local ready = latest_matching(function(candidate)
+        local status = type(candidate.console_status) == "table" and candidate.console_status or {}
+        return candidate.label == "ArkTraceSnapshot"
+          and candidate.args == snapshot_label
+          and status.running == true
+          and status.prompt_state == prompt_state
+      end) ~= nil
+      if not ready then
+        request_snapshot(snapshot_label)
+      end
+      return ready
+    end)
+  end
 
   local text = "corx::corx(data = mtca"
   tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceClearInput", "Enter" })
@@ -173,6 +202,45 @@ local ok, err = xpcall(function()
 
   vim.print({
     completion_show = completion_show,
+  })
+
+  -- Regression: in a browser/debug prompt, local frame symbols must be merged
+  -- into ordinary console symbol completion. A short prefix such as `da`
+  -- already has global search-path matches like `data`, so browser locals were
+  -- previously skipped and the local object `dat` never appeared.
+  submit_console("ark_browser_dat_probe <- function() { dat <- data.frame(x = 1); browser(); invisible(NULL) }")
+  wait_for_prompt_state("browser dat probe definition top-level", "top-level", 15000)
+  submit_console("ark_browser_dat_probe()")
+  wait_for_prompt_state("browser dat prompt", "browser", 15000)
+
+  local browser_text = "da"
+  tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceClearInput", "Enter" })
+  tmux({ "send-keys", "-l", "-t", nvim_pane, browser_text })
+  tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceShowManual", "Enter" })
+
+  local browser_completion_show = nil
+  ark_test.wait_for("real console Blink browser-frame dat completion", 30000, function()
+    browser_completion_show = latest_matching(function(candidate)
+      if candidate.label ~= "BlinkCmpShow" or type(candidate.line) ~= "string" then
+        return false
+      end
+      if candidate.line:sub(1, #browser_text) ~= browser_text then
+        return false
+      end
+      for _, item in ipairs(candidate.items or {}) do
+        if item.label == "dat" and item.client_name == "ark_lsp" then
+          return true
+        end
+      end
+      return false
+    end)
+    return browser_completion_show ~= nil
+  end)
+
+  submit_console("c")
+
+  vim.print({
+    browser_completion_show = browser_completion_show,
   })
 end, debug.traceback)
 

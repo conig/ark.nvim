@@ -1782,10 +1782,7 @@ list()
         let (_, _, store) =
             target_project_paths(&analysis_uri, &state).expect("expected target project paths");
 
-        assert_eq!(
-            PathBuf::from(store),
-            tempdir.path().join("_targets")
-        );
+        assert_eq!(PathBuf::from(store), tempdir.path().join("_targets"));
     }
 
     #[test]

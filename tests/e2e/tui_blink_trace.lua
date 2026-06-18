@@ -51,6 +51,7 @@ local function snapshot(label, extra)
   local items = {}
   local menu_lines = {}
   local menu_open = false
+  local console_status = {}
   local diagnostics = {}
   local ark_status = {}
 
@@ -102,6 +103,18 @@ local function snapshot(label, extra)
     end
   end
 
+  local ok_console, console = pcall(require, "ark.console")
+  if ok_console and console and type(console.status) == "function" then
+    local ok_status, status = pcall(console.status, 0)
+    if ok_status and type(status) == "table" then
+      console_status = {
+        input_start = tonumber(status.input_start),
+        prompt_state = status.prompt_state,
+        running = status.running == true,
+      }
+    end
+  end
+
   append(vim.tbl_extend("force", {
     label = label,
     mode = vim.api.nvim_get_mode().mode,
@@ -114,6 +127,7 @@ local function snapshot(label, extra)
     menu_lines = menu_lines,
     trigger = ok_trigger and trigger and trigger.context and trigger.context.trigger or nil,
     items = items,
+    console_status = console_status,
     diagnostics = diagnostics,
     floats = float_windows(),
   }, extra or {}))
@@ -183,6 +197,32 @@ vim.api.nvim_create_user_command("ArkTraceClearInput", function()
   snapshot("ArkTraceClearInput")
   vim.cmd("startinsert")
 end, {})
+
+vim.api.nvim_create_user_command("ArkTraceSubmit", function(opts)
+  local text = opts.args or ""
+  local submitted = false
+  local err = nil
+  local ok_console, console = pcall(require, "ark.console")
+  if ok_console and console and type(console.status) == "function" and type(console.submit) == "function" then
+    local status = console.status(0)
+    if type(status) == "table" then
+      local input_start = tonumber(status.input_start) or 0
+      vim.api.nvim_buf_set_lines(0, input_start, -1, false, { text })
+      vim.api.nvim_win_set_cursor(0, { input_start + 1, #text })
+      submitted, err = console.submit(0)
+    else
+      err = "not an Ark console buffer"
+    end
+  else
+    err = "ark.console submit API is unavailable"
+  end
+
+  snapshot("ArkTraceSubmit", {
+    args = text,
+    err = err,
+    submitted = submitted == true,
+  })
+end, { nargs = "+" })
 
 vim.api.nvim_create_user_command("ArkTraceSend", function(opts)
   local ok_ark, ark = pcall(require, "ark")
