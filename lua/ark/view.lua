@@ -2,6 +2,7 @@ local M = {}
 
 local states = {}
 local highlight_namespace = vim.api.nvim_create_namespace("ark-view")
+local sticky_header_namespace = vim.api.nvim_create_namespace("ark-view-sticky-header")
 local grid_column_min_width = 8
 local grid_column_override_min_width = 4
 local grid_column_override_max_width = 200
@@ -202,6 +203,89 @@ local function apply_table_highlights(buf, lines, row_width)
     end
     highlight_pipe_separators(buf, row, line)
   end
+end
+
+local function clear_sticky_header(buf)
+  if valid_buf(buf) then
+    vim.api.nvim_buf_clear_namespace(buf, sticky_header_namespace, 0, -1)
+  end
+end
+
+local function sticky_header_chunks(line, row_width)
+  line = tostring(line or "")
+  row_width = tonumber(row_width) or 0
+
+  local chunks = {}
+  local index = 1
+  if row_width > 0 then
+    local row_text = line:sub(1, math.min(#line, row_width))
+    if row_text ~= "" then
+      chunks[#chunks + 1] = { row_text, "ArkViewRowNumber" }
+    end
+    index = #row_text + 1
+  end
+
+  while index <= #line do
+    local pipe_col = line:find("|", index, true)
+    if not pipe_col then
+      local text = line:sub(index)
+      if text ~= "" then
+        chunks[#chunks + 1] = { text, "ArkViewHeader" }
+      end
+      break
+    end
+
+    if pipe_col > index then
+      chunks[#chunks + 1] = { line:sub(index, pipe_col - 1), "ArkViewHeader" }
+    end
+    chunks[#chunks + 1] = { line:sub(pipe_col, pipe_col), "ArkViewSeparator" }
+    index = pipe_col + 1
+  end
+
+  if #chunks == 0 then
+    return { { "", "ArkViewHeader" } }
+  end
+  return chunks
+end
+
+local function update_sticky_header(win, buf, header_line, row_width)
+  clear_sticky_header(buf)
+
+  if not valid_win(win) or not valid_buf(buf) or type(header_line) ~= "string" or header_line == "" then
+    return
+  end
+
+  local ok, view = pcall(vim.api.nvim_win_call, win, function()
+    return vim.fn.winsaveview()
+  end)
+  if not ok or type(view) ~= "table" then
+    return
+  end
+
+  local topline = tonumber(view.topline or 1) or 1
+  if topline <= 1 then
+    return
+  end
+
+  ensure_highlights()
+  local line_count = math.max(1, vim.api.nvim_buf_line_count(buf))
+  local row = math.max(0, math.min(topline - 1, line_count - 1))
+  vim.api.nvim_buf_set_extmark(buf, sticky_header_namespace, row, 0, {
+    virt_lines = { sticky_header_chunks(header_line, row_width) },
+    virt_lines_above = true,
+    virt_lines_leftcol = true,
+    virt_lines_overflow = "scroll",
+    priority = 4096,
+  })
+end
+
+local function update_sticky_headers(state)
+  if not state then
+    return
+  end
+
+  update_sticky_header(state.grid_win, state.grid_buf, state.grid_header_line, state.grid_header_row_width)
+  update_sticky_header(state.pinned_win, state.pinned_buf, state.pinned_header_line, state.pinned_header_row_width)
 end
 
 local function apply_grid_highlights(state, lines, row_width)
@@ -798,6 +882,7 @@ local function close_pinned_window(state)
   if not state then
     return
   end
+  clear_sticky_header(state.pinned_buf)
   if valid_win(state.pinned_win) then
     pcall(vim.api.nvim_win_close, state.pinned_win, true)
   end
@@ -889,6 +974,8 @@ local function render_pinned_column(state, row_width)
   local column_index = tonumber(state.pinned_column)
   if not column_index then
     close_pinned_window(state)
+    state.pinned_header_line = nil
+    state.pinned_header_row_width = nil
     if valid_buf(state.pinned_buf) then
       set_buffer_lines(state.pinned_buf, {})
     end
@@ -905,6 +992,8 @@ local function render_pinned_column(state, row_width)
   local win = ensure_pinned_window(state)
   local width = column_width_for_rows(state, column_index, row_width)
   local lines = { table.concat({ pad_text("#", row_width), pad_text(item.name or ("V" .. tostring(column_index)), width) }, " | ") }
+  state.pinned_header_line = lines[1]
+  state.pinned_header_row_width = row_width
   local row_by_line = {}
   local primary_line_by_row = {}
   for row_index, row in ipairs(state.rows or {}) do
@@ -938,6 +1027,7 @@ local function render_pinned_column(state, row_width)
       pcall(vim.api.nvim_win_set_cursor, win, { row, 0 })
     end
   end
+  update_sticky_headers(state)
 end
 
 local function move_grid_cursor_to_selected_column(state)
@@ -1017,6 +1107,8 @@ local function render_grid(state)
   end
 
   local lines = { table.concat(header_parts, " | ") }
+  state.grid_header_line = lines[1]
+  state.grid_header_row_width = row_width
   local row_by_line = {}
   local primary_line_by_row = {}
   for row_index, row in ipairs(rows) do
@@ -1042,6 +1134,7 @@ local function render_grid(state)
   if valid_win(state.grid_win) then
     move_grid_cursor_to_selected_column(state)
   end
+  update_sticky_headers(state)
 end
 
 local function sync_selected_column(state)
@@ -1085,6 +1178,8 @@ local function sync_selected_column(state)
     row = math.min(row, math.max(1, vim.api.nvim_buf_line_count(state.pinned_buf)))
     pcall(vim.api.nvim_win_set_cursor, state.pinned_win, { row, 0 })
   end
+
+  update_sticky_headers(state)
 end
 
 local function move_selected_column(state, delta)
@@ -1265,6 +1360,7 @@ local function open_schema_picker(state)
     focus_selected_column_in_grid(state)
     render_sidebar(state)
     center_current_view()
+    update_sticky_headers(state)
   end
 
   local ok, snacks = pcall(require, "snacks")
@@ -1621,6 +1717,7 @@ local function setup_keymaps(state)
 
   map("zz", function()
     center_current_view()
+    update_sticky_headers(state)
   end)
 
   local function describe_column()
@@ -1765,6 +1862,10 @@ function M.open(opts)
     grid_primary_line_by_row = {},
     pinned_row_by_line = {},
     pinned_primary_line_by_row = {},
+    grid_header_line = nil,
+    grid_header_row_width = nil,
+    pinned_header_line = nil,
+    pinned_header_row_width = nil,
     page_offset = tonumber(page.offset or 0) or 0,
     page_limit = tonumber(page.limit or opts.page_limit or 200) or 200,
     selected_column = opened.schema and opened.schema[1] and tonumber(opened.schema[1].index) or 1,
@@ -1809,6 +1910,15 @@ function M.open(opts)
     buffer = sidebar_buf,
     callback = function()
       sync_selected_column(state)
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "WinScrolled", "WinResized" }, {
+    group = group,
+    callback = function(args)
+      local win = tonumber(args.match)
+      if args.event == "WinResized" or win == state.grid_win or win == state.pinned_win then
+        update_sticky_headers(state)
+      end
     end,
   })
   vim.api.nvim_create_autocmd("BufWipeout", {

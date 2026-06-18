@@ -382,6 +382,8 @@ The explorer is backed by the managed R session. It can page through tabular
 objects, sort and filter columns, inspect cell values, show column profiles,
 export the current view, and display the R code used for the active view. It is
 for quick local inspection, not a replacement for a full IDE data pane.
+When the grid is scrolled vertically, ArkView keeps the column header visible
+above the first visible row.
 
 Inside ArkView, use `<` and `>` to narrow or widen the selected column, `=` to
 enter an exact width, and `w` to wrap or unwrap the selected column at its

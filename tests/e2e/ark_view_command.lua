@@ -227,6 +227,32 @@ local function has_highlight(buf, group, row, col)
   return false
 end
 
+local function sticky_header(buf)
+  local namespace = vim.api.nvim_get_namespaces()["ark-view-sticky-header"]
+  if not namespace then
+    return nil
+  end
+
+  local extmarks = vim.api.nvim_buf_get_extmarks(buf, namespace, 0, -1, { details = true })
+  if #extmarks == 0 then
+    return nil
+  end
+
+  local mark = extmarks[1]
+  local details = mark[4] or {}
+  local chunks = ((details.virt_lines or {})[1]) or {}
+  local text = ""
+  for _, chunk in ipairs(chunks) do
+    text = text .. tostring(chunk[1] or "")
+  end
+
+  return {
+    row = mark[2],
+    text = text,
+    details = details,
+  }
+end
+
 local function find_line(lines, text)
   for index, line in ipairs(lines) do
     if line:find(text, 1, true) then
@@ -1070,6 +1096,30 @@ local ok, err = pcall(function()
         .. vim.inspect(selected_view),
       0
     )
+  end
+
+  local sticky = sticky_header(grid_buf)
+  if not sticky then
+    error("expected ArkView to show a sticky grid header after scrolling", 0)
+  end
+  if sticky.row ~= selected_view.topline - 1 then
+    error(
+      "expected sticky grid header above topline "
+        .. tostring(selected_view.topline)
+        .. ", got "
+        .. vim.inspect(sticky),
+      0
+    )
+  end
+  if not sticky.text:find("wide_01", 1, true) or not sticky.text:find("wide_16", 1, true) then
+    error("expected sticky grid header to contain wide table columns, got " .. vim.inspect(sticky), 0)
+  end
+  if
+    sticky.details.virt_lines_above ~= true
+    or sticky.details.virt_lines_leftcol ~= true
+    or sticky.details.virt_lines_overflow ~= "scroll"
+  then
+    error("expected sticky grid header to reserve a horizontally scrolling virtual line, got " .. vim.inspect(sticky), 0)
   end
 
   vim.api.nvim_set_current_win(grid_win)

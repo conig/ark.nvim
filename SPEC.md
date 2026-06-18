@@ -203,6 +203,8 @@ part of the default supported path.
 - ArkView table navigation keeps the selected data column synchronized between
   the grid and columns pane. Local `H` and `L` mappings move to the previous or
   next data column and clamp at table edges.
+- ArkView keeps the grid column header visible as a sticky header when vertical
+  scrolling moves the canonical header line out of view.
 
 ## What Is Essentially Complete
 
