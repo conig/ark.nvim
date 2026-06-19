@@ -227,32 +227,6 @@ local function has_highlight(buf, group, row, col)
   return false
 end
 
-local function sticky_header(buf)
-  local namespace = vim.api.nvim_get_namespaces()["ark-view-sticky-header"]
-  if not namespace then
-    return nil
-  end
-
-  local extmarks = vim.api.nvim_buf_get_extmarks(buf, namespace, 0, -1, { details = true })
-  if #extmarks == 0 then
-    return nil
-  end
-
-  local mark = extmarks[1]
-  local details = mark[4] or {}
-  local chunks = ((details.virt_lines or {})[1]) or {}
-  local text = ""
-  for _, chunk in ipairs(chunks) do
-    text = text .. tostring(chunk[1] or "")
-  end
-
-  return {
-    row = mark[2],
-    text = text,
-    details = details,
-  }
-end
-
 local function find_line(lines, text)
   for index, line in ipairs(lines) do
     if line:find(text, 1, true) then
@@ -260,6 +234,29 @@ local function find_line(lines, text)
     end
   end
   error("expected line containing " .. vim.inspect(text) .. ", got " .. vim.inspect(lines), 0)
+end
+
+local function sticky_header_float(anchor_win)
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local config = vim.api.nvim_win_get_config(win)
+    if config.relative == "win" and config.win == anchor_win then
+      local buf = vim.api.nvim_win_get_buf(win)
+      local lines = vim.api.nvim_buf_get_lines(buf, 0, 1, false)
+      local text = lines[1] or ""
+      if text:find("#", 1, true) and text:find("|", 1, true) then
+        return {
+          win = win,
+          buf = buf,
+          text = text,
+          config = config,
+          view = vim.api.nvim_win_call(win, function()
+            return vim.fn.winsaveview()
+          end),
+        }
+      end
+    end
+  end
+  return nil
 end
 
 local ok, err = pcall(function()
@@ -1098,28 +1095,24 @@ local ok, err = pcall(function()
     )
   end
 
-  local sticky = sticky_header(grid_buf)
+  local sticky = sticky_header_float(grid_win)
   if not sticky then
-    error("expected ArkView to show a sticky grid header after scrolling", 0)
-  end
-  if sticky.row ~= selected_view.topline - 1 then
-    error(
-      "expected sticky grid header above topline "
-        .. tostring(selected_view.topline)
-        .. ", got "
-        .. vim.inspect(sticky),
-      0
-    )
+    error("expected ArkView to open a sticky grid header float after scrolling", 0)
   end
   if not sticky.text:find("wide_01", 1, true) or not sticky.text:find("wide_16", 1, true) then
     error("expected sticky grid header to contain wide table columns, got " .. vim.inspect(sticky), 0)
   end
-  if
-    sticky.details.virt_lines_above ~= true
-    or sticky.details.virt_lines_leftcol ~= true
-    or sticky.details.virt_lines_overflow ~= "scroll"
-  then
-    error("expected sticky grid header to reserve a horizontally scrolling virtual line, got " .. vim.inspect(sticky), 0)
+  if sticky.config.focusable ~= false or sticky.config.height ~= 1 then
+    error("expected sticky grid header to be a one-line non-focusable float, got " .. vim.inspect(sticky), 0)
+  end
+  if sticky.view.leftcol ~= selected_view.leftcol then
+    error(
+      "expected sticky grid header to mirror grid horizontal scroll leftcol="
+        .. tostring(selected_view.leftcol)
+        .. ", got "
+        .. vim.inspect(sticky),
+      0
+    )
   end
 
   vim.api.nvim_set_current_win(grid_win)
