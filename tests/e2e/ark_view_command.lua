@@ -1105,6 +1105,9 @@ local ok, err = pcall(function()
   if sticky.config.focusable ~= false or sticky.config.height ~= 1 then
     error("expected sticky grid header to be a one-line non-focusable float, got " .. vim.inspect(sticky), 0)
   end
+  if sticky.config.row ~= 0 then
+    error("expected sticky grid header to sit at the top of the grid, got " .. vim.inspect(sticky), 0)
+  end
   if sticky.view.leftcol ~= selected_view.leftcol then
     error(
       "expected sticky grid header to mirror grid horizontal scroll leftcol="

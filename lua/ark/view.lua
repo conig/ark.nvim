@@ -221,20 +221,6 @@ local function close_header_window(state, prefix)
   state[buf_key] = nil
 end
 
-local function header_float_row(win)
-  if not valid_win(win) then
-    return 0
-  end
-
-  local ok, winbar = pcall(function()
-    return vim.wo[win].winbar
-  end)
-  if ok and type(winbar) == "string" and winbar ~= "" then
-    return 1
-  end
-  return 0
-end
-
 local function sync_header_window_view(header_win, anchor_win)
   if not valid_win(header_win) or not valid_win(anchor_win) then
     return
@@ -281,7 +267,7 @@ local function update_header_window(state, prefix, anchor_win, header_line, row_
   apply_table_highlights(header_buf, { header_line }, row_width)
 
   local width = math.max(1, vim.api.nvim_win_get_width(anchor_win))
-  local row = header_float_row(anchor_win)
+  local row = 0
   local header_win = state[win_key]
   if valid_win(header_win) then
     pcall(vim.api.nvim_win_set_config, header_win, {

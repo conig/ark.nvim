@@ -204,7 +204,22 @@ local ok, err = xpcall(function()
   end, 300, false)
 
   local captured = ark_test.tmux({ "capture-pane", "-t", session_name, "-p" })
-  if not captured:find("#%s+|%s+mpg") then
+  local captured_lines = vim.split(captured, "\n", { plain = true })
+  local winbar_line = nil
+  local header_line = nil
+  for index, line in ipairs(captured_lines) do
+    if line:find("mtcars | Rows", 1, true) then
+      winbar_line = index
+    end
+    if line:find("^#%s+|%s+mpg") then
+      header_line = index
+      break
+    end
+  end
+
+  -- Regression: the sticky header must occupy the top visible grid row. A
+  -- floating header one row too low leaves a data row above the column names.
+  if not winbar_line or not header_line or header_line ~= winbar_line + 1 then
     ark_test.fail("expected visible sticky ArkView column header after scrolling, captured pane:\n" .. captured)
   end
 end, debug.traceback)
