@@ -157,6 +157,7 @@ vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, { "mtcars" })
 
 local view = ark.view("mtcars", source_buf)
 vim.api.nvim_set_current_win(view.grid_win)
+vim.wo[view.grid_win].signcolumn = "yes:2"
 vim.api.nvim_win_set_cursor(view.grid_win, { 8, 0 })
 vim.cmd("normal! zt")
 vim.cmd("redraw!")
@@ -207,19 +208,30 @@ local ok, err = xpcall(function()
   local captured_lines = vim.split(captured, "\n", { plain = true })
   local winbar_line = nil
   local header_line = nil
+  local header_col = nil
+  local data_col = nil
   for index, line in ipairs(captured_lines) do
     if line:find("mtcars | Rows", 1, true) then
       winbar_line = index
     end
-    if line:find("^#%s+|%s+mpg") then
+    if line:find("^%s*#%s+|%s+mpg") then
       header_line = index
+      header_col = line:find("%S")
+      local data_line = captured_lines[index + 1] or ""
+      data_col = data_line:find("%S")
       break
     end
   end
 
-  -- Regression: the sticky header must occupy the top visible grid row. A
-  -- floating header one row too low leaves a data row above the column names.
-  if not winbar_line or not header_line or header_line ~= winbar_line + 1 then
+  -- Regression: the sticky header must occupy the top visible grid row and
+  -- align with grid text when the user's config reserves sign/status columns.
+  if
+    not winbar_line
+    or not header_line
+    or header_line ~= winbar_line + 1
+    or not header_col
+    or header_col ~= data_col
+  then
     ark_test.fail("expected visible sticky ArkView column header after scrolling, captured pane:\n" .. captured)
   end
 end, debug.traceback)

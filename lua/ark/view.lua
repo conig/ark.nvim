@@ -221,6 +221,19 @@ local function close_header_window(state, prefix)
   state[buf_key] = nil
 end
 
+local function window_text_offset(win)
+  if not valid_win(win) then
+    return 0
+  end
+
+  local ok, info = pcall(vim.fn.getwininfo, win)
+  if not ok or type(info) ~= "table" or type(info[1]) ~= "table" then
+    return 0
+  end
+
+  return math.max(0, tonumber(info[1].textoff) or 0)
+end
+
 local function sync_header_window_view(header_win, anchor_win)
   if not valid_win(header_win) or not valid_win(anchor_win) then
     return
@@ -266,15 +279,17 @@ local function update_header_window(state, prefix, anchor_win, header_line, row_
   set_buffer_lines(header_buf, { header_line })
   apply_table_highlights(header_buf, { header_line }, row_width)
 
-  local width = math.max(1, vim.api.nvim_win_get_width(anchor_win))
+  local text_offset = window_text_offset(anchor_win)
+  local width = math.max(1, vim.api.nvim_win_get_width(anchor_win) - text_offset)
   local row = 0
+  local col = text_offset
   local header_win = state[win_key]
   if valid_win(header_win) then
     pcall(vim.api.nvim_win_set_config, header_win, {
       relative = "win",
       win = anchor_win,
       row = row,
-      col = 0,
+      col = col,
       width = width,
       height = 1,
       zindex = 40,
@@ -284,7 +299,7 @@ local function update_header_window(state, prefix, anchor_win, header_line, row_
       relative = "win",
       win = anchor_win,
       row = row,
-      col = 0,
+      col = col,
       width = width,
       height = 1,
       style = "minimal",
