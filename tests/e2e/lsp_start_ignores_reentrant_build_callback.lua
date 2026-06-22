@@ -90,19 +90,18 @@ vim.lsp.start = function(config, opts)
       return false
     end,
     notify = function() end,
-    request_sync = function(_, method, payload, timeout_ms, bufnr)
+    request = function(_, method, payload, callback, bufnr)
       request_depth = request_depth + 1
       max_request_depth = math.max(max_request_depth, request_depth)
       bootstrap_requests[#bootstrap_requests + 1] = {
         method = method,
         payload = vim.deepcopy(payload),
-        timeout_ms = timeout_ms,
         bufnr = bufnr,
       }
 
-      -- Regression: Neovim's request_sync() waits with scheduled callbacks
-      -- enabled. A detached build completion that fires during this wait must
-      -- not recursively re-enter start_client() and bootstrap the same client.
+      -- Regression: a detached build completion that fires while startup
+      -- bootstrap is in flight must not recursively re-enter start_client()
+      -- and bootstrap the same client again.
       if not build_callback_fired and type(captured_build_callback) == "function" then
         build_callback_fired = true
         captured_build_callback({ ok = true })
@@ -111,12 +110,13 @@ vim.lsp.start = function(config, opts)
         end, 10, false)
       end
 
-      request_depth = request_depth - 1
-      return {
-        result = {
+      vim.defer_fn(function()
+        request_depth = request_depth - 1
+        callback(nil, {
           hydrated = true,
-        },
-      }, nil
+        })
+      end, 0)
+      return true, #bootstrap_requests
     end,
   }
   return id

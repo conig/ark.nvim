@@ -8,6 +8,7 @@ local status_calls = 0
 local bridge_env_calls = 0
 local validate_bridge_calls = 0
 local bootstrap_requests = {}
+local request_sync_calls = 0
 local notifications = {}
 local clients = {}
 local startup_ready = nil
@@ -35,14 +36,14 @@ package.loaded["ark.dev"] = {
 package.loaded["ark.tmux"] = {
   status = function()
     status_calls = status_calls + 1
-    error("sync startup should not call tmux.status()", 0)
+    error("startup should not call tmux.status()", 0)
   end,
   session_id = function()
     return "tmux-session-42"
   end,
   bridge_env = function()
     bridge_env_calls = bridge_env_calls + 1
-    error("sync startup should use startup snapshot env, not tmux.bridge_env()", 0)
+    error("startup should use startup snapshot env, not tmux.bridge_env()", 0)
   end,
   startup_snapshot = function(_, opts)
     if opts and opts.validate_bridge == true then
@@ -106,18 +107,22 @@ vim.lsp.start = function(config, opts)
         payload = vim.deepcopy(payload),
       }
     end,
-    request_sync = function(_, method, payload, timeout_ms, bufnr)
+    request_sync = function()
+      request_sync_calls = request_sync_calls + 1
+      error("startup bootstrap should not use request_sync()", 0)
+    end,
+    request = function(_, method, payload, callback, bufnr)
       bootstrap_requests[#bootstrap_requests + 1] = {
         method = method,
         payload = vim.deepcopy(payload),
-        timeout_ms = timeout_ms,
         bufnr = bufnr,
       }
-      return {
-        result = {
+      vim.defer_fn(function()
+        callback(nil, {
           hydrated = true,
-        },
-      }, nil
+        })
+      end, 0)
+      return true, #bootstrap_requests
     end,
   }
   return id
@@ -177,14 +182,24 @@ local ok, err = pcall(function()
     error("expected lsp.start to return client id 1, got " .. vim.inspect(client_id), 0)
   end
 
+  local bootstrapped = vim.wait(400, function()
+    return startup_ready ~= nil or request_sync_calls > 0
+  end, 20, false)
+  if not bootstrapped then
+    error("expected async startup bootstrap to complete", 0)
+  end
+  if request_sync_calls ~= 0 then
+    error("expected startup bootstrap to avoid request_sync(), got " .. tostring(request_sync_calls), 0)
+  end
+
   if status_calls ~= 0 then
-    error("expected sync startup to avoid tmux.status(), got " .. tostring(status_calls), 0)
+    error("expected startup to avoid tmux.status(), got " .. tostring(status_calls), 0)
   end
   if bridge_env_calls ~= 0 then
-    error("expected sync startup to avoid tmux.bridge_env(), got " .. tostring(bridge_env_calls), 0)
+    error("expected startup to avoid tmux.bridge_env(), got " .. tostring(bridge_env_calls), 0)
   end
   if validate_bridge_calls ~= 0 then
-    error("expected sync startup to trust the status file instead of pre-validating the bridge, got " .. tostring(validate_bridge_calls), 0)
+    error("expected startup to trust the status file instead of pre-validating the bridge, got " .. tostring(validate_bridge_calls), 0)
   end
   if #bootstrap_requests ~= 1 then
     error("expected one bootstrap request, got " .. vim.inspect(bootstrap_requests), 0)
@@ -207,11 +222,11 @@ local ok, err = pcall(function()
     error("unexpected bootstrap request payload: " .. vim.inspect(request), 0)
   end
 
-  local settled = vim.wait(400, function()
+  local settled = vim.wait(100, function()
     return #notifications > 0
   end, 20, false)
   if settled then
-    error("expected sync startup to avoid initial session notifications, got " .. vim.inspect(notifications), 0)
+    error("expected startup to avoid initial session notifications, got " .. vim.inspect(notifications), 0)
   end
 
   if type(startup_ready) ~= "table" or startup_ready.bufnr ~= bufnr then

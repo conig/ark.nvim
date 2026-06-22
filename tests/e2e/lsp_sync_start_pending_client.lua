@@ -119,10 +119,25 @@ vim.lsp.start = function(config, opts)
         },
       }, nil
     end,
+    request = function(_, method, payload, callback, target_bufnr)
+      if method ~= "ark/internal/bootstrapSession" then
+        callback({
+          message = "unexpected request: " .. tostring(method),
+        }, nil)
+        return true, 1
+      end
+
+      vim.defer_fn(function()
+        callback(nil, {
+          hydrated = true,
+        })
+      end, 0)
+      return true, 1
+    end,
   }
 
   -- Simulate a real LSP process that starts successfully but initializes
-  -- after ark.nvim's synchronous bootstrap wait window expires.
+  -- after ark.nvim's initial startup call returns.
   vim.defer_fn(function()
     if clients[id] then
       clients[id].initialized = true

@@ -38,7 +38,6 @@ local client_status_attempt_ms = {}
 local managed_client_ids = {}
 local pending_startup_bootstraps = {}
 local startup_bootstrap_requests = {}
-local bootstrap_client_session
 local bootstrap_client_session_async
 local start_pending_bootstrap_async
 local session_watch_finished
@@ -217,25 +216,6 @@ local function clients_for_buffers(opts, bufnrs, match_opts)
   end
 
   return clients
-end
-
-local function wait_for_live_client(client_id, timeout_ms)
-  if not client_id then
-    return nil
-  end
-
-  if timeout_ms and timeout_ms > 0 then
-    vim.wait(timeout_ms, function()
-      return live_client(vim.lsp.get_client_by_id(client_id))
-    end, 20, false)
-  end
-
-  local client = vim.lsp.get_client_by_id(client_id)
-  if live_client(client) then
-    return client
-  end
-
-  return nil
 end
 
 local function project_root_for_path(path, markers)
@@ -761,14 +741,6 @@ local function suppress_transient_status_downgrade(previous, current)
     and same_session_identity(previous, current)
 end
 
-local function keep_startup_bootstrap_pending(payload, hydrated)
-  if hydrated == true or not payload_present(payload) then
-    return false
-  end
-
-  return payload.status ~= "error"
-end
-
 local function startup_bootstrap_pending(bufnr)
   return type(bufnr) == "number" and pending_startup_bootstraps[bufnr] == true
 end
@@ -1091,34 +1063,6 @@ local function bootstrap_timeout_ms(opts)
   return math.max(timeout_ms, 1000)
 end
 
-bootstrap_client_session = function(client, opts, bufnr, payload)
-  if not live_client(client) then
-    return false, "ark_lsp client unavailable"
-  end
-  if not payload_present(payload) then
-    return false, "session payload unavailable"
-  end
-
-  local result, err = request_result(
-    client,
-    SESSION_BOOTSTRAP_METHOD,
-    payload,
-    bootstrap_timeout_ms(opts),
-    bufnr
-  )
-  if err then
-    return false, err
-  end
-  if type(result) ~= "table" then
-    return false, "invalid bootstrap response"
-  end
-  if result.hydrated == true then
-    clear_client_status(client)
-  end
-
-  return result.hydrated == true, nil
-end
-
 bootstrap_client_session_async = function(client, opts, bufnr, payload, callback)
   if not live_client(client) then
     callback(false, "ark_lsp client unavailable")
@@ -1130,9 +1074,8 @@ bootstrap_client_session_async = function(client, opts, bufnr, payload, callback
   end
 
   if type(client.request) ~= "function" then
-    local hydrated, err = bootstrap_client_session(client, opts, bufnr, payload)
-    callback(hydrated, err)
-    return true
+    callback(false, "ark_lsp client does not support async requests")
+    return false
   end
 
   return request_result_async(
@@ -1171,7 +1114,7 @@ start_pending_bootstrap_async = function(client, opts, bufnr, payload, source, n
   end
 
   startup_bootstrap_requests[bufnr] = true
-  bootstrap_client_session_async(client, opts, bufnr, payload, function(hydrated, bootstrap_err)
+  local started = bootstrap_client_session_async(client, opts, bufnr, payload, function(hydrated, bootstrap_err)
     startup_bootstrap_requests[bufnr] = nil
 
     if not vim.api.nvim_buf_is_valid(bufnr) or not live_client(client) then
@@ -1205,6 +1148,11 @@ start_pending_bootstrap_async = function(client, opts, bufnr, payload, source, n
       callback(hydrated, nil)
     end
   end)
+
+  if not started then
+    startup_bootstrap_requests[bufnr] = nil
+    return false
+  end
 
   return true
 end
@@ -1393,6 +1341,51 @@ local function ensure_session_watch(opts, bufnr, payload, watch_opts)
   return start_session_watch_poll(opts, status_path)
 end
 
+local function start_startup_bootstrap(opts, bufnr, client, payload, source, notify_on_error)
+  if not payload_present(payload) then
+    set_startup_bootstrap_pending(bufnr, false)
+    return false
+  end
+
+  set_startup_bootstrap_pending(bufnr, true)
+  ensure_session_watch(opts, bufnr, payload, {
+    notify_immediately = false,
+  })
+
+  if payload.status == "error" then
+    set_startup_bootstrap_pending(bufnr, false)
+    return false
+  end
+
+  if payload.status ~= "ready" or payload.replReady ~= true then
+    if client and type(client.id) == "number" then
+      schedule_session_syncs(opts, bufnr, client.id)
+    end
+    return false
+  end
+
+  if not live_client(client) then
+    if client and type(client.id) == "number" then
+      schedule_session_syncs(opts, bufnr, client.id)
+    end
+    return false
+  end
+
+  return start_pending_bootstrap_async(
+    client,
+    opts,
+    bufnr,
+    payload,
+    source or STARTUP_READY_SOURCES.immediate,
+    notify_on_error == true,
+    function(hydrated)
+      if not hydrated and live_client(client) then
+        schedule_session_syncs(opts, bufnr, client.id)
+      end
+    end
+  )
+end
+
 function M.config(opts, bufnr, _config_opts)
   bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   local cmd, cmd_err = dev.ensure_current_detached_lsp_cmd(opts.lsp.cmd, _config_opts)
@@ -1484,26 +1477,7 @@ local function start_client_inner(opts, bufnr, start_opts)
         return client.id
       end
 
-      local hydrated = false
-      local bootstrap_err = nil
-      if payload_present(startup_payload) then
-        hydrated, bootstrap_err = bootstrap_client_session(client, opts, bufnr, startup_payload)
-        if hydrated then
-          cache_client_session(client, startup_payload)
-          notify_startup_ready(bufnr, {
-            source = STARTUP_READY_SOURCES.immediate,
-          })
-        end
-      end
-      if bootstrap_err then
-        vim.notify("ark.nvim session bootstrap failed: " .. bootstrap_err, vim.log.levels.WARN, {
-          title = "ark.nvim",
-        })
-      end
-      ensure_session_watch(opts, bufnr, startup_payload, {
-        notify_immediately = hydrated ~= true,
-      })
-      set_startup_bootstrap_pending(bufnr, keep_startup_bootstrap_pending(startup_payload, hydrated))
+      start_startup_bootstrap(opts, bufnr, client, startup_payload, STARTUP_READY_SOURCES.immediate, true)
       return client.id
     end
   end
@@ -1536,29 +1510,11 @@ local function start_client_inner(opts, bufnr, start_opts)
     return client_id
   end
 
-  local client = wait_for_live_client(client_id, opts.lsp.restart_wait_ms)
-  local hydrated = false
-  local bootstrap_err = nil
-  if payload_present(startup_payload) and live_client(client) then
-    hydrated, bootstrap_err = bootstrap_client_session(client, opts, bufnr, startup_payload)
-    if hydrated then
-      cache_client_session(client, startup_payload)
-      notify_startup_ready(bufnr, {
-        source = STARTUP_READY_SOURCES.immediate,
-      })
-    end
-  end
-  if bootstrap_err then
-    vim.notify("ark.nvim session bootstrap failed: " .. bootstrap_err, vim.log.levels.WARN, {
-      title = "ark.nvim",
-    })
-  end
-  ensure_session_watch(opts, bufnr, startup_payload, {
-    notify_immediately = hydrated ~= true,
-  })
-  set_startup_bootstrap_pending(bufnr, keep_startup_bootstrap_pending(startup_payload, hydrated))
-  if hydrated ~= true and not live_client(client) then
-    schedule_session_syncs(opts, bufnr, client_id)
+  local client = vim.lsp.get_client_by_id(client_id)
+  if payload_present(startup_payload) then
+    start_startup_bootstrap(opts, bufnr, client, startup_payload, STARTUP_READY_SOURCES.immediate, true)
+  else
+    set_startup_bootstrap_pending(bufnr, false)
   end
   return client_id
 end
