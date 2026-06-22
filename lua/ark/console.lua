@@ -2287,7 +2287,7 @@ local function setup_keymaps(bufnr)
   vim.keymap.set({ "n", "i" }, "<C-c>", function()
     M.interrupt(bufnr)
   end, { buffer = bufnr, desc = "Interrupt Ark console R process" })
-  vim.keymap.set({ "n", "i" }, "<C-d>", function()
+  vim.keymap.set("i", "<C-d>", function()
     M.eof(bufnr)
   end, { buffer = bufnr, desc = "Send EOF to Ark console R process" })
 end
