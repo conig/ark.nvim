@@ -26,6 +26,14 @@
     return(tools::parse_Rd(help_page$path))
   }
 
+  rd_obj <- tryCatch(
+    getFromNamespace(".getHelpFile", "utils")(help_page),
+    error = function(e) NULL
+  )
+  if (!is.null(rd_obj)) {
+    return(rd_obj)
+  }
+
   help_path <- as.character(help_page)
   rd_name <- basename(help_path)
   rd_package <- basename(dirname(dirname(help_path)))
@@ -54,20 +62,21 @@
     return(text)
   }
 
-  chars <- strsplit(enc2utf8(text), "")[[1L]]
-  out <- character()
-
-  for (ch in chars) {
-    if (identical(ch, "\b")) {
-      if (length(out) > 0L) {
-        out <- out[-length(out)]
-      }
-    } else {
-      out[[length(out) + 1L]] <- ch
-    }
+  text <- enc2utf8(text)
+  if (!grepl("\b", text, fixed = TRUE)) {
+    return(text)
   }
 
-  paste(out, collapse = "")
+  repeat {
+    stripped <- gsub(".\b", "", text, perl = TRUE)
+    if (identical(stripped, text)) {
+      return(gsub("\b", "", stripped, fixed = TRUE))
+    }
+    if (!grepl("\b", stripped, fixed = TRUE)) {
+      return(stripped)
+    }
+    text <- stripped
+  }
 }
 
 .ark_flatten_rd_text <- function(node) {
