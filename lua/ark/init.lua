@@ -19,13 +19,14 @@ local did_setup = false
 local options = nil
 local startup_tokens = {}
 local startup_traces = {}
-local runtime_ready_waiters = {}
-local runtime_ready_waiter_seq = 0
+local readiness_waiters = {}
+local readiness_waiter_seq = 0
 local pending_session_sync = 0
 local help_float_ns = vim.api.nvim_create_namespace("ArkHelpFloat")
 local help_filetype = "arkhelp"
 local is_ark_buffer
 local runtime_ready
+local repl_ready
 local ensure_bridge_runtime
 local start_or_recover_pane_after_runtime_ready
 
@@ -1111,20 +1112,50 @@ runtime_ready = function(bufnr)
     and detached_status.lastSessionUpdateStatus == "ready"
 end
 
-local function remove_runtime_ready_waiter(waiter)
-  local bucket = runtime_ready_waiters[waiter.bufnr]
+repl_ready = function()
+  local status = session_backend.status(options)
+  return type(status) == "table" and status.repl_ready == true
+end
+
+local function readiness_bucket(kind, bufnr, create)
+  local group = readiness_waiters[kind]
+  if type(group) ~= "table" then
+    if not create then
+      return nil
+    end
+    group = {}
+    readiness_waiters[kind] = group
+  end
+
+  local bucket = group[bufnr]
+  if type(bucket) ~= "table" then
+    if not create then
+      return nil
+    end
+    bucket = {}
+    group[bufnr] = bucket
+  end
+
+  return bucket, group
+end
+
+local function remove_ready_waiter(waiter)
+  local bucket, group = readiness_bucket(waiter.kind, waiter.bufnr, false)
   if type(bucket) ~= "table" or bucket[waiter.id] ~= waiter then
     return false
   end
 
   bucket[waiter.id] = nil
   if next(bucket) == nil then
-    runtime_ready_waiters[waiter.bufnr] = nil
+    group[waiter.bufnr] = nil
+  end
+  if next(group) == nil then
+    readiness_waiters[waiter.kind] = nil
   end
   return true
 end
 
-local function run_runtime_ready_callback(waiter, err)
+local function run_ready_callback(waiter, err)
   vim.schedule(function()
     if type(waiter.callback) == "function" then
       waiter.callback(err)
@@ -1132,53 +1163,87 @@ local function run_runtime_ready_callback(waiter, err)
   end)
 end
 
-local function drain_runtime_ready_waiters(bufnr)
-  local bucket = runtime_ready_waiters[bufnr]
-  if type(bucket) ~= "table" or not runtime_ready(bufnr) then
+local function drain_ready_waiters(kind, bufnr)
+  local bucket, group = readiness_bucket(kind, bufnr, false)
+  if type(bucket) ~= "table" then
     return
   end
 
-  runtime_ready_waiters[bufnr] = nil
-  for _, waiter in pairs(bucket) do
-    run_runtime_ready_callback(waiter, nil)
+  local drained = {}
+  for id, waiter in pairs(bucket) do
+    if type(waiter.ready) == "function" and waiter.ready() then
+      bucket[id] = nil
+      drained[#drained + 1] = waiter
+    end
+  end
+
+  if next(bucket) == nil then
+    group[bufnr] = nil
+  end
+  if next(group) == nil then
+    readiness_waiters[kind] = nil
+  end
+
+  for _, waiter in ipairs(drained) do
+    run_ready_callback(waiter, nil)
   end
 end
 
-local function wait_until_runtime_ready(bufnr, label, callback)
-  if runtime_ready(bufnr) then
+local function drain_all_ready_waiters(bufnr)
+  local kinds = {}
+  for kind, _ in pairs(readiness_waiters) do
+    kinds[#kinds + 1] = kind
+  end
+
+  for _, kind in ipairs(kinds) do
+    drain_ready_waiters(kind, bufnr)
+  end
+end
+
+local function wait_until_ready(kind, bufnr, label, ready, timeout_message, callback)
+  if ready() then
     local result, err = callback(nil)
     return result, err, "callback"
   end
 
-  runtime_ready_waiter_seq = runtime_ready_waiter_seq + 1
+  readiness_waiter_seq = readiness_waiter_seq + 1
   local waiter = {
-    id = runtime_ready_waiter_seq,
+    id = readiness_waiter_seq,
+    kind = kind,
     bufnr = bufnr,
     label = label,
+    ready = ready,
+    timeout_message = timeout_message,
     callback = callback,
   }
 
-  local bucket = runtime_ready_waiters[bufnr]
-  if type(bucket) ~= "table" then
-    bucket = {}
-    runtime_ready_waiters[bufnr] = bucket
-  end
+  local bucket = readiness_bucket(kind, bufnr, true)
   bucket[waiter.id] = waiter
 
   vim.defer_fn(function()
-    if not remove_runtime_ready_waiter(waiter) then
+    if not remove_ready_waiter(waiter) then
       return
     end
 
-    if runtime_ready(bufnr) then
-      run_runtime_ready_callback(waiter, nil)
+    if ready() then
+      run_ready_callback(waiter, nil)
       return
     end
 
-    run_runtime_ready_callback(waiter, label .. " bridge is not ready")
+    run_ready_callback(waiter, timeout_message)
   end, runtime_wait_timeout_ms())
 
   return true, nil, "queued"
+end
+
+local function wait_until_runtime_ready(bufnr, label, callback)
+  return wait_until_ready("runtime", bufnr, label, function()
+    return runtime_ready(bufnr)
+  end, label .. " bridge is not ready", callback)
+end
+
+local function wait_until_repl_ready(bufnr, label, callback)
+  return wait_until_ready("repl", bufnr, label, repl_ready, "managed R repl is not ready for help", callback)
 end
 
 local function ensure_runtime_ready(bufnr, label)
@@ -1215,10 +1280,11 @@ local function ensure_runtime_ready(bufnr, label)
   return true
 end
 
-local function with_runtime_ready(bufnr, label, callback, runtime_opts)
+local function with_managed_session_ready(bufnr, label, callback, runtime_opts)
   runtime_opts = runtime_opts or {}
   bufnr = resolve_bufnr(bufnr)
   label = label or "ark.nvim runtime"
+  local wait_until = runtime_opts.wait_until_ready or wait_until_runtime_ready
 
   if not is_ark_buffer(bufnr) then
     return nil, label .. " requires an R-family buffer", "runtime"
@@ -1238,18 +1304,18 @@ local function with_runtime_ready(bufnr, label, callback, runtime_opts)
       return nil, label .. " requires an R-family buffer", "runtime"
     end
 
-    local _, pane_err = start_or_recover_pane_after_runtime_ready({
+    local pane_id, pane_err = start_or_recover_pane_after_runtime_ready({
       recover_bridge_failure = true,
     })
-    if pane_err then
-      return nil, pane_err, "runtime"
+    if not pane_id then
+      return nil, pane_err or "failed to start managed R pane", "runtime"
     end
 
     lsp.sync_sessions(options, bufnr)
-    local result, err, err_source = wait_until_runtime_ready(bufnr, label, done)
+    local result, err, err_source = wait_until(bufnr, label, done)
     if err_source == "queued" then
       vim.defer_fn(function()
-        drain_runtime_ready_waiters(bufnr)
+        drain_all_ready_waiters(bufnr)
       end, 50)
     end
     return result, err, err_source
@@ -1304,6 +1370,10 @@ local function with_runtime_ready(bufnr, label, callback, runtime_opts)
   end
 
   return nil, bridge_err, "runtime"
+end
+
+local function with_runtime_ready(bufnr, label, callback, runtime_opts)
+  return with_managed_session_ready(bufnr, label, callback, runtime_opts)
 end
 
 is_ark_buffer = function(bufnr)
@@ -1623,7 +1693,7 @@ function M.setup(opts)
       record_startup_unlock(bufnr, type(payload) == "table" and payload.source or "LspBootstrap", {
         post_lsp_bootstrap_unlock_ms = 0,
       })
-      drain_runtime_ready_waiters(bufnr)
+      drain_all_ready_waiters(bufnr)
       if type(blink.maybe_show_after_startup) == "function" then
         vim.defer_fn(function()
           blink.maybe_show_after_startup(bufnr)
@@ -2092,40 +2162,31 @@ function M.help_pane(bufnr)
     return nil, topic_err
   end
 
-  local bridge_ok, bridge_err = ensure_bridge_runtime({
-    user_initiated = true,
-    wait_on_pending = true,
+  local function send_help(runtime_err)
+    if runtime_err then
+      notify(runtime_err, vim.log.levels.WARN)
+      return nil, runtime_err
+    end
+
+    local ok, send_err = session_backend.send_text(options, help_expression(topic))
+    if not ok then
+      notify(send_err, vim.log.levels.ERROR)
+      return nil, send_err
+    end
+
+    return topic, nil
+  end
+
+  local sent, wait_err, err_source = with_managed_session_ready(bufnr, "ark.nvim help pane", send_help, {
+    start_lsp = false,
+    wait_until_ready = wait_until_repl_ready,
   })
-  if not bridge_ok then
-    notify(bridge_err, vim.log.levels.ERROR)
-    return nil, bridge_err
+  if not sent and wait_err and err_source ~= "callback" then
+    notify(wait_err, vim.log.levels.WARN)
+    return nil, wait_err
   end
-
-  local pane_id, pane_err = start_or_recover_pane_after_runtime_ready({
-    recover_bridge_failure = true,
-  })
-  if not pane_id then
-    notify(pane_err, vim.log.levels.ERROR)
-    return nil, pane_err
-  end
-
-  lsp.sync_sessions(options)
-
-  local runtime_config = session_backend.runtime_config(options) or {}
-  local repl_ready = vim.wait(tonumber(runtime_config.bridge_wait_ms or 5000) or 5000, function()
-    local status = session_backend.status(options)
-    return type(status) == "table" and status.repl_ready == true
-  end, 100, false)
-  if not repl_ready then
-    local err = "managed R repl is not ready for help"
-    notify(err, vim.log.levels.WARN)
-    return nil, err
-  end
-
-  local ok, send_err = session_backend.send_text(options, help_expression(topic))
-  if not ok then
-    notify(send_err, vim.log.levels.ERROR)
-    return nil, send_err
+  if not sent and wait_err then
+    return nil, wait_err
   end
 
   return topic, nil
