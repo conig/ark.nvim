@@ -71,10 +71,18 @@ if not idle_fingerprint then
   ark_test.fail("idle status file missing before quiet-window check: " .. tostring(status_path))
 end
 
+local original_jobwait = vim.fn.jobwait
+local idle_jobwait_calls = 0
+vim.fn.jobwait = function(...)
+  idle_jobwait_calls = idle_jobwait_calls + 1
+  return original_jobwait(...)
+end
+
 local changed_while_idle = vim.wait(1300, function()
   local current = file_fingerprint(status_path)
   return current ~= nil and current ~= idle_fingerprint
 end, 50, false)
+vim.fn.jobwait = original_jobwait
 if changed_while_idle then
   ark_test.fail("nvim-console rewrote its status file while idle: " .. vim.inspect({
     before = idle_fingerprint,
@@ -82,6 +90,9 @@ if changed_while_idle then
     status_path = status_path,
     status = require("ark.session_runtime").read_status_file(status_path),
   }))
+end
+if idle_jobwait_calls ~= 0 then
+  ark_test.fail("nvim-console polled jobwait() while idle: " .. tostring(idle_jobwait_calls))
 end
 
 local ok, send_err = require("ark.console").send_text(bufnr, "1 + 1")

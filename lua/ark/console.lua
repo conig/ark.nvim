@@ -153,23 +153,74 @@ local function publish_status(bufnr)
 end
 
 local function start_status_publisher(bufnr)
-  local timer = vim.uv.new_timer()
-  if not timer then
+  publish_status(bufnr)
+
+  if not uv or type(uv.new_fs_event) ~= "function" then
+    return nil
+  end
+
+  local info = state.buffers[bufnr]
+  local status_path = type(info) == "table" and info.status_path or nil
+  if type(status_path) ~= "string" or status_path == "" then
+    return nil
+  end
+
+  local dir = vim.fs.dirname(status_path)
+  if type(dir) ~= "string" or dir == "" then
+    return nil
+  end
+  vim.fn.mkdir(dir, "p")
+
+  local filename = status_path:match("[^/]+$") or status_path
+  local watcher = uv.new_fs_event()
+  if not watcher then
     publish_status(bufnr)
     return nil
   end
 
-  timer:start(0, 500, vim.schedule_wrap(function()
-    if not vim.api.nvim_buf_is_valid(bufnr) then
-      timer:stop()
-      timer:close()
+  local publish_pending = false
+  local function publish_soon()
+    if publish_pending then
       return
     end
 
-    publish_status(bufnr)
-  end))
+    publish_pending = true
+    vim.schedule(function()
+      publish_pending = false
+      if watcher:is_closing() then
+        return
+      end
+      if not vim.api.nvim_buf_is_valid(bufnr) then
+        watcher:stop()
+        watcher:close()
+        return
+      end
 
-  return timer
+      publish_status(bufnr)
+    end)
+  end
+
+  local ok = pcall(function()
+    watcher:start(dir, {}, function(_, changed)
+      if type(changed) == "string" and changed ~= "" and changed ~= filename then
+        return
+      end
+
+      publish_soon()
+    end)
+  end)
+  if not ok then
+    if not watcher:is_closing() then
+      watcher:close()
+    end
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      return nil
+    end
+    publish_status(bufnr)
+    return nil
+  end
+
+  return watcher
 end
 
 local ansi_palette = {

@@ -5,6 +5,7 @@ local M = {}
 local DEFAULT_MAX_FILES = 128
 local DEFAULT_MAX_FILE_BYTES = 1024 * 1024
 local unpack = table.unpack or unpack
+local static_manifest_cache = {}
 
 local function normalize(path)
   if type(path) ~= "string" or path == "" then
@@ -488,11 +489,25 @@ local function add_file(files, seen, path, opts)
   files[#files + 1] = path
 end
 
+local function remember_scanned_dir(dir, opts)
+  dir = normalize(dir)
+  if not dir or type(opts._scanned_dirs) ~= "table" or type(opts._seen_scanned_dirs) ~= "table" then
+    return
+  end
+  if opts._seen_scanned_dirs[dir] then
+    return
+  end
+
+  opts._seen_scanned_dirs[dir] = true
+  opts._scanned_dirs[#opts._scanned_dirs + 1] = dir
+end
+
 local function scan_dir(dir, files, seen, opts)
   if not uv or type(uv.fs_scandir) ~= "function" then
     return
   end
 
+  remember_scanned_dir(dir, opts)
   local handle = uv.fs_scandir(dir)
   if not handle then
     return
@@ -555,11 +570,15 @@ local function source_paths(path, text)
 end
 
 local function collect_files(project, opts)
+  opts = vim.tbl_extend("force", opts or {}, {
+    _scanned_dirs = {},
+    _seen_scanned_dirs = {},
+  })
   local files = {}
   local seen = {}
   local script = normalize(project and project.script)
   if not script then
-    return files
+    return files, opts._scanned_dirs
   end
 
   add_file(files, seen, script, opts)
@@ -585,7 +604,7 @@ local function collect_files(project, opts)
     index = index + 1
   end
 
-  return files
+  return files, opts._scanned_dirs
 end
 
 local function parse_targets(path, text)
@@ -736,13 +755,95 @@ local function progress_manifest(project, files, source_records_list, opts)
   return targets
 end
 
+local function cache_key(project, opts)
+  project = project or {}
+  opts = opts or {}
+  return table.concat({
+    normalize(project.root) or "",
+    normalize(project.script) or "",
+    normalize(project.store) or "",
+    tostring(opts.max_files or DEFAULT_MAX_FILES),
+    tostring(opts.max_file_bytes or DEFAULT_MAX_FILE_BYTES),
+  }, "\0")
+end
+
+local function path_signature(path)
+  path = normalize(path)
+  if not path or not uv or type(uv.fs_stat) ~= "function" then
+    return "missing"
+  end
+
+  local stat = uv.fs_stat(path)
+  if type(stat) ~= "table" then
+    return "missing"
+  end
+
+  local mtime = stat.mtime or {}
+  return table.concat({
+    stat.type or "",
+    tostring(stat.size or ""),
+    tostring(mtime.sec or ""),
+    tostring(mtime.nsec or ""),
+  }, ":")
+end
+
+local function dependency_signature(project, files, dirs)
+  local entries = {}
+
+  local function add(kind, path)
+    path = normalize(path)
+    if not path then
+      return
+    end
+    entries[#entries + 1] = table.concat({
+      kind,
+      path,
+      path_signature(path),
+    }, "\t")
+  end
+
+  for _, path in ipairs(files or {}) do
+    add("file", path)
+  end
+  for _, dir in ipairs(dirs or {}) do
+    add("dir", dir)
+  end
+
+  local store = normalize(project and project.store)
+  if store then
+    add("file", joinpath(store, "meta", "progress"))
+  end
+
+  table.sort(entries)
+  return table.concat(entries, "\n")
+end
+
+local function cached_manifest(project, opts, started)
+  local entry = static_manifest_cache[cache_key(project, opts)]
+  if type(entry) ~= "table" then
+    return nil
+  end
+  if dependency_signature(project, entry.files, entry.dirs) ~= entry.dependency_signature then
+    return nil
+  end
+
+  local payload = vim.deepcopy(entry.payload)
+  payload.elapsed_ms = math.floor((((uv and uv.hrtime and uv.hrtime()) or vim.loop.hrtime()) - started) / 1e6)
+  return payload
+end
+
 function M.static_manifest(project, opts)
   opts = opts or {}
   local started = (uv and uv.hrtime and uv.hrtime()) or vim.loop.hrtime()
+  local cached = cached_manifest(project or {}, opts, started)
+  if cached then
+    return cached
+  end
+
   local targets = nil
   local manifest_source = "static"
   local seen_names = {}
-  local files = collect_files(project or {}, opts)
+  local files, dirs = collect_files(project or {}, opts)
   local parsed_sources = source_records(files, opts)
 
   targets = progress_manifest(project or {}, files, parsed_sources, opts)
@@ -760,7 +861,7 @@ function M.static_manifest(project, opts)
   end
 
   local elapsed_ms = math.floor((((uv and uv.hrtime and uv.hrtime()) or vim.loop.hrtime()) - started) / 1e6)
-  return {
+  local payload = {
     schema_version = 1,
     status = "ok",
     project = project,
@@ -769,6 +870,13 @@ function M.static_manifest(project, opts)
     files = files,
     elapsed_ms = elapsed_ms,
   }
+  static_manifest_cache[cache_key(project or {}, opts)] = {
+    files = vim.deepcopy(files),
+    dirs = vim.deepcopy(dirs),
+    dependency_signature = dependency_signature(project or {}, files, dirs),
+    payload = vim.deepcopy(payload),
+  }
+  return payload
 end
 
 return M
