@@ -19,10 +19,13 @@ local did_setup = false
 local options = nil
 local startup_tokens = {}
 local startup_traces = {}
+local runtime_ready_waiters = {}
+local runtime_ready_waiter_seq = 0
 local pending_session_sync = 0
 local help_float_ns = vim.api.nvim_create_namespace("ArkHelpFloat")
 local help_filetype = "arkhelp"
 local is_ark_buffer
+local runtime_ready
 local ensure_bridge_runtime
 local start_or_recover_pane_after_runtime_ready
 
@@ -1023,16 +1026,7 @@ local function wait_for_help_runtime(bufnr)
   local timeout_ms = tonumber(runtime_config.bridge_wait_ms or 5000) or 5000
 
   return vim.wait(timeout_ms, function()
-    local tmux_status = session_backend.status(options)
-    local lsp_status = lsp.status(options, bufnr)
-    local bridge_ready = type(tmux_status) == "table" and tmux_status.bridge_ready == true
-    local detached_status = type(lsp_status) == "table" and lsp_status.detachedSessionStatus or nil
-    return bridge_ready
-      and type(lsp_status) == "table"
-      and lsp_status.available == true
-      and lsp_status.sessionBridgeConfigured == true
-      and type(detached_status) == "table"
-      and detached_status.lastSessionUpdateStatus == "ready"
+    return runtime_ready(bufnr)
   end, 100, false)
 end
 
@@ -1094,6 +1088,99 @@ local function resolve_view_source_bufnr(bufnr)
   return nil
 end
 
+local function runtime_wait_timeout_ms()
+  local runtime_config = session_backend.runtime_config(options) or {}
+  return tonumber(runtime_config.bridge_wait_ms or 5000) or 5000
+end
+
+runtime_ready = function(bufnr)
+  if not is_ark_buffer(bufnr) then
+    return false
+  end
+
+  local tmux_status = session_backend.status(options)
+  local lsp_status = lsp.status(options, bufnr)
+  local bridge_ready = type(tmux_status) == "table" and tmux_status.bridge_ready == true
+  local detached_status = type(lsp_status) == "table" and lsp_status.detachedSessionStatus or nil
+
+  return bridge_ready
+    and type(lsp_status) == "table"
+    and lsp_status.available == true
+    and lsp_status.sessionBridgeConfigured == true
+    and type(detached_status) == "table"
+    and detached_status.lastSessionUpdateStatus == "ready"
+end
+
+local function remove_runtime_ready_waiter(waiter)
+  local bucket = runtime_ready_waiters[waiter.bufnr]
+  if type(bucket) ~= "table" or bucket[waiter.id] ~= waiter then
+    return false
+  end
+
+  bucket[waiter.id] = nil
+  if next(bucket) == nil then
+    runtime_ready_waiters[waiter.bufnr] = nil
+  end
+  return true
+end
+
+local function run_runtime_ready_callback(waiter, err)
+  vim.schedule(function()
+    if type(waiter.callback) == "function" then
+      waiter.callback(err)
+    end
+  end)
+end
+
+local function drain_runtime_ready_waiters(bufnr)
+  local bucket = runtime_ready_waiters[bufnr]
+  if type(bucket) ~= "table" or not runtime_ready(bufnr) then
+    return
+  end
+
+  runtime_ready_waiters[bufnr] = nil
+  for _, waiter in pairs(bucket) do
+    run_runtime_ready_callback(waiter, nil)
+  end
+end
+
+local function wait_until_runtime_ready(bufnr, label, callback)
+  if runtime_ready(bufnr) then
+    local result, err = callback(nil)
+    return result, err, "callback"
+  end
+
+  runtime_ready_waiter_seq = runtime_ready_waiter_seq + 1
+  local waiter = {
+    id = runtime_ready_waiter_seq,
+    bufnr = bufnr,
+    label = label,
+    callback = callback,
+  }
+
+  local bucket = runtime_ready_waiters[bufnr]
+  if type(bucket) ~= "table" then
+    bucket = {}
+    runtime_ready_waiters[bufnr] = bucket
+  end
+  bucket[waiter.id] = waiter
+
+  vim.defer_fn(function()
+    if not remove_runtime_ready_waiter(waiter) then
+      return
+    end
+
+    if runtime_ready(bufnr) then
+      run_runtime_ready_callback(waiter, nil)
+      return
+    end
+
+    run_runtime_ready_callback(waiter, label .. " bridge is not ready")
+  end, runtime_wait_timeout_ms())
+
+  return true, nil, "queued"
+end
+
 local function ensure_runtime_ready(bufnr, label)
   bufnr = resolve_bufnr(bufnr)
   label = label or "ark.nvim runtime"
@@ -1126,6 +1213,97 @@ local function ensure_runtime_ready(bufnr, label)
   end
 
   return true
+end
+
+local function with_runtime_ready(bufnr, label, callback, runtime_opts)
+  runtime_opts = runtime_opts or {}
+  bufnr = resolve_bufnr(bufnr)
+  label = label or "ark.nvim runtime"
+
+  if not is_ark_buffer(bufnr) then
+    return nil, label .. " requires an R-family buffer", "runtime"
+  end
+
+  local callback_done = false
+  local function done(err)
+    if callback_done then
+      return
+    end
+    callback_done = true
+    return callback(err)
+  end
+
+  local function finish_after_bridge()
+    if not is_ark_buffer(bufnr) then
+      return nil, label .. " requires an R-family buffer", "runtime"
+    end
+
+    local _, pane_err = start_or_recover_pane_after_runtime_ready({
+      recover_bridge_failure = true,
+    })
+    if pane_err then
+      return nil, pane_err, "runtime"
+    end
+
+    lsp.sync_sessions(options, bufnr)
+    local result, err, err_source = wait_until_runtime_ready(bufnr, label, done)
+    if err_source == "queued" then
+      vim.defer_fn(function()
+        drain_runtime_ready_waiters(bufnr)
+      end, 50)
+    end
+    return result, err, err_source
+  end
+
+  if runtime_opts.start_lsp ~= false then
+    lsp.start(options, bufnr)
+  end
+
+  local bridge_complete = false
+  local bridge_ok, bridge_err, bridge_kind = ensure_bridge_runtime({
+    user_initiated = true,
+    wait_on_pending = false,
+    on_build_complete = function(result)
+      if bridge_complete then
+        return
+      end
+      bridge_complete = true
+
+      vim.schedule(function()
+        if type(result) == "table" and result.ok == true then
+          if runtime_opts.start_lsp ~= false then
+            lsp.start(options, bufnr)
+          end
+          local ok, err, err_source = finish_after_bridge()
+          if not ok and err and err_source ~= "callback" then
+            done(err)
+          end
+          return
+        end
+
+        local failure = type(result) == "table" and result.error or nil
+        done(failure or bridge_err or "arkbridge runtime install failed")
+      end)
+    end,
+  })
+
+  if bridge_ok then
+    bridge_complete = true
+    return finish_after_bridge()
+  end
+
+  if bridge_kind == "build_pending" then
+    vim.defer_fn(function()
+      if bridge_complete then
+        return
+      end
+      bridge_complete = true
+      done(bridge_err or "arkbridge runtime install did not finish")
+    end, 20000)
+    return true, nil, "queued"
+  end
+
+  return nil, bridge_err, "runtime"
 end
 
 is_ark_buffer = function(bufnr)
@@ -1216,7 +1394,7 @@ ensure_bridge_runtime = function(bridge_opts)
     notify(message, bridge_opts.pending_level or vim.log.levels.INFO)
   end
 
-  return nil, message
+  return nil, message, type(err) == "table" and err.kind or nil
 end
 
 local function sync_sessions_soon()
@@ -1445,6 +1623,7 @@ function M.setup(opts)
       record_startup_unlock(bufnr, type(payload) == "table" and payload.source or "LspBootstrap", {
         post_lsp_bootstrap_unlock_ms = 0,
       })
+      drain_runtime_ready_waiters(bufnr)
       if type(blink.maybe_show_after_startup) == "function" then
         vim.defer_fn(function()
           blink.maybe_show_after_startup(bufnr)
@@ -1858,44 +2037,39 @@ local function show_help_page(bufnr, topic)
     end
   end
 
-  local bridge_ok, bridge_err = ensure_bridge_runtime({
-    user_initiated = true,
-    wait_on_pending = true,
+  local function open_help(runtime_err)
+    if runtime_err then
+      notify(runtime_err, vim.log.levels.WARN)
+      return nil, runtime_err
+    end
+
+    local page, page_err = lsp.help_text(options, bufnr, topic)
+    if not page then
+      notify(page_err or "no help text found", vim.log.levels.WARN)
+      return nil, page_err
+    end
+
+    open_readonly_float(page.text, {
+      references = page.references,
+      source_bufnr = bufnr,
+      on_follow = function(target)
+        show_help_page(bufnr, target)
+      end,
+    })
+
+    return topic, nil
+  end
+
+  local opened_topic, runtime_err, err_source = with_runtime_ready(bufnr, "ark.nvim help", open_help, {
+    start_lsp = false,
   })
-  if not bridge_ok then
-    notify(bridge_err, vim.log.levels.ERROR)
-    return nil, bridge_err
+  if not opened_topic and runtime_err and err_source ~= "callback" then
+    notify(runtime_err, vim.log.levels.WARN)
+    return nil, runtime_err
   end
-
-  local _, pane_err = start_or_recover_pane_after_runtime_ready({
-    recover_bridge_failure = true,
-  })
-  if pane_err then
-    notify(pane_err, vim.log.levels.ERROR)
-    return nil, pane_err
+  if not opened_topic and runtime_err then
+    return nil, runtime_err
   end
-
-  lsp.sync_sessions(options, bufnr)
-
-  if not wait_for_help_runtime(bufnr) then
-    local err = "ark.nvim help bridge is not ready"
-    notify(err, vim.log.levels.WARN)
-    return nil, err
-  end
-
-  local page, page_err = lsp.help_text(options, bufnr, topic)
-  if not page then
-    notify(page_err or "no help text found", vim.log.levels.WARN)
-    return nil, page_err
-  end
-
-  open_readonly_float(page.text, {
-    references = page.references,
-    source_bufnr = bufnr,
-    on_follow = function(target)
-      show_help_page(bufnr, target)
-    end,
-  })
 
   return topic, nil
 end
@@ -1982,22 +2156,34 @@ function M.view(expr, bufnr)
     return nil, err
   end
 
-  local ok, runtime_err = ensure_runtime_ready(source_bufnr, "ark.nvim data explorer")
-  if not ok then
+  local function open_view(runtime_err)
+    if runtime_err then
+      notify(runtime_err, vim.log.levels.WARN)
+      return nil, runtime_err
+    end
+
+    local opened, open_err = view.open({
+      expr = expr,
+      source_bufnr = source_bufnr,
+      options = options,
+      lsp = lsp,
+      notify = notify,
+    })
+    if not opened then
+      notify(open_err or "failed to open ArkView", vim.log.levels.WARN)
+      return nil, open_err
+    end
+
+    return opened
+  end
+
+  local opened, runtime_err, err_source = with_runtime_ready(source_bufnr, "ark.nvim data explorer", open_view)
+  if not opened and runtime_err and err_source ~= "callback" then
     notify(runtime_err, vim.log.levels.WARN)
     return nil, runtime_err
   end
-
-  local opened, open_err = view.open({
-    expr = expr,
-    source_bufnr = source_bufnr,
-    options = options,
-    lsp = lsp,
-    notify = notify,
-  })
-  if not opened then
-    notify(open_err or "failed to open ArkView", vim.log.levels.WARN)
-    return nil, open_err
+  if not opened and runtime_err then
+    return nil, runtime_err
   end
 
   return opened
@@ -2270,28 +2456,43 @@ local function package_install_request_async(bufnr, packages, description, dry_r
   ensure_setup()
   bufnr = resolve_bufnr(bufnr)
 
-  local ok, runtime_err = ensure_runtime_ready(bufnr, "ark.nvim package install")
-  if not ok then
+  local function request_install(runtime_err)
+    if runtime_err then
+      notify(runtime_err, vim.log.levels.WARN)
+      if type(callback) == "function" then
+        callback(nil, runtime_err)
+      end
+      return nil, runtime_err
+    end
+
+    return lsp.package_install_async(options, bufnr, packages, description, dry_run, function(result, err)
+      if err then
+        notify(err or "package install failed", vim.log.levels.WARN)
+        if type(callback) == "function" then
+          callback(nil, err)
+        end
+        return
+      end
+
+      if type(callback) == "function" then
+        callback(result, nil)
+      end
+    end)
+  end
+
+  local ok, runtime_err, err_source = with_runtime_ready(bufnr, "ark.nvim package install", request_install)
+  if not ok and runtime_err and err_source ~= "callback" then
     notify(runtime_err, vim.log.levels.WARN)
     if type(callback) == "function" then
       callback(nil, runtime_err)
     end
     return nil, runtime_err
   end
+  if not ok and runtime_err then
+    return nil, runtime_err
+  end
 
-  return lsp.package_install_async(options, bufnr, packages, description, dry_run, function(result, err)
-    if err then
-      notify(err or "package install failed", vim.log.levels.WARN)
-      if type(callback) == "function" then
-        callback(nil, err)
-      end
-      return
-    end
-
-    if type(callback) == "function" then
-      callback(result, nil)
-    end
-  end)
+  return ok
 end
 
 local function targets_request(bufnr, label, request)
@@ -2330,54 +2531,70 @@ end
 local function targets_request_async(bufnr, label, request, callback)
   ensure_setup()
   bufnr = resolve_bufnr(bufnr)
+  label = label or "ark.nvim target lens"
 
-  local ok, runtime_err = ensure_runtime_ready(bufnr, label or "ark.nvim target lens")
-  if not ok then
+  local function request_targets(runtime_err)
+    if runtime_err then
+      notify(runtime_err, vim.log.levels.WARN)
+      if type(callback) == "function" then
+        callback(nil, runtime_err)
+      end
+      return nil, runtime_err
+    end
+
+    local project = targets_project(bufnr)
+    local attempt = 0
+    local request_once
+
+    local function handle_result(result, err)
+      if result then
+        if type(callback) == "function" then
+          callback(result, nil)
+        end
+        return
+      end
+
+      local err_text = tostring(err or "")
+      local transient = err_text:find("Resource temporarily unavailable", 1, true) ~= nil
+        or err_text:find("bridge connection failed", 1, true) ~= nil
+      if transient and attempt < 5 then
+        vim.defer_fn(function()
+          request_once()
+        end, 150 * attempt)
+        return
+      end
+
+      notify(err or "target request failed", vim.log.levels.WARN)
+      if type(callback) == "function" then
+        callback(nil, err)
+      end
+    end
+
+    request_once = function()
+      attempt = attempt + 1
+      local sent, send_err = request(project, bufnr, handle_result)
+      if not sent then
+        handle_result(nil, send_err)
+      end
+    end
+
+    request_once()
+    return true
+  end
+
+  local ok, runtime_err, err_source = with_runtime_ready(bufnr, label, request_targets)
+  if not ok and runtime_err and err_source ~= "callback" then
     notify(runtime_err, vim.log.levels.WARN)
     if type(callback) == "function" then
       callback(nil, runtime_err)
     end
     return nil, runtime_err
   end
-
-  local project = targets_project(bufnr)
-  local attempt = 0
-  local request_once
-
-  local function handle_result(result, err)
-    if result then
-      if type(callback) == "function" then
-        callback(result, nil)
-      end
-      return
-    end
-
-    local err_text = tostring(err or "")
-    local transient = err_text:find("Resource temporarily unavailable", 1, true) ~= nil
-      or err_text:find("bridge connection failed", 1, true) ~= nil
-    if transient and attempt < 5 then
-      vim.defer_fn(function()
-        request_once()
-      end, 150 * attempt)
-      return
-    end
-
-    notify(err or "target request failed", vim.log.levels.WARN)
-    if type(callback) == "function" then
-      callback(nil, err)
-    end
+  if not ok and runtime_err then
+    return nil, runtime_err
   end
 
-  request_once = function()
-    attempt = attempt + 1
-    local sent, send_err = request(project, bufnr, handle_result)
-    if not sent then
-      handle_result(nil, send_err)
-    end
-  end
-
-  request_once()
-  return true
+  return ok
 end
 
 function M.missing_packages(bufnr)
