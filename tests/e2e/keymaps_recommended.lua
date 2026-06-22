@@ -1,3 +1,4 @@
+vim.opt.rtp:prepend(vim.fn.getcwd())
 vim.g.mapleader = " "
 
 local sent = {}
@@ -38,6 +39,10 @@ package.loaded["ark"] = {
   end,
   view = function(expr, bufnr)
     calls.view = { expr = expr, bufnr = bufnr }
+  end,
+  view_under_cursor = function(bufnr)
+    calls.view_under_cursor = (calls.view_under_cursor or 0) + 1
+    calls.view_under_cursor_bufnr = bufnr
   end,
   help = function(bufnr)
     calls.help = bufnr
@@ -133,6 +138,15 @@ if sent[#sent] ~= "summary(mtcars)" then
   error("expected <prefix>s to send summary(expr), got " .. vim.inspect(sent), 0)
 end
 
+invoke("<F5>v")
+if calls.view_under_cursor ~= 1 or calls.view_under_cursor_bufnr ~= 0 then
+  error("expected <prefix>v to open ArkView under cursor, got " .. vim.inspect(calls), 0)
+end
+
+if type(mapping("<F5>v", "x").callback) ~= "function" then
+  error("expected visual <prefix>v to open ArkView for the selection", 0)
+end
+
 invoke("<F5>p")
 if calls.start_pane ~= 1 or calls.refresh ~= 1 then
   error("expected <prefix>p to start pane and refresh, got " .. vim.inspect(calls), 0)
@@ -155,7 +169,7 @@ end
 invoke("<F5>V")
 invoke("<F5>?")
 invoke("<F6>")
-if not vim.deep_equal(calls.view, { expr = nil, bufnr = 0 }) or calls.help ~= 0 or calls.snippets ~= 0 then
+if calls.view_under_cursor ~= 2 or calls.view_under_cursor_bufnr ~= 0 or calls.help ~= 0 or calls.snippets ~= 0 then
   error("expected view/help/snippets mappings to call Ark helpers, got " .. vim.inspect(calls), 0)
 end
 

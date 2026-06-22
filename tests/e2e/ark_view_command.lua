@@ -1174,6 +1174,53 @@ local ok, err = pcall(function()
   if view_open_exprs[#view_open_exprs] ~= "targets::tar_read(clean_data)" then
     error("expected no-arg ArkView to use tar_read() expression, got " .. vim.inspect(view_open_exprs), 0)
   end
+
+  local function assert_repl_view_uses_source_buffer(kind, line, cursor_col, expected_expr)
+    vim.api.nvim_set_current_tabpage(source_tab)
+    local repl_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_set_current_buf(repl_buf)
+    vim.bo[repl_buf].filetype = ""
+    vim.api.nvim_buf_set_lines(repl_buf, 0, -1, false, { line })
+    vim.api.nvim_win_set_cursor(0, { 1, cursor_col })
+
+    if kind == "terminal" then
+      vim.b[repl_buf].ark_terminal = true
+      vim.b[repl_buf].ark_terminal_source_bufnr = source_buf
+    elseif kind == "console" then
+      vim.b[repl_buf].ark_console = true
+      vim.b[repl_buf].ark_console_source_bufnr = source_buf
+    else
+      error("unexpected repl buffer kind: " .. tostring(kind), 0)
+    end
+
+    local opened, view_err = ark.view(nil, repl_buf)
+    if not opened then
+      error("expected ArkView from " .. kind .. " buffer to open: " .. tostring(view_err), 0)
+    end
+    if view_open_exprs[#view_open_exprs] ~= expected_expr then
+      error(
+        "expected ArkView from "
+          .. kind
+          .. " buffer to use expression "
+          .. vim.inspect(expected_expr)
+          .. ", got "
+          .. vim.inspect(view_open_exprs),
+        0
+      )
+    end
+    if view_open_bufnrs[#view_open_bufnrs] ~= source_buf then
+      error(
+        "expected ArkView from "
+          .. kind
+          .. " buffer to use the R source buffer, got "
+          .. vim.inspect(view_open_bufnrs),
+        0
+      )
+    end
+  end
+
+  assert_repl_view_uses_source_buffer("terminal", "> targets::tar_read(clean_data)", 15, "targets::tar_read(clean_data)")
+  assert_repl_view_uses_source_buffer("console", "mtcars", 0, "mtcars")
 end)
 
 vim.notify = original_notify

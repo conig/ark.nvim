@@ -1,4 +1,5 @@
 vim.opt.rtp:prepend(vim.fn.getcwd())
+vim.g.mapleader = " "
 
 local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test.lua"))
 local stop_watchdog = ark_test.start_watchdog(30000, "nvim_console_smoke")
@@ -44,6 +45,31 @@ if vim.b[bufnr].ark_console ~= true then
 end
 if vim.bo[bufnr].filetype ~= "r" then
   ark_test.fail("console buffer should be an R buffer, got " .. vim.bo[bufnr].filetype)
+end
+
+local winid = vim.fn.bufwinid(bufnr)
+if type(winid) == "number" and winid > 0 then
+  vim.api.nvim_set_current_win(winid)
+end
+
+local view_calls = {}
+ark.view_under_cursor = function(view_bufnr)
+  view_calls[#view_calls + 1] = view_bufnr
+end
+
+local view_map = vim.fn.maparg("<leader>rv", "n", false, true)
+if type(view_map) ~= "table" or type(view_map.callback) ~= "function" then
+  ark_test.fail("console should map normal <leader>rv to ArkView: " .. vim.inspect(view_map))
+end
+
+local visual_view_map = vim.fn.maparg("<leader>rv", "x", false, true)
+if type(visual_view_map) ~= "table" or type(visual_view_map.callback) ~= "function" then
+  ark_test.fail("console should map visual <leader>rv to ArkView: " .. vim.inspect(visual_view_map))
+end
+
+view_map.callback()
+if view_calls[1] ~= bufnr then
+  ark_test.fail("console <leader>rv should target the console buffer, got " .. vim.inspect(view_calls))
 end
 
 local lsp_config = ark.lsp_config(bufnr)

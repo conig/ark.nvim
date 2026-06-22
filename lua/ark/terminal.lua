@@ -1,5 +1,6 @@
 local session_runtime = require("ark.session_runtime")
 local console_frontend = require("ark.console_frontend")
+local repl_keymaps = require("ark.repl_keymaps")
 
 local M = {}
 
@@ -115,6 +116,20 @@ local function visible_window(bufnr)
   return nil
 end
 
+local function remember_source_bufnr(bufnr, source_bufnr, filetypes)
+  if type(bufnr) ~= "number" or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  if type(source_bufnr) ~= "number" or source_bufnr == bufnr or not vim.api.nvim_buf_is_valid(source_bufnr) then
+    return
+  end
+  if not filetype_enabled(filetypes or {}, vim.bo[source_bufnr].filetype) then
+    return
+  end
+
+  vim.b[bufnr].ark_terminal_source_bufnr = source_bufnr
+end
+
 local function launcher_env(config, session_id)
   local env = {
     ARK_NVIM_LAUNCHER = config.launcher,
@@ -171,6 +186,7 @@ end
 
 local function open_terminal_window(config, existing_bufnr)
   local original_win = vim.api.nvim_get_current_win()
+  local source_bufnr = vim.api.nvim_win_get_buf(original_win)
   local direction = normalize_split_direction(config.split_direction)
   if not direction then
     return nil, nil, "invalid ark.nvim terminal.split_direction: " .. tostring(config.split_direction)
@@ -192,6 +208,10 @@ local function open_terminal_window(config, existing_bufnr)
   end
 
   local bufnr = vim.api.nvim_get_current_buf()
+  vim.b[bufnr].ark_terminal = true
+  if source_bufnr ~= bufnr and vim.api.nvim_buf_is_valid(source_bufnr) then
+    vim.b[bufnr].ark_terminal_source_bufnr = source_bufnr
+  end
   vim.bo[bufnr].bufhidden = "hide"
   vim.bo[bufnr].swapfile = false
 
@@ -513,6 +533,8 @@ function M.start(opts)
   if opts.configure_slime then
     configure_send_targets(bufnr, jobid, opts.filetypes)
   end
+  remember_source_bufnr(bufnr, vim.api.nvim_get_current_buf(), opts.filetypes)
+  repl_keymaps.attach_view_keymap(bufnr, opts)
 
   return tostring(bufnr), nil
 end

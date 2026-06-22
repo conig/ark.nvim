@@ -1043,6 +1043,57 @@ local function resolve_bufnr(bufnr)
   return bufnr
 end
 
+local function managed_repl_buffer(bufnr)
+  return bufnr ~= nil
+    and vim.api.nvim_buf_is_valid(bufnr)
+    and (vim.b[bufnr].ark_console == true or vim.b[bufnr].ark_terminal == true)
+end
+
+local function add_candidate_bufnr(candidates, seen, bufnr)
+  if type(bufnr) ~= "number" or bufnr < 1 or seen[bufnr] then
+    return
+  end
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+
+  seen[bufnr] = true
+  candidates[#candidates + 1] = bufnr
+end
+
+local function resolve_view_source_bufnr(bufnr)
+  if is_ark_buffer(bufnr) then
+    return bufnr
+  end
+  if not managed_repl_buffer(bufnr) then
+    return bufnr
+  end
+
+  local candidates = {}
+  local seen = {}
+  add_candidate_bufnr(candidates, seen, vim.b[bufnr].ark_terminal_source_bufnr)
+  add_candidate_bufnr(candidates, seen, vim.b[bufnr].ark_console_source_bufnr)
+  add_candidate_bufnr(candidates, seen, vim.fn.bufnr("#"))
+
+  for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_win_is_valid(winid) then
+      add_candidate_bufnr(candidates, seen, vim.api.nvim_win_get_buf(winid))
+    end
+  end
+
+  for _, candidate in ipairs(vim.api.nvim_list_bufs()) do
+    add_candidate_bufnr(candidates, seen, candidate)
+  end
+
+  for _, candidate in ipairs(candidates) do
+    if is_ark_buffer(candidate) then
+      return candidate
+    end
+  end
+
+  return nil
+end
+
 local function ensure_runtime_ready(bufnr, label)
   bufnr = resolve_bufnr(bufnr)
   label = label or "ark.nvim runtime"
@@ -1924,7 +1975,14 @@ function M.view(expr, bufnr)
     return nil, err
   end
 
-  local ok, runtime_err = ensure_runtime_ready(bufnr, "ark.nvim data explorer")
+  local source_bufnr = resolve_view_source_bufnr(bufnr)
+  if type(source_bufnr) ~= "number" then
+    local err = "ark.nvim data explorer requires an R-family buffer"
+    notify(err, vim.log.levels.WARN)
+    return nil, err
+  end
+
+  local ok, runtime_err = ensure_runtime_ready(source_bufnr, "ark.nvim data explorer")
   if not ok then
     notify(runtime_err, vim.log.levels.WARN)
     return nil, runtime_err
@@ -1932,7 +1990,7 @@ function M.view(expr, bufnr)
 
   local opened, open_err = view.open({
     expr = expr,
-    source_bufnr = bufnr,
+    source_bufnr = source_bufnr,
     options = options,
     lsp = lsp,
     notify = notify,
@@ -1943,6 +2001,11 @@ function M.view(expr, bufnr)
   end
 
   return opened
+end
+
+function M.view_under_cursor(bufnr)
+  ensure_setup()
+  return M.view(expression.current(), bufnr)
 end
 
 function M.view_refresh()

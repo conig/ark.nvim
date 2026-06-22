@@ -1,4 +1,5 @@
 local lsp = require("ark.lsp")
+local repl_keymaps = require("ark.repl_keymaps")
 local session_runtime = require("ark.session_runtime")
 
 local M = {}
@@ -2185,6 +2186,7 @@ end
 
 local function create_buffer(opts)
   local bufnr
+  local source_bufnr = vim.api.nvim_get_current_buf()
   if standalone_console(opts or {}) then
     pcall(vim.cmd, "silent! only")
     bufnr = vim.api.nvim_get_current_buf()
@@ -2196,6 +2198,9 @@ local function create_buffer(opts)
     vim.api.nvim_win_set_buf(0, bufnr)
   end
   vim.b[bufnr].ark_console = true
+  if source_bufnr ~= bufnr and vim.api.nvim_buf_is_valid(source_bufnr) then
+    vim.b[bufnr].ark_console_source_bufnr = source_bufnr
+  end
   vim.bo[bufnr].buftype = ""
   vim.bo[bufnr].bufhidden = "hide"
   vim.bo[bufnr].buflisted = false
@@ -2216,7 +2221,8 @@ local function console_buffer()
   return nil, nil
 end
 
-local function setup_keymaps(bufnr)
+local function setup_keymaps(bufnr, opts)
+  repl_keymaps.attach_view_keymap(bufnr, opts)
   vim.keymap.set({ "n", "i" }, "<CR>", function()
     M.submit_or_accept_completion(bufnr)
   end, { buffer = bufnr, desc = "Accept Ark console completion or submit input" })
@@ -2375,7 +2381,7 @@ function M.start(opts)
     return "ok"
   end
 
-  setup_keymaps(bufnr)
+  setup_keymaps(bufnr, opts)
 
   vim.api.nvim_create_autocmd("WinResized", {
     group = vim.api.nvim_create_augroup("ArkConsoleResize" .. tostring(bufnr), { clear = true }),

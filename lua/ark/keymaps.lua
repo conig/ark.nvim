@@ -193,10 +193,16 @@ function M.attach(bufnr, opts)
   map(bufnr, { "n", "x" }, prefix .. "h", call_on_current_expr("head"), "Run head() on R expression or selection")
   map(bufnr, { "n", "x" }, prefix .. "s", call_on_current_expr("summary"), "Run summary() on R expression or selection")
 
+  map(bufnr, { "n", "x" }, prefix .. "v", function()
+    local module = ark()
+    if module then
+      module.view_under_cursor(0)
+    end
+  end, "Open ArkView under cursor or selection")
   map(bufnr, "n", prefix .. "V", function()
     local module = ark()
     if module then
-      module.view(nil, 0)
+      module.view_under_cursor(0)
     end
   end, "Open ArkView under cursor")
   map(bufnr, "n", prefix .. "?", function()
