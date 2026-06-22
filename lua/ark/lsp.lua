@@ -43,6 +43,7 @@ local bootstrap_client_session_async
 local start_pending_bootstrap_async
 local session_watch_finished
 local session_poll_finished
+local start_client
 local startup_ready_callback = nil
 local STATUS_CACHE_TTL_MS = 250
 local STATUS_THROTTLE_MS = 100
@@ -1428,7 +1429,7 @@ function M.config(opts, bufnr, _config_opts)
   }, nil
 end
 
-local function start_client(opts, bufnr, start_opts)
+local function start_client_inner(opts, bufnr, start_opts)
   bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   if not filetype_enabled(opts.filetypes, vim.bo[bufnr].filetype) then
     return nil
@@ -1560,6 +1561,28 @@ local function start_client(opts, bufnr, start_opts)
     schedule_session_syncs(opts, bufnr, client_id)
   end
   return client_id
+end
+
+local active_start_clients = {}
+
+start_client = function(opts, bufnr, start_opts)
+  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
+  if active_start_clients[bufnr] then
+    local client = live_clients(opts, bufnr)[1]
+    return client and client.id or nil
+  end
+
+  active_start_clients[bufnr] = true
+  local ok, result = xpcall(function()
+    return start_client_inner(opts, bufnr, start_opts)
+  end, debug.traceback)
+  active_start_clients[bufnr] = nil
+
+  if not ok then
+    error(result, 0)
+  end
+
+  return result
 end
 
 local function restart_client(opts, bufnr, start_opts)
