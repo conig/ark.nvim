@@ -16,6 +16,26 @@ vim.env.ARK_TMUX_SESSION = nil
 _G.__ark_nvim_state = {}
 package.loaded["ark"] = nil
 package.loaded["ark.tmux"] = nil
+package.loaded["ark.session_runtime"] = {
+  status_file_path = function()
+    return "/tmp/ark-test-status.json"
+  end,
+  read_status_file = function()
+    return {
+      status = "ready",
+      port = 43077,
+      auth_token = "test-token",
+      repl_ready = true,
+      pid = vim.fn.getpid(),
+    }
+  end,
+  ping_bridge = function()
+    return true
+  end,
+  status_root = function()
+    return "/tmp"
+  end,
+}
 package.loaded["ark.bridge"] = {
   ensure_current_runtime = function()
     return true

@@ -1117,6 +1117,20 @@ repl_ready = function()
   return type(status) == "table" and status.repl_ready == true
 end
 
+local function wait_for_repl_ready_for_send()
+  if repl_ready() then
+    return true, nil
+  end
+
+  local timeout_ms = runtime_wait_timeout_ms()
+  local ready = vim.wait(timeout_ms, repl_ready, 50, false)
+  if ready then
+    return true, nil
+  end
+
+  return nil, "managed R repl is not ready for send"
+end
+
 local function readiness_bucket(kind, bufnr, create)
   local group = readiness_waiters[kind]
   if type(group) ~= "table" then
@@ -2019,6 +2033,11 @@ function M._slime_before_send()
     return nil, pane_err
   end
 
+  local repl_ok, repl_err = wait_for_repl_ready_for_send()
+  if not repl_ok then
+    return nil, repl_err
+  end
+
   sync_sessions_soon()
   return true, nil
 end
@@ -2074,6 +2093,12 @@ function M.send(text)
   if not pane_id then
     notify(pane_err, vim.log.levels.ERROR)
     return nil, pane_err
+  end
+
+  local repl_ok, repl_err = wait_for_repl_ready_for_send()
+  if not repl_ok then
+    notify(repl_err, vim.log.levels.ERROR)
+    return nil, repl_err
   end
 
   sync_sessions_soon()
