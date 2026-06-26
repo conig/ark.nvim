@@ -104,6 +104,7 @@ ark.targets_view_pick = real_targets_view_pick
 
 local real_view_open_exprs = {}
 local real_view_open_bufnrs = {}
+local backend_start_calls = {}
 local lsp = require("ark.lsp")
 local tmux = require("ark.tmux")
 lsp.start = function()
@@ -164,9 +165,14 @@ tmux.status = function()
     repl_ready = true,
   }
 end
+tmux.start = function(...)
+  backend_start_calls[#backend_start_calls + 1] = { ... }
+  return "%unexpected", nil
+end
 
 -- Regression: ArkView from an nvim-console input should work even when the
--- console was opened without a separate remembered R source buffer.
+-- console was opened without a separate remembered R source buffer. It should
+-- use the console's own session instead of starting a second managed backend.
 vim.api.nvim_set_current_win(winid)
 vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "mtcars" })
 vim.api.nvim_win_set_cursor(0, { 1, 2 })
@@ -184,6 +190,9 @@ if real_view_open_exprs[1] ~= "mtcars" or real_view_open_bufnrs[1] ~= bufnr then
     bufnrs = real_view_open_bufnrs,
     console_bufnr = bufnr,
   }))
+end
+if #backend_start_calls ~= 0 then
+  ark_test.fail("console normal-mode <leader>rV should not start a separate backend: " .. vim.inspect(backend_start_calls))
 end
 ark.view_close()
 if vim.api.nvim_win_is_valid(winid) then

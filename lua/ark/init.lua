@@ -1131,6 +1131,40 @@ runtime_ready = function(bufnr)
     and detached_status.lastSessionUpdateStatus == "ready"
 end
 
+local function active_console_status(bufnr)
+  if not console_view_source_buffer(bufnr) then
+    return nil
+  end
+
+  local status = console.status(bufnr)
+  if type(status) ~= "table" or status.running ~= true then
+    return nil
+  end
+  if type(status.session_id) ~= "string" or status.session_id == "" then
+    return nil
+  end
+  if type(status.status_path) ~= "string" or status.status_path == "" then
+    return nil
+  end
+
+  return status
+end
+
+local function console_runtime_ready(bufnr)
+  if not active_console_status(bufnr) then
+    return false
+  end
+
+  local lsp_status = lsp.status(options, bufnr)
+  local detached_status = type(lsp_status) == "table" and lsp_status.detachedSessionStatus or nil
+
+  return type(lsp_status) == "table"
+    and lsp_status.available == true
+    and lsp_status.sessionBridgeConfigured == true
+    and type(detached_status) == "table"
+    and detached_status.lastSessionUpdateStatus == "ready"
+end
+
 repl_ready = function()
   local status = session_backend.status(options)
   return type(status) == "table" and status.repl_ready == true
@@ -1275,6 +1309,12 @@ local function wait_until_runtime_ready(bufnr, label, callback)
   end, label .. " bridge is not ready", callback)
 end
 
+local function wait_until_console_runtime_ready(bufnr, label, callback)
+  return wait_until_ready("runtime", bufnr, label, function()
+    return console_runtime_ready(bufnr)
+  end, label .. " console session is not ready", callback)
+end
+
 local function wait_until_repl_ready(bufnr, label, callback)
   return wait_until_ready("repl", bufnr, label, repl_ready, "managed R repl is not ready for help", callback)
 end
@@ -1403,6 +1443,44 @@ local function with_managed_session_ready(bufnr, label, callback, runtime_opts)
   end
 
   return nil, bridge_err, "runtime"
+end
+
+local function with_console_session_ready(bufnr, label, callback, runtime_opts)
+  runtime_opts = runtime_opts or {}
+  bufnr = resolve_bufnr(bufnr)
+  label = label or "ark.nvim runtime"
+  local wait_until = runtime_opts.wait_until_ready or wait_until_console_runtime_ready
+  local request_bufnr = runtime_opts.request_bufnr
+
+  if not active_console_status(bufnr) then
+    return nil, label .. " requires a running Ark console", "runtime"
+  end
+
+  local callback_done = false
+  local function done(err)
+    if callback_done then
+      return
+    end
+    callback_done = true
+    return callback(err)
+  end
+
+  if runtime_opts.start_lsp ~= false then
+    lsp.start(options, bufnr)
+    if type(request_bufnr) == "number" and request_bufnr ~= bufnr and vim.api.nvim_buf_is_valid(request_bufnr) then
+      lsp.start(options, request_bufnr)
+    end
+  end
+
+  lsp.sync_sessions(options, bufnr)
+
+  local result, err, err_source = wait_until(bufnr, label, done)
+  if err_source == "queued" then
+    vim.defer_fn(function()
+      drain_all_ready_waiters(bufnr)
+    end, 50)
+  end
+  return result, err, err_source
 end
 
 local function with_runtime_ready(bufnr, label, callback, runtime_opts)
@@ -2289,7 +2367,19 @@ function M.view(expr, bufnr)
     return opened
   end
 
-  local opened, runtime_err, err_source = with_runtime_ready(source_bufnr, "ark.nvim data explorer", open_view)
+  local runtime_bufnr = source_bufnr
+  local runtime_ready_fn = with_runtime_ready
+  local runtime_opts = nil
+  if active_console_status(bufnr) then
+    runtime_bufnr = bufnr
+    runtime_ready_fn = with_console_session_ready
+    runtime_opts = {
+      request_bufnr = source_bufnr,
+    }
+  end
+
+  local opened, runtime_err, err_source =
+    runtime_ready_fn(runtime_bufnr, "ark.nvim data explorer", open_view, runtime_opts)
   if not opened and runtime_err and err_source ~= "callback" then
     notify(runtime_err, vim.log.levels.WARN)
     return nil, runtime_err
@@ -3248,7 +3338,7 @@ function M.targets_view_pick(bufnr)
       return
     end
 
-    M.view("targets::tar_read(name = " .. r_string_literal(name) .. ")", source_bufnr)
+    M.view("targets::tar_read(name = " .. r_string_literal(name) .. ")", bufnr)
   end)
 end
 
