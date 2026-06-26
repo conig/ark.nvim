@@ -9,7 +9,7 @@ vim.fn.mkdir(run_tmpdir, "p")
 local launcher = vim.fs.normalize(run_tmpdir .. "/fake-r")
 vim.fn.writefile({
   "#!/usr/bin/env bash",
-  "printf 'mtcars\\n'",
+  "printf '> mtcars'",
   "while IFS= read -r _line; do :; done",
 }, launcher)
 vim.fn.setfperm(launcher, "rwxr-xr-x")
@@ -105,6 +105,15 @@ if type(visual_upper_view_map) ~= "table" or type(visual_upper_view_map.callback
   ark_test.fail("terminal backend should map visual <leader>rV to ArkView: " .. vim.inspect(visual_upper_view_map))
 end
 
+-- Regression: users press ArkView mappings from the active R prompt, where a
+-- terminal buffer is in terminal-job mode rather than normal mode.
+local terminal_upper_view_map = vim.fn.maparg("<leader>rV", "t", false, true)
+if type(terminal_upper_view_map) ~= "table" or type(terminal_upper_view_map.callback) ~= "function" then
+  terminal.stop()
+  stop_watchdog()
+  ark_test.fail("terminal backend should map terminal-mode <leader>rV to ArkView: " .. vim.inspect(terminal_upper_view_map))
+end
+
 local target_view_map = vim.fn.maparg("<leader>tv", "n", false, true)
 if type(target_view_map) ~= "table" or type(target_view_map.callback) ~= "function" then
   terminal.stop()
@@ -112,9 +121,22 @@ if type(target_view_map) ~= "table" or type(target_view_map.callback) ~= "functi
   ark_test.fail("terminal backend should map normal <leader>tv to target ArkView: " .. vim.inspect(target_view_map))
 end
 
+vim.cmd("startinsert")
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Space>rV", true, false, true), "xt", false)
+local keypress_opened_view = vim.wait(1000, function()
+  return view_calls[1] == bufnr
+end, 20, false)
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-\\><C-n>", true, false, true), "xt", false)
+if not keypress_opened_view then
+  terminal.stop()
+  stop_watchdog()
+  ark_test.fail("terminal-mode <leader>rV keypress should open ArkView, got " .. vim.inspect(view_calls))
+end
+
 view_map.callback()
 upper_view_map.callback()
-if view_calls[1] ~= bufnr or view_calls[2] ~= bufnr then
+terminal_upper_view_map.callback()
+if view_calls[1] ~= bufnr or view_calls[2] ~= bufnr or view_calls[3] ~= bufnr or view_calls[4] ~= bufnr then
   terminal.stop()
   stop_watchdog()
   ark_test.fail("terminal ArkView mappings should target the terminal buffer, got " .. vim.inspect(view_calls))
@@ -125,6 +147,112 @@ if target_view_calls[1] ~= bufnr then
   terminal.stop()
   stop_watchdog()
   ark_test.fail("terminal <leader>tv should target the terminal buffer, got " .. vim.inspect(target_view_calls))
+end
+
+package.loaded["ark"] = nil
+local real_ark = require("ark")
+local lsp = require("ark.lsp")
+local real_view_open_exprs = {}
+local real_view_open_bufnrs = {}
+
+real_ark.setup({
+  auto_start_lsp = false,
+  auto_start_pane = false,
+  configure_slime = false,
+  session = {
+    backend = "terminal",
+  },
+  terminal = {
+    console_frontend = "raw",
+    launcher = launcher,
+    startup_status_dir = vim.fs.normalize(run_tmpdir .. "/status"),
+    session_pkg_path = vim.fs.normalize(run_tmpdir .. "/arkbridge"),
+  },
+})
+
+lsp.status = function()
+  return {
+    available = true,
+    sessionBridgeConfigured = true,
+    detachedSessionStatus = {
+      lastSessionUpdateStatus = "ready",
+    },
+  }
+end
+lsp.view_open = function(_opts, view_bufnr, expr)
+  real_view_open_bufnrs[#real_view_open_bufnrs + 1] = view_bufnr
+  real_view_open_exprs[#real_view_open_exprs + 1] = expr
+  return {
+    session_id = "terminal-keymap-view",
+    title = expr,
+    total_rows = 1,
+    total_columns = 1,
+    schema = {
+      { index = 1, name = "x", class = "numeric", type = "double" },
+    },
+    filters = {},
+    sort = { column_index = 0, direction = "" },
+  }, nil
+end
+lsp.view_page = function()
+  return {
+    offset = 0,
+    limit = 100,
+    total_rows = 1,
+    row_numbers = { 1 },
+    rows = {
+      { "1" },
+    },
+  }, nil
+end
+lsp.view_state = function()
+  return {
+    session_id = "terminal-keymap-view",
+    title = "mtcars",
+    total_rows = 1,
+    total_columns = 1,
+    schema = {
+      { index = 1, name = "x", class = "numeric", type = "double" },
+    },
+    filters = {},
+    sort = { column_index = 0, direction = "" },
+  }, nil
+end
+terminal.status = function()
+  return {
+    bridge_ready = true,
+    repl_ready = true,
+  }
+end
+
+vim.api.nvim_set_current_win(winid)
+vim.cmd("startinsert")
+local terminal_rendered_input = vim.wait(1000, function()
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  return table.concat(lines, "\n"):find("mtcars", 1, true) ~= nil
+end, 20, false)
+if not terminal_rendered_input then
+  terminal.stop()
+  stop_watchdog()
+  ark_test.fail("terminal did not render mtcars before ArkView keypress")
+end
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Space>rV", true, false, true), "xt", false)
+local real_keypress_opened_view = vim.wait(1000, function()
+  return real_view_open_exprs[1] ~= nil
+end, 20, false)
+if not real_keypress_opened_view then
+  terminal.stop()
+  stop_watchdog()
+  ark_test.fail("terminal-mode <leader>rV keypress should open real ArkView, got no view requests")
+end
+if real_view_open_exprs[1] ~= "mtcars" or real_view_open_bufnrs[1] ~= source_bufnr then
+  terminal.stop()
+  stop_watchdog()
+  ark_test.fail("terminal-mode <leader>rV should view mtcars from the source buffer, got " .. vim.inspect({
+    exprs = real_view_open_exprs,
+    bufnrs = real_view_open_bufnrs,
+    source_bufnr = source_bufnr,
+  }))
 end
 
 terminal.stop()

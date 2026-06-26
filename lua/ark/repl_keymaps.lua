@@ -42,6 +42,10 @@ local function open_target_view(bufnr)
   end
 end
 
+local function terminal_buffer(bufnr)
+  return type(bufnr) == "number" and vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].buftype == "terminal"
+end
+
 function M.attach_view_keymap(bufnr, opts)
   if type(bufnr) ~= "number" or not vim.api.nvim_buf_is_valid(bufnr) then
     return
@@ -56,11 +60,14 @@ function M.attach_view_keymap(bufnr, opts)
   if type(previous_prefix) == "string" and previous_prefix ~= "" then
     pcall(vim.keymap.del, "n", previous_prefix .. "v", { buffer = bufnr })
     pcall(vim.keymap.del, "x", previous_prefix .. "v", { buffer = bufnr })
+    pcall(vim.keymap.del, "t", previous_prefix .. "v", { buffer = bufnr })
     pcall(vim.keymap.del, "n", previous_prefix .. "V", { buffer = bufnr })
     pcall(vim.keymap.del, "x", previous_prefix .. "V", { buffer = bufnr })
+    pcall(vim.keymap.del, "t", previous_prefix .. "V", { buffer = bufnr })
   end
   if type(previous_target_prefix) == "string" and previous_target_prefix ~= "" then
     pcall(vim.keymap.del, "n", previous_target_prefix .. "v", { buffer = bufnr })
+    pcall(vim.keymap.del, "t", previous_target_prefix .. "v", { buffer = bufnr })
   end
 
   vim.keymap.set({ "n", "x" }, prefix .. "v", function()
@@ -74,6 +81,20 @@ function M.attach_view_keymap(bufnr, opts)
   vim.keymap.set("n", target_prefix .. "v", function()
     open_target_view(bufnr)
   end, { buffer = bufnr, desc = "Open ArkView for target" })
+
+  if terminal_buffer(bufnr) then
+    vim.keymap.set("t", prefix .. "v", function()
+      open_view_under_cursor(bufnr)
+    end, { buffer = bufnr, desc = "Open ArkView under cursor or selection" })
+
+    vim.keymap.set("t", prefix .. "V", function()
+      open_view_under_cursor(bufnr)
+    end, { buffer = bufnr, desc = "Open ArkView under cursor or selection" })
+
+    vim.keymap.set("t", target_prefix .. "v", function()
+      open_target_view(bufnr)
+    end, { buffer = bufnr, desc = "Open ArkView for target" })
+  end
 
   vim.b[bufnr].ark_repl_view_keymap_prefix = prefix
   vim.b[bufnr].ark_repl_view_keymap_target_prefix = target_prefix
