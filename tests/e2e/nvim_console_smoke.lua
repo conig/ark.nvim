@@ -54,6 +54,8 @@ end
 
 local view_calls = {}
 local target_view_calls = {}
+local real_view_under_cursor = ark.view_under_cursor
+local real_targets_view_pick = ark.targets_view_pick
 ark.view_under_cursor = function(view_bufnr)
   view_calls[#view_calls + 1] = view_bufnr
 end
@@ -95,6 +97,97 @@ end
 target_view_map.callback()
 if target_view_calls[1] ~= bufnr then
   ark_test.fail("console <leader>tv should target the console buffer, got " .. vim.inspect(target_view_calls))
+end
+
+ark.view_under_cursor = real_view_under_cursor
+ark.targets_view_pick = real_targets_view_pick
+
+local real_view_open_exprs = {}
+local real_view_open_bufnrs = {}
+local lsp = require("ark.lsp")
+local tmux = require("ark.tmux")
+lsp.start = function()
+  return bufnr
+end
+lsp.sync_sessions = function() end
+lsp.status = function()
+  return {
+    available = true,
+    sessionBridgeConfigured = true,
+    detachedSessionStatus = {
+      lastSessionUpdateStatus = "ready",
+    },
+  }
+end
+lsp.view_open = function(_opts, view_bufnr, expr)
+  real_view_open_bufnrs[#real_view_open_bufnrs + 1] = view_bufnr
+  real_view_open_exprs[#real_view_open_exprs + 1] = expr
+  return {
+    session_id = "console-keymap-view",
+    title = expr,
+    total_rows = 1,
+    total_columns = 1,
+    schema = {
+      { index = 1, name = "x", class = "numeric", type = "double" },
+    },
+    filters = {},
+    sort = { column_index = 0, direction = "" },
+  }, nil
+end
+lsp.view_page = function()
+  return {
+    offset = 0,
+    limit = 100,
+    total_rows = 1,
+    row_numbers = { 1 },
+    rows = {
+      { "1" },
+    },
+  }, nil
+end
+lsp.view_state = function()
+  return {
+    session_id = "console-keymap-view",
+    title = "mtcars",
+    total_rows = 1,
+    total_columns = 1,
+    schema = {
+      { index = 1, name = "x", class = "numeric", type = "double" },
+    },
+    filters = {},
+    sort = { column_index = 0, direction = "" },
+  }, nil
+end
+tmux.status = function()
+  return {
+    bridge_ready = true,
+    repl_ready = true,
+  }
+end
+
+-- Regression: ArkView from an nvim-console input should work even when the
+-- console was opened without a separate remembered R source buffer.
+vim.api.nvim_set_current_win(winid)
+vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "mtcars" })
+vim.api.nvim_win_set_cursor(0, { 1, 2 })
+vim.cmd("stopinsert")
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Space>rV", true, false, true), "xt", false)
+local console_keypress_opened_view = vim.wait(1000, function()
+  return real_view_open_exprs[1] ~= nil
+end, 20, false)
+if not console_keypress_opened_view then
+  ark_test.fail("console normal-mode <leader>rV should open ArkView, got no view requests")
+end
+if real_view_open_exprs[1] ~= "mtcars" or real_view_open_bufnrs[1] ~= bufnr then
+  ark_test.fail("console normal-mode <leader>rV should view mtcars from the console buffer, got " .. vim.inspect({
+    exprs = real_view_open_exprs,
+    bufnrs = real_view_open_bufnrs,
+    console_bufnr = bufnr,
+  }))
+end
+ark.view_close()
+if vim.api.nvim_win_is_valid(winid) then
+  vim.api.nvim_set_current_win(winid)
 end
 
 local lsp_config = ark.lsp_config(bufnr)

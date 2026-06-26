@@ -25,6 +25,7 @@ local pending_session_sync = 0
 local help_float_ns = vim.api.nvim_create_namespace("ArkHelpFloat")
 local help_filetype = "arkhelp"
 local is_ark_buffer
+local is_ark_runtime_buffer
 local runtime_ready
 local repl_ready
 local ensure_bridge_runtime
@@ -1044,6 +1045,14 @@ local function managed_repl_buffer(bufnr)
     and (vim.b[bufnr].ark_console == true or vim.b[bufnr].ark_terminal == true)
 end
 
+local function console_view_source_buffer(bufnr)
+  return bufnr ~= nil
+    and vim.api.nvim_buf_is_valid(bufnr)
+    and options ~= nil
+    and vim.b[bufnr].ark_console == true
+    and vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype)
+end
+
 local function add_candidate_bufnr(candidates, seen, bufnr)
   if type(bufnr) ~= "number" or bufnr < 1 or seen[bufnr] then
     return
@@ -1076,6 +1085,16 @@ local function resolve_view_source_bufnr(bufnr)
     end
   end
 
+  for _, candidate in ipairs(candidates) do
+    if is_ark_buffer(candidate) then
+      return candidate
+    end
+  end
+
+  if console_view_source_buffer(bufnr) then
+    return bufnr
+  end
+
   for _, candidate in ipairs(vim.api.nvim_list_bufs()) do
     add_candidate_bufnr(candidates, seen, candidate)
   end
@@ -1095,7 +1114,7 @@ local function runtime_wait_timeout_ms()
 end
 
 runtime_ready = function(bufnr)
-  if not is_ark_buffer(bufnr) then
+  if not is_ark_runtime_buffer(bufnr) then
     return false
   end
 
@@ -1264,7 +1283,7 @@ local function ensure_runtime_ready(bufnr, label)
   bufnr = resolve_bufnr(bufnr)
   label = label or "ark.nvim runtime"
 
-  if not is_ark_buffer(bufnr) then
+  if not is_ark_runtime_buffer(bufnr) then
     return nil, label .. " requires an R-family buffer"
   end
 
@@ -1300,7 +1319,7 @@ local function with_managed_session_ready(bufnr, label, callback, runtime_opts)
   label = label or "ark.nvim runtime"
   local wait_until = runtime_opts.wait_until_ready or wait_until_runtime_ready
 
-  if not is_ark_buffer(bufnr) then
+  if not is_ark_runtime_buffer(bufnr) then
     return nil, label .. " requires an R-family buffer", "runtime"
   end
 
@@ -1314,7 +1333,7 @@ local function with_managed_session_ready(bufnr, label, callback, runtime_opts)
   end
 
   local function finish_after_bridge()
-    if not is_ark_buffer(bufnr) then
+    if not is_ark_runtime_buffer(bufnr) then
       return nil, label .. " requires an R-family buffer", "runtime"
     end
 
@@ -1395,6 +1414,13 @@ is_ark_buffer = function(bufnr)
     and vim.api.nvim_buf_is_valid(bufnr)
     and options ~= nil
     and vim.b[bufnr].ark_console ~= true
+    and vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype)
+end
+
+is_ark_runtime_buffer = function(bufnr)
+  return bufnr ~= nil
+    and vim.api.nvim_buf_is_valid(bufnr)
+    and options ~= nil
     and vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype)
 end
 
