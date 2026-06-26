@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io::Read;
 use std::io::Write;
 use std::net::Shutdown;
@@ -1365,6 +1367,7 @@ impl SessionBridge {
             .collect::<Vec<_>>();
 
         self.append_browser_debug_command_completion_items(request, &mut items)?;
+        prioritize_bare_symbol_completion_items(request, &mut items);
 
         Ok(items)
     }
@@ -2259,6 +2262,78 @@ fn completion_sort_text(request: &CompletionRequest, index: usize) -> String {
         CompletionFlavor::Subset => format!("0-{index:04}"),
         _ => format!("{index:04}"),
     }
+}
+
+fn prioritize_bare_symbol_completion_items(
+    request: &CompletionRequest,
+    items: &mut [CompletionItem],
+) {
+    if !matches!(request.flavor, CompletionFlavor::Symbol) {
+        return;
+    }
+
+    let names = items
+        .iter()
+        .map(|item| completion_item_symbol_name(item).to_string())
+        .collect::<HashSet<_>>();
+
+    let mut group_starts: HashMap<String, usize> = HashMap::new();
+    for (index, item) in items.iter().enumerate() {
+        let name = completion_item_symbol_name(item);
+        let Some(generic) = symbol_completion_generic_name(name, &names) else {
+            continue;
+        };
+
+        group_starts
+            .entry(generic.to_string())
+            .and_modify(|existing| *existing = (*existing).min(index))
+            .or_insert(index);
+    }
+
+    if group_starts.is_empty() {
+        return;
+    }
+
+    for (index, item) in items.iter().enumerate() {
+        let name = completion_item_symbol_name(item);
+        if let Some(group_start) = group_starts.get(name).copied() {
+            group_starts.insert(name.to_string(), group_start.min(index));
+        }
+    }
+
+    for (index, item) in items.iter_mut().enumerate() {
+        let name = completion_item_symbol_name(item).to_string();
+        let Some((group_start, tier)) = group_starts
+            .get(name.as_str())
+            .map(|group_start| (*group_start, 0))
+            .or_else(|| {
+                symbol_completion_generic_name(name.as_str(), &names).and_then(|generic| {
+                    group_starts
+                        .get(generic)
+                        .map(|group_start| (*group_start, 1))
+                })
+            })
+        else {
+            continue;
+        };
+
+        item.sort_text = Some(format!("{group_start:04}-{tier}-{name}-{index:04}"));
+    }
+}
+
+fn completion_item_symbol_name(item: &CompletionItem) -> &str {
+    item.filter_text.as_deref().unwrap_or(item.label.as_str())
+}
+
+fn symbol_completion_generic_name<'a>(name: &'a str, names: &HashSet<String>) -> Option<&'a str> {
+    name.char_indices().rev().find_map(|(index, ch)| {
+        if ch != '.' || index == 0 {
+            return None;
+        }
+
+        let generic = &name[..index];
+        names.contains(generic).then_some(generic)
+    })
 }
 
 fn completion_item_data(
@@ -6077,6 +6152,70 @@ mod tests {
         );
 
         assert_eq!(item.kind, Some(CompletionItemKind::VARIABLE));
+    }
+
+    #[test]
+    fn test_symbol_completion_items_prioritize_generic_before_s3_methods() {
+        let request = CompletionRequest {
+            expr: String::from("baseenv()"),
+            flavor: CompletionFlavor::Symbol,
+            prefix: Some(String::from("summ")),
+            accessor: None,
+            close_string: false,
+            quote_insert: false,
+            subset_kind: None,
+        };
+
+        let mut items = vec![
+            completion_item(
+                BridgeMember {
+                    name_display: String::from("summary.aov"),
+                    name_raw: String::from("summary.aov"),
+                    r#type: String::from("closure"),
+                    ..Default::default()
+                },
+                &request,
+                None,
+                0,
+            ),
+            completion_item(
+                BridgeMember {
+                    name_display: String::from("summary.glm"),
+                    name_raw: String::from("summary.glm"),
+                    r#type: String::from("closure"),
+                    ..Default::default()
+                },
+                &request,
+                None,
+                1,
+            ),
+            completion_item(
+                BridgeMember {
+                    name_display: String::from("summary"),
+                    name_raw: String::from("summary"),
+                    r#type: String::from("closure"),
+                    ..Default::default()
+                },
+                &request,
+                None,
+                2,
+            ),
+        ];
+
+        prioritize_bare_symbol_completion_items(&request, &mut items);
+
+        let generic = items
+            .iter()
+            .find(|item| item.label == "summary")
+            .expect("expected summary completion item");
+        let method = items
+            .iter()
+            .find(|item| item.label == "summary.aov")
+            .expect("expected summary.aov completion item");
+
+        assert_eq!(generic.sort_text.as_deref(), Some("0000-0-summary-0002"));
+        assert_eq!(method.sort_text.as_deref(), Some("0000-1-summary.aov-0000"));
+        assert!(generic.sort_text < method.sort_text);
     }
 
     #[test]
