@@ -21,9 +21,13 @@ vim.bo[source_bufnr].filetype = "r"
 vim.api.nvim_buf_set_lines(source_bufnr, 0, -1, false, { "mtcars" })
 
 local view_calls = {}
+local target_view_calls = {}
 package.loaded["ark"] = {
   view_under_cursor = function(bufnr)
     view_calls[#view_calls + 1] = bufnr
+  end,
+  targets_view_pick = function(bufnr)
+    target_view_calls[#target_view_calls + 1] = bufnr
   end,
 }
 
@@ -87,11 +91,40 @@ if type(visual_view_map) ~= "table" or type(visual_view_map.callback) ~= "functi
   ark_test.fail("terminal backend should map visual <leader>rv to ArkView: " .. vim.inspect(visual_view_map))
 end
 
-view_map.callback()
-if view_calls[1] ~= bufnr then
+local upper_view_map = vim.fn.maparg("<leader>rV", "n", false, true)
+if type(upper_view_map) ~= "table" or type(upper_view_map.callback) ~= "function" then
   terminal.stop()
   stop_watchdog()
-  ark_test.fail("terminal <leader>rv should target the terminal buffer, got " .. vim.inspect(view_calls))
+  ark_test.fail("terminal backend should map normal <leader>rV to ArkView: " .. vim.inspect(upper_view_map))
+end
+
+local visual_upper_view_map = vim.fn.maparg("<leader>rV", "x", false, true)
+if type(visual_upper_view_map) ~= "table" or type(visual_upper_view_map.callback) ~= "function" then
+  terminal.stop()
+  stop_watchdog()
+  ark_test.fail("terminal backend should map visual <leader>rV to ArkView: " .. vim.inspect(visual_upper_view_map))
+end
+
+local target_view_map = vim.fn.maparg("<leader>tv", "n", false, true)
+if type(target_view_map) ~= "table" or type(target_view_map.callback) ~= "function" then
+  terminal.stop()
+  stop_watchdog()
+  ark_test.fail("terminal backend should map normal <leader>tv to target ArkView: " .. vim.inspect(target_view_map))
+end
+
+view_map.callback()
+upper_view_map.callback()
+if view_calls[1] ~= bufnr or view_calls[2] ~= bufnr then
+  terminal.stop()
+  stop_watchdog()
+  ark_test.fail("terminal ArkView mappings should target the terminal buffer, got " .. vim.inspect(view_calls))
+end
+
+target_view_map.callback()
+if target_view_calls[1] ~= bufnr then
+  terminal.stop()
+  stop_watchdog()
+  ark_test.fail("terminal <leader>tv should target the terminal buffer, got " .. vim.inspect(target_view_calls))
 end
 
 terminal.stop()

@@ -53,8 +53,12 @@ if type(winid) == "number" and winid > 0 then
 end
 
 local view_calls = {}
+local target_view_calls = {}
 ark.view_under_cursor = function(view_bufnr)
   view_calls[#view_calls + 1] = view_bufnr
+end
+ark.targets_view_pick = function(view_bufnr)
+  target_view_calls[#target_view_calls + 1] = view_bufnr
 end
 
 local view_map = vim.fn.maparg("<leader>rv", "n", false, true)
@@ -67,9 +71,30 @@ if type(visual_view_map) ~= "table" or type(visual_view_map.callback) ~= "functi
   ark_test.fail("console should map visual <leader>rv to ArkView: " .. vim.inspect(visual_view_map))
 end
 
+local upper_view_map = vim.fn.maparg("<leader>rV", "n", false, true)
+if type(upper_view_map) ~= "table" or type(upper_view_map.callback) ~= "function" then
+  ark_test.fail("console should map normal <leader>rV to ArkView: " .. vim.inspect(upper_view_map))
+end
+
+local visual_upper_view_map = vim.fn.maparg("<leader>rV", "x", false, true)
+if type(visual_upper_view_map) ~= "table" or type(visual_upper_view_map.callback) ~= "function" then
+  ark_test.fail("console should map visual <leader>rV to ArkView: " .. vim.inspect(visual_upper_view_map))
+end
+
+local target_view_map = vim.fn.maparg("<leader>tv", "n", false, true)
+if type(target_view_map) ~= "table" or type(target_view_map.callback) ~= "function" then
+  ark_test.fail("console should map normal <leader>tv to target ArkView: " .. vim.inspect(target_view_map))
+end
+
 view_map.callback()
-if view_calls[1] ~= bufnr then
-  ark_test.fail("console <leader>rv should target the console buffer, got " .. vim.inspect(view_calls))
+upper_view_map.callback()
+if view_calls[1] ~= bufnr or view_calls[2] ~= bufnr then
+  ark_test.fail("console ArkView mappings should target the console buffer, got " .. vim.inspect(view_calls))
+end
+
+target_view_map.callback()
+if target_view_calls[1] ~= bufnr then
+  ark_test.fail("console <leader>tv should target the console buffer, got " .. vim.inspect(target_view_calls))
 end
 
 local lsp_config = ark.lsp_config(bufnr)

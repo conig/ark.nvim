@@ -15,6 +15,10 @@ package.loaded["ark"] = {
     calls[#calls + 1] = { name = "pick", bufnr = bufnr }
     return true
   end,
+  targets_view_pick = function(bufnr)
+    calls[#calls + 1] = { name = "view_pick", bufnr = bufnr }
+    return true
+  end,
   targets_active = function(bufnr)
     calls[#calls + 1] = { name = "active", bufnr = bufnr }
     return "clean_data"
@@ -67,6 +71,7 @@ vim.cmd("ArkTargetsInfo")
 vim.cmd("ArkTargets")
 vim.cmd("ArkTargetsManifest")
 vim.cmd("ArkTargetPick")
+vim.cmd("ArkTargetView")
 vim.cmd("ArkTargetAcquire")
 vim.cmd("ArkTargetActive")
 vim.cmd("ArkTargetGraph")
@@ -105,6 +110,7 @@ local expected = {
   { name = "manifest", bufnr = 0 },
   { name = "manifest", bufnr = 0 },
   { name = "pick", bufnr = 0 },
+  { name = "view_pick", bufnr = 0 },
   { name = "pick", bufnr = 0 },
   { name = "active", bufnr = 0 },
   { name = "graph", bufnr = 0 },

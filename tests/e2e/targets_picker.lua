@@ -11,6 +11,7 @@ local async_action_started = 0
 local manifest_calls = 0
 local notifications = {}
 local printed = {}
+local view_open_calls = {}
 
 package.loaded["snacks"] = {
   picker = {
@@ -130,7 +131,10 @@ package.loaded["ark.snippets"] = {
 }
 
 package.loaded["ark.view"] = {
-  open = function() end,
+  open = function(opts)
+    view_open_calls[#view_open_calls + 1] = opts
+    return { expr = opts.expr }
+  end,
   refresh = function() end,
   close = function() end,
 }
@@ -276,6 +280,23 @@ if active ~= "clean_data" then
   error("expected picked target to become active, got " .. vim.inspect(active), 0)
 end
 
+local view_ok, view_err = ark.targets_view_pick(source_buf)
+if not view_ok then
+  error("target ArkView picker failed: " .. tostring(view_err), 0)
+end
+if picker_closed ~= 2 then
+  error("expected target ArkView picker to close after selecting clean_data", 0)
+end
+if #view_open_calls ~= 1 then
+  error("expected target ArkView picker to open one view, got " .. vim.inspect(view_open_calls), 0)
+end
+if view_open_calls[1].expr ~= 'targets::tar_read(name = "clean_data")' then
+  error("expected target ArkView expression for clean_data, got " .. vim.inspect(view_open_calls[1].expr), 0)
+end
+if view_open_calls[1].source_bufnr ~= source_buf then
+  error("expected target ArkView to use the source buffer, got " .. vim.inspect(view_open_calls[1]), 0)
+end
+
 picker_spec = nil
 notifications = {}
 printed = {}
@@ -297,7 +318,7 @@ end
 if not vim.deep_equal(action_calls[1].names, { "clean_data" }) or action_calls[1].action ~= "invalidate" then
   error("expected pick action to invalidate clean_data, got " .. vim.inspect(action_calls), 0)
 end
-if picker_closed ~= 2 then
+if picker_closed ~= 3 then
   error("expected target action picker to close before invalidating clean_data", 0)
 end
 if #printed ~= 0 then

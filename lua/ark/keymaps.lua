@@ -199,12 +199,12 @@ function M.attach(bufnr, opts)
       module.view_under_cursor(0)
     end
   end, "Open ArkView under cursor or selection")
-  map(bufnr, "n", prefix .. "V", function()
+  map(bufnr, { "n", "x" }, prefix .. "V", function()
     local module = ark()
     if module then
       module.view_under_cursor(0)
     end
-  end, "Open ArkView under cursor")
+  end, "Open ArkView under cursor or selection")
   map(bufnr, "n", prefix .. "?", function()
     local module = ark()
     if module then
@@ -217,6 +217,13 @@ function M.attach(bufnr, opts)
       module.snippets(0)
     end
   end, "Open Ark snippets")
+
+  map(bufnr, "n", target_prefix .. "v", function()
+    local module = ark()
+    if module and type(module.targets_view_pick) == "function" then
+      module.targets_view_pick(0)
+    end
+  end, "Open ArkView for target")
 
   map(bufnr, "n", target_prefix .. "ta", function()
     local module = ark()

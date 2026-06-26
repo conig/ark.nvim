@@ -108,6 +108,9 @@ package.loaded["ark"] = {
   targets_pick = function(bufnr)
     calls[#calls + 1] = { name = "target_pick", bufnr = bufnr }
   end,
+  targets_view_pick = function(bufnr)
+    calls[#calls + 1] = { name = "target_view_pick", bufnr = bufnr }
+  end,
   targets_project_info = function(bufnr)
     calls[#calls + 1] = { name = "target_info", bufnr = bufnr }
     return { status = "ok" }
@@ -168,6 +171,7 @@ vim.cmd("Ark view close")
 vim.cmd("Ark targets info")
 vim.cmd("Ark targets manifest")
 vim.cmd("Ark targets pick")
+vim.cmd("Ark targets view")
 vim.cmd("Ark targets active")
 vim.cmd("Ark targets graph")
 vim.cmd("Ark targets network")
@@ -220,6 +224,7 @@ local expected = {
   { name = "target_info", bufnr = 0 },
   { name = "target_manifest", bufnr = 0 },
   { name = "target_pick", bufnr = 0 },
+  { name = "target_view_pick", bufnr = 0 },
   { name = "target_active", bufnr = 0 },
   { name = "target_graph", bufnr = 0 },
   { name = "target_graph", bufnr = 0 },
@@ -247,6 +252,11 @@ end
 local completions = vim.fn.getcompletion("Ark targets b", "cmdline")
 if not vim.tbl_contains(completions, "targets build") then
   error("expected Ark dispatcher completion to include targets build, got " .. vim.inspect(completions), 0)
+end
+
+local view_completions = vim.fn.getcompletion("Ark targets v", "cmdline")
+if not vim.tbl_contains(view_completions, "targets view") then
+  error("expected Ark dispatcher completion to include targets view, got " .. vim.inspect(view_completions), 0)
 end
 
 local package_completions = vim.fn.getcompletion("Ark packages i", "cmdline")

@@ -53,6 +53,9 @@ package.loaded["ark"] = {
   targets_pick = function(bufnr)
     calls.targets_pick = bufnr
   end,
+  targets_view_pick = function(bufnr)
+    calls.targets_view_pick = bufnr
+  end,
   targets_active = function(bufnr)
     calls.targets_active = bufnr
     return "clean_data"
@@ -167,14 +170,18 @@ if calls.new_tab ~= 1 or calls.prev_tab ~= 1 or calls.next_tab ~= 1 or calls.clo
 end
 
 invoke("<F5>V")
+if type(mapping("<F5>V", "x").callback) ~= "function" then
+  error("expected visual <prefix>V to open ArkView for the selection", 0)
+end
 invoke("<F5>?")
 invoke("<F6>")
 if calls.view_under_cursor ~= 2 or calls.view_under_cursor_bufnr ~= 0 or calls.help ~= 0 or calls.snippets ~= 0 then
   error("expected view/help/snippets mappings to call Ark helpers, got " .. vim.inspect(calls), 0)
 end
 
+invoke("<F7>v")
 invoke("<F7>ta")
 invoke("<F7>tn")
-if calls.targets_pick ~= 0 or calls.targets_active ~= 0 then
+if calls.targets_view_pick ~= 0 or calls.targets_pick ~= 0 or calls.targets_active ~= 0 then
   error("expected target mappings to call Ark target helpers, got " .. vim.inspect(calls), 0)
 end

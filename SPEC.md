@@ -467,6 +467,7 @@ Expected commands:
 - `:ArkTargetLoadActive`
 - `:ArkTargetLog`
 - `:ArkTargetStatus`
+- `:ArkTargetView`
 
 The commands may use Snacks pickers when available, but the canonical operation
 should remain available through LSP code actions and direct commands. Pickers
@@ -479,6 +480,9 @@ action asynchronously and notify on completion so Neovim remains responsive
 while the managed R session works. Target invalidation should call the
 idempotent tidyselect-safe invalidate path immediately, without doing metadata
 or manifest preflight before the invalidation request.
+The optional keymap preset and managed REPL buffers should expose `<leader>tv`
+as the default target ArkView route, using the picker to open
+`targets::tar_read(name = ...)` for the selected target.
 
 ### Cache And Invalidation
 

@@ -115,6 +115,7 @@ local ark_command_completions = {
   "targets object-meta",
   "targets pick",
   "targets status",
+  "targets view",
   "view",
   "view close",
   "view refresh",
@@ -151,6 +152,8 @@ local function dispatch_targets_command(args)
     print_result(ark.targets_manifest(0))
   elseif subcommand == "pick" then
     ark.targets_pick(0)
+  elseif subcommand == "view" then
+    ark.targets_view_pick(0)
   elseif subcommand == "active" then
     local name, err = ark.targets_active(0)
     if name then
@@ -437,6 +440,10 @@ end, { desc = "Print the target manifest for the current buffer" })
 vim.api.nvim_create_user_command("ArkTargetPick", function()
   require("ark").targets_pick(0)
 end, { desc = "Pick and remember the active target for the current project" })
+
+vim.api.nvim_create_user_command("ArkTargetView", function()
+  require("ark").targets_view_pick(0)
+end, { desc = "Pick a target and open it in ArkView" })
 
 vim.api.nvim_create_user_command("ArkTargetAcquire", function()
   require("ark").targets_pick(0)

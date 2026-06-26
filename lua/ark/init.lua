@@ -3206,6 +3206,26 @@ function M.targets_pick(bufnr, callback)
   return true
 end
 
+function M.targets_view_pick(bufnr)
+  ensure_setup()
+  bufnr = resolve_bufnr(bufnr)
+
+  local source_bufnr = resolve_view_source_bufnr(bufnr)
+  if type(source_bufnr) ~= "number" then
+    local err = "ark.nvim target ArkView requires an R-family buffer"
+    notify(err, vim.log.levels.WARN)
+    return nil, err
+  end
+
+  return M.targets_pick(source_bufnr, function(name)
+    if type(name) ~= "string" or name == "" then
+      return
+    end
+
+    M.view("targets::tar_read(name = " .. r_string_literal(name) .. ")", source_bufnr)
+  end)
+end
+
 function M.targets_network(bufnr)
   return targets_request(bufnr, "ark.nvim target network", function(project, target_bufnr)
     return lsp.targets_network(options, target_bufnr, project)

@@ -190,7 +190,8 @@ That preset includes:
 - `<leader>rp` to start or restart the managed R pane
 - `<leader>rw` to send the expression under cursor or the selection
 - `<leader>rh` / `<leader>rs` to run `head()` / `summary()` on that expression
-- `<leader>rV`, `<leader>r?`, and `<leader>as` for ArkView, help, and snippets
+- `<leader>rV`, `<leader>tv`, `<leader>r?`, and `<leader>as` for ArkView,
+  target ArkView, help, and snippets
 - `<leader>r=`, `<leader>r[`, `<leader>r]`, and `<leader>r-` for Ark R tabs
 - `<leader>tta` and `<leader>ttn` to pick and show the active Ark target
 
@@ -443,6 +444,8 @@ For `{targets}` projects:
 - `:Ark targets graph`, `:Ark targets network`, `:Ark targets status`,
   `:Ark targets meta`, and `:Ark targets log` open target views
 - `:Ark targets pick` selects and remembers an active `{targets}` target
+- `:Ark targets view` picks a target and opens `targets::tar_read(...)` in
+  ArkView
 - `:Ark targets load-pick` / `:Ark targets build-pick` pick a target and run
   the matching target operation
 - `:Ark targets load-active` / `:Ark targets build-active` run the operation
