@@ -493,8 +493,10 @@ local function popup_display_args(opts)
     tostring(opts.width),
     "-h",
     tostring(opts.height),
+    "-x",
+    "C",
     "-y",
-    "0",
+    "C",
   }
 
   if opts.border == false then

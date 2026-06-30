@@ -185,8 +185,8 @@ local ok, err = pcall(function()
     error("expected ArkHelp popup to disable terminal alternate-screen via TERM=ansi, got " .. popup_command, 0)
   end
 
-  if popup_arg(jobstart_calls[1].command, "-y") ~= "0" then
-    error("expected ArkHelp popup to be top-anchored to avoid exposing old pane rows, got " .. popup_command, 0)
+  if popup_arg(jobstart_calls[1].command, "-x") ~= "C" or popup_arg(jobstart_calls[1].command, "-y") ~= "C" then
+    error("expected ArkHelp popup to be centered on both axes, got " .. popup_command, 0)
   end
   if has_popup_flag(jobstart_calls[1].command, "-B") then
     error("expected ArkHelp popup to keep tmux border chrome for its title, got " .. popup_command, 0)
@@ -306,8 +306,8 @@ local ok, err = pcall(function()
   if popup_arg(jobstart_calls[1].command, "-w") ~= "91%" or popup_arg(jobstart_calls[1].command, "-h") ~= "83%" then
     error("unexpected ArkView popup geometry: " .. ui_popup_command, 0)
   end
-  if popup_arg(jobstart_calls[1].command, "-y") ~= "0" then
-    error("expected ArkView popup to be top-anchored to avoid exposing old pane rows, got " .. ui_popup_command, 0)
+  if popup_arg(jobstart_calls[1].command, "-x") ~= "C" or popup_arg(jobstart_calls[1].command, "-y") ~= "C" then
+    error("expected ArkView popup to be centered on both axes, got " .. ui_popup_command, 0)
   end
   if has_popup_flag(jobstart_calls[1].command, "-B") then
     error("expected ArkView popup to keep tmux border chrome for its title, got " .. ui_popup_command, 0)
@@ -378,8 +378,8 @@ local ok, err = pcall(function()
     error("expected one Neovim UI popup display-popup call, got " .. vim.inspect(jobstart_calls), 0)
   end
   local nvim_ui_popup_command = table.concat(jobstart_calls[1].command, "\t")
-  if popup_arg(jobstart_calls[1].command, "-y") ~= "0" then
-    error("expected Neovim UI popup to be top-anchored to avoid exposing old pane rows, got " .. nvim_ui_popup_command, 0)
+  if popup_arg(jobstart_calls[1].command, "-x") ~= "C" or popup_arg(jobstart_calls[1].command, "-y") ~= "C" then
+    error("expected Neovim UI popup to be centered on both axes, got " .. nvim_ui_popup_command, 0)
   end
   if has_popup_flag(jobstart_calls[1].command, "-B") then
     error("expected Neovim UI popup to keep tmux border chrome for its title, got " .. nvim_ui_popup_command, 0)
