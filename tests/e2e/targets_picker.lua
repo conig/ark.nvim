@@ -96,13 +96,14 @@ package.loaded["ark.lsp"] = {
       },
     }
   end,
-  targets_action = function(_, _, project, action, names)
+  targets_action = function(_, bufnr, project, action, names)
     if action == "invalidate" then
       vim.wait(1200, function()
         return false
       end, 1200, false)
     end
     action_calls[#action_calls + 1] = {
+      bufnr = bufnr,
       project = project,
       action = action,
       names = names,
@@ -112,10 +113,11 @@ package.loaded["ark.lsp"] = {
     end
     return { action = action, names = names }
   end,
-  targets_action_async = function(_, _, project, action, names, callback)
+  targets_action_async = function(_, bufnr, project, action, names, callback)
     async_action_started = async_action_started + 1
     vim.defer_fn(function()
       action_calls[#action_calls + 1] = {
+        bufnr = bufnr,
         project = project,
         action = action,
         names = names,
@@ -337,6 +339,70 @@ end
 local active_action = ark.targets_action_active("make", source_buf)
 if not active_action or not vim.deep_equal(action_calls[2].names, { "clean_data" }) or action_calls[2].action ~= "make" then
   error("expected active action to make clean_data, got " .. vim.inspect(action_calls), 0)
+end
+
+local notes_buf = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_set_current_buf(notes_buf)
+vim.api.nvim_buf_set_name(notes_buf, project_root .. "/notes.txt")
+vim.bo[notes_buf].filetype = "text"
+vim.api.nvim_buf_set_lines(notes_buf, 0, -1, false, {
+  "This note is part of the target pipeline review.",
+})
+
+notifications = {}
+printed = {}
+local txt_action_start_count = #action_calls
+local txt_async_start_count = async_action_started
+
+-- Regression: target projects include non-R files such as notes, logs, and
+-- manuscript assets. Target actions must use the current buffer as the project
+-- anchor without requiring that buffer itself to be an R-family LSP buffer.
+local txt_pick_ok, txt_pick_err = ark.targets_action_pick("invalidate", notes_buf)
+if not txt_pick_ok then
+  error("target action picker should start from a project-local text buffer: " .. tostring(txt_pick_err), 0)
+end
+if async_action_started ~= txt_async_start_count + 1 then
+  error("expected text-buffer target action to dispatch asynchronously, got " .. async_action_started, 0)
+end
+
+local txt_action_completed = vim.wait(2500, function()
+  return #action_calls >= txt_action_start_count + 1 and #notifications >= 1
+end, 20, false)
+if not txt_action_completed then
+  error("timed out waiting for text-buffer target invalidation; calls=" .. vim.inspect(action_calls), 0)
+end
+
+local txt_action = action_calls[#action_calls]
+if txt_action.action ~= "invalidate" or not vim.deep_equal(txt_action.names, { "clean_data" }) then
+  error("expected text-buffer action to invalidate clean_data, got " .. vim.inspect(txt_action), 0)
+end
+if txt_action.project.root ~= project_root then
+  error("expected text-buffer action to keep the text buffer project root, got " .. vim.inspect(txt_action), 0)
+end
+if txt_action.bufnr == notes_buf then
+  error("text-buffer target action should use an Ark runtime buffer for the LSP request, got " .. vim.inspect(txt_action), 0)
+end
+
+vim.api.nvim_buf_delete(source_buf, { force = true })
+local hidden_runtime_action = ark.targets_action("make", "clean_data", notes_buf)
+if type(hidden_runtime_action) ~= "table" then
+  error("text-buffer target action should create a hidden runtime buffer from _targets.R", 0)
+end
+local hidden_runtime_call = action_calls[#action_calls]
+if hidden_runtime_call.action ~= "make" or not vim.deep_equal(hidden_runtime_call.names, { "clean_data" }) then
+  error("expected hidden-runtime action to make clean_data, got " .. vim.inspect(hidden_runtime_call), 0)
+end
+if hidden_runtime_call.project.root ~= project_root then
+  error("expected hidden-runtime action to keep the text buffer project root, got " .. vim.inspect(hidden_runtime_call), 0)
+end
+if hidden_runtime_call.bufnr == notes_buf then
+  error("hidden-runtime action should not use the text buffer as the LSP request buffer", 0)
+end
+if vim.api.nvim_buf_get_name(hidden_runtime_call.bufnr) ~= project_root .. "/_targets.R" then
+  error("expected hidden runtime buffer to be _targets.R, got " .. vim.inspect(hidden_runtime_call), 0)
+end
+if vim.bo[hidden_runtime_call.bufnr].filetype ~= "r" then
+  error("expected hidden runtime buffer to use R filetype, got " .. vim.bo[hidden_runtime_call.bufnr].filetype, 0)
 end
 
 vim.ui.select = original_select

@@ -2938,6 +2938,94 @@ function M.targets_script(bufnr)
   return targets_project(bufnr).script
 end
 
+local target_runtime_by_root = {}
+
+local function same_targets_project(project, bufnr)
+  if type(project) ~= "table" or type(project.root) ~= "string" or project.root == "" then
+    return false
+  end
+  if type(bufnr) ~= "number" or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  return targets_project(bufnr).root == project.root
+end
+
+local function target_runtime_candidate(project, bufnr)
+  if is_ark_runtime_buffer(bufnr) and same_targets_project(project, bufnr) then
+    return bufnr
+  end
+  return nil
+end
+
+local function target_runtime_filetype()
+  local filetypes = options and options.filetypes or nil
+  if vim.tbl_contains(filetypes or {}, "r") then
+    return "r"
+  end
+  return (type(filetypes) == "table" and filetypes[1]) or "r"
+end
+
+local function ensure_target_script_buffer(project)
+  local script = type(project) == "table" and project.script or nil
+  if type(script) ~= "string" or script == "" or vim.fn.filereadable(script) ~= 1 then
+    return nil
+  end
+
+  local bufnr = vim.fn.bufnr(script)
+  local existed = bufnr > 0
+  if not existed then
+    bufnr = vim.fn.bufadd(script)
+  end
+  if type(bufnr) ~= "number" or bufnr < 1 or not vim.api.nvim_buf_is_valid(bufnr) then
+    return nil
+  end
+
+  if not vim.api.nvim_buf_is_loaded(bufnr) then
+    vim.fn.bufload(bufnr)
+  end
+  if not existed then
+    vim.bo[bufnr].buflisted = false
+  end
+  if not vim.tbl_contains(options.filetypes or {}, vim.bo[bufnr].filetype) then
+    vim.bo[bufnr].filetype = target_runtime_filetype()
+  end
+
+  if target_runtime_candidate(project, bufnr) then
+    target_runtime_by_root[project.root] = bufnr
+    return bufnr
+  end
+  return nil
+end
+
+local function targets_runtime_bufnr(project, anchor_bufnr)
+  local candidates = {}
+  local seen = {}
+
+  add_candidate_bufnr(candidates, seen, anchor_bufnr)
+  add_candidate_bufnr(candidates, seen, target_runtime_by_root[project.root])
+  add_candidate_bufnr(candidates, seen, vim.fn.bufnr("#"))
+
+  for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_win_is_valid(winid) then
+      add_candidate_bufnr(candidates, seen, vim.api.nvim_win_get_buf(winid))
+    end
+  end
+
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    add_candidate_bufnr(candidates, seen, bufnr)
+  end
+
+  for _, candidate in ipairs(candidates) do
+    local runtime_bufnr = target_runtime_candidate(project, candidate)
+    if runtime_bufnr then
+      target_runtime_by_root[project.root] = runtime_bufnr
+      return runtime_bufnr
+    end
+  end
+
+  return ensure_target_script_buffer(project)
+end
+
 local function target_name_text(value)
   if type(value) == "string" then
     return value
@@ -3102,18 +3190,24 @@ end
 
 local function targets_request(bufnr, label, request)
   ensure_setup()
-  bufnr = resolve_bufnr(bufnr)
+  local anchor_bufnr = resolve_bufnr(bufnr)
+  local project = targets_project(anchor_bufnr)
+  local target_bufnr = targets_runtime_bufnr(project, anchor_bufnr)
+  if not target_bufnr then
+    local err = (label or "ark.nvim target lens") .. " requires an R-family buffer or readable targets script"
+    notify(err, vim.log.levels.WARN)
+    return nil, err
+  end
 
-  local ok, runtime_err = ensure_runtime_ready(bufnr, label or "ark.nvim target lens")
+  local ok, runtime_err = ensure_runtime_ready(target_bufnr, label or "ark.nvim target lens")
   if not ok then
     notify(runtime_err, vim.log.levels.WARN)
     return nil, runtime_err
   end
 
-  local project = targets_project(bufnr)
   local result, err = nil, nil
   for attempt = 1, 5 do
-    result, err = request(project, bufnr)
+    result, err = request(project, target_bufnr)
     if result then
       return result
     end
@@ -3135,8 +3229,18 @@ end
 
 local function targets_request_async(bufnr, label, request, callback)
   ensure_setup()
-  bufnr = resolve_bufnr(bufnr)
+  local anchor_bufnr = resolve_bufnr(bufnr)
   label = label or "ark.nvim target lens"
+  local project = targets_project(anchor_bufnr)
+  local target_bufnr = targets_runtime_bufnr(project, anchor_bufnr)
+  if not target_bufnr then
+    local err = label .. " requires an R-family buffer or readable targets script"
+    notify(err, vim.log.levels.WARN)
+    if type(callback) == "function" then
+      callback(nil, err)
+    end
+    return nil, err
+  end
 
   local function request_targets(runtime_err)
     if runtime_err then
@@ -3147,7 +3251,6 @@ local function targets_request_async(bufnr, label, request, callback)
       return nil, runtime_err
     end
 
-    local project = targets_project(bufnr)
     local attempt = 0
     local request_once
 
@@ -3177,7 +3280,7 @@ local function targets_request_async(bufnr, label, request, callback)
 
     request_once = function()
       attempt = attempt + 1
-      local sent, send_err = request(project, bufnr, handle_result)
+      local sent, send_err = request(project, target_bufnr, handle_result)
       if not sent then
         handle_result(nil, send_err)
       end
@@ -3187,7 +3290,7 @@ local function targets_request_async(bufnr, label, request, callback)
     return true
   end
 
-  local ok, runtime_err, err_source = with_runtime_ready(bufnr, label, request_targets)
+  local ok, runtime_err, err_source = with_runtime_ready(target_bufnr, label, request_targets)
   if not ok and runtime_err and err_source ~= "callback" then
     notify(runtime_err, vim.log.levels.WARN)
     if type(callback) == "function" then
