@@ -188,6 +188,9 @@ local ok, err = pcall(function()
   if popup.opts.help.rpc_name ~= "__ark_help_popup_backend" then
     error("expected ArkHelp tmux popup link backend RPC name, got " .. vim.inspect(popup.opts.help), 0)
   end
+  if popup.opts.help.initial.topic ~= "dplyr::mutate" then
+    error("expected ArkHelp tmux popup to receive initial history topic, got " .. vim.inspect(popup.opts.help), 0)
+  end
   local popup_refs = popup.opts.help.initial and popup.opts.help.initial.references or {}
   if type(popup_refs[1]) ~= "table" or popup_refs[1].target ~= "dplyr::group_by" then
     error("expected ArkHelp tmux popup to receive initial link targets, got " .. vim.inspect(popup.opts.help), 0)

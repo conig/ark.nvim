@@ -1077,8 +1077,132 @@ local function open_readonly_float(text, opts)
     end
   end
 
+  local current_topic = type(opts.topic) == "string" and opts.topic or nil
+  local back_stack = {}
+  local forward_stack = {}
+
+  local function notify_help(message)
+    vim.notify(tostring(message), vim.log.levels.WARN, { title = "ark.nvim" })
+  end
+
+  local function request_page(target)
+    if type(opts.on_request_page) ~= "function" then
+      return nil, "ArkHelp history navigation is unavailable"
+    end
+
+    return opts.on_request_page(target)
+  end
+
+  local function set_page(page, target)
+    if type(page) ~= "table" or type(page.text) ~= "string" then
+      return nil, "invalid ArkHelp page response"
+    end
+
+    local next_rendered = render_help_display(split_lines(page.text))
+    local next_lines = next_rendered.lines
+    if #next_lines == 0 then
+      next_lines = { "" }
+      next_rendered.lines = next_lines
+    end
+
+    vim.bo[buf].readonly = false
+    vim.bo[buf].modifiable = true
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, next_lines)
+    vim.bo[buf].filetype = help_filetype
+    local treesitter_started = start_help_markdown_parser(buf)
+    vim.b[buf].ark_help_treesitter = treesitter_started
+    vim.bo[buf].modifiable = false
+    vim.bo[buf].readonly = true
+    apply_help_highlights(buf, next_rendered, page.references or {})
+    vim.defer_fn(function()
+      if vim.api.nvim_buf_is_valid(buf) then
+        start_help_markdown_syntax(buf)
+      end
+    end, 20)
+
+    current_topic = type(page.topic) == "string" and page.topic ~= "" and page.topic or target
+    vim.b[buf].ark_help_topic = current_topic
+    pcall(vim.api.nvim_win_set_cursor, win, { 1, 0 })
+    return true, nil
+  end
+
+  local function follow_target(target)
+    if type(target) ~= "string" or target == "" then
+      return
+    end
+
+    local page, err = request_page(target)
+    if not page then
+      notify_help(err or "failed to follow ArkHelp link")
+      return
+    end
+
+    local previous = current_topic
+    local ok, set_err = set_page(page, target)
+    if not ok then
+      notify_help(set_err or "failed to render ArkHelp link")
+      return
+    end
+
+    if type(previous) == "string" and previous ~= "" and previous ~= current_topic then
+      back_stack[#back_stack + 1] = previous
+      forward_stack = {}
+    end
+  end
+
+  local function history_back()
+    local target = back_stack[#back_stack]
+    if type(target) ~= "string" or target == "" then
+      return
+    end
+
+    local page, err = request_page(target)
+    if not page then
+      notify_help(err or "failed to open previous ArkHelp page")
+      return
+    end
+
+    local previous = current_topic
+    local ok, set_err = set_page(page, target)
+    if not ok then
+      notify_help(set_err or "failed to render previous ArkHelp page")
+      return
+    end
+
+    back_stack[#back_stack] = nil
+    if type(previous) == "string" and previous ~= "" and previous ~= current_topic then
+      forward_stack[#forward_stack + 1] = previous
+    end
+  end
+
+  local function history_forward()
+    local target = forward_stack[#forward_stack]
+    if type(target) ~= "string" or target == "" then
+      return
+    end
+
+    local page, err = request_page(target)
+    if not page then
+      notify_help(err or "failed to open next ArkHelp page")
+      return
+    end
+
+    local previous = current_topic
+    local ok, set_err = set_page(page, target)
+    if not ok then
+      notify_help(set_err or "failed to render next ArkHelp page")
+      return
+    end
+
+    forward_stack[#forward_stack] = nil
+    if type(previous) == "string" and previous ~= "" and previous ~= current_topic then
+      back_stack[#back_stack + 1] = previous
+    end
+  end
+
   vim.b[buf].ark_help_source_bufnr = opts.source_bufnr
   vim.b[buf].ark_help_buffer = true
+  vim.b[buf].ark_help_topic = current_topic
 
   vim.keymap.set("n", "q", close, { buffer = buf, nowait = true, silent = true })
   vim.keymap.set("n", "<CR>", function()
@@ -1087,12 +1211,10 @@ local function open_readonly_float(text, opts)
       return
     end
 
-    close()
-
-    if type(opts.on_follow) == "function" then
-      opts.on_follow(match.target)
-    end
+    follow_target(match.target)
   end, { buffer = buf, nowait = true, silent = true })
+  vim.keymap.set("n", "H", history_back, { buffer = buf, nowait = true, silent = true })
+  vim.keymap.set("n", "L", history_forward, { buffer = buf, nowait = true, silent = true })
 
   return buf, win
 end
@@ -1236,6 +1358,7 @@ local function open_help_popup(page, topic, source_bufnr)
   if backend then
     popup_opts.help = vim.tbl_extend("force", backend, {
       initial = {
+        topic = payload.topic,
         references = payload.references,
       },
     })
@@ -2657,10 +2780,11 @@ local function show_help_page(bufnr, topic)
     end
 
     open_readonly_float(page.text, {
+      topic = topic,
       references = page.references,
       source_bufnr = bufnr,
-      on_follow = function(target)
-        show_help_page(bufnr, target)
+      on_request_page = function(target)
+        return lsp.help_text(options, bufnr, target)
       end,
     })
 

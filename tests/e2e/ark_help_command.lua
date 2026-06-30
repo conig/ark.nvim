@@ -262,6 +262,9 @@ local ok, err = pcall(function()
   if not help_keymaps.q then
     error("expected ArkHelp to close from normal-mode q", 0)
   end
+  if not help_keymaps.H or not help_keymaps.L then
+    error("expected ArkHelp to map H/L for help history navigation", 0)
+  end
   if help_keymaps["<Esc>"] then
     error("expected ArkHelp to leave Escape unbound for close", 0)
   end
@@ -392,7 +395,34 @@ local ok, err = pcall(function()
     error("expected help link follow to open group_by help, got " .. vim.inspect(linked_lines), 0)
   end
 
-  if not vim.deep_equal(help_requests, { "dplyr::mutate", "dplyr::group_by" }) then
+  vim.api.nvim_feedkeys("H", "xt", false)
+  vim.wait(1000, function()
+    local current_lines = vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false)
+    return current_lines[1] == "mutate {dplyr}"
+  end, 20, false)
+
+  local back_lines = vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false)
+  if back_lines[1] ~= "mutate {dplyr}" then
+    error("expected H to return to previous ArkHelp page, got " .. vim.inspect(back_lines), 0)
+  end
+
+  vim.api.nvim_feedkeys("L", "xt", false)
+  vim.wait(1000, function()
+    local current_lines = vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false)
+    return current_lines[1] == "group_by {dplyr}"
+  end, 20, false)
+
+  linked_lines = vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false)
+  if linked_lines[1] ~= "group_by {dplyr}" then
+    error("expected L to go forward to linked ArkHelp page, got " .. vim.inspect(linked_lines), 0)
+  end
+
+  if not vim.deep_equal(help_requests, {
+    "dplyr::mutate",
+    "dplyr::group_by",
+    "dplyr::mutate",
+    "dplyr::group_by",
+  }) then
     error("unexpected help lookup sequence: " .. vim.inspect(help_requests), 0)
   end
 

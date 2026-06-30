@@ -164,6 +164,7 @@ local ok, err = pcall(function()
       backend_id = "ark-help-popup-test",
       rpc_name = "__ark_help_popup_backend",
       initial = {
+        topic = "lm",
         references = {
           {
             line = 1,
@@ -255,6 +256,13 @@ local ok, err = pcall(function()
   if not popup_bootstrap_text:find("<CR>", 1, true) or not popup_bootstrap_text:find("reference_under_cursor", 1, true) then
     error("expected ArkHelp popup Enter to follow the reference under cursor, got " .. popup_bootstrap_text, 0)
   end
+  if not popup_bootstrap_text:find("history_back", 1, true)
+    or not popup_bootstrap_text:find("history_forward", 1, true)
+    or not popup_bootstrap_text:find("'H'", 1, true)
+    or not popup_bootstrap_text:find("'L'", 1, true)
+  then
+    error("expected ArkHelp popup H/L to navigate help history, got " .. popup_bootstrap_text, 0)
+  end
 
   local bootstrap_buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_set_current_buf(bootstrap_buf)
@@ -266,6 +274,16 @@ local ok, err = pcall(function()
   local bootstrap_refs = vim.b[bootstrap_buf].ark_help_references or {}
   if type(bootstrap_refs[1]) ~= "table" or bootstrap_refs[1].target ~= "stats::lm" then
     error("expected generated ArkHelp popup bootstrap to install references, got " .. vim.inspect(bootstrap_refs), 0)
+  end
+  if vim.b[bootstrap_buf].ark_help_topic ~= "lm" then
+    error("expected generated ArkHelp popup bootstrap to preserve initial topic, got " .. vim.inspect(vim.b[bootstrap_buf].ark_help_topic), 0)
+  end
+  local popup_keymaps = {}
+  for _, map in ipairs(vim.api.nvim_buf_get_keymap(bootstrap_buf, "n")) do
+    popup_keymaps[map.lhs] = map
+  end
+  if not popup_keymaps.H or not popup_keymaps.L then
+    error("expected generated ArkHelp popup bootstrap to map H/L, got " .. vim.inspect(popup_keymaps), 0)
   end
 
   -- Regression: closing ArkHelp must ask tmux to remove the popup before
