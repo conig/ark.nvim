@@ -45,7 +45,7 @@ pub(crate) fn help_text(topic: &str) -> anyhow::Result<Option<HelpPage>> {
 
     match run_rscript(HELP_TEXT_SCRIPT, &[topic]) {
         Ok(text) => {
-            let text = text.trim().to_string();
+            let text = clean_rd2txt_output(text.as_str()).trim().to_string();
             if text.is_empty() {
                 Ok(None)
             } else {
@@ -89,6 +89,20 @@ fn run_rscript(script: &str, args: &[&str]) -> anyhow::Result<String> {
 
     String::from_utf8(output.stdout)
         .map_err(|err| anyhow!("detached R metadata helper returned non-UTF8 output: {err}"))
+}
+
+fn clean_rd2txt_output(text: &str) -> String {
+    let mut cleaned = String::with_capacity(text.len());
+
+    for character in text.chars() {
+        if character == '\x08' {
+            cleaned.pop();
+        } else {
+            cleaned.push(character);
+        }
+    }
+
+    cleaned
 }
 
 #[derive(Default)]
@@ -305,5 +319,16 @@ mtcars	mpg
             .expect("expected help text for utils::head");
 
         assert!(help.text.contains("head"));
+        assert!(!help.text.contains('\x08'));
+    }
+
+    #[test]
+    fn cleans_rd2txt_overstrike_sequences() {
+        let text =
+            "_\x08D_\x08e_\x08s_\x08c_\x08r_\x08i_\x08p_\x08t_\x08i_\x08o_\x08n:\nD\x08Do\x08oc";
+
+        let cleaned = clean_rd2txt_output(text);
+
+        assert_eq!(cleaned, "Description:\nDoc");
     }
 }

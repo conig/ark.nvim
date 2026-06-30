@@ -192,6 +192,17 @@ local function resolve_completion(item)
   return ark_test.request(client, "completionItem/resolve", item, 10000)
 end
 
+local function documentation_text(item)
+  local documentation = item and item.documentation
+  if type(documentation) == "string" then
+    return documentation
+  end
+  if type(documentation) == "table" then
+    return documentation.value or (documentation.MarkupContent and documentation.MarkupContent.value)
+  end
+  return nil
+end
+
 ark_test.wait_for("R filetype", 10000, function()
   return vim.bo.filetype == "r"
 end)
@@ -266,6 +277,21 @@ local namespace_completion = type_and_capture_completion("utils::he", "head")
 local dollar_completion = type_and_capture_completion("mtcars$mp", "mpg")
 
 reset_buffer({ "" })
+vim.api.nvim_feedkeys("Alibrar", "xt", false)
+ark_test.wait_for("typed library completion text", 4000, function()
+  return vim.api.nvim_get_current_line() == "librar"
+end)
+local library_items = {}
+local library_item = nil
+local library_item_ready = vim.wait(5000, function()
+  library_items = request_completion_at_cursor("librar")
+  library_item = ark_test.find_item(library_items, "library")
+  return library_item ~= nil
+end, 100, false)
+local resolved_library_item = library_item and resolve_completion(library_item) or nil
+local resolved_library_doc_text = documentation_text(resolved_library_item)
+
+reset_buffer({ "" })
 vim.api.nvim_feedkeys("Autils::he", "xt", false)
 ark_test.wait_for("typed namespace completion text", 4000, function()
   return vim.api.nvim_get_current_line() == "utils::he"
@@ -278,13 +304,9 @@ local namespace_item_ready = vim.wait(5000, function()
   return namespace_item ~= nil
 end, 100, false)
 local resolved_namespace_item = namespace_item and resolve_completion(namespace_item) or nil
-local resolved_doc = resolved_namespace_item and resolved_namespace_item.documentation or nil
-local resolved_doc_text = nil
-if type(resolved_doc) == "table" then
-  resolved_doc_text = resolved_doc.value or (resolved_doc.MarkupContent and resolved_doc.MarkupContent.value)
-end
+local resolved_doc_text = documentation_text(resolved_namespace_item)
 if type(resolved_doc_text) ~= "string" then
-  resolved_doc_text = vim.inspect(resolved_doc)
+  resolved_doc_text = vim.inspect(resolved_namespace_item and resolved_namespace_item.documentation or nil)
 end
 
 local missing_package = "arkdefinitelymissingpackage"
@@ -293,13 +315,22 @@ local missing_package_diagnostic = wait_for_missing_package_diagnostic(missing_p
 local completion_ok = library_completion.found_in_lsp and namespace_completion.found_in_lsp
 completion_ok = completion_ok and dollar_completion ~= nil and dollar_completion.found_in_lsp
 completion_ok = completion_ok and namespace_item_ready == true
+completion_ok = completion_ok and library_item_ready == true
 
 local docs_ok = type(resolved_doc_text) == "string" and resolved_doc_text:find("head", 1, true) ~= nil
-if not completion_ok or not docs_ok or not missing_package_diagnostic.found then
+local library_docs_ok = type(resolved_library_doc_text) == "string"
+  and resolved_library_doc_text:find("library", 1, true) ~= nil
+  and not resolved_library_doc_text:find("\b", 1, true)
+if not completion_ok or not docs_ok or not library_docs_ok or not missing_package_diagnostic.found then
   ark_test.fail(vim.inspect({
     marks = marks,
     startup_elapsed_ms = startup_elapsed_ms,
     library_completion = library_completion,
+    library_item_ready = library_item_ready,
+    library_item = library_item,
+    library_item_labels = ark_test.item_labels(library_items),
+    resolved_library_item = resolved_library_item,
+    resolved_library_doc_text = resolved_library_doc_text,
     namespace_completion = namespace_completion,
     namespace_item_ready = namespace_item_ready,
     namespace_item = namespace_item,
@@ -320,6 +351,7 @@ end
 vim.print({
   marks = marks,
   library_completion = library_completion,
+  resolved_library_doc_text = resolved_library_doc_text,
   namespace_completion = namespace_completion,
   resolved_doc_text = resolved_doc_text,
   missing_package_diagnostic = missing_package_diagnostic,
