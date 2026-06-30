@@ -66,8 +66,10 @@ use crate::lsp::completions::provide_detached_post_bridge_completions;
 use crate::lsp::completions::provide_detached_pre_bridge_completions;
 use crate::lsp::completions::provide_detached_static_completions;
 use crate::lsp::completions::resolve_completion;
+use crate::lsp::completions::resolve_detached_completion;
 use crate::lsp::definitions::find_target_definition;
 use crate::lsp::definitions::goto_definition;
+use crate::lsp::detached_metadata;
 use crate::lsp::document_context::DocumentContext;
 use crate::lsp::folding_range::folding_range;
 use crate::lsp::help_topic::help_topic;
@@ -518,7 +520,13 @@ pub(crate) fn handle_help_text(
 ) -> LspResult<Option<HelpPage>> {
     if !state.has_attached_runtime() {
         let Some(session_bridge) = state.session_bridge.as_ref() else {
-            return Ok(None);
+            return match detached_metadata::help_text(params.topic.as_str()) {
+                Ok(text) => Ok(text),
+                Err(err) => {
+                    log::warn!("Detached help text fallback failed: {err:?}");
+                    Ok(None)
+                },
+            };
         };
 
         return match session_bridge.help_text(params.topic.as_str()) {
@@ -742,7 +750,16 @@ pub(crate) fn handle_completion(
 
             return Ok(completion_response_from_items(items));
         }
-        return runtime_required(state);
+
+        if let Some(completions) =
+            provide_detached_post_bridge_completions(&context, state).map_err(LspError::Anyhow)?
+        {
+            return Ok(completion_response_from_items(completions));
+        }
+
+        let static_items =
+            provide_detached_static_completions(&context, state).map_err(LspError::Anyhow)?;
+        return Ok(completion_response_from_items(static_items));
     }
 
     let completions = r_task(|| provide_completions(&context, state))?;
@@ -775,6 +792,9 @@ pub(crate) fn handle_completion_resolve(
                     }
                 },
             };
+        }
+        if let Err(err) = resolve_detached_completion(&mut item) {
+            log::warn!("Detached completion resolve fallback failed: {err:?}");
         }
         return Ok(item);
     }

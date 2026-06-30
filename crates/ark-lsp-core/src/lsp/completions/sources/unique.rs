@@ -141,6 +141,20 @@ pub(crate) fn first_detached_static_source_plan(
         return Ok(Some(plan));
     }
 
+    if let Some(plan) = collect_source_plan(
+        UniqueSourceKind::Namespace,
+        NamespaceSource,
+        completion_context,
+    )? {
+        return Ok(Some(plan));
+    }
+
+    if let Some(plan) =
+        collect_source_plan(UniqueSourceKind::Dollar, DollarSource, completion_context)?
+    {
+        return Ok(Some(plan));
+    }
+
     Ok(None)
 }
 

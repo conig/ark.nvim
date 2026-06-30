@@ -19,6 +19,7 @@ use tree_sitter::Node;
 use tree_sitter::Point;
 
 use crate::lsp::completions::completion_context::CompletionContext;
+use crate::lsp::completions::completion_item::completion_item_from_function;
 use crate::lsp::completions::completion_item::completion_item_from_lazydata;
 use crate::lsp::completions::completion_item::completion_item_from_namespace;
 use crate::lsp::completions::completion_item::completion_item_from_package;
@@ -49,6 +50,10 @@ impl CompletionSource for NamespaceSource {
 fn completions_from_namespace(
     completion_context: &CompletionContext,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    if !completion_context.state.has_attached_runtime() {
+        return completions_from_namespace_static(completion_context);
+    }
+
     let context = completion_context.document_context;
     let node = context.node;
 
@@ -124,6 +129,62 @@ fn completions_from_namespace(
         if let Some(mut lazydata) = lazydata {
             completions.append(&mut lazydata);
         }
+    }
+
+    set_sort_text_by_words_first(&mut completions);
+
+    Ok(Some(completions))
+}
+
+fn completions_from_namespace_static(
+    completion_context: &CompletionContext,
+) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    let context = completion_context.document_context;
+    let node = context.node;
+
+    let node = match node.node_type() {
+        NodeType::Anonymous(kind) if matches!(kind.as_str(), "::" | ":::") => {
+            namespace_node_from_colons(node, context.point)
+        },
+        NodeType::Identifier => namespace_node_from_identifier(node),
+        _ => return Ok(None),
+    };
+
+    let mut completions = Vec::new();
+
+    let node = match node {
+        NamespaceNodeKind::None => return Ok(None),
+        NamespaceNodeKind::EmptySet => return Ok(Some(completions)),
+        NamespaceNodeKind::PackageName => {
+            for package in completion_context.state.installed_packages.iter() {
+                let item = unsafe { completion_item_from_package(package, false)? };
+                completions.push(item);
+            }
+            set_sort_text_by_words_first(&mut completions);
+            return Ok(Some(completions));
+        },
+        NamespaceNodeKind::Node(node) => node,
+    };
+
+    let exports_only =
+        node.node_type() == NodeType::NamespaceOperator(NamespaceOperatorType::External);
+    if !exports_only {
+        return Ok(Some(completions));
+    }
+
+    let Some(package) = node.child_by_field_name("lhs") else {
+        return Ok(Some(completions));
+    };
+
+    let package = package.node_as_str(&context.document.contents)?;
+    let Some(package_metadata) = completion_context.state.library.get(package) else {
+        return Ok(Some(completions));
+    };
+
+    let function_context = completion_context.function_context()?;
+    for symbol in package_metadata.exported_symbols().iter() {
+        let item = completion_item_from_function(symbol, Some(package), function_context)?;
+        completions.push(item);
     }
 
     set_sort_text_by_words_first(&mut completions);
@@ -259,6 +320,9 @@ fn list_namespace_exports(namespace: SEXP) -> RObject {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use oak_semantic::library::Library;
     use tower_lsp::lsp_types::CompletionItem;
 
     use crate::fixtures::point_from_cursor;
@@ -267,6 +331,7 @@ mod tests {
     use crate::lsp::completions::tests::utils::find_completion_by_label;
     use crate::lsp::document::Document;
     use crate::lsp::document_context::DocumentContext;
+    use crate::lsp::state::RuntimeMode;
     use crate::lsp::state::WorldState;
     use crate::r_task;
 
@@ -375,5 +440,35 @@ mod tests {
                 .unwrap();
             assert!(completions.is_empty());
         });
+    }
+
+    #[test]
+    fn test_detached_namespace_completion_uses_static_package_metadata() {
+        let temp_lib = tempfile::tempdir().expect("expected temp library");
+        let package_dir = temp_lib.path().join("arktestpkg");
+        fs::create_dir(&package_dir).expect("expected package directory");
+        fs::write(
+            package_dir.join("DESCRIPTION"),
+            "Package: arktestpkg\nVersion: 1.0\n",
+        )
+        .expect("expected DESCRIPTION");
+        fs::write(package_dir.join("NAMESPACE"), "export(foo)\n").expect("expected NAMESPACE");
+
+        let (text, point) = point_from_cursor("arktestpkg::fo@");
+        let document = Document::new(&text, None);
+        let document_context = DocumentContext::new(&document, point, None);
+        let state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            installed_packages: vec![String::from("arktestpkg")],
+            library: Library::new(vec![temp_lib.path().to_path_buf()]),
+            ..Default::default()
+        };
+        let context = CompletionContext::new(&document_context, &state);
+
+        let completions = completions_from_namespace(&context)
+            .expect("expected completions")
+            .expect("expected namespace source to handle context");
+
+        assert!(find_completion_by_label(&completions, "foo").is_some());
     }
 }

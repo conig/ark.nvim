@@ -70,6 +70,9 @@ pub(crate) struct WorldState {
     /// Map of package name to package metadata for installed libraries. Lazily populated.
     pub(crate) library: Library,
 
+    /// Static member names for objects that are present in a default detached R session.
+    pub(crate) static_object_members: HashMap<String, Vec<String>>,
+
     pub(crate) config: LspConfig,
 
     pub(crate) runtime_mode: RuntimeMode,
@@ -81,6 +84,10 @@ pub(crate) struct WorldState {
     pub(crate) detached_session_pending_generation: Option<u64>,
     pub(crate) detached_session_completed_generation: Option<u64>,
     pub(crate) detached_session_status: DetachedSessionStatus,
+
+    pub(crate) detached_baseline_bootstrap_attempted: bool,
+    pub(crate) detached_baseline_bootstrap_pending: bool,
+    pub(crate) detached_baseline_status: DetachedBaselineStatus,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -99,6 +106,16 @@ pub(crate) struct DetachedSessionStatus {
     pub last_bootstrap_error: String,
 }
 
+#[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DetachedBaselineStatus {
+    pub last_bootstrap_attempt_ms: Option<u64>,
+    pub last_bootstrap_success_ms: Option<u64>,
+    pub last_bootstrap_duration_ms: Option<u64>,
+    pub last_bootstrap_error: String,
+    pub pending: bool,
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DetachedStatusSnapshot {
@@ -111,6 +128,10 @@ pub(crate) struct DetachedStatusSnapshot {
     pub installed_package_count: usize,
     pub library_path_count: usize,
     pub detached_session_status: DetachedSessionStatus,
+    pub detached_baseline_bootstrap_attempted: bool,
+    pub detached_baseline_status: DetachedBaselineStatus,
+    pub static_object_count: usize,
+    pub static_object_member_count: usize,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -177,6 +198,34 @@ impl WorldState {
         self.detached_session_completed_generation == Some(self.detached_session_update_generation)
     }
 
+    pub(crate) fn detached_baseline_hydrated(&self) -> bool {
+        if self.runtime_mode != RuntimeMode::Detached {
+            return true;
+        }
+
+        let metadata_incomplete = self.console_scopes.is_empty() ||
+            self.installed_packages.is_empty() ||
+            self.library.library_paths.is_empty();
+        if metadata_incomplete {
+            return false;
+        }
+
+        self.detached_baseline_status
+            .last_bootstrap_success_ms
+            .is_some() &&
+            self.detached_baseline_status
+                .last_bootstrap_error
+                .is_empty()
+    }
+
+    pub(crate) fn detached_analysis_hydrated(&self) -> bool {
+        if self.runtime_mode != RuntimeMode::Detached {
+            return true;
+        }
+
+        self.detached_session_hydrated() || self.detached_baseline_hydrated()
+    }
+
     pub(crate) fn detached_status_snapshot(&self) -> DetachedStatusSnapshot {
         DetachedStatusSnapshot {
             runtime_mode: match self.runtime_mode {
@@ -194,6 +243,10 @@ impl WorldState {
             installed_package_count: self.installed_packages.len(),
             library_path_count: self.library.library_paths.len(),
             detached_session_status: self.detached_session_status.clone(),
+            detached_baseline_bootstrap_attempted: self.detached_baseline_bootstrap_attempted,
+            detached_baseline_status: self.detached_baseline_status.clone(),
+            static_object_count: self.static_object_members.len(),
+            static_object_member_count: self.static_object_members.values().map(Vec::len).sum(),
         }
     }
 }
@@ -208,6 +261,7 @@ impl Default for WorldState {
             installed_packages: Vec::new(),
             root: None,
             library: Library::default(),
+            static_object_members: HashMap::new(),
             config: LspConfig::default(),
             runtime_mode: RuntimeMode::Attached,
             session_bridge: None,
@@ -216,6 +270,9 @@ impl Default for WorldState {
             detached_session_pending_generation: None,
             detached_session_completed_generation: None,
             detached_session_status: DetachedSessionStatus::default(),
+            detached_baseline_bootstrap_attempted: false,
+            detached_baseline_bootstrap_pending: false,
+            detached_baseline_status: DetachedBaselineStatus::default(),
         }
     }
 }

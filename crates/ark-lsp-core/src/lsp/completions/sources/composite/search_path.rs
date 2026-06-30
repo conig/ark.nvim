@@ -5,6 +5,8 @@
 //
 //
 
+use std::collections::BTreeSet;
+
 use harp::env_parent;
 use harp::exec::RFunction;
 use harp::exec::RFunctionExt;
@@ -19,6 +21,7 @@ use tower_lsp::lsp_types::CompletionItem;
 
 use crate::console;
 use crate::lsp::completions::completion_context::CompletionContext;
+use crate::lsp::completions::completion_item::completion_item_from_function;
 use crate::lsp::completions::completion_item::completion_item_from_package;
 use crate::lsp::completions::completion_item::completion_item_from_symbol;
 use crate::lsp::completions::sources::utils::filter_out_dot_prefixes;
@@ -44,6 +47,10 @@ impl CompletionSource for SearchPathSource {
 fn completions_from_search_path(
     context: &CompletionContext,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    if !context.state.has_attached_runtime() {
+        return completions_from_static_search_path(context);
+    }
+
     let mut completions = vec![];
 
     const KEYWORD_SOURCE: &[&str] = &[
@@ -133,6 +140,46 @@ fn completions_from_search_path(
 
     // Push search path completions starting with non-word characters to the
     // bottom of the sort list (like those starting with `.`, or `%>%`)
+    set_sort_text_by_words_first(&mut completions);
+
+    Ok(Some(completions))
+}
+
+fn completions_from_static_search_path(
+    context: &CompletionContext,
+) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    let mut completions = Vec::new();
+
+    const KEYWORD_SOURCE: &[&str] = &[
+        "if", "else", "repeat", "while", "function", "for", "in", "next", "break",
+    ];
+
+    let mut seen = BTreeSet::new();
+    let function_context = context.function_context()?;
+    for symbol in context
+        .state
+        .console_scopes
+        .iter()
+        .flat_map(|scope| scope.iter())
+    {
+        if KEYWORD_SOURCE.contains(&symbol.as_str()) || !seen.insert(symbol.clone()) {
+            continue;
+        }
+
+        let item = completion_item_from_function(symbol, None, function_context)?;
+        completions.push(item);
+    }
+
+    for package in context.state.installed_packages.iter() {
+        if !seen.insert(package.clone()) {
+            continue;
+        }
+
+        let item = unsafe { completion_item_from_package(package, true)? };
+        completions.push(item);
+    }
+
+    filter_out_dot_prefixes(context.document_context, &mut completions);
     set_sort_text_by_words_first(&mut completions);
 
     Ok(Some(completions))

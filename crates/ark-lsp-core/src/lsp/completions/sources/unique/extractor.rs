@@ -38,7 +38,7 @@ impl CompletionSource for DollarSource {
         &self,
         completion_context: &CompletionContext,
     ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
-        completions_from_dollar(completion_context.document_context)
+        completions_from_dollar(completion_context)
     }
 }
 
@@ -58,10 +58,14 @@ impl CompletionSource for AtSource {
 }
 
 fn completions_from_dollar(
-    context: &DocumentContext,
+    completion_context: &CompletionContext,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    if !completion_context.state.has_attached_runtime() {
+        return completions_from_static_dollar(completion_context);
+    }
+
     completions_from_extractor(
-        context,
+        completion_context.document_context,
         NodeType::ExtractOperator(ExtractOperatorType::Dollar),
         ".DollarNames",
     )
@@ -103,6 +107,41 @@ fn completions_from_extractor(
     let text = node.node_as_str(&context.document.contents)?;
 
     completions.append(&mut completions_from_extractor_object(text, fun)?);
+
+    Ok(Some(completions))
+}
+
+fn completions_from_static_dollar(
+    completion_context: &CompletionContext,
+) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    let context = completion_context.document_context;
+    let node = context.node;
+
+    let Some(node) =
+        locate_extractor_node(node, NodeType::ExtractOperator(ExtractOperatorType::Dollar))
+    else {
+        return Ok(None);
+    };
+
+    let mut completions = Vec::new();
+    let Some(node) = node.child_by_field_name("lhs") else {
+        return Ok(Some(completions));
+    };
+
+    let text = node.node_as_str(&context.document.contents)?;
+    let Some(members) = completion_context.state.static_object_members.get(text) else {
+        return Ok(None);
+    };
+
+    const ENQUOTE: bool = false;
+    for name in members {
+        match unsafe { completion_item_from_data_variable(name, text, ENQUOTE) } {
+            Ok(item) => completions.push(item),
+            Err(err) => log::error!("{err:?}"),
+        }
+    }
+
+    set_sort_text_by_first_appearance(&mut completions);
 
     Ok(Some(completions))
 }
@@ -202,15 +241,29 @@ fn completions_from_extractor_object(text: &str, fun: &str) -> anyhow::Result<Ve
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use harp::eval::RParseEvalOptions;
     use harp::object::r_lgl_get;
+    use tower_lsp::lsp_types::CompletionItem;
 
     use crate::fixtures::package_is_installed;
     use crate::fixtures::point_from_cursor;
+    use crate::lsp::completions::completion_context::CompletionContext;
     use crate::lsp::completions::sources::unique::extractor::completions_from_dollar;
     use crate::lsp::document::Document;
     use crate::lsp::document_context::DocumentContext;
+    use crate::lsp::state::RuntimeMode;
+    use crate::lsp::state::WorldState;
     use crate::r_task;
+
+    fn attached_dollar_completions(
+        context: &DocumentContext,
+    ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+        let state = WorldState::default();
+        let completion_context = CompletionContext::new(context, &state);
+        completions_from_dollar(&completion_context)
+    }
 
     #[test]
     fn test_dollar_completions() {
@@ -227,7 +280,7 @@ mod tests {
             let document = Document::new(text.as_str(), None);
             let context = DocumentContext::new(&document, point, None);
 
-            let completions = completions_from_dollar(&context).unwrap().unwrap();
+            let completions = attached_dollar_completions(&context).unwrap().unwrap();
             assert_eq!(completions.len(), 2);
 
             // Note, no sorting done!
@@ -240,7 +293,7 @@ mod tests {
             let (text, point) = point_from_cursor("foo@$");
             let document = Document::new(text.as_str(), None);
             let context = DocumentContext::new(&document, point, None);
-            let completions = completions_from_dollar(&context).unwrap();
+            let completions = attached_dollar_completions(&context).unwrap();
             assert!(completions.is_none());
 
             // Clean up
@@ -268,7 +321,7 @@ mod tests {
             // (If the user is typing pseudocode, we want to respect that and say that we
             // recognize they are on the RHS of a `$`, but respond with no completions
             // because they haven't specified a real object yet)
-            let completions = completions_from_dollar(&context).unwrap().unwrap();
+            let completions = attached_dollar_completions(&context).unwrap().unwrap();
             assert_eq!(completions.len(), 0);
 
             let (text, point) = point_from_cursor("foo$mat@");
@@ -276,9 +329,31 @@ mod tests {
             let context = DocumentContext::new(&document, point, None);
 
             // Same as above
-            let completions = completions_from_dollar(&context).unwrap().unwrap();
+            let completions = attached_dollar_completions(&context).unwrap().unwrap();
             assert_eq!(completions.len(), 0);
         })
+    }
+
+    #[test]
+    fn test_detached_dollar_completions_use_static_object_members() {
+        let (text, point) = point_from_cursor("mtcars$mp@");
+        let document = Document::new(text.as_str(), None);
+        let document_context = DocumentContext::new(&document, point, None);
+        let state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            static_object_members: HashMap::from([(String::from("mtcars"), vec![
+                String::from("mpg"),
+                String::from("cyl"),
+            ])]),
+            ..Default::default()
+        };
+        let completion_context = CompletionContext::new(&document_context, &state);
+
+        let completions = completions_from_dollar(&completion_context)
+            .expect("expected completions")
+            .expect("expected dollar source to handle context");
+
+        assert!(completions.iter().any(|item| item.label == "mpg"));
     }
 
     #[test]
@@ -293,7 +368,7 @@ mod tests {
             // LHS "object" because it is too complex, so the right thing to do is to
             // return an empty completion set to prevent other completion sources from
             // running.
-            let completions = completions_from_dollar(&context).unwrap().unwrap();
+            let completions = attached_dollar_completions(&context).unwrap().unwrap();
             assert_eq!(completions.len(), 0);
         })
     }
@@ -316,7 +391,7 @@ mod tests {
             // `None` because we have no completions to provide, and we do want other
             // completion sources to get a chance to run, as you can put arbitrary
             // expressions on the LHS of a `$` or `@`.
-            let completions = completions_from_dollar(&context).unwrap();
+            let completions = attached_dollar_completions(&context).unwrap();
             assert!(completions.is_none());
 
             // Clean up
@@ -340,7 +415,7 @@ mod tests {
             let context = DocumentContext::new(&document, point, None);
 
             // All names of `foo`, the frontend filters them
-            let completions = completions_from_dollar(&context).unwrap().unwrap();
+            let completions = attached_dollar_completions(&context).unwrap().unwrap();
             assert_eq!(completions.len(), 2);
             assert_eq!(completions.first().unwrap().label, String::from("abcd"));
             assert_eq!(completions.get(1).unwrap().label, String::from("wxyz"));
@@ -350,7 +425,7 @@ mod tests {
             let context = DocumentContext::new(&document, point, None);
 
             // Same as above
-            let completions = completions_from_dollar(&context).unwrap().unwrap();
+            let completions = attached_dollar_completions(&context).unwrap().unwrap();
             assert_eq!(completions.len(), 2);
             assert_eq!(completions.first().unwrap().label, String::from("abcd"));
             assert_eq!(completions.get(1).unwrap().label, String::from("wxyz"));
@@ -387,7 +462,7 @@ foo <- Foo$new()
             let context = DocumentContext::new(&document, point, None);
 
             // We get some default R6 methods back, but we are looking for `abc`
-            let completions = completions_from_dollar(&context).unwrap().unwrap();
+            let completions = attached_dollar_completions(&context).unwrap().unwrap();
 
             let completion_labels: Vec<String> = completions
                 .into_iter()

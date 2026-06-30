@@ -123,6 +123,7 @@ pub(crate) struct SessionBootstrap {
     pub search_path_symbols: Vec<String>,
     pub installed_packages: Vec<String>,
     pub library_paths: Vec<PathBuf>,
+    pub static_object_members: HashMap<String, Vec<String>>,
     pub timings: SessionBootstrapTimings,
 }
 
@@ -1563,6 +1564,7 @@ impl SessionBridge {
                 .into_iter()
                 .map(PathBuf::from)
                 .collect::<Vec<_>>(),
+            static_object_members: HashMap::new(),
             timings: SessionBootstrapTimings {
                 total_ms: duration_ms(total_start.elapsed()),
                 search_path_symbols_ms: 0,
@@ -2023,6 +2025,7 @@ fn bootstrap_from_status(
             .into_iter()
             .map(PathBuf::from)
             .collect::<Vec<_>>(),
+        static_object_members: HashMap::new(),
         timings: SessionBootstrapTimings {
             total_ms: total_ms.unwrap_or(0),
             search_path_symbols_ms: search_path_symbols_ms.unwrap_or(0),

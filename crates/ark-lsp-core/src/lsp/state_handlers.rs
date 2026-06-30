@@ -57,6 +57,7 @@ use crate::lsp::capabilities::Capabilities;
 use crate::lsp::config::indent_style_from_lsp;
 use crate::lsp::config::DOCUMENT_SETTINGS;
 use crate::lsp::config::GLOBAL_SETTINGS;
+use crate::lsp::detached_metadata;
 use crate::lsp::document::Document;
 use crate::lsp::document::DocumentKind;
 use crate::lsp::handlers::SessionBootstrapResponse;
@@ -94,6 +95,141 @@ pub(crate) struct DetachedSessionHydrationOutput {
     pub generation: u64,
     pub repl_seq: Option<u64>,
     pub result: anyhow::Result<SessionBootstrap>,
+}
+
+#[derive(Debug)]
+pub(crate) struct DetachedBaselineHydrationRequest {
+    pub attempt_ms: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct DetachedBaselineHydrationOutput {
+    pub attempt_ms: u64,
+    pub result: anyhow::Result<SessionBootstrap>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct DetachedHydrationRequests {
+    pub baseline: Option<DetachedBaselineHydrationRequest>,
+    pub session: Option<DetachedSessionHydrationRequest>,
+}
+
+pub(crate) fn begin_detached_baseline_hydration(
+    state: &mut WorldState,
+    force: bool,
+) -> Option<DetachedBaselineHydrationRequest> {
+    if state.runtime_mode != RuntimeMode::Detached {
+        return None;
+    }
+
+    if state.detached_session_hydrated() {
+        return None;
+    }
+
+    if state.detached_baseline_bootstrap_pending {
+        return None;
+    }
+
+    let metadata_incomplete = state.console_scopes.is_empty() ||
+        state.installed_packages.is_empty() ||
+        state.library.library_paths.is_empty();
+    if !force && !metadata_incomplete {
+        return None;
+    }
+
+    let now = now_ms();
+    let retry_cooldown_elapsed = state
+        .detached_baseline_status
+        .last_bootstrap_attempt_ms
+        .map(|last| now.saturating_sub(last) >= 500)
+        .unwrap_or(true);
+    let retry_failed_bootstrap = state.detached_baseline_bootstrap_attempted &&
+        state
+            .detached_baseline_status
+            .last_bootstrap_success_ms
+            .is_none() &&
+        !state
+            .detached_baseline_status
+            .last_bootstrap_error
+            .is_empty() &&
+        metadata_incomplete &&
+        retry_cooldown_elapsed;
+
+    if !force && state.detached_baseline_bootstrap_attempted && !retry_failed_bootstrap {
+        return None;
+    }
+
+    tracing::info!("Queueing detached baseline metadata bootstrap");
+
+    state.detached_baseline_bootstrap_attempted = true;
+    state.detached_baseline_bootstrap_pending = true;
+    state.detached_baseline_status.pending = true;
+    state.detached_baseline_status.last_bootstrap_attempt_ms = Some(now);
+    state.detached_baseline_status.last_bootstrap_duration_ms = None;
+    state.detached_baseline_status.last_bootstrap_error.clear();
+
+    Some(DetachedBaselineHydrationRequest { attempt_ms: now })
+}
+
+pub(crate) fn run_detached_baseline_hydration(
+    request: DetachedBaselineHydrationRequest,
+) -> DetachedBaselineHydrationOutput {
+    DetachedBaselineHydrationOutput {
+        attempt_ms: request.attempt_ms,
+        result: detached_metadata::bootstrap(),
+    }
+}
+
+pub(crate) fn finish_detached_baseline_hydration(
+    output: DetachedBaselineHydrationOutput,
+    state: &mut WorldState,
+) {
+    if state.runtime_mode != RuntimeMode::Detached {
+        return;
+    }
+
+    let current_attempt = state.detached_baseline_status.last_bootstrap_attempt_ms;
+    if current_attempt != Some(output.attempt_ms) {
+        tracing::info!(
+            output_attempt_ms = output.attempt_ms,
+            current_attempt_ms = ?current_attempt,
+            "Ignoring stale detached baseline metadata result"
+        );
+        return;
+    }
+
+    state.detached_baseline_bootstrap_pending = false;
+    state.detached_baseline_status.pending = false;
+
+    if state.detached_session_hydrated() {
+        tracing::info!("Ignoring detached baseline metadata result after live session hydration");
+        return;
+    }
+
+    match output.result {
+        Ok(bootstrap) => {
+            tracing::info!(
+                search_path_symbols = bootstrap.search_path_symbols.len(),
+                installed_packages = bootstrap.installed_packages.len(),
+                library_paths = bootstrap.library_paths.len(),
+                bootstrap_total_ms = bootstrap.timings.total_ms,
+                "Hydrated detached baseline metadata"
+            );
+            state.console_scopes = vec![bootstrap.search_path_symbols];
+            state.installed_packages = bootstrap.installed_packages;
+            state.library = Library::new(bootstrap.library_paths);
+            state.static_object_members = bootstrap.static_object_members;
+            state.detached_baseline_status.last_bootstrap_success_ms = Some(now_ms());
+            state.detached_baseline_status.last_bootstrap_duration_ms =
+                Some(bootstrap.timings.total_ms);
+            state.detached_baseline_status.last_bootstrap_error.clear();
+            lsp::diagnostics_refresh_all(state);
+        },
+        Err(err) => {
+            state.detached_baseline_status.last_bootstrap_error = err.to_string();
+            tracing::warn!("Detached baseline metadata bootstrap failed: {err:?}");
+        },
+    }
 }
 
 pub(crate) fn begin_detached_session_hydration(
@@ -237,6 +373,7 @@ pub(crate) fn finish_detached_session_hydration(
             state.console_scopes = vec![bootstrap.search_path_symbols];
             state.installed_packages = bootstrap.installed_packages;
             state.library = Library::new(bootstrap.library_paths);
+            state.static_object_members = bootstrap.static_object_members;
             state.detached_session_status.last_bootstrap_success_ms = Some(now_ms());
             state.detached_session_status.last_bootstrap_duration_ms =
                 Some(bootstrap.timings.total_ms);
@@ -459,7 +596,7 @@ pub(crate) fn did_open(
     params: DidOpenTextDocumentParams,
     lsp_state: &mut LspState,
     state: &mut WorldState,
-) -> anyhow::Result<Option<DetachedSessionHydrationRequest>> {
+) -> anyhow::Result<DetachedHydrationRequests> {
     let contents = params.text_document.text.as_str();
     let uri = params.text_document.uri;
     let version = params.text_document.version;
@@ -477,7 +614,14 @@ pub(crate) fn did_open(
 
     // NOTE: Do we need to call `update_config()` here?
     // update_config(vec![uri]).await;
-    let hydration = begin_detached_session_hydration(state, false);
+    let hydration = DetachedHydrationRequests {
+        baseline: begin_detached_baseline_hydration(state, false),
+        session: state
+            .session_bridge
+            .is_some()
+            .then(|| begin_detached_session_hydration(state, false))
+            .flatten(),
+    };
 
     if state.runtime_mode == RuntimeMode::Attached {
         lsp::main_loop::index_update(vec![uri], state.clone());
@@ -492,7 +636,7 @@ pub(crate) fn did_change(
     params: DidChangeTextDocumentParams,
     lsp_state: &mut LspState,
     state: &mut WorldState,
-) -> anyhow::Result<Option<DetachedSessionHydrationRequest>> {
+) -> anyhow::Result<DetachedHydrationRequests> {
     let uri = &params.text_document.uri;
     let document = state.get_document_mut(uri)?;
 
@@ -502,7 +646,14 @@ pub(crate) fn did_change(
         .ok_or(anyhow!("No parser for {uri}"))?;
 
     document.on_did_change(parser, &params);
-    let hydration = begin_detached_session_hydration(state, false);
+    let hydration = DetachedHydrationRequests {
+        baseline: begin_detached_baseline_hydration(state, false),
+        session: state
+            .session_bridge
+            .is_some()
+            .then(|| begin_detached_session_hydration(state, false))
+            .flatten(),
+    };
     lsp::main_loop::index_update(vec![uri.clone()], state.clone());
     lsp::main_loop::diagnostics_refresh_all_from_state(state);
 
@@ -656,9 +807,9 @@ pub(crate) async fn did_change_configuration(
 pub(crate) fn did_update_session(
     params: SessionUpdateParams,
     state: &mut WorldState,
-) -> anyhow::Result<Option<DetachedSessionHydrationRequest>> {
+) -> anyhow::Result<DetachedHydrationRequests> {
     if state.runtime_mode != RuntimeMode::Detached {
-        return Ok(None);
+        return Ok(DetachedHydrationRequests::default());
     }
 
     tracing::info!(
@@ -682,18 +833,23 @@ pub(crate) fn did_update_session(
     state.detached_session_pending_generation = None;
     state.detached_session_bootstrap_attempted = false;
 
-    let hydration =
-        if params.status == "ready" && params.repl_ready && state.session_bridge.is_some() {
-            begin_detached_session_hydration(state, true)
-        } else {
-            None
-        };
+    let session = if params.status == "ready" && params.repl_ready && state.session_bridge.is_some()
+    {
+        begin_detached_session_hydration(state, true)
+    } else {
+        None
+    };
+    let baseline = if session.is_none() {
+        begin_detached_baseline_hydration(state, false)
+    } else {
+        None
+    };
 
-    if hydration.is_none() {
+    if session.is_none() && baseline.is_none() {
         lsp::diagnostics_refresh_all(state);
     }
 
-    Ok(hydration)
+    Ok(DetachedHydrationRequests { baseline, session })
 }
 
 pub(crate) fn bootstrap_session(
@@ -701,9 +857,13 @@ pub(crate) fn bootstrap_session(
     state: &mut WorldState,
 ) -> LspResult<SessionBootstrapResponse> {
     let hydration = did_update_session(params, state)?;
-    if let Some(request) = hydration {
+    if let Some(request) = hydration.session {
         let output = run_detached_session_hydration(request);
         finish_detached_session_hydration(output, state);
+    }
+    if let Some(request) = hydration.baseline {
+        let output = run_detached_baseline_hydration(request);
+        finish_detached_baseline_hydration(output, state);
     }
 
     Ok(SessionBootstrapResponse {
@@ -984,12 +1144,108 @@ mod tests {
         );
 
         assert!(
-            hydration.is_none(),
+            hydration.session.is_none(),
             "detached session bootstrap should wait for repl_ready=true"
+        );
+        assert!(
+            hydration.baseline.is_some(),
+            "baseline metadata bootstrap can run while waiting for a managed pane"
         );
         assert!(state.console_scopes.is_empty());
         assert!(state.library.library_paths.is_empty());
         assert_eq!(state.detached_session_status.last_bootstrap_repl_seq, None);
+    }
+
+    #[test]
+    fn test_detached_baseline_hydration_makes_analysis_ready_without_live_session() {
+        let mut state = WorldState::detached();
+        let request = begin_detached_baseline_hydration(&mut state, false)
+            .expect("expected baseline hydration request");
+
+        finish_detached_baseline_hydration(
+            DetachedBaselineHydrationOutput {
+                attempt_ms: request.attempt_ms,
+                result: Ok(SessionBootstrap {
+                    search_path_symbols: vec![String::from("library")],
+                    installed_packages: vec![String::from("utils")],
+                    library_paths: vec![std::path::PathBuf::from("/tmp/ark-test-library")],
+                    static_object_members: std::collections::HashMap::from([(
+                        String::from("mtcars"),
+                        vec![String::from("mpg")],
+                    )]),
+                    ..Default::default()
+                }),
+            },
+            &mut state,
+        );
+
+        assert!(state.detached_baseline_hydrated());
+        assert!(state.detached_analysis_hydrated());
+        assert!(!state.detached_session_hydrated());
+        assert_eq!(state.console_scopes, vec![vec![String::from("library")]]);
+        assert_eq!(state.installed_packages, vec![String::from("utils")]);
+        assert_eq!(state.library.library_paths.len(), 1);
+        assert_eq!(state.static_object_members.get("mtcars").unwrap(), &vec![
+            String::from("mpg")
+        ]);
+    }
+
+    #[test]
+    fn test_detached_baseline_result_does_not_replace_live_session_inputs() {
+        let mut state = WorldState {
+            runtime_mode: crate::lsp::state::RuntimeMode::Detached,
+            detached_session_update_generation: 1,
+            detached_session_completed_generation: Some(1),
+            detached_session_status: crate::lsp::state::DetachedSessionStatus {
+                last_session_update_status: String::from("ready"),
+                last_bootstrap_success_ms: Some(1),
+                ..Default::default()
+            },
+            detached_baseline_bootstrap_pending: true,
+            detached_baseline_status: crate::lsp::state::DetachedBaselineStatus {
+                last_bootstrap_attempt_ms: Some(7),
+                pending: true,
+                ..Default::default()
+            },
+            console_scopes: vec![vec![String::from("live_symbol")]],
+            installed_packages: vec![String::from("livepkg")],
+            library: Library::new(vec![std::path::PathBuf::from("/tmp/live-library")]),
+            static_object_members: std::collections::HashMap::from([(
+                String::from("live_object"),
+                vec![String::from("live_member")],
+            )]),
+            ..Default::default()
+        };
+
+        finish_detached_baseline_hydration(
+            DetachedBaselineHydrationOutput {
+                attempt_ms: 7,
+                result: Ok(SessionBootstrap {
+                    search_path_symbols: vec![String::from("baseline_symbol")],
+                    installed_packages: vec![String::from("baselinepkg")],
+                    library_paths: vec![std::path::PathBuf::from("/tmp/baseline-library")],
+                    static_object_members: std::collections::HashMap::from([(
+                        String::from("baseline_object"),
+                        vec![String::from("baseline_member")],
+                    )]),
+                    ..Default::default()
+                }),
+            },
+            &mut state,
+        );
+
+        assert_eq!(state.console_scopes, vec![vec![String::from(
+            "live_symbol"
+        )]]);
+        assert_eq!(state.installed_packages, vec![String::from("livepkg")]);
+        assert_eq!(
+            state.library.library_paths[0],
+            std::path::PathBuf::from("/tmp/live-library")
+        );
+        assert!(state.static_object_members.contains_key("live_object"));
+        assert!(!state.static_object_members.contains_key("baseline_object"));
+        assert!(!state.detached_baseline_bootstrap_pending);
+        assert!(!state.detached_baseline_status.pending);
     }
 
     #[test]

@@ -18,7 +18,10 @@ pub(crate) enum UniqueSourceKind {
 
 impl UniqueSourceKind {
     pub(crate) fn is_detached_pre_bridge(self) -> bool {
-        matches!(self, Self::SingleColon | Self::Frontmatter | Self::Comment)
+        matches!(
+            self,
+            Self::SingleColon | Self::Frontmatter | Self::Comment | Self::Namespace | Self::Dollar
+        )
     }
 
     pub(crate) fn is_detached_post_bridge(self) -> bool {
@@ -39,7 +42,10 @@ pub(crate) enum CompositeSourceKind {
 
 impl CompositeSourceKind {
     pub(crate) fn is_detached_static(self) -> bool {
-        matches!(self, Self::Keyword | Self::Document | Self::Workspace)
+        matches!(
+            self,
+            Self::Keyword | Self::SearchPath | Self::Document | Self::Workspace
+        )
     }
 }
 
@@ -180,6 +186,7 @@ mod tests {
         ]);
         assert_eq!(plan.detached_static_kinds(), vec![
             CompositeSourceKind::Keyword,
+            CompositeSourceKind::SearchPath,
             CompositeSourceKind::Document,
             CompositeSourceKind::Workspace,
         ]);
@@ -190,12 +197,39 @@ mod tests {
         let (text, point) = point_from_cursor("foo$@");
         let document = Document::new(text.as_str(), None);
         let document_context = DocumentContext::new(&document, point, Some(String::from("$")));
-        let state = WorldState::default();
+        let state = WorldState {
+            runtime_mode: crate::lsp::state::RuntimeMode::Detached,
+            ..Default::default()
+        };
         let completion_context = CompletionContext::new(&document_context, &state);
 
         let plan = plan_detached_static_completions(&completion_context).unwrap();
 
         assert!(matches!(plan, CompletionPlan::Composite(_)));
+    }
+
+    #[test]
+    fn test_detached_static_plan_routes_known_static_dollar_context() {
+        let (text, point) = point_from_cursor("mtcars$mp@");
+        let document = Document::new(text.as_str(), None);
+        let document_context = DocumentContext::new(&document, point, None);
+        let state = WorldState {
+            runtime_mode: crate::lsp::state::RuntimeMode::Detached,
+            static_object_members: std::collections::HashMap::from([(
+                String::from("mtcars"),
+                vec![String::from("mpg")],
+            )]),
+            ..Default::default()
+        };
+        let completion_context = CompletionContext::new(&document_context, &state);
+
+        let plan = plan_detached_static_completions(&completion_context).unwrap();
+
+        let CompletionPlan::Unique(plan) = plan else {
+            panic!("expected known static dollar completion to route to unique source");
+        };
+        assert_eq!(plan.kind, UniqueSourceKind::Dollar);
+        assert_eq!(plan.items.first().unwrap().label, "mpg");
     }
 
     #[test]

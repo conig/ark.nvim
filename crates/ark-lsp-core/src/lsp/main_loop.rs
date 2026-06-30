@@ -112,6 +112,7 @@ pub(crate) enum Event {
 
 #[derive(Debug)]
 pub(crate) enum InternalEvent {
+    DetachedBaselineHydrationCompleted(state_handlers::DetachedBaselineHydrationOutput),
     DetachedSessionHydrationCompleted(state_handlers::DetachedSessionHydrationOutput),
 }
 
@@ -304,7 +305,7 @@ impl GlobalState {
                         LspNotification::SessionUpdate(params) => {
                             let hydration =
                                 state_handlers::did_update_session(params, &mut self.world)?;
-                            self.spawn_detached_session_hydration(hydration);
+                            self.spawn_detached_hydrations(hydration);
                             Ok(())
                         },
                         LspNotification::DidChangeWorkspaceFolders(_params) => {
@@ -320,13 +321,13 @@ impl GlobalState {
                         LspNotification::DidOpenTextDocument(params) => {
                             let hydration =
                                 state_handlers::did_open(params, &mut self.lsp_state, &mut self.world)?;
-                            self.spawn_detached_session_hydration(hydration);
+                            self.spawn_detached_hydrations(hydration);
                             Ok(())
                         },
                         LspNotification::DidChangeTextDocument(params) => {
                             let hydration =
                                 state_handlers::did_change(params, &mut self.lsp_state, &mut self.world)?;
-                            self.spawn_detached_session_hydration(hydration);
+                            self.spawn_detached_hydrations(hydration);
                             Ok(())
                         },
                         LspNotification::DidSaveTextDocument(_params) => {
@@ -453,6 +454,9 @@ impl GlobalState {
                 }
             },
             Event::Internal(event) => match event {
+                InternalEvent::DetachedBaselineHydrationCompleted(output) => {
+                    state_handlers::finish_detached_baseline_hydration(output, &mut self.world);
+                },
                 InternalEvent::DetachedSessionHydrationCompleted(output) => {
                     state_handlers::finish_detached_session_hydration(output, &mut self.world);
                 },
@@ -488,26 +492,36 @@ impl GlobalState {
         lsp::spawn_blocking(move || respond(response_tx, handler, into_lsp_response).and(Ok(None)))
     }
 
-    fn spawn_detached_session_hydration(
-        &self,
-        request: Option<state_handlers::DetachedSessionHydrationRequest>,
-    ) {
-        let Some(request) = request else {
-            return;
-        };
+    fn spawn_detached_hydrations(&self, requests: state_handlers::DetachedHydrationRequests) {
+        if let Some(request) = requests.baseline {
+            let events_tx = self.events_tx.clone();
+            spawn_blocking(move || {
+                let output = state_handlers::run_detached_baseline_hydration(request);
+                events_tx
+                    .send(Event::Internal(
+                        InternalEvent::DetachedBaselineHydrationCompleted(output),
+                    ))
+                    .map_err(|err| {
+                        anyhow!("Failed to queue detached baseline hydration result: {err}")
+                    })?;
+                Ok(None)
+            });
+        }
 
-        let events_tx = self.events_tx.clone();
-        spawn_blocking(move || {
-            let output = state_handlers::run_detached_session_hydration(request);
-            events_tx
-                .send(Event::Internal(
-                    InternalEvent::DetachedSessionHydrationCompleted(output),
-                ))
-                .map_err(|err| {
-                    anyhow!("Failed to queue detached session hydration result: {err}")
-                })?;
-            Ok(None)
-        });
+        if let Some(request) = requests.session {
+            let events_tx = self.events_tx.clone();
+            spawn_blocking(move || {
+                let output = state_handlers::run_detached_session_hydration(request);
+                events_tx
+                    .send(Event::Internal(
+                        InternalEvent::DetachedSessionHydrationCompleted(output),
+                    ))
+                    .map_err(|err| {
+                        anyhow!("Failed to queue detached session hydration result: {err}")
+                    })?;
+                Ok(None)
+            });
+        }
     }
 }
 

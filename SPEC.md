@@ -213,6 +213,12 @@ part of the default supported path.
   of reporting a false bootstrap failure.
 - Diagnostics remain syntax-first during detached startup and only become fully
   session-aware after hydration completes.
+- When no managed pane is attached, detached `ark-lsp` may hydrate
+  side-effect-free baseline metadata from local R: library paths, installed
+  packages, default search-path symbols, help text, and member names for
+  deterministic attached objects such as default package data frames. This
+  baseline must not execute user `.GlobalEnv` state, and live bridge/session
+  metadata remains authoritative once a managed session is available.
 - Missing-package diagnostics for `pkg::foo`, `library(pkg)`, and `require(pkg)`
   should rely on the current installed-package snapshot or lazy library-path
   metadata, without forcing an eager installed-package enumeration on the

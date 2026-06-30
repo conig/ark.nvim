@@ -13,6 +13,7 @@ pub mod completions;
 mod config;
 mod declarations;
 pub mod definitions;
+mod detached_metadata;
 pub mod diagnostics;
 pub mod diagnostics_syntax;
 pub mod document;

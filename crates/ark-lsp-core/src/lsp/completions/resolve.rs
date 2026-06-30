@@ -13,6 +13,7 @@ use tower_lsp::lsp_types::MarkupContent;
 use tower_lsp::lsp_types::MarkupKind;
 
 use crate::lsp::completions::types::CompletionData;
+use crate::lsp::detached_metadata;
 use crate::lsp::help::RHtmlHelp;
 
 pub fn resolve_completion(item: &mut CompletionItem) -> anyhow::Result<bool> {
@@ -42,6 +43,69 @@ pub fn resolve_completion(item: &mut CompletionItem) -> anyhow::Result<bool> {
         CompletionData::ScopeParameter { name: _ } => Ok(false),
         CompletionData::Unknown => Ok(false),
     }
+}
+
+pub fn resolve_detached_completion(item: &mut CompletionItem) -> anyhow::Result<bool> {
+    let Some(data) = item.data.clone() else {
+        return Ok(false);
+    };
+
+    let data: CompletionData = unwrap!(serde_json::from_value(data), Err(err) => {
+        bail!("Completion `data` can't be deserialized: {err:?}.");
+    });
+
+    match data {
+        CompletionData::Function { name, package } => {
+            resolve_detached_function_completion_item(item, name.as_str(), package.as_deref())
+        },
+        CompletionData::Package { name } => {
+            resolve_detached_package_completion_item(item, name.as_str())
+        },
+        _ => Ok(false),
+    }
+}
+
+fn resolve_detached_package_completion_item(
+    item: &mut CompletionItem,
+    package: &str,
+) -> anyhow::Result<bool> {
+    let topic = join!(package, "::", package, "-package");
+    let Some(help) = detached_metadata::help_text(topic.as_str())? else {
+        return Ok(false);
+    };
+
+    let markup = MarkupContent {
+        kind: MarkupKind::PlainText,
+        value: help.text,
+    };
+
+    item.detail = None;
+    item.documentation = Some(Documentation::MarkupContent(markup));
+
+    Ok(true)
+}
+
+fn resolve_detached_function_completion_item(
+    item: &mut CompletionItem,
+    name: &str,
+    package: Option<&str>,
+) -> anyhow::Result<bool> {
+    let topic = match package {
+        Some(package) => join!(package, "::", name),
+        None => name.to_string(),
+    };
+    let Some(help) = detached_metadata::help_text(topic.as_str())? else {
+        return Ok(false);
+    };
+
+    let markup = MarkupContent {
+        kind: MarkupKind::PlainText,
+        value: help.text,
+    };
+
+    item.documentation = Some(Documentation::MarkupContent(markup));
+
+    Ok(true)
 }
 
 fn resolve_package_completion_item(
