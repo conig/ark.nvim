@@ -20,6 +20,8 @@ use libr::R_lsInternal;
 use tower_lsp::lsp_types::CompletionItem;
 
 use crate::console;
+use crate::lsp::call_context::document_context_matches_package_argument;
+use crate::lsp::call_context::PackageCompletionMode;
 use crate::lsp::completions::completion_context::CompletionContext;
 use crate::lsp::completions::completion_item::completion_item_from_function;
 use crate::lsp::completions::completion_item::completion_item_from_package;
@@ -129,9 +131,10 @@ fn completions_from_search_path(
             .param("all.available", true)
             .call()?;
 
+        let append_colons = package_items_should_append_colons(context)?;
         let strings = packages.to::<Vec<String>>()?;
         for string in strings.iter() {
-            let item = completion_item_from_package(string, true)?;
+            let item = completion_item_from_package(string, append_colons)?;
             completions.push(item);
         }
     }
@@ -170,12 +173,13 @@ fn completions_from_static_search_path(
         completions.push(item);
     }
 
+    let append_colons = package_items_should_append_colons(context)?;
     for package in context.state.installed_packages.iter() {
         if !seen.insert(package.clone()) {
             continue;
         }
 
-        let item = unsafe { completion_item_from_package(package, true)? };
+        let item = unsafe { completion_item_from_package(package, append_colons)? };
         completions.push(item);
     }
 
@@ -183,4 +187,46 @@ fn completions_from_static_search_path(
     set_sort_text_by_words_first(&mut completions);
 
     Ok(Some(completions))
+}
+
+fn package_items_should_append_colons(context: &CompletionContext) -> anyhow::Result<bool> {
+    Ok(!document_context_matches_package_argument(
+        context.document_context,
+        PackageCompletionMode::BareSymbol,
+    )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::fixtures::point_from_cursor;
+    use crate::lsp::completions::completion_context::CompletionContext;
+    use crate::lsp::completions::sources::composite::search_path::completions_from_static_search_path;
+    use crate::lsp::document::Document;
+    use crate::lsp::document_context::DocumentContext;
+    use crate::lsp::state::RuntimeMode;
+    use crate::lsp::state::WorldState;
+
+    #[test]
+    fn test_static_installed_packages_do_not_append_namespace_colons_in_library_call() {
+        let (text, point) = point_from_cursor("library(ggplo@)");
+        let document = Document::new(text.as_str(), None);
+        let document_context = DocumentContext::new(&document, point, None);
+        let state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            installed_packages: vec![String::from("ggplot2")],
+            ..Default::default()
+        };
+        let context = CompletionContext::new(&document_context, &state);
+
+        let completions = completions_from_static_search_path(&context)
+            .unwrap()
+            .unwrap();
+        let item = completions
+            .iter()
+            .find(|item| item.label == "ggplot2")
+            .unwrap();
+
+        assert_eq!(item.insert_text.as_deref(), Some("ggplot2"));
+        assert!(item.command.is_none());
+    }
 }

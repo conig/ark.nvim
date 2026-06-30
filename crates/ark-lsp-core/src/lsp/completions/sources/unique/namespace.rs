@@ -156,6 +156,10 @@ fn completions_from_namespace_static(
         NamespaceNodeKind::None => return Ok(None),
         NamespaceNodeKind::EmptySet => return Ok(Some(completions)),
         NamespaceNodeKind::PackageName => {
+            if completion_context.state.installed_packages.is_empty() {
+                return Ok(None);
+            }
+
             for package in completion_context.state.installed_packages.iter() {
                 let item = unsafe { completion_item_from_package(package, false)? };
                 completions.push(item);
@@ -470,5 +474,22 @@ mod tests {
             .expect("expected namespace source to handle context");
 
         assert!(find_completion_by_label(&completions, "foo").is_some());
+    }
+
+    #[test]
+    fn test_detached_namespace_package_lhs_without_static_packages_defers() {
+        let (text, point) = point_from_cursor("uti@::head");
+        let document = Document::new(&text, None);
+        let document_context = DocumentContext::new(&document, point, None);
+        let state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            installed_packages: Vec::new(),
+            ..Default::default()
+        };
+        let context = CompletionContext::new(&document_context, &state);
+
+        let completions = completions_from_namespace(&context).expect("expected completion result");
+
+        assert!(completions.is_none());
     }
 }

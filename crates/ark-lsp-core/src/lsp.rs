@@ -6,6 +6,7 @@
 //
 
 pub mod backend;
+pub(crate) mod call_context;
 pub mod capabilities;
 pub mod code_action;
 pub mod comm;

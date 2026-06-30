@@ -157,6 +157,8 @@ pub(super) unsafe fn completion_item_from_package(
             command: "editor.action.triggerSuggest".to_string(),
             ..Default::default()
         });
+    } else {
+        item.insert_text = Some(package.to_string());
     }
 
     Ok(item)
