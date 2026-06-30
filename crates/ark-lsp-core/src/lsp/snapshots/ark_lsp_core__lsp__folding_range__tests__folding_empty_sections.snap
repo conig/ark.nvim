@@ -1,0 +1,37 @@
+---
+source: crates/ark-lsp-core/src/lsp/folding_range.rs
+assertion_line: 486
+expression: "test_folding_range(\"\n# Empty section ----\n\n# Another empty section ----\n\n# Section with content ----\na\")"
+---
+[
+    FoldingRange {
+        start_line: 1,
+        start_character: None,
+        end_line: 2,
+        end_character: None,
+        kind: Some(
+            Region,
+        ),
+        collapsed_text: None,
+    },
+    FoldingRange {
+        start_line: 3,
+        start_character: None,
+        end_line: 4,
+        end_character: None,
+        kind: Some(
+            Region,
+        ),
+        collapsed_text: None,
+    },
+    FoldingRange {
+        start_line: 5,
+        start_character: None,
+        end_line: 6,
+        end_character: None,
+        kind: Some(
+            Region,
+        ),
+        collapsed_text: None,
+    },
+]

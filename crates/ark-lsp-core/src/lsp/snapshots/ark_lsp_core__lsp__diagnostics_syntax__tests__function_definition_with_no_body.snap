@@ -1,0 +1,6 @@
+---
+source: crates/ark-lsp-core/src/lsp/diagnostics_syntax.rs
+assertion_line: 700
+expression: diagnostic.message
+---
+Invalid function definition. Missing a body.

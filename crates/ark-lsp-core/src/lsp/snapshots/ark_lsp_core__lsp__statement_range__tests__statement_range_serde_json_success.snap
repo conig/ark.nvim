@@ -1,0 +1,19 @@
+---
+source: crates/ark-lsp-core/src/lsp/statement_range.rs
+assertion_line: 2647
+expression: "serde_json::to_string_pretty(&success).unwrap()"
+---
+{
+  "kind": "success",
+  "range": {
+    "start": {
+      "line": 5,
+      "character": 3
+    },
+    "end": {
+      "line": 6,
+      "character": 4
+    }
+  },
+  "code": null
+}

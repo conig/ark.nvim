@@ -1,18 +1,24 @@
-This directory is the shared source-of-truth for the LSP implementation that is
-currently compiled in both `crates/ark` and `crates/ark-lsp`.
+`ark-lsp-core` is the shared source of truth for the Neovim-facing LSP
+implementation used by both host crates:
 
-Why it exists:
-- most of the `lsp/` tree was byte-identical across the two crates
-- the remaining divergence is concentrated in the host adapter files:
-  `backend.rs`, `main_loop.rs`, and `state_handlers.rs`
+- `crates/ark`: attached legacy kernel host
+- `crates/ark-lsp`: detached stdio host for `ark.nvim`
 
-Why it is not a standalone Cargo package yet:
-- the shared code still relies on crate-root hooks such as `console`, `r_task`,
-  `analysis`, `fixtures`, and `url`
-- those hooks still differ enough between the attached `ark` runtime and the
-  detached `ark-lsp` runtime that forcing a full crate boundary now would add
-  more abstraction churn than clarity
+The shared crate owns the LSP module tree, indexing, diagnostics, completion,
+hover, signature help, static state, bridge-aware handlers, and common
+tree-sitter helpers. Host crates should not reintroduce `#[path]` imports into
+this tree.
 
-The intended next step is to keep shrinking those host hooks until this source
-tree can become a real shared library crate rather than a path-shared module
-tree.
+The attached `ark` host still owns the Amalthea `ServerHandler` wrapper and the
+real R-thread scheduler. Those host-specific capabilities are installed into
+this crate through the narrow hooks in `runtime.rs`:
+
+- run a closure on the attached R thread
+- read attached console state such as the selected environment and console
+  inputs
+- attach or remove the LSP event channel from the console
+- surface crash messages through the attached UI comm when available
+
+Detached `ark-lsp` uses the crate defaults, which deliberately avoid assuming an
+embedded R runtime. Runtime-aware detached features should continue to flow
+through `lsp/session_bridge.rs`.

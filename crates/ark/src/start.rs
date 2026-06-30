@@ -40,6 +40,8 @@ pub fn start_kernel(
     capture_streams: bool,
     default_repos: DefaultRepos,
 ) {
+    lsp::install_core_hooks();
+
     // Locate R home directory
     let r_home = match harp::command::r_home_setup() {
         Ok(r_home) => r_home,

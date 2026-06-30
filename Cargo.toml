@@ -9,29 +9,7 @@
 # feature set in `dev-dependencies`).
 resolver = "2"
 
-members = [
-    "crates/aether_path",
-    "crates/amalthea",
-    "crates/ark",
-    "crates/ark-lsp",
-    "crates/ark-lsp-support",
-    "crates/ark_macros",
-    "crates/echo",
-    "crates/harp",
-    "crates/harp_macros",
-    "crates/libr",
-    "crates/oak_core",
-    "crates/oak_db",
-    "crates/oak_fs",
-    "crates/oak_ide",
-    "crates/oak_index_vec",
-    "crates/oak_package_metadata",
-    "crates/oak_r_process",
-    "crates/oak_scan",
-    "crates/oak_semantic",
-    "crates/oak_sources",
-    "crates/stdext",
-]
+members = ["crates/*"]
 
 [workspace.package]
 rust-version = "1.94"
@@ -53,6 +31,7 @@ aether_syntax = { git = "https://github.com/posit-dev/air", package = "air_r_syn
 amalthea = { path = "crates/amalthea" }
 anyhow = "1.0.102"
 ark = { path = "crates/ark" }
+ark-lsp-core = { path = "crates/ark-lsp-core" }
 ark-lsp-support = { path = "crates/ark-lsp-support" }
 ark_macros = { path = "crates/ark_macros" }
 assert_matches = "1.5.0"

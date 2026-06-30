@@ -1,0 +1,6 @@
+---
+source: crates/ark-lsp-core/src/lsp/diagnostics.rs
+assertion_line: 1541
+expression: diagnostic.message
+---
+Invalid namespace operator '::'. Missing a right hand side.

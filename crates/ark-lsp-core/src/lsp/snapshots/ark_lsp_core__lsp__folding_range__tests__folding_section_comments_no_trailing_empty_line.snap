@@ -1,0 +1,17 @@
+---
+source: crates/ark-lsp-core/src/lsp/folding_range.rs
+assertion_line: 433
+expression: "test_folding_range(\"\n# First section ----\na\nb\")"
+---
+[
+    FoldingRange {
+        start_line: 1,
+        start_character: None,
+        end_line: 3,
+        end_character: None,
+        kind: Some(
+            Region,
+        ),
+        collapsed_text: None,
+    },
+]

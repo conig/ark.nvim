@@ -65,13 +65,6 @@ pub enum SessionMode {
     Background,
 }
 
-/// Notifications from other components (e.g., LSP) to the Console
-#[derive(Debug)]
-pub(crate) enum ConsoleNotification {
-    /// Notification that a document has changed, requiring breakpoint invalidation.
-    DidChangeDocument(FilePath),
-}
-
 /// Stack of pending inputs
 pub(super) struct PendingInputs {
     /// EXPRSXP vector of parsed expressions

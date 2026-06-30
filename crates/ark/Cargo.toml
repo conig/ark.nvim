@@ -32,6 +32,7 @@ aether_syntax.workspace = true
 aether_path.workspace = true
 amalthea.workspace = true
 anyhow.workspace = true
+ark-lsp-core.workspace = true
 ark-lsp-support.workspace = true
 ark_macros.workspace = true
 async-trait.workspace = true

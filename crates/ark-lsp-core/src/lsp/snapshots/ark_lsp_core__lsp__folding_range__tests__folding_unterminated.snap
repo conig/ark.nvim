@@ -1,0 +1,6 @@
+---
+source: crates/ark-lsp-core/src/lsp/folding_range.rs
+assertion_line: 722
+expression: "format!(\"Expected error: {}\", e)"
+---
+"Expected error: Parse error"

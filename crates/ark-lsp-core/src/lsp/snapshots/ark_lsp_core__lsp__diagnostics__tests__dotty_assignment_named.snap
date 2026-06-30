@@ -1,0 +1,6 @@
+---
+source: crates/ark-lsp-core/src/lsp/diagnostics.rs
+assertion_line: 1787
+expression: diagnostic.message
+---
+No symbol named 'x' in scope.

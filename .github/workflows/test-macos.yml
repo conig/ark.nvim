@@ -1,4 +1,4 @@
-name: "Test ark.nvim - macOS"
+name: "Test Ark - macOS"
 
 on:
   workflow_call:

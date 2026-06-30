@@ -45,7 +45,6 @@ pub mod strings;
 pub mod sys;
 pub mod thread;
 pub mod traps;
-pub mod treesitter;
 pub mod ui;
 pub mod url;
 pub mod variables;

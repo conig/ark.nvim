@@ -1,0 +1,6 @@
+---
+source: crates/ark-lsp-core/src/lsp/diagnostics.rs
+assertion_line: 1443
+expression: diagnostic.message
+---
+Syntax error

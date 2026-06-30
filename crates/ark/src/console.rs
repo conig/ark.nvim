@@ -61,6 +61,7 @@ use amalthea::wire::stream::Stream;
 use amalthea::wire::stream::StreamOutput;
 use amalthea::Error;
 use anyhow::*;
+use ark_lsp_support::notifications::ConsoleInputs;
 use bus::Bus;
 use crossbeam::channel::bounded;
 use crossbeam::channel::Receiver;
@@ -117,6 +118,7 @@ mod console_integration;
 mod console_repl;
 
 use aether_path::FilePath;
+pub(crate) use ark_lsp_core::console::ConsoleNotification;
 use console_annotate::annotate_input;
 use console_annotate::annotate_notebook;
 pub(crate) use console_debug::DebugCallText;
@@ -138,7 +140,6 @@ pub(crate) use console_repl::r_suicide;
 pub(crate) use console_repl::r_write_console;
 pub(crate) use console_repl::selected_env;
 use console_repl::ActiveReadConsoleRequest;
-pub(crate) use console_repl::ConsoleNotification;
 pub(crate) use console_repl::ConsoleOutputCapture;
 pub(crate) use console_repl::KernelInfo;
 use console_repl::PendingInputs;
@@ -154,10 +155,8 @@ use crate::help::r_help::RHelp;
 use crate::lsp::events::EVENTS;
 use crate::lsp::main_loop::DidCloseVirtualDocumentParams;
 use crate::lsp::main_loop::DidOpenVirtualDocumentParams;
-use crate::lsp::main_loop::Event;
 use crate::lsp::main_loop::KernelNotification;
-use crate::lsp::main_loop::TokioUnboundedSender;
-use crate::lsp::state_handlers::ConsoleInputs;
+use crate::lsp::main_loop::LspEventSender;
 use crate::modules;
 use crate::modules::ARK_ENVS;
 use crate::plots::graphics_device;
@@ -257,7 +256,7 @@ pub struct Console {
     help_port: Option<u16>,
 
     /// Event channel for notifying the LSP. In principle, could be a Jupyter comm.
-    lsp_events_tx: Option<TokioUnboundedSender<Event>>,
+    lsp_events_tx: Option<LspEventSender>,
 
     /// The kernel's copy of virtual documents to notify the LSP about when the LSP
     /// initially connects and after an LSP restart.

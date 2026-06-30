@@ -1,0 +1,55 @@
+---
+source: crates/ark-lsp-core/src/lsp/folding_range.rs
+assertion_line: 572
+expression: "test_folding_range(\"\nfunction() {\n  if (condition) {\n    a\n  } else {\n    b\n  }\n}\n\nlist <- list(\n  a = 1,\n  b = 2,\n  c = 3\n)\")"
+---
+[
+    FoldingRange {
+        start_line: 1,
+        start_character: Some(
+            12,
+        ),
+        end_line: 6,
+        end_character: None,
+        kind: Some(
+            Region,
+        ),
+        collapsed_text: None,
+    },
+    FoldingRange {
+        start_line: 2,
+        start_character: Some(
+            18,
+        ),
+        end_line: 3,
+        end_character: None,
+        kind: Some(
+            Region,
+        ),
+        collapsed_text: None,
+    },
+    FoldingRange {
+        start_line: 4,
+        start_character: Some(
+            10,
+        ),
+        end_line: 5,
+        end_character: None,
+        kind: Some(
+            Region,
+        ),
+        collapsed_text: None,
+    },
+    FoldingRange {
+        start_line: 9,
+        start_character: Some(
+            13,
+        ),
+        end_line: 12,
+        end_character: None,
+        kind: Some(
+            Region,
+        ),
+        collapsed_text: None,
+    },
+]

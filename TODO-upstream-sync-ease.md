@@ -2,6 +2,20 @@
 
 Created after the 2026-06-30 upstream sync on `sync/upstream-2026-06-30`.
 
+Status after implementation:
+
+- TODO 1 implemented: `crates/ark-lsp-core` is now a real Cargo crate, the
+  workspace is back to `members = ["crates/*"]`, and host crates re-export the
+  shared LSP implementation instead of using `#[path]` imports.
+- TODO 2 implemented: `backend.rs`, `main_loop.rs`, and `state_handlers.rs`
+  are shared in `ark-lsp-core`; the attached-only Amalthea wrapper and runtime
+  hooks remain in `crates/ark/src/lsp/`.
+- TODO 3 resolved by documented decision: keep the current `Document` and
+  fork-owned indexer model for now, with future port guidance in
+  `crates/ark-lsp-core/UPSTREAM_STATE_MODEL.md`.
+- TODO 4 implemented: test workflow display names now match upstream again;
+  upstream release workflow deletion remains an intentional product divergence.
+
 This file is for follow-up work that should make future syncs from
 `posit-dev/ark` easier without undoing the Neovim product boundary. Treat these
 as TODOs with discovery notes, not as pre-decided implementations. If the current

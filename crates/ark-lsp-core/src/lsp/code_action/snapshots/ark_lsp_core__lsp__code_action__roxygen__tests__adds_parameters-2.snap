@@ -1,0 +1,13 @@
+---
+source: crates/ark-lsp-core/src/lsp/code_action/roxygen.rs
+assertion_line: 250
+expression: new_text
+---
+#' Title
+#'
+#' @param ...
+#'
+#' @returns
+#'
+#' @export
+#' @examples
