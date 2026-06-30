@@ -82,7 +82,9 @@ Responsibilities:
 - present `ArkHelp` through a tmux popup containing a read-only Neovim help
   buffer by default when running on the tmux backend inside tmux, with the
   existing in-process Neovim floating help buffer as the fallback and explicit
-  float mode
+  float mode; rendered help references are styled as links and pressing Enter
+  on a reference keeps the user inside ArkHelp while navigating to the linked
+  help topic
 - build tmux popup surfaces for ArkHelp, ArkView, and source-Neovim UI attach
   through one shared popup envelope helper; each invocation supplies width,
   height, target pane/client, optional environment, command payload, top-border

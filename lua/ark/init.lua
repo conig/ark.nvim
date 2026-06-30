@@ -570,6 +570,25 @@ local function help_palette()
     code_bg = blend_colors(normal_bg, "#000000", relative_luminance(normal_bg) >= 128 and 0.18 or 0.12)
   end
 
+  local label_fg = first_color(
+    colors.sun,
+    colors.yellow,
+    colors.orange,
+    colors.baby_pink,
+    get_hl_color("Title", "fg"),
+    normal_fg
+  )
+  local link_fg = first_color(
+    colors.blue,
+    colors.cyan,
+    colors.teal,
+    colors.nord_blue,
+    get_hl_color("Underlined", "fg"),
+    get_hl_color("DiagnosticInfo", "fg"),
+    get_hl_color("Identifier", "fg"),
+    "#61afef"
+  )
+
   return {
     normal_bg = normal_bg,
     normal_fg = normal_fg,
@@ -590,14 +609,8 @@ local function help_palette()
       "#111111",
       normal_fg
     ),
-    label_fg = first_color(
-      colors.sun,
-      colors.yellow,
-      colors.orange,
-      colors.baby_pink,
-      get_hl_color("Title", "fg"),
-      normal_fg
-    ),
+    label_fg = label_fg,
+    link_fg = link_fg,
   }
 end
 
@@ -640,7 +653,8 @@ local function ensure_help_highlights()
     bold = true,
   })
   vim.api.nvim_set_hl(0, "ArkHelpReference", {
-    fg = palette.label_fg,
+    fg = palette.link_fg,
+    bold = true,
     underline = true,
   })
 end
@@ -793,6 +807,21 @@ local function build_help_reference_matches(lines, references, code_lines)
   return matches
 end
 
+local function help_code_lines(rendered)
+  local code_lines = {}
+  for _, block in ipairs((rendered or {}).code_blocks or {}) do
+    for line_index = block.fence_start, block.fence_end do
+      code_lines[line_index] = true
+    end
+  end
+  return code_lines
+end
+
+local function help_reference_matches(rendered, references)
+  rendered = rendered or {}
+  return build_help_reference_matches(rendered.lines or {}, references or {}, help_code_lines(rendered))
+end
+
 local function reference_under_cursor(buf)
   local cursor = vim.api.nvim_win_get_cursor(0)
   local line = cursor[1]
@@ -872,6 +901,16 @@ local function render_help_display(raw_lines)
   return rendered
 end
 
+local function help_popup_payload(text, references, topic)
+  local rendered = render_help_display(split_lines(text))
+  return {
+    topic = topic,
+    title = topic and ("ArkHelp: " .. topic) or "ArkHelp",
+    lines = rendered.lines,
+    references = help_reference_matches(rendered, references),
+  }
+end
+
 local function start_help_markdown_parser(buf)
   return pcall(vim.treesitter.start, buf, "markdown")
 end
@@ -912,13 +951,9 @@ local function apply_help_highlights(buf, rendered, references)
   local title_line = nil
   local sections = {}
   local code_blocks_by_header = {}
-  local code_lines = {}
 
   for _, block in ipairs(rendered.code_blocks or {}) do
     code_blocks_by_header[block.header_line] = block
-    for line_index = block.fence_start, block.fence_end do
-      code_lines[line_index] = true
-    end
   end
 
   for index, line in ipairs(lines) do
@@ -972,7 +1007,7 @@ local function apply_help_highlights(buf, rendered, references)
     end
   end
 
-  local matches = build_help_reference_matches(lines, references, code_lines)
+  local matches = help_reference_matches(rendered, references)
   for _, match in ipairs(matches) do
     vim.api.nvim_buf_set_extmark(buf, help_float_ns, match.line - 1, match.start_col, {
       end_col = match.end_col,
@@ -1118,14 +1153,95 @@ local function should_use_tmux_help_popup()
   return type(status) == "table" and status.inside_tmux == true
 end
 
-local function open_help_popup(text, topic)
-  local help_opts = type(options) == "table" and type(options.help) == "table" and options.help or {}
-  local rendered = render_help_display(split_lines(text))
-  local popup_opts = vim.tbl_deep_extend("force", help_opts.popup or {}, {
-    title = topic and ("ArkHelp: " .. topic) or "ArkHelp",
-  })
+local current_nvim_server
+local help_popup_backend_rpc_name = "__ark_help_popup_backend"
+local help_popup_backend_seq = 0
+local help_popup_backends = {}
 
-  return session_backend.help_popup(options, table.concat(rendered.lines, "\n"), popup_opts)
+local function help_popup_backend_response(ok, value, err)
+  return {
+    ok = ok == true,
+    value = value,
+    err = err,
+  }
+end
+
+local function ensure_help_popup_backend_rpc()
+  _G[help_popup_backend_rpc_name] = function(backend_id, method, args)
+    if type(backend_id) ~= "string" or backend_id == "" then
+      return help_popup_backend_response(false, nil, "ArkHelp popup backend id is required")
+    end
+
+    if method == "dispose" then
+      help_popup_backends[backend_id] = nil
+      return help_popup_backend_response(true, true, nil)
+    end
+
+    local backend = help_popup_backends[backend_id]
+    if type(backend) ~= "table" then
+      return help_popup_backend_response(false, nil, "unknown ArkHelp popup backend: " .. tostring(backend_id))
+    end
+
+    if method ~= "page" then
+      return help_popup_backend_response(false, nil, "unsupported ArkHelp popup backend method: " .. tostring(method))
+    end
+
+    args = type(args) == "table" and args or {}
+    local topic = args[1]
+    if type(topic) ~= "string" or topic == "" then
+      return help_popup_backend_response(false, nil, "ArkHelp popup link requires a non-empty topic")
+    end
+
+    local bufnr = backend.source_bufnr
+    if type(bufnr) ~= "number" or not vim.api.nvim_buf_is_valid(bufnr) then
+      bufnr = 0
+    end
+
+    local page, page_err = lsp.help_text(options, bufnr, topic)
+    if not page then
+      return help_popup_backend_response(false, nil, page_err or "no help text found")
+    end
+
+    return help_popup_backend_response(true, help_popup_payload(page.text, page.references, topic), nil)
+  end
+end
+
+local function register_help_popup_backend(source_bufnr)
+  local server = current_nvim_server()
+  if type(server) ~= "string" or server == "" then
+    return nil
+  end
+
+  ensure_help_popup_backend_rpc()
+  help_popup_backend_seq = help_popup_backend_seq + 1
+  local backend_id = "ark-help-popup-" .. tostring(vim.fn.getpid()) .. "-" .. tostring(help_popup_backend_seq)
+  help_popup_backends[backend_id] = {
+    source_bufnr = source_bufnr,
+  }
+
+  return {
+    server = server,
+    backend_id = backend_id,
+    rpc_name = help_popup_backend_rpc_name,
+  }
+end
+
+local function open_help_popup(page, topic, source_bufnr)
+  local help_opts = type(options) == "table" and type(options.help) == "table" and options.help or {}
+  local payload = help_popup_payload(page.text, page.references, topic)
+  local popup_opts = vim.tbl_deep_extend("force", help_opts.popup or {}, {
+    title = payload.title,
+  })
+  local backend = register_help_popup_backend(source_bufnr)
+  if backend then
+    popup_opts.help = vim.tbl_extend("force", backend, {
+      initial = {
+        references = payload.references,
+      },
+    })
+  end
+
+  return session_backend.help_popup(options, table.concat(payload.lines, "\n"), popup_opts)
 end
 
 local function should_use_tmux_view_popup()
@@ -1146,7 +1262,7 @@ local function should_use_tmux_view_popup()
   return type(status) == "table" and status.inside_tmux == true
 end
 
-local function current_nvim_server()
+current_nvim_server = function()
   if type(vim.v.servername) == "string" and vim.v.servername ~= "" then
     return vim.v.servername
   end
@@ -2533,7 +2649,7 @@ local function show_help_page(bufnr, topic)
     end
 
     if should_use_tmux_help_popup() then
-      local popup_ok, popup_err = open_help_popup(page.text, topic)
+      local popup_ok, popup_err = open_help_popup(page, topic, bufnr)
       if popup_ok then
         return topic, nil
       end

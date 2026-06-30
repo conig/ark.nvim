@@ -176,6 +176,22 @@ local ok, err = pcall(function()
   if popup.opts.viewer ~= "nvim" then
     error("expected ArkHelp popup to use the Neovim backend by default, got " .. vim.inspect(popup.opts), 0)
   end
+  if type(popup.opts.help) ~= "table" then
+    error("expected ArkHelp tmux popup to receive link-follow metadata, got " .. vim.inspect(popup.opts), 0)
+  end
+  if type(popup.opts.help.server) ~= "string" or popup.opts.help.server == "" then
+    error("expected ArkHelp tmux popup link backend to include a parent Neovim server, got " .. vim.inspect(popup.opts.help), 0)
+  end
+  if type(popup.opts.help.backend_id) ~= "string" or popup.opts.help.backend_id == "" then
+    error("expected ArkHelp tmux popup link backend to include a backend id, got " .. vim.inspect(popup.opts.help), 0)
+  end
+  if popup.opts.help.rpc_name ~= "__ark_help_popup_backend" then
+    error("expected ArkHelp tmux popup link backend RPC name, got " .. vim.inspect(popup.opts.help), 0)
+  end
+  local popup_refs = popup.opts.help.initial and popup.opts.help.initial.references or {}
+  if type(popup_refs[1]) ~= "table" or popup_refs[1].target ~= "dplyr::group_by" then
+    error("expected ArkHelp tmux popup to receive initial link targets, got " .. vim.inspect(popup.opts.help), 0)
+  end
 
   if #notifications ~= 0 then
     error("expected ArkHelp popup happy path to avoid notifications, got " .. vim.inspect(notifications), 0)

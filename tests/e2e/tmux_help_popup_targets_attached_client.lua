@@ -112,6 +112,14 @@ local ok, err = pcall(function()
     return table.concat(vim.fn.readfile(script), "\n")
   end
 
+  local function popup_bootstrap(script_text)
+    local bootstrap = script_text:match("([^%s'\"]+%.arkhelp%.lua)")
+    if not bootstrap then
+      error("expected ArkHelp popup launcher to load a link bootstrap script, got " .. script_text, 0)
+    end
+    return bootstrap, table.concat(vim.fn.readfile(bootstrap), "\n")
+  end
+
   local default_popup_ok, default_popup_err = tmux.help_popup({}, "Default viewer\n", {
     target = "%source",
     title = "ArkHelp: default viewer",
@@ -150,6 +158,21 @@ local ok, err = pcall(function()
     nvim = {
       bin = "nvim",
       init = "NONE",
+    },
+    help = {
+      server = "/tmp/ark-help-popup.sock",
+      backend_id = "ark-help-popup-test",
+      rpc_name = "__ark_help_popup_backend",
+      initial = {
+        references = {
+          {
+            line = 1,
+            start_col = 0,
+            end_col = 6,
+            target = "stats::lm",
+          },
+        },
+      },
     },
   })
 
@@ -216,6 +239,33 @@ local ok, err = pcall(function()
   end
   if not popup_script:find("markdown_fenced_languages", 1, true) or not popup_script:find("syntax/markdown.vim", 1, true) then
     error("expected ArkHelp popup buffer to enable markdown fenced R syntax highlighting, got " .. popup_script, 0)
+  end
+  local popup_bootstrap_path, popup_bootstrap_text = popup_bootstrap(popup_script)
+  if not popup_bootstrap_text:find("__ark_help_popup_backend", 1, true)
+    or not popup_bootstrap_text:find("sockconnect", 1, true)
+  then
+    error("expected ArkHelp popup to request followed links from the parent Neovim, got " .. popup_bootstrap_text, 0)
+  end
+  if not popup_bootstrap_text:find("ArkHelpReference", 1, true)
+    or not popup_bootstrap_text:find("underline", 1, true)
+    or not popup_bootstrap_text:find("bold", 1, true)
+  then
+    error("expected ArkHelp popup links to be styled in the child Neovim, got " .. popup_bootstrap_text, 0)
+  end
+  if not popup_bootstrap_text:find("<CR>", 1, true) or not popup_bootstrap_text:find("reference_under_cursor", 1, true) then
+    error("expected ArkHelp popup Enter to follow the reference under cursor, got " .. popup_bootstrap_text, 0)
+  end
+
+  local bootstrap_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(bootstrap_buf)
+  vim.api.nvim_buf_set_lines(bootstrap_buf, 0, -1, false, { "stats lm" })
+  local bootstrap_ok, bootstrap_err = pcall(vim.cmd, "luafile " .. vim.fn.fnameescape(popup_bootstrap_path))
+  if not bootstrap_ok then
+    error("expected generated ArkHelp popup bootstrap to execute: " .. tostring(bootstrap_err), 0)
+  end
+  local bootstrap_refs = vim.b[bootstrap_buf].ark_help_references or {}
+  if type(bootstrap_refs[1]) ~= "table" or bootstrap_refs[1].target ~= "stats::lm" then
+    error("expected generated ArkHelp popup bootstrap to install references, got " .. vim.inspect(bootstrap_refs), 0)
   end
 
   -- Regression: closing ArkHelp must ask tmux to remove the popup before

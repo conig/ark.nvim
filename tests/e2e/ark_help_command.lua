@@ -271,6 +271,14 @@ local ok, err = pcall(function()
   if normal_float.bg and usage_hl.bg and normal_float.bg == usage_hl.bg then
     error("expected code chunk background to differ from float background", 0)
   end
+  local reference_hl = vim.api.nvim_get_hl(0, { name = "ArkHelpReference", link = false })
+  if reference_hl.underline ~= true or reference_hl.bold ~= true then
+    error("expected ArkHelp references to be styled as links, got " .. vim.inspect(reference_hl), 0)
+  end
+  local argument_hl = vim.api.nvim_get_hl(0, { name = "ArkHelpArgumentName", link = false })
+  if reference_hl.fg and argument_hl.fg and reference_hl.fg == argument_hl.fg then
+    error("expected ArkHelp reference links to be visually distinct from argument names", 0)
+  end
 
   local ns = vim.api.nvim_create_namespace("ArkHelpFloat")
   local extmarks = vim.api.nvim_buf_get_extmarks(help_buf, ns, 0, -1, { details = true })

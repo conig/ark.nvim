@@ -1710,6 +1710,142 @@ function M.send_text(config_or_text, maybe_text)
   return true, nil
 end
 
+local function help_popup_bootstrap_lines(help)
+  help = type(help) == "table" and help or {}
+  local initial = type(help.initial) == "table" and help.initial or {}
+  local references = type(initial.references) == "table" and initial.references or {}
+  local references_json = vim.json.encode(references)
+  local rpc_name = type(help.rpc_name) == "string" and help.rpc_name ~= "" and help.rpc_name or "__ark_help_popup_backend"
+  local server = type(help.server) == "string" and help.server or ""
+  local backend_id = type(help.backend_id) == "string" and help.backend_id or ""
+  local rpc_source = table.concat({
+    "local rpc_name, backend_id, method, args = ...",
+    "local fn = _G[rpc_name]",
+    "if type(fn) ~= 'function' then",
+    "  return { ok = false, err = 'ArkHelp popup backend RPC is not registered' }",
+    "end",
+    "return fn(backend_id, method, args)",
+  }, "\n")
+
+  return {
+    "local ns = vim.api.nvim_create_namespace('ArkHelpPopup')",
+    "local references = vim.json.decode(" .. lua_literal(references_json) .. ") or {}",
+    "local server = " .. lua_literal(server),
+    "local backend_id = " .. lua_literal(backend_id),
+    "local rpc_name = " .. lua_literal(rpc_name),
+    "local rpc_source = " .. lua_literal(rpc_source),
+    "local chan = nil",
+    "local function style_links()",
+    "  local ok, underlined = pcall(vim.api.nvim_get_hl, 0, { name = 'Underlined', link = false })",
+    "  local fg = ok and type(underlined) == 'table' and underlined.fg or nil",
+    "  vim.api.nvim_set_hl(0, 'ArkHelpReference', { fg = fg or 0x61afef, underline = true, bold = true })",
+    "end",
+    "local function apply_reference_highlights(next_references)",
+    "  references = type(next_references) == 'table' and next_references or {}",
+    "  vim.b.ark_help_references = references",
+    "  vim.api.nvim_buf_clear_namespace(0, ns, 0, -1)",
+    "  style_links()",
+    "  for _, reference in ipairs(references) do",
+    "    local line = tonumber(reference.line)",
+    "    local start_col = tonumber(reference.start_col)",
+    "    local end_col = tonumber(reference.end_col)",
+    "    if line and start_col and end_col and line > 0 and end_col > start_col then",
+    "      pcall(vim.api.nvim_buf_set_extmark, 0, ns, line - 1, start_col, {",
+    "        end_col = end_col,",
+    "        hl_group = 'ArkHelpReference',",
+    "        priority = 320,",
+    "      })",
+    "    end",
+    "  end",
+    "end",
+    "local function connect()",
+    "  if type(chan) == 'number' and chan > 0 then",
+    "    return chan, nil",
+    "  end",
+    "  if server == '' then",
+    "    return nil, 'ArkHelp popup link backend is not configured'",
+    "  end",
+    "  local ok, result = pcall(vim.fn.sockconnect, 'pipe', server, { rpc = true })",
+    "  if not ok or type(result) ~= 'number' or result <= 0 then",
+    "    return nil, 'failed to connect ArkHelp popup to ' .. tostring(server) .. ': ' .. tostring(result)",
+    "  end",
+    "  chan = result",
+    "  return chan, nil",
+    "end",
+    "local function request(method, args)",
+    "  local rpc_chan, connect_err = connect()",
+    "  if not rpc_chan then",
+    "    return nil, connect_err",
+    "  end",
+    "  local ok, response = pcall(vim.rpcrequest, rpc_chan, 'nvim_exec_lua', rpc_source, { rpc_name, backend_id, method, args or {} })",
+    "  if not ok then",
+    "    return nil, tostring(response)",
+    "  end",
+    "  if type(response) ~= 'table' then",
+    "    return nil, 'invalid ArkHelp popup backend response'",
+    "  end",
+    "  if response.ok == false then",
+    "    return nil, tostring(response.err or 'ArkHelp popup backend request failed')",
+    "  end",
+    "  return response.value, nil",
+    "end",
+    "local function set_page(page)",
+    "  if type(page) ~= 'table' then",
+    "    return nil, 'invalid ArkHelp page response'",
+    "  end",
+    "  local lines = type(page.lines) == 'table' and page.lines or { '' }",
+    "  if #lines == 0 then",
+    "    lines = { '' }",
+    "  end",
+    "  vim.bo.readonly = false",
+    "  vim.bo.modifiable = true",
+    "  vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)",
+    "  vim.bo.modifiable = false",
+    "  vim.bo.readonly = true",
+    "  apply_reference_highlights(page.references)",
+    "  pcall(vim.api.nvim_win_set_cursor, 0, { 1, 0 })",
+    "  return true, nil",
+    "end",
+    "local function reference_under_cursor()",
+    "  local cursor = vim.api.nvim_win_get_cursor(0)",
+    "  local line = cursor[1]",
+    "  local col = cursor[2]",
+    "  for _, reference in ipairs(references or {}) do",
+    "    if reference.line == line and col >= reference.start_col and col < reference.end_col then",
+    "      return reference",
+    "    end",
+    "  end",
+    "  return nil",
+    "end",
+    "local function follow_reference()",
+    "  local reference = reference_under_cursor()",
+    "  if not reference or type(reference.target) ~= 'string' or reference.target == '' then",
+    "    return",
+    "  end",
+    "  local page, err = request('page', { reference.target })",
+    "  if not page then",
+    "    vim.notify(tostring(err or 'failed to follow ArkHelp link'), vim.log.levels.WARN, { title = 'ark.nvim' })",
+    "    return",
+    "  end",
+    "  local ok, set_err = set_page(page)",
+    "  if not ok then",
+    "    vim.notify(tostring(set_err or 'failed to render ArkHelp link'), vim.log.levels.WARN, { title = 'ark.nvim' })",
+    "  end",
+    "end",
+    "vim.keymap.set('n', '<CR>', follow_reference, { buffer = 0, nowait = true, silent = true })",
+    "vim.api.nvim_create_autocmd('VimLeavePre', {",
+    "  once = true,",
+    "  callback = function()",
+    "    pcall(request, 'dispose', {})",
+    "    if type(chan) == 'number' then",
+    "      pcall(vim.fn.chanclose, chan)",
+    "    end",
+    "  end,",
+    "})",
+    "apply_reference_highlights(references)",
+  }
+end
+
 function M.help_popup(_config, text, opts)
   opts = opts or {}
 
@@ -1735,6 +1871,7 @@ function M.help_popup(_config, text, opts)
 
   local path = popup_temp_path(".arkhelp")
   local script = popup_temp_path(".arkhelp-popup.sh")
+  local bootstrap = nil
   local lines = vim.split(text, "\n", { plain = true })
   local write_ok, write_err = pcall(vim.fn.writefile, lines, path, "b")
   if not write_ok then
@@ -1748,6 +1885,13 @@ function M.help_popup(_config, text, opts)
   local cleanup_from_parent = false
 
   if viewer == "nvim" then
+    bootstrap = popup_temp_path(".arkhelp.lua")
+    local bootstrap_ok, bootstrap_err = pcall(vim.fn.writefile, help_popup_bootstrap_lines(opts.help), bootstrap, "b")
+    if not bootstrap_ok then
+      pcall(vim.fn.delete, path)
+      return nil, "failed to write ArkHelp popup bootstrap: " .. tostring(bootstrap_err)
+    end
+
     local nvim = type(opts.nvim) == "table" and opts.nvim or {}
     local nvim_bin = type(nvim.bin) == "string" and nvim.bin ~= "" and nvim.bin or vim.v.progpath or "nvim"
     local hide_chrome = "set laststatus=0 showtabline=0 noshowmode noruler noshowcmd | silent! set cmdheight=0"
@@ -1761,7 +1905,11 @@ function M.help_popup(_config, text, opts)
     local cleanup_help_lua = table.concat({
       "lua vim.api.nvim_create_autocmd('VimLeavePre', {",
       "once = true,",
-      "callback = function() pcall(vim.fn.delete, " .. lua_literal(path) .. ") end,",
+      "callback = function() pcall(vim.fn.delete, "
+        .. lua_literal(path)
+        .. "); pcall(vim.fn.delete, "
+        .. lua_literal(bootstrap)
+        .. ") end,",
       "})",
     }, " ")
     local close_popup_command =
@@ -1793,6 +1941,8 @@ function M.help_popup(_config, text, opts)
       "-c",
       "lua pcall(vim.treesitter.start, 0, 'markdown')",
       "-c",
+      "luafile " .. bootstrap,
+      "-c",
       "autocmd QuitPre * lua pcall(_G.__ark_help_popup_close)",
       "-c",
       "nnoremap <buffer><silent> q <Cmd>" .. close_popup_command .. "<CR>",
@@ -1813,19 +1963,30 @@ function M.help_popup(_config, text, opts)
     cleanup_from_parent = true
   else
     pcall(vim.fn.delete, path)
+    pcall(vim.fn.delete, bootstrap)
     return nil, "unsupported ArkHelp tmux popup viewer: " .. tostring(opts.viewer)
+  end
+
+  local cleanup_paths = { script, path }
+  if bootstrap then
+    cleanup_paths[#cleanup_paths + 1] = bootstrap
+  end
+  local cleanup_args = {}
+  for _, cleanup_path in ipairs(cleanup_paths) do
+    cleanup_args[#cleanup_args + 1] = vim.fn.shellescape(cleanup_path)
   end
 
   local script_lines = {
     "#!/bin/sh",
     shell_join(popup_command_args),
     "status=$?",
-    "rm -f -- " .. vim.fn.shellescape(script) .. " " .. vim.fn.shellescape(path),
+    "rm -f -- " .. table.concat(cleanup_args, " "),
     "exit $status",
   }
   local script_ok, script_err = pcall(vim.fn.writefile, script_lines, script, "b")
   if not script_ok then
     pcall(vim.fn.delete, path)
+    pcall(vim.fn.delete, bootstrap)
     return nil, "failed to write ArkHelp popup launcher: " .. tostring(script_err)
   end
   pcall(vim.fn.setfperm, script, "rwx------")
@@ -1854,6 +2015,7 @@ function M.help_popup(_config, text, opts)
       on_exit = function()
         pcall(vim.fn.delete, path)
         pcall(vim.fn.delete, script)
+        pcall(vim.fn.delete, bootstrap)
       end,
     }
   end
@@ -1862,6 +2024,7 @@ function M.help_popup(_config, text, opts)
   if popup_err then
     pcall(vim.fn.delete, path)
     pcall(vim.fn.delete, script)
+    pcall(vim.fn.delete, bootstrap)
     return nil, "failed to open tmux ArkHelp popup: " .. tostring(popup_err)
   end
 
