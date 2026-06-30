@@ -133,6 +133,77 @@ local ok, err = pcall(function()
     sessionId = one_column_string_view.session_id,
   }, 10000)
 
+  local filter_view = ark_test.request(client, "ark/internal/viewOpen", {
+    expr = [[data.frame(score = c(1, 4, 5, 10), group = c("alpha", "beta", "alphabet", "beta"), stringsAsFactors = FALSE)]],
+  }, 10000)
+
+  local group_values = ark_test.request(client, "ark/internal/viewValues", {
+    sessionId = filter_view.session_id,
+    columnIndex = 2,
+  }, 10000)
+
+  local beta_value = nil
+  for _, item in ipairs(group_values.values or {}) do
+    if item.label == "beta" then
+      beta_value = item
+      break
+    end
+  end
+  if beta_value == nil or tonumber(beta_value.count or 0) ~= 2 or type(beta_value.value_key) ~= "string" then
+    error("expected value picker payload to include beta count and key, got " .. vim.inspect(group_values), 0)
+  end
+
+  local exact_group = ark_test.request(client, "ark/internal/viewFilter", {
+    sessionId = filter_view.session_id,
+    columnIndex = 2,
+    query = beta_value.label,
+    mode = "exact",
+    valueKey = beta_value.value_key,
+    label = beta_value.label,
+  }, 10000)
+
+  if tonumber(exact_group.total_rows or 0) ~= 2 or (exact_group.filters or {})[1].mode ~= "exact" then
+    error("expected exact value filter to keep two beta rows, got " .. vim.inspect(exact_group), 0)
+  end
+
+  local values_ignoring_own_filter = ark_test.request(client, "ark/internal/viewValues", {
+    sessionId = filter_view.session_id,
+    columnIndex = 2,
+  }, 10000)
+  if tonumber(values_ignoring_own_filter.total_values or 0) ~= 3 then
+    error("expected value facets to ignore the current column filter, got " .. vim.inspect(values_ignoring_own_filter), 0)
+  end
+
+  ark_test.request(client, "ark/internal/viewFilter", {
+    sessionId = filter_view.session_id,
+    columnIndex = 2,
+    query = "",
+  }, 10000)
+
+  local less_than = ark_test.request(client, "ark/internal/viewFilter", {
+    sessionId = filter_view.session_id,
+    columnIndex = 1,
+    query = "< 5",
+  }, 10000)
+
+  if tonumber(less_than.total_rows or 0) ~= 2 or (less_than.filters or {})[1].mode ~= "lt" then
+    error("expected numeric < filter to keep score < 5 rows, got " .. vim.inspect(less_than), 0)
+  end
+
+  local greater_than = ark_test.request(client, "ark/internal/viewFilter", {
+    sessionId = filter_view.session_id,
+    columnIndex = 1,
+    query = ">5",
+  }, 10000)
+
+  if tonumber(greater_than.total_rows or 0) ~= 1 or (greater_than.filters or {})[1].mode ~= "gt" then
+    error("expected numeric > filter to keep score > 5 rows, got " .. vim.inspect(greater_than), 0)
+  end
+
+  ark_test.request(client, "ark/internal/viewClose", {
+    sessionId = filter_view.session_id,
+  }, 10000)
+
   local mpg_profile = ark_test.request(client, "ark/internal/viewProfile", {
     sessionId = opened.session_id,
     columnIndex = 1,

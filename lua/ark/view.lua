@@ -736,11 +736,12 @@ local function show_help_window(state)
     "",
     "Columns",
     "  S      search columns",
-    "  < / >  narrow/widen selected column",
+    "  { / }  narrow/widen selected column",
     "  =      set selected column width; blank resets",
     "  w      wrap/unwrap selected column at its width",
     "  s      toggle sort on selected column",
-    "  /      set literal text filter; empty clears",
+    "  /      set text or numeric filter; empty clears",
+    "  f      pick exact value filter",
     "  C      clear all filters and sort",
     "  d      describe selected column",
     "  p      pin/unpin selected column",
@@ -1457,6 +1458,93 @@ local function open_schema_picker(state)
   }, choose)
 end
 
+local function apply_filter(state, column_index, query, mode, value_key, label)
+  local updated = request_or_error(
+    state,
+    "ArkView Error",
+    state.lsp.view_filter,
+    state.session_id,
+    column_index,
+    query,
+    mode,
+    value_key,
+    label
+  )
+  if not updated then
+    return nil
+  end
+
+  state.sort = updated.sort or state.sort
+  state.filters = updated.filters or {}
+  state.total_rows = tonumber(updated.total_rows) or state.total_rows
+  refresh_page(state, 0)
+  return updated
+end
+
+local function value_filter_label(item)
+  return string.format("%s (%d)", item.label or "", tonumber(item.count or 0) or 0)
+end
+
+local function open_value_filter_picker(state)
+  sync_selected_column(state)
+  local column_index = tonumber(state.selected_column)
+  local schema_item = schema_by_index(state, column_index)
+  if not schema_item then
+    return
+  end
+
+  local payload = request_or_error(state, "ArkView Error", state.lsp.view_values, state.session_id, column_index)
+  if not payload then
+    return
+  end
+
+  local items = payload.values or {}
+  if #items == 0 then
+    notify(state, "ArkView column has no filterable values", vim.log.levels.INFO)
+    return
+  end
+
+  local function choose(item)
+    if not item then
+      return
+    end
+    apply_filter(state, column_index, item.label or "", "exact", item.value_key or "", item.label or "")
+  end
+
+  local title = "ArkView Values: " .. (schema_item.name or "column")
+  local ok, snacks = pcall(require, "snacks")
+  if ok and type(snacks) == "table" and type(snacks.picker) == "table" and type(snacks.picker.select) == "function" then
+    snacks.picker.select(items, {
+      prompt = title,
+      format_item = value_filter_label,
+    }, choose)
+    return
+  end
+
+  if ok and type(snacks) == "table" and type(snacks.picker) == "table" and type(snacks.picker.pick) == "function" then
+    snacks.picker.pick({
+      title = title,
+      items = vim.tbl_map(function(item)
+        return {
+          text = value_filter_label(item),
+          item = item,
+        }
+      end, items),
+      format = "text",
+      confirm = function(picker, choice)
+        picker:close()
+        choose(choice and choice.item or nil)
+      end,
+    })
+    return
+  end
+
+  vim.ui.select(items, {
+    prompt = title,
+    format_item = value_filter_label,
+  }, choose)
+end
+
 local function toggle_pinned_column(state)
   if not state then
     return
@@ -1698,15 +1786,12 @@ local function setup_keymaps(state)
       if input == nil then
         return
       end
-      local updated = request_or_error(state, "ArkView Error", state.lsp.view_filter, state.session_id, column_index, input)
-      if not updated then
-        return
-      end
-      state.sort = updated.sort or state.sort
-      state.filters = updated.filters or {}
-      state.total_rows = tonumber(updated.total_rows) or state.total_rows
-      refresh_page(state, 0)
+      apply_filter(state, column_index, input, "contains", "", "")
     end)
+  end)
+
+  map("f", function()
+    open_value_filter_picker(state)
   end)
 
   map("C", function()
@@ -1748,11 +1833,11 @@ local function setup_keymaps(state)
     open_schema_picker(state)
   end)
 
-  map("<lt>", function()
+  map("{", function()
     adjust_selected_column_width(state, -grid_column_width_step)
   end)
 
-  map(">", function()
+  map("}", function()
     adjust_selected_column_width(state, grid_column_width_step)
   end)
 

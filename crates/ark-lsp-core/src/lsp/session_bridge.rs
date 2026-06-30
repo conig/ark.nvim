@@ -872,6 +872,9 @@ impl SessionBridge {
         session_id: &str,
         column_index: u32,
         query: &str,
+        mode: &str,
+        value_key: &str,
+        label: &str,
     ) -> anyhow::Result<Value> {
         self.view_command(
             "view_filter",
@@ -879,6 +882,19 @@ impl SessionBridge {
                 "session_id": session_id,
                 "column_index": column_index,
                 "query": query,
+                "mode": mode,
+                "value_key": value_key,
+                "label": label,
+            }),
+        )
+    }
+
+    pub(crate) fn view_values(&self, session_id: &str, column_index: u32) -> anyhow::Result<Value> {
+        self.view_command(
+            "view_values",
+            serde_json::json!({
+                "session_id": session_id,
+                "column_index": column_index,
             }),
         )
     }

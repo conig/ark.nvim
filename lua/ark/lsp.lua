@@ -15,6 +15,7 @@ local VIEW_STATE_METHOD = "ark/internal/viewState"
 local VIEW_PAGE_METHOD = "ark/internal/viewPage"
 local VIEW_SORT_METHOD = "ark/internal/viewSort"
 local VIEW_FILTER_METHOD = "ark/internal/viewFilter"
+local VIEW_VALUES_METHOD = "ark/internal/viewValues"
 local VIEW_SCHEMA_SEARCH_METHOD = "ark/internal/viewSchemaSearch"
 local VIEW_PROFILE_METHOD = "ark/internal/viewProfile"
 local VIEW_CODE_METHOD = "ark/internal/viewCode"
@@ -1917,11 +1918,21 @@ function M.view_sort(opts, bufnr, session_id, column_index, direction)
   }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
-function M.view_filter(opts, bufnr, session_id, column_index, query)
+function M.view_filter(opts, bufnr, session_id, column_index, query, mode, value_key, label)
   return view_request(opts, bufnr, VIEW_FILTER_METHOD, {
     sessionId = session_id,
     columnIndex = column_index,
     query = query,
+    mode = mode or "contains",
+    valueKey = value_key or "",
+    label = label or "",
+  }, VIEW_REQUEST_TIMEOUT_MS)
+end
+
+function M.view_values(opts, bufnr, session_id, column_index)
+  return view_request(opts, bufnr, VIEW_VALUES_METHOD, {
+    sessionId = session_id,
+    columnIndex = column_index,
   }, VIEW_REQUEST_TIMEOUT_MS)
 end
 

@@ -112,6 +112,7 @@ pub static ARK_VIEW_STATE_REQUEST: &str = "ark/internal/viewState";
 pub static ARK_VIEW_PAGE_REQUEST: &str = "ark/internal/viewPage";
 pub static ARK_VIEW_SORT_REQUEST: &str = "ark/internal/viewSort";
 pub static ARK_VIEW_FILTER_REQUEST: &str = "ark/internal/viewFilter";
+pub static ARK_VIEW_VALUES_REQUEST: &str = "ark/internal/viewValues";
 pub static ARK_VIEW_SCHEMA_SEARCH_REQUEST: &str = "ark/internal/viewSchemaSearch";
 pub static ARK_VIEW_PROFILE_REQUEST: &str = "ark/internal/viewProfile";
 pub static ARK_VIEW_CODE_REQUEST: &str = "ark/internal/viewCode";
@@ -223,6 +224,21 @@ pub(crate) struct ViewFilterParams {
     pub column_index: u32,
     #[serde(default)]
     pub query: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub value_key: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ViewValuesParams {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub column_index: u32,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -270,6 +286,7 @@ pub(crate) enum ViewRpcRequest {
     Page(ViewPageParams),
     Sort(ViewSortParams),
     Filter(ViewFilterParams),
+    Values(ViewValuesParams),
     SchemaSearch(ViewSchemaSearchParams),
     Profile(ViewProfileParams),
     Code(ViewSessionParams),
@@ -546,7 +563,13 @@ pub(crate) fn handle_view_rpc(params: ViewRpcRequest, state: &WorldState) -> Lsp
             params.session_id.as_str(),
             params.column_index,
             params.query.as_str(),
+            params.mode.as_str(),
+            params.value_key.as_str(),
+            params.label.as_str(),
         ),
+        ViewRpcRequest::Values(params) => {
+            session_bridge.view_values(params.session_id.as_str(), params.column_index)
+        },
         ViewRpcRequest::SchemaSearch(params) => {
             session_bridge.view_schema_search(params.session_id.as_str(), params.query.as_str())
         },

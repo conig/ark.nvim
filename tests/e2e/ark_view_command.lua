@@ -11,6 +11,7 @@ local view_open_bufnrs = {}
 local view_open_exprs = {}
 local sort_calls = {}
 local filter_calls = {}
+local value_calls = {}
 local profile_calls = {}
 local cell_calls = {}
 local export_calls = 0
@@ -78,9 +79,36 @@ local function copy_filters()
     filters[#filters + 1] = {
       column_index = item.column_index,
       query = item.query,
+      mode = item.mode or "contains",
     }
   end
   return filters
+end
+
+local function parsed_filter(column_index, query, mode, value_key, label)
+  query = tostring(query or "")
+  mode = mode or "contains"
+  if mode == "contains" then
+    local op, threshold = query:match("^%s*([<>])%s*(.+)%s*$")
+    if op and tonumber(threshold) then
+      return {
+        column_index = column_index,
+        query = op .. " " .. tostring(tonumber(threshold)),
+        mode = op == "<" and "lt" or "gt",
+        threshold = tonumber(threshold),
+      }
+    end
+  end
+  local filter_query = query
+  if label ~= nil and label ~= "" then
+    filter_query = label
+  end
+  return {
+    column_index = column_index,
+    query = filter_query,
+    mode = mode,
+    value_key = value_key,
+  }
 end
 
 local function filtered_rows()
@@ -88,8 +116,17 @@ local function filtered_rows()
   for _, filter in ipairs(backend.filters) do
     if filter.query ~= "" then
       rows = vim.tbl_filter(function(row)
-        local value = tostring(row[filter.column_index] or ""):lower()
-        return value:find(filter.query:lower(), 1, true) ~= nil
+        local value = tostring(row[filter.column_index] or "")
+        if filter.mode == "exact" then
+          return value == tostring(filter.value_key or filter.query or "")
+        end
+        if filter.mode == "lt" then
+          return tonumber(value) and tonumber(value) < tonumber(filter.threshold)
+        end
+        if filter.mode == "gt" then
+          return tonumber(value) and tonumber(value) > tonumber(filter.threshold)
+        end
+        return value:lower():find(tostring(filter.query or ""):lower(), 1, true) ~= nil
       end, rows)
     end
   end
@@ -322,19 +359,47 @@ local ok, err = pcall(function()
     return snapshot(), nil
   end
 
-  lsp.view_filter = function(_opts, _bufnr, _session_id, column_index, query)
+  lsp.view_filter = function(_opts, _bufnr, _session_id, column_index, query, mode, value_key, label)
     filter_calls[#filter_calls + 1] = {
       column_index = column_index,
       query = query,
+      mode = mode or "contains",
+      value_key = value_key or "",
+      label = label or "",
     }
     backend.filters = {}
     if query ~= "" then
-      backend.filters[1] = {
-        column_index = column_index,
-        query = query,
-      }
+      backend.filters[1] = parsed_filter(column_index, query, mode, value_key, label)
     end
     return snapshot(), nil
+  end
+
+  lsp.view_values = function(_opts, _bufnr, _session_id, column_index)
+    value_calls[#value_calls + 1] = column_index
+    local counts = {}
+    for _, row in ipairs(backend.base_rows) do
+      local value = tostring(row[column_index] or "")
+      counts[value] = (counts[value] or 0) + 1
+    end
+    local values = {}
+    for value, count in pairs(counts) do
+      values[#values + 1] = {
+        label = value,
+        value_key = value,
+        count = count,
+      }
+    end
+    table.sort(values, function(left, right)
+      if left.count ~= right.count then
+        return left.count > right.count
+      end
+      return left.label < right.label
+    end)
+    return {
+      column_index = column_index,
+      total_values = #values,
+      values = values,
+    }, nil
   end
 
   lsp.view_profile = function(_opts, _bufnr, _session_id, column_index)
@@ -548,7 +613,9 @@ local ok, err = pcall(function()
     or not help_text:find("H/L    previous/next column", 1, true)
     or not help_text:find("d      describe selected column", 1, true)
     or not help_text:find("p      pin/unpin selected column", 1, true)
-    or not help_text:find("/      set literal text filter; empty clears", 1, true)
+    or not help_text:find("{ / }  narrow/widen selected column", 1, true)
+    or not help_text:find("/      set text or numeric filter; empty clears", 1, true)
+    or not help_text:find("f      pick exact value filter", 1, true)
     or not help_text:find("C      clear all filters and sort", 1, true)
     or not help_text:find("Esc/q  close this help", 1, true)
   then
@@ -754,6 +821,9 @@ local ok, err = pcall(function()
   if not vim.deep_equal(filter_calls[1], {
     column_index = 2,
     query = "4",
+    mode = "contains",
+    value_key = "",
+    label = "",
   }) then
     error("expected filter on selected column, got " .. vim.inspect(filter_calls), 0)
   end
@@ -895,6 +965,9 @@ local ok, err = pcall(function()
   if not vim.deep_equal(filter_calls[2], {
     column_index = 2,
     query = "",
+    mode = "contains",
+    value_key = "",
+    label = "",
   }) then
     error("expected clear-all to clear selected filter, got " .. vim.inspect(filter_calls), 0)
   end
@@ -929,6 +1002,58 @@ local ok, err = pcall(function()
   then
     error("expected clear-all to restore neutral winbar sort/filter summary, got " .. vim.inspect(winbar), 0)
   end
+
+  picker_spec = nil
+  picker_choice_index = 1
+  press("f")
+  if picker_spec == nil then
+    error("expected ArkView to open a Snacks picker for exact value filtering", 0)
+  end
+  if picker_spec.title ~= "ArkView Values: cyl" then
+    error("unexpected ArkView value picker title: " .. vim.inspect(picker_spec.title), 0)
+  end
+  if value_calls[1] ~= 2 then
+    error("expected exact value picker to request values for cyl, got " .. vim.inspect(value_calls), 0)
+  end
+  if not vim.deep_equal(filter_calls[3], {
+    column_index = 2,
+    query = "4",
+    mode = "exact",
+    value_key = "4",
+    label = "4",
+  }) then
+    error("expected exact filter on selected value, got " .. vim.inspect(filter_calls), 0)
+  end
+  grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
+  if #grid_lines ~= 2 or not (grid_lines[2] or ""):find("22.8", 1, true) then
+    error("expected exact filter picker to keep the cyl=4 row only, got " .. vim.inspect(grid_lines), 0)
+  end
+
+  vim.ui.input = function(opts, on_confirm)
+    if not opts.prompt:find("Text filter cyl", 1, true) then
+      error("unexpected comparator filter prompt: " .. vim.inspect(opts), 0)
+    end
+    on_confirm("< 8")
+  end
+  press("/")
+  if not vim.deep_equal(filter_calls[4], {
+    column_index = 2,
+    query = "< 8",
+    mode = "contains",
+    value_key = "",
+    label = "",
+  }) then
+    error("expected comparator filter request through text filter path, got " .. vim.inspect(filter_calls), 0)
+  end
+  grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
+  if
+    #grid_lines ~= 3
+    or not (grid_lines[2] or ""):find("21.0", 1, true)
+    or not (grid_lines[3] or ""):find("22.8", 1, true)
+  then
+    error("expected numeric comparator filter to keep cyl < 8 rows, got " .. vim.inspect(grid_lines), 0)
+  end
+  vim.ui.input = original_input
 
   -- Regression: ArkView should size automatic columns from visible values up
   -- to a practical per-column cap instead of squeezing every column into the
@@ -1019,6 +1144,20 @@ local ok, err = pcall(function()
   long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[3] or ""))
   if long_cell_width ~= 200 then
     error("expected :Ark view width reset to restore 200-cell adaptive width, got " .. tostring(long_cell_width), 0)
+  end
+
+  press("{")
+  grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
+  long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[3] or ""))
+  if long_cell_width ~= 192 then
+    error("expected { to narrow selected column to 192 cells, got " .. tostring(long_cell_width), 0)
+  end
+
+  press("}")
+  grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
+  long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[3] or ""))
+  if long_cell_width ~= 200 then
+    error("expected } to widen selected column back to 200 cells, got " .. tostring(long_cell_width), 0)
   end
 
   -- Regression: choosing a far column with S should leave the selected grid

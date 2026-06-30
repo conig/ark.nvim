@@ -2120,6 +2120,7 @@ local function view_popup_bootstrap_lines(root, server, backend_id, expr)
     "  'view_page',",
     "  'view_sort',",
     "  'view_filter',",
+    "  'view_values',",
     "  'view_schema_search',",
     "  'view_profile',",
     "  'view_code',",

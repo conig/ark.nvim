@@ -72,6 +72,142 @@
   grepl(query, values, fixed = TRUE)
 }
 
+.ark_view_value_label <- function(value, max_chars = 80L) {
+  if (is.null(value) || length(value) == 0L) {
+    return("")
+  }
+
+  if (is.list(value) && !is.object(value)) {
+    value <- value[[1L]]
+  }
+
+  if (length(value) == 1L && is.atomic(value) && is.na(value)) {
+    return("<NA>")
+  }
+
+  .ark_view_display_value(value, max_chars = max_chars)
+}
+
+.ark_view_value_key <- function(value) {
+  if (is.null(value) || length(value) == 0L) {
+    return("null:")
+  }
+
+  if (is.list(value) && !is.object(value)) {
+    value <- value[[1L]]
+  }
+
+  class_key <- paste(class(value), collapse = "/")
+  if (length(value) == 1L && is.atomic(value) && is.na(value)) {
+    return(paste0(class_key, ":<NA>"))
+  }
+
+  value_key <- tryCatch(
+    paste(encodeString(as.character(value), quote = "\""), collapse = "\r"),
+    error = function(e) paste(utils::capture.output(str(value, give.attr = FALSE, vec.len = 5L)), collapse = " ")
+  )
+  paste0(class_key, ":", value_key)
+}
+
+.ark_view_filter_mode <- function(filter) {
+  if (is.list(filter)) {
+    mode <- as.character(filter$mode %||% "contains")
+    if (nzchar(mode)) {
+      return(mode)
+    }
+  }
+  "contains"
+}
+
+.ark_view_filter_query <- function(filter) {
+  if (is.list(filter)) {
+    return(as.character(filter$query %||% ""))
+  }
+  as.character(filter %||% "")
+}
+
+.ark_view_filter_threshold <- function(filter) {
+  if (!is.list(filter)) {
+    return(NA_real_)
+  }
+  suppressWarnings(as.numeric(filter$threshold %||% NA_real_))
+}
+
+.ark_view_filter_value_key <- function(filter) {
+  if (!is.list(filter)) {
+    return("")
+  }
+  as.character(filter$value_key %||% "")
+}
+
+.ark_view_numeric_filter_column <- function(column) {
+  is.numeric(column) || is.integer(column)
+}
+
+.ark_view_parse_filter <- function(column, query, mode = "contains", value_key = "", label = "") {
+  query <- as.character(query %||% "")
+  mode <- as.character(mode %||% "contains")
+  value_key <- as.character(value_key %||% "")
+  label <- as.character(label %||% "")
+  if (!nzchar(mode) || identical(mode, "auto")) {
+    mode <- "contains"
+  }
+
+  if (identical(mode, "contains")) {
+    if (!nzchar(query)) {
+      return(NULL)
+    }
+
+    trimmed <- trimws(query)
+    comparator <- regexec("^([<>])\\s*(.+)$", trimmed)
+    parts <- regmatches(trimmed, comparator)[[1L]]
+    if (length(parts) == 3L) {
+      threshold <- suppressWarnings(as.numeric(parts[[3L]]))
+      if (is.na(threshold) || !is.finite(threshold)) {
+        .ark_view_fail("E_IPC_REQUEST", "invalid numeric comparison filter", "ipc_view_filter")
+      }
+      if (!.ark_view_numeric_filter_column(column)) {
+        .ark_view_fail("E_IPC_REQUEST", "numeric comparison filters require a numeric column", "ipc_view_filter")
+      }
+
+      return(list(
+        mode = if (identical(parts[[2L]], "<")) "lt" else "gt",
+        query = paste(parts[[2L]], format(threshold, trim = TRUE, scientific = FALSE)),
+        threshold = threshold
+      ))
+    }
+
+    return(list(mode = "contains", query = query))
+  }
+
+  if (identical(mode, "exact")) {
+    if (!nzchar(value_key)) {
+      .ark_view_fail("E_IPC_REQUEST", "missing exact filter value", "ipc_view_filter")
+    }
+    if (!nzchar(label)) {
+      label <- query
+    }
+    return(list(mode = "exact", query = label, value_key = value_key))
+  }
+
+  if (mode %in% c("lt", "gt")) {
+    threshold <- suppressWarnings(as.numeric(query))
+    if (is.na(threshold) || !is.finite(threshold)) {
+      .ark_view_fail("E_IPC_REQUEST", "invalid numeric comparison filter", "ipc_view_filter")
+    }
+    if (!.ark_view_numeric_filter_column(column)) {
+      .ark_view_fail("E_IPC_REQUEST", "numeric comparison filters require a numeric column", "ipc_view_filter")
+    }
+    return(list(
+      mode = mode,
+      query = paste(if (identical(mode, "lt")) "<" else ">", format(threshold, trim = TRUE, scientific = FALSE)),
+      threshold = threshold
+    ))
+  }
+
+  .ark_view_fail("E_IPC_REQUEST", "invalid filter mode", "ipc_view_filter")
+}
+
 .ark_view_is_rectangular <- function(x) {
   if (is.data.frame(x)) {
     return(TRUE)
@@ -234,7 +370,7 @@
   })
 }
 
-.ark_view_apply_filters <- function(data, filters) {
+.ark_view_apply_filters <- function(data, filters, exclude_column = NULL) {
   if (!length(filters)) {
     return(data)
   }
@@ -242,7 +378,7 @@
   keep <- rep(TRUE, nrow(data))
   for (name in names(filters)) {
     query <- filters[[name]]
-    if (!is.character(query) || !nzchar(query)) {
+    if (is.null(query) || (is.character(query) && !nzchar(query))) {
       next
     }
 
@@ -250,9 +386,35 @@
     if (is.na(index) || index < 1L || index > ncol(data)) {
       next
     }
+    if (!is.null(exclude_column) && identical(index, as.integer(exclude_column))) {
+      next
+    }
 
-    values <- vapply(data[[index]], .ark_view_stringify_value, character(1))
-    matches <- .ark_view_fixed_search(query, values)
+    mode <- .ark_view_filter_mode(query)
+    if (identical(mode, "contains")) {
+      filter_query <- .ark_view_filter_query(query)
+      if (!nzchar(filter_query)) {
+        next
+      }
+      values <- vapply(data[[index]], .ark_view_stringify_value, character(1))
+      matches <- .ark_view_fixed_search(filter_query, values)
+    } else if (identical(mode, "exact")) {
+      value_key <- .ark_view_filter_value_key(query)
+      if (!nzchar(value_key)) {
+        next
+      }
+      values <- vapply(data[[index]], .ark_view_value_key, character(1))
+      matches <- identical(value_key, "") | values == value_key
+    } else if (mode %in% c("lt", "gt")) {
+      threshold <- .ark_view_filter_threshold(query)
+      if (is.na(threshold) || !is.finite(threshold)) {
+        next
+      }
+      values <- suppressWarnings(as.numeric(data[[index]]))
+      matches <- if (identical(mode, "lt")) values < threshold else values > threshold
+    } else {
+      next
+    }
     matches[is.na(matches)] <- FALSE
     keep <- keep & matches
   }
@@ -276,9 +438,9 @@
   data[ord, , drop = FALSE]
 }
 
-.ark_view_current_data <- function(view) {
+.ark_view_current_data <- function(view, exclude_filter_column = NULL) {
   data <- view$data
-  data <- .ark_view_apply_filters(data, view$filters %||% list())
+  data <- .ark_view_apply_filters(data, view$filters %||% list(), exclude_column = exclude_filter_column)
   .ark_view_apply_sort(data, view$sort %||% list())
 }
 
@@ -286,7 +448,12 @@
   data <- .ark_view_current_data(view)
   filters <- view$filters %||% list()
   filter_list <- lapply(names(filters), function(name) {
-    list(column_index = suppressWarnings(as.integer(name)), query = filters[[name]])
+    filter <- filters[[name]]
+    list(
+      column_index = suppressWarnings(as.integer(name)),
+      query = .ark_view_filter_query(filter),
+      mode = .ark_view_filter_mode(filter)
+    )
   })
   list(
     session_id = view$session_id,
@@ -405,7 +572,7 @@
   })
 }
 
-.ark_view_filter_payload <- function(session, session_id, column_index, query) {
+.ark_view_filter_payload <- function(session, session_id, column_index, query, mode = "contains", value_key = "", label = "") {
   .ark_view_safe(session, {
     view <- .ark_view_require_session_id(session, session_id)
     column_index <- suppressWarnings(as.integer(column_index))
@@ -416,8 +583,9 @@
 
     filters <- view$filters %||% list()
     key <- as.character(column_index)
-    if (nzchar(query)) {
-      filters[[key]] <- query
+    filter <- .ark_view_parse_filter(view$data[[column_index]], query, mode, value_key, label)
+    if (!is.null(filter)) {
+      filters[[key]] <- filter
     } else {
       filters[[key]] <- NULL
     }
@@ -426,6 +594,48 @@
     .emit_json(utils::modifyList(
       list(schema_version = .ark_schema_version(), status = "ok", session = session),
       .ark_view_state_payload_data(view)
+    ))
+  })
+}
+
+.ark_view_values_payload <- function(session, session_id, column_index) {
+  .ark_view_safe(session, {
+    view <- .ark_view_require_session_id(session, session_id)
+    column_index <- suppressWarnings(as.integer(column_index))
+    if (is.na(column_index) || column_index < 1L || column_index > ncol(view$data)) {
+      .ark_view_fail("E_IPC_REQUEST", "invalid column_index", "ipc_view_values")
+    }
+
+    data <- .ark_view_current_data(view, exclude_filter_column = column_index)
+    column <- data[[column_index]]
+    if (!length(column)) {
+      values <- list()
+    } else {
+      keys <- vapply(column, .ark_view_value_key, character(1))
+      labels <- vapply(column, .ark_view_value_label, character(1))
+      counts <- sort(table(keys, useNA = "no"), decreasing = TRUE)
+      values <- lapply(names(counts), function(key) {
+        first <- match(key, keys)
+        list(
+          label = labels[[first]],
+          value_key = key,
+          count = as.integer(counts[[key]])
+        )
+      })
+      values <- values[order(
+        -vapply(values, function(item) item$count %||% 0L, integer(1)),
+        vapply(values, function(item) item$label %||% "", character(1))
+      )]
+    }
+
+    .emit_json(list(
+      schema_version = .ark_schema_version(),
+      status = "ok",
+      session = session,
+      session_id = session_id,
+      column_index = as.integer(column_index),
+      total_values = as.integer(length(values)),
+      values = values
     ))
   })
 }
@@ -571,15 +781,41 @@
         next
       }
       column_name <- names(view$data)[[index]]
-      query <- filters[[name]]
-      lines <- c(
-        lines,
-        sprintf(
-          ".ark_view <- .ark_view[grepl(tolower(%s), tolower(as.character(.ark_view%s)), fixed = TRUE), , drop = FALSE]",
-          .ark_view_escape_code_string(query),
-          .ark_view_column_accessor(column_name)
+      filter <- filters[[name]]
+      mode <- .ark_view_filter_mode(filter)
+      query <- .ark_view_filter_query(filter)
+      if (identical(mode, "contains")) {
+        lines <- c(
+          lines,
+          sprintf(
+            ".ark_view <- .ark_view[grepl(tolower(%s), tolower(as.character(.ark_view%s)), fixed = TRUE), , drop = FALSE]",
+            .ark_view_escape_code_string(query),
+            .ark_view_column_accessor(column_name)
+          )
         )
-      )
+      } else if (mode %in% c("lt", "gt")) {
+        threshold <- .ark_view_filter_threshold(filter)
+        operator <- if (identical(mode, "lt")) "<" else ">"
+        lines <- c(
+          lines,
+          sprintf(".ark_filter_values <- suppressWarnings(as.numeric(.ark_view%s))", .ark_view_column_accessor(column_name)),
+          sprintf(
+            ".ark_view <- .ark_view[!is.na(.ark_filter_values) & .ark_filter_values %s %s, , drop = FALSE]",
+            operator,
+            format(threshold, trim = TRUE, scientific = FALSE)
+          ),
+          "rm(.ark_filter_values)"
+        )
+      } else if (identical(mode, "exact")) {
+        lines <- c(
+          lines,
+          sprintf(
+            ".ark_view <- .ark_view[vapply(.ark_view%s, function(.ark_value) { if (length(.ark_value) == 1L && is.atomic(.ark_value) && is.na(.ark_value)) '<NA>' else paste(format(.ark_value, trim = TRUE, justify = 'none'), collapse = ' ') }, character(1)) == %s, , drop = FALSE]",
+            .ark_view_column_accessor(column_name),
+            .ark_view_escape_code_string(query)
+          )
+        )
+      }
     }
 
     direction <- as.character(view$sort$direction %||% "")

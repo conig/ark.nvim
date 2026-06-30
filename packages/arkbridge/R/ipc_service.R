@@ -239,7 +239,18 @@
       session,
       req$session_id %||% "",
       req$column_index %||% 0L,
-      req$query %||% ""
+      req$query %||% "",
+      req$mode %||% "contains",
+      req$value_key %||% "",
+      req$label %||% ""
+    ))
+  }
+
+  if (identical(req$command %||% "", "view_values")) {
+    return(.ark_view_values_payload(
+      session,
+      req$session_id %||% "",
+      req$column_index %||% 0L
     ))
   }
 

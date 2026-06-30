@@ -48,6 +48,7 @@ use crate::lsp::handlers::ViewRpcRequest;
 use crate::lsp::handlers::ViewSchemaSearchParams;
 use crate::lsp::handlers::ViewSessionParams;
 use crate::lsp::handlers::ViewSortParams;
+use crate::lsp::handlers::ViewValuesParams;
 use crate::lsp::handlers::VirtualDocumentParams;
 use crate::lsp::handlers::VirtualDocumentResponse;
 use crate::lsp::handlers::ARK_HELP_TEXT_REQUEST;
@@ -73,6 +74,7 @@ use crate::lsp::handlers::ARK_VIEW_PROFILE_REQUEST;
 use crate::lsp::handlers::ARK_VIEW_SCHEMA_SEARCH_REQUEST;
 use crate::lsp::handlers::ARK_VIEW_SORT_REQUEST;
 use crate::lsp::handlers::ARK_VIEW_STATE_REQUEST;
+use crate::lsp::handlers::ARK_VIEW_VALUES_REQUEST;
 use crate::lsp::help_topic;
 use crate::lsp::help_topic::HelpTopicParams;
 use crate::lsp::help_topic::HelpTopicResponse;
@@ -671,6 +673,15 @@ impl Backend {
         )
     }
 
+    async fn view_values(&self, params: ViewValuesParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::Values(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
     async fn view_schema_search(
         &self,
         params: ViewSchemaSearchParams,
@@ -869,6 +880,7 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         .custom_method(ARK_VIEW_PAGE_REQUEST, Backend::view_page)
         .custom_method(ARK_VIEW_SORT_REQUEST, Backend::view_sort)
         .custom_method(ARK_VIEW_FILTER_REQUEST, Backend::view_filter)
+        .custom_method(ARK_VIEW_VALUES_REQUEST, Backend::view_values)
         .custom_method(ARK_VIEW_SCHEMA_SEARCH_REQUEST, Backend::view_schema_search)
         .custom_method(ARK_VIEW_PROFILE_REQUEST, Backend::view_profile)
         .custom_method(ARK_VIEW_CODE_REQUEST, Backend::view_code)

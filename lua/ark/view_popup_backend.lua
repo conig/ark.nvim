@@ -12,6 +12,7 @@ local view_methods = {
   view_code = true,
   view_export = true,
   view_filter = true,
+  view_values = true,
   view_open = true,
   view_page = true,
   view_profile = true,
