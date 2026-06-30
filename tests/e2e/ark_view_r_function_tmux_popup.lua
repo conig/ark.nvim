@@ -168,10 +168,11 @@ local ok, err = xpcall(function()
     fail_with_diagnostics("timed out waiting for R View hook probe", pane_id)
   end
   -- tmux capture can soft-wrap long probe lines in the middle of tokens.
-  if not hook_probe:find("%sinstalled=TRUE")
-    or not hook_probe:find("%ssame=TRUE")
-    or not hook_probe:find("%sutils_s%s*ame=TRUE")
-    or not hook_probe:find("%shas_req%s*uest=TRUE")
+  local compact_probe = hook_probe:gsub("%s+", "")
+  if not compact_probe:find("installed=TRUE", 1, true)
+    or not compact_probe:find("same=TRUE", 1, true)
+    or not compact_probe:find("utils_same=TRUE", 1, true)
+    or not compact_probe:find("has_request=TRUE", 1, true)
   then
     fail_with_diagnostics("installed R runtime did not expose the ArkView hook: " .. tostring(hook_probe), pane_id)
   end
