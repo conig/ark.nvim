@@ -769,6 +769,39 @@
   }
 }
 
+.ark_help_topic_exists_in_package <- function(topic, package) {
+  topic <- trimws(as.character(topic %||% ""))
+  package <- trimws(as.character(package %||% ""))
+  if (!nzchar(topic) || !nzchar(package)) {
+    return(FALSE)
+  }
+
+  original_help <- .ark_original_help_function()
+  help_page <- tryCatch(
+    suppressWarnings(do.call(original_help, list(
+      topic = topic,
+      package = package,
+      help_type = "text"
+    ))),
+    error = function(e) NULL
+  )
+
+  length(help_page) >= 1L
+}
+
+.ark_resolve_implicit_help_package <- function(topic, default_package = NULL) {
+  default_package <- trimws(as.character(default_package %||% ""))
+  if (!nzchar(default_package)) {
+    return(NULL)
+  }
+
+  if (.ark_help_topic_exists_in_package(topic, default_package)) {
+    return(default_package)
+  }
+
+  NULL
+}
+
 .ark_flatten_rd_text <- function(node) {
   if (is.null(node)) {
     return("")
@@ -792,7 +825,11 @@
 
   if (nzchar(option)) {
     if (startsWith(option, "=")) {
-      return(list(topic = substring(option, 2L), package = default_package))
+      topic <- substring(option, 2L)
+      return(list(
+        topic = topic,
+        package = .ark_resolve_implicit_help_package(topic, default_package)
+      ))
     }
 
     if (grepl(":", option, fixed = TRUE)) {
@@ -805,7 +842,10 @@
       }
     }
 
-    return(list(topic = option, package = default_package))
+    return(list(
+      topic = option,
+      package = .ark_resolve_implicit_help_package(option, default_package)
+    ))
   }
 
   if (!nzchar(label)) {
@@ -818,7 +858,10 @@
     return(NULL)
   }
 
-  list(topic = topic, package = default_package)
+  list(
+    topic = topic,
+    package = .ark_resolve_implicit_help_package(topic, default_package)
+  )
 }
 
 .ark_collect_help_links <- function(node, default_package = NULL) {
