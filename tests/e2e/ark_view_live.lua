@@ -183,7 +183,8 @@ local ok, err = pcall(function()
   local less_than = ark_test.request(client, "ark/internal/viewFilter", {
     sessionId = filter_view.session_id,
     columnIndex = 1,
-    query = "< 5",
+    query = "5",
+    mode = "lt",
   }, 10000)
 
   if tonumber(less_than.total_rows or 0) ~= 2 or (less_than.filters or {})[1].mode ~= "lt" then
@@ -193,7 +194,8 @@ local ok, err = pcall(function()
   local greater_than = ark_test.request(client, "ark/internal/viewFilter", {
     sessionId = filter_view.session_id,
     columnIndex = 1,
-    query = ">5",
+    query = "5",
+    mode = "gt",
   }, 10000)
 
   if tonumber(greater_than.total_rows or 0) ~= 1 or (greater_than.filters or {})[1].mode ~= "gt" then

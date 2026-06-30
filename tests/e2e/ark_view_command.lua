@@ -88,16 +88,14 @@ end
 local function parsed_filter(column_index, query, mode, value_key, label)
   query = tostring(query or "")
   mode = mode or "contains"
-  if mode == "contains" then
-    local op, threshold = query:match("^%s*([<>])%s*(.+)%s*$")
-    if op and tonumber(threshold) then
-      return {
-        column_index = column_index,
-        query = op .. " " .. tostring(tonumber(threshold)),
-        mode = op == "<" and "lt" or "gt",
-        threshold = tonumber(threshold),
-      }
-    end
+  if mode == "lt" or mode == "gt" then
+    local symbol = mode == "lt" and "<" or ">"
+    return {
+      column_index = column_index,
+      query = symbol .. " " .. tostring(tonumber(query)),
+      mode = mode,
+      threshold = tonumber(query),
+    }
   end
   local filter_query = query
   if label ~= nil and label ~= "" then
@@ -193,6 +191,9 @@ local function grid_cells(line)
   return vim.split(line or "", " | ", { plain = true })
 end
 
+local grid_header_rows = 2
+local grid_data_start = grid_header_rows + 1
+
 local function assert_sidebar_selected(sidebar_buf, line)
   local lines = vim.api.nvim_buf_get_lines(sidebar_buf, 0, -1, false)
   for index = 3, #lines do
@@ -279,12 +280,13 @@ local function sticky_header_float(anchor_win)
     local config = vim.api.nvim_win_get_config(win)
     if config.relative == "win" and config.win == anchor_win then
       local buf = vim.api.nvim_win_get_buf(win)
-      local lines = vim.api.nvim_buf_get_lines(buf, 0, 1, false)
+      local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
       local text = lines[1] or ""
       if text:find("#", 1, true) and text:find("|", 1, true) then
         return {
           win = win,
           buf = buf,
+          lines = lines,
           text = text,
           config = config,
           view = vim.api.nvim_win_call(win, function()
@@ -566,6 +568,9 @@ local ok, err = pcall(function()
   if not (grid_lines[1] or ""):find("mpg", 1, true) then
     error("expected ArkView grid header in current buffer, got " .. vim.inspect(grid_lines), 0)
   end
+  if not (grid_lines[2] or ""):find("<numeric>", 1, true) then
+    error("expected ArkView grid class header in current buffer, got " .. vim.inspect(grid_lines), 0)
+  end
 
   local sidebar_lines = vim.api.nvim_buf_get_lines(sidebar_buf, 0, -1, false)
   if sidebar_lines[1] ~= "Columns 2" then
@@ -577,13 +582,16 @@ local ok, err = pcall(function()
   if not has_highlight(grid_buf, "ArkViewHeader", 0, header_col) then
     error("expected ArkView grid header highlight", 0)
   end
+  if not has_highlight(grid_buf, "ArkViewHeaderClass", 1, header_col) then
+    error("expected ArkView grid class header highlight", 0)
+  end
   if not has_highlight(sidebar_buf, "ArkViewHeader", 0, 0) then
     error("expected ArkView columns header highlight", 0)
   end
   if not has_highlight(grid_buf, "ArkViewSeparator", 0, separator_col) then
     error("expected ArkView separator highlight on pipe characters", 0)
   end
-  if not has_highlight(grid_buf, "ArkViewRowNumber", 1, 0) then
+  if not has_highlight(grid_buf, "ArkViewRowNumber", grid_data_start - 1, 0) then
     error("expected ArkView row-number highlight", 0)
   end
 
@@ -611,10 +619,12 @@ local ok, err = pcall(function()
     help_lines[1] ~= "Navigation"
     or not help_text:find("zz     center cursor in the current view", 1, true)
     or not help_text:find("H/L    previous/next column", 1, true)
+    or not help_text:find("J/K    down/up half page", 1, true)
     or not help_text:find("d      describe selected column", 1, true)
     or not help_text:find("p      pin/unpin selected column", 1, true)
     or not help_text:find("{ / }  narrow/widen selected column", 1, true)
-    or not help_text:find("/      set text or numeric filter; empty clears", 1, true)
+    or not help_text:find("/      set text filter; empty clears", 1, true)
+    or not help_text:find("< / >  set numeric less/greater filter", 1, true)
     or not help_text:find("f      pick exact value filter", 1, true)
     or not help_text:find("C      clear all filters and sort", 1, true)
     or not help_text:find("Esc/q  close this help", 1, true)
@@ -675,7 +685,7 @@ local ok, err = pcall(function()
     error("expected <Tab> in ArkView columns pane to return to the grid", 0)
   end
 
-  move_cursor(grid_win, 2, header_column(grid_lines, "cyl"))
+  move_cursor(grid_win, grid_data_start, header_column(grid_lines, "cyl"))
   local updated_sidebar = assert_sidebar_selected(sidebar_buf, 4)
   if not updated_sidebar[4]:find("cyl", 1, true) then
     error("expected grid cursor move to select cyl column, got " .. vim.inspect(updated_sidebar), 0)
@@ -702,7 +712,11 @@ local ok, err = pcall(function()
   end
 
   local pinned_lines = vim.api.nvim_buf_get_lines(pinned_buf, 0, -1, false)
-  if not (pinned_lines[1] or ""):find("cyl", 1, true) or not (pinned_lines[2] or ""):find("6", 1, true) then
+  if
+    not (pinned_lines[1] or ""):find("cyl", 1, true)
+    or not (pinned_lines[2] or ""):find("<numeric>", 1, true)
+    or not (pinned_lines[3] or ""):find("6", 1, true)
+  then
     error("expected pinned pane to render the cyl column, got " .. vim.inspect(pinned_lines), 0)
   end
   if not has_highlight(pinned_buf, "ArkViewHeader", 0, header_column(pinned_lines, "cyl")) then
@@ -744,7 +758,7 @@ local ok, err = pcall(function()
     return original_win_set_cursor(win, pos)
   end
 
-  move_cursor(grid_win, 3, header_column(grid_lines, "cyl"))
+  move_cursor(grid_win, grid_data_start + 1, header_column(grid_lines, "cyl"))
 
   vim.api.nvim_buf_set_lines = original_buf_set_lines
   vim.api.nvim_win_set_cursor = original_win_set_cursor
@@ -812,7 +826,7 @@ local ok, err = pcall(function()
   end
 
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
-  if not (grid_lines[2] or ""):find("22.8", 1, true) then
+  if not (grid_lines[grid_data_start] or ""):find("22.8", 1, true) then
     error("expected sorted rows to place cyl=4 first, got " .. vim.inspect(grid_lines), 0)
   end
   assert_winbar_contains(grid_win, "Sort cyl asc")
@@ -834,7 +848,7 @@ local ok, err = pcall(function()
   end
 
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
-  if #grid_lines ~= 2 or not (grid_lines[2] or ""):find("22.8", 1, true) then
+  if #grid_lines ~= grid_header_rows + 1 or not (grid_lines[grid_data_start] or ""):find("22.8", 1, true) then
     error("expected filtered grid to contain the cyl=4 row only, got " .. vim.inspect(grid_lines), 0)
   end
   assert_winbar_contains(grid_win, "Rows 1-1/1")
@@ -887,7 +901,7 @@ local ok, err = pcall(function()
     error("expected column description to avoid opening a details split, got " .. tostring(#wins), 0)
   end
 
-  move_cursor(grid_win, 2, header_column(grid_lines, "cyl"))
+  move_cursor(grid_win, grid_data_start, header_column(grid_lines, "cyl"))
   press("c")
   if code_calls ~= 1 then
     error("expected generated code request once, got " .. tostring(code_calls), 0)
@@ -985,10 +999,10 @@ local ok, err = pcall(function()
 
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
   if
-    #grid_lines ~= 4
-    or not (grid_lines[2] or ""):find("21.0", 1, true)
-    or not (grid_lines[3] or ""):find("22.8", 1, true)
-    or not (grid_lines[4] or ""):find("18.7", 1, true)
+    #grid_lines ~= grid_header_rows + 3
+    or not (grid_lines[grid_data_start] or ""):find("21.0", 1, true)
+    or not (grid_lines[grid_data_start + 1] or ""):find("22.8", 1, true)
+    or not (grid_lines[grid_data_start + 2] or ""):find("18.7", 1, true)
   then
     error("expected clear-all to restore unfiltered unsorted rows, got " .. vim.inspect(grid_lines), 0)
   end
@@ -1025,31 +1039,31 @@ local ok, err = pcall(function()
     error("expected exact filter on selected value, got " .. vim.inspect(filter_calls), 0)
   end
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
-  if #grid_lines ~= 2 or not (grid_lines[2] or ""):find("22.8", 1, true) then
+  if #grid_lines ~= grid_header_rows + 1 or not (grid_lines[grid_data_start] or ""):find("22.8", 1, true) then
     error("expected exact filter picker to keep the cyl=4 row only, got " .. vim.inspect(grid_lines), 0)
   end
 
   vim.ui.input = function(opts, on_confirm)
-    if not opts.prompt:find("Text filter cyl", 1, true) then
+    if not opts.prompt:find("Less than filter cyl", 1, true) then
       error("unexpected comparator filter prompt: " .. vim.inspect(opts), 0)
     end
-    on_confirm("< 8")
+    on_confirm("8")
   end
-  press("/")
+  press("<lt>")
   if not vim.deep_equal(filter_calls[4], {
     column_index = 2,
-    query = "< 8",
-    mode = "contains",
+    query = "8",
+    mode = "lt",
     value_key = "",
     label = "",
   }) then
-    error("expected comparator filter request through text filter path, got " .. vim.inspect(filter_calls), 0)
+    error("expected less-than filter request through < key path, got " .. vim.inspect(filter_calls), 0)
   end
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
   if
-    #grid_lines ~= 3
-    or not (grid_lines[2] or ""):find("21.0", 1, true)
-    or not (grid_lines[3] or ""):find("22.8", 1, true)
+    #grid_lines ~= grid_header_rows + 2
+    or not (grid_lines[grid_data_start] or ""):find("21.0", 1, true)
+    or not (grid_lines[grid_data_start + 1] or ""):find("22.8", 1, true)
   then
     error("expected numeric comparator filter to keep cyl < 8 rows, got " .. vim.inspect(grid_lines), 0)
   end
@@ -1077,11 +1091,11 @@ local ok, err = pcall(function()
   press("r")
 
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
-  local id_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[2] or ""))
-  local long_cell = grid_cells(grid_lines[2])[3] or ""
+  local id_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[grid_data_start])[2] or ""))
+  local long_cell = grid_cells(grid_lines[grid_data_start])[3] or ""
   local long_cell_width = vim.fn.strdisplaywidth(long_cell)
-  if id_cell_width ~= 8 then
-    error("expected narrow id column to keep minimum width 8, got " .. tostring(id_cell_width), 0)
+  if id_cell_width ~= 9 then
+    error("expected narrow id column to fit the <integer> class label, got " .. tostring(id_cell_width), 0)
   end
   if long_cell_width ~= 200 then
     error("expected long string column to expand to 200-cell cap, got " .. tostring(long_cell_width), 0)
@@ -1090,7 +1104,7 @@ local ok, err = pcall(function()
   if long_cell:sub(1, #moderately_long_value) ~= moderately_long_value or marker_after_moderate_value == ">" then
     error("expected 120-cell value to render without clipping, got " .. vim.inspect(long_cell), 0)
   end
-  local capped_cell = grid_cells(grid_lines[3])[3] or ""
+  local capped_cell = grid_cells(grid_lines[grid_data_start + 1])[3] or ""
   local capped_cell_width = vim.fn.strdisplaywidth(capped_cell)
   if capped_cell_width ~= 200 or capped_cell:sub(-1) ~= ">" then
     error(
@@ -1104,7 +1118,7 @@ local ok, err = pcall(function()
 
   vim.cmd("Ark view width 20 description")
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
-  long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[3] or ""))
+  long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[grid_data_start])[3] or ""))
   if long_cell_width ~= 20 then
     error("expected :Ark view width to set description width to 20, got " .. tostring(long_cell_width), 0)
   end
@@ -1124,7 +1138,7 @@ local ok, err = pcall(function()
   end
 
   local calls_before_wrap_copy = #cell_calls
-  move_cursor(grid_win, 3, header_column(grid_lines, "description"))
+  move_cursor(grid_win, grid_data_start + 1, header_column(grid_lines, "description"))
   press("y")
   if not vim.deep_equal(cell_calls[calls_before_wrap_copy + 1], {
     row_index = 1,
@@ -1135,27 +1149,27 @@ local ok, err = pcall(function()
 
   vim.cmd("Ark view wrap off description")
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
-  if #grid_lines ~= 3 then
+  if #grid_lines ~= grid_header_rows + 2 then
     error("expected :Ark view wrap off to restore one line per row, got " .. vim.inspect(grid_lines), 0)
   end
 
   vim.cmd("Ark view width reset description")
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
-  long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[3] or ""))
+  long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[grid_data_start])[3] or ""))
   if long_cell_width ~= 200 then
     error("expected :Ark view width reset to restore 200-cell adaptive width, got " .. tostring(long_cell_width), 0)
   end
 
   press("{")
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
-  long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[3] or ""))
+  long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[grid_data_start])[3] or ""))
   if long_cell_width ~= 192 then
     error("expected { to narrow selected column to 192 cells, got " .. tostring(long_cell_width), 0)
   end
 
   press("}")
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
-  long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[2])[3] or ""))
+  long_cell_width = vim.fn.strdisplaywidth((grid_cells(grid_lines[grid_data_start])[3] or ""))
   if long_cell_width ~= 200 then
     error("expected } to widen selected column back to 200 cells, got " .. tostring(long_cell_width), 0)
   end
@@ -1190,6 +1204,51 @@ local ok, err = pcall(function()
   press("r")
 
   grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
+  move_cursor(grid_win, grid_data_start, header_column(grid_lines, "wide_01"))
+  vim.api.nvim_set_current_win(grid_win)
+  local half_page_amount = math.max(1, math.floor(vim.api.nvim_win_get_height(grid_win) / 2))
+  local line_count_for_half_page = vim.api.nvim_buf_line_count(grid_buf)
+  local max_topline_for_half_page = math.max(1, line_count_for_half_page - vim.api.nvim_win_get_height(grid_win) + 1)
+  local half_page_view = vim.fn.winsaveview()
+  half_page_view.topline = 1
+  half_page_view.leftcol = 0
+  half_page_view.skipcol = 0
+  vim.fn.winrestview(half_page_view)
+
+  press("J")
+  local half_page_down_cursor = vim.api.nvim_win_get_cursor(grid_win)
+  local half_page_down_view = vim.fn.winsaveview()
+  local expected_half_page_down_line = math.min(line_count_for_half_page, grid_data_start + half_page_amount)
+  local expected_half_page_down_topline = math.min(max_topline_for_half_page, 1 + half_page_amount)
+  if half_page_down_cursor[1] ~= expected_half_page_down_line or half_page_down_view.topline ~= expected_half_page_down_topline then
+    error(
+      "expected J to move down a half page to line "
+        .. tostring(expected_half_page_down_line)
+        .. " topline "
+        .. tostring(expected_half_page_down_topline)
+        .. ", got cursor="
+        .. vim.inspect(half_page_down_cursor)
+        .. " view="
+        .. vim.inspect(half_page_down_view),
+      0
+    )
+  end
+
+  press("K")
+  local half_page_up_cursor = vim.api.nvim_win_get_cursor(grid_win)
+  local half_page_up_view = vim.fn.winsaveview()
+  if half_page_up_cursor[1] ~= grid_data_start or half_page_up_view.topline ~= 1 then
+    error(
+      "expected K to move back up a half page to line "
+        .. tostring(grid_data_start)
+        .. " topline 1, got cursor="
+        .. vim.inspect(half_page_up_cursor)
+        .. " view="
+        .. vim.inspect(half_page_up_view),
+      0
+    )
+  end
+
   move_cursor(grid_win, 40, header_column(grid_lines, "wide_01"))
   vim.cmd("normal! zt")
   local far_column = header_column(grid_lines, "wide_16")
@@ -1242,8 +1301,11 @@ local ok, err = pcall(function()
   if not sticky.text:find("wide_01", 1, true) or not sticky.text:find("wide_16", 1, true) then
     error("expected sticky grid header to contain wide table columns, got " .. vim.inspect(sticky), 0)
   end
-  if sticky.config.focusable ~= false or sticky.config.height ~= 1 then
-    error("expected sticky grid header to be a one-line non-focusable float, got " .. vim.inspect(sticky), 0)
+  if not ((sticky.lines or {})[2] or ""):find("<character>", 1, true) then
+    error("expected sticky grid header to contain the class row, got " .. vim.inspect(sticky), 0)
+  end
+  if sticky.config.focusable ~= false or sticky.config.height ~= 2 then
+    error("expected sticky grid header to be a two-line non-focusable float, got " .. vim.inspect(sticky), 0)
   end
   if sticky.config.row ~= 0 then
     error("expected sticky grid header to sit at the top of the grid, got " .. vim.inspect(sticky), 0)

@@ -11,6 +11,7 @@ local grid_column_separator_width = 3
 
 local function ensure_highlights()
   vim.api.nvim_set_hl(0, "ArkViewHeader", { link = "Title", default = true })
+  vim.api.nvim_set_hl(0, "ArkViewHeaderClass", { link = "Comment", default = true })
   vim.api.nvim_set_hl(0, "ArkViewSummary", { link = "Comment", default = true })
   vim.api.nvim_set_hl(0, "ArkViewSeparator", { link = "NonText", default = true })
   vim.api.nvim_set_hl(0, "ArkViewRowNumber", { link = "LineNr", default = true })
@@ -139,6 +140,27 @@ local function blank_text(width)
   return string.rep(" ", math.max(0, tonumber(width) or 0))
 end
 
+local function header_line_count(state)
+  return math.max(1, #(state and state.grid_header_lines or {}))
+end
+
+local function column_class_label(item)
+  if type(item) ~= "table" then
+    return "<unknown>"
+  end
+
+  local class = item.class or item.type or "unknown"
+  if type(class) == "table" then
+    class = table.concat(class, "/")
+  end
+  class = vim.trim(tostring(class or ""))
+  if class == "" then
+    class = "unknown"
+  end
+
+  return "<" .. class .. ">"
+end
+
 local function split_display_width(text, width)
   text = tostring(text or "")
   width = tonumber(width) or 0
@@ -195,7 +217,7 @@ local function highlight_pipe_separators(buf, row, line)
   end
 end
 
-local function apply_table_highlights(buf, lines, row_width)
+local function apply_table_highlights(buf, lines, row_width, header_rows)
   if not valid_buf(buf) then
     return
   end
@@ -203,10 +225,14 @@ local function apply_table_highlights(buf, lines, row_width)
   ensure_highlights()
   vim.api.nvim_buf_clear_namespace(buf, highlight_namespace, 0, -1)
 
+  header_rows = math.max(1, tonumber(header_rows) or 1)
   for index, line in ipairs(lines) do
     local row = index - 1
-    if row == 0 then
+    if index == 1 then
       set_highlight(buf, "ArkViewHeader", row, 0, #line, 100)
+      set_highlight(buf, "ArkViewRowNumber", row, 0, math.min(row_width, #line), 110)
+    elseif index <= header_rows then
+      set_highlight(buf, "ArkViewHeaderClass", row, 0, #line, 100)
       set_highlight(buf, "ArkViewRowNumber", row, 0, math.min(row_width, #line), 110)
     elseif line ~= "(no rows)" then
       set_highlight(buf, "ArkViewRowNumber", row, 0, math.min(row_width, #line), 110)
@@ -265,8 +291,11 @@ local function sync_header_window_view(header_win, anchor_win)
   end)
 end
 
-local function update_header_window(state, prefix, anchor_win, header_line, row_width)
-  if not state or not valid_win(anchor_win) or type(header_line) ~= "string" or header_line == "" then
+local function update_header_window(state, prefix, anchor_win, header_lines, row_width)
+  if type(header_lines) == "string" and header_lines ~= "" then
+    header_lines = { header_lines }
+  end
+  if not state or not valid_win(anchor_win) or type(header_lines) ~= "table" or #header_lines == 0 then
     close_header_window(state, prefix)
     return
   end
@@ -287,11 +316,12 @@ local function update_header_window(state, prefix, anchor_win, header_line, row_
     state[buf_key] = header_buf
   end
 
-  set_buffer_lines(header_buf, { header_line })
-  apply_table_highlights(header_buf, { header_line }, row_width)
+  set_buffer_lines(header_buf, header_lines)
+  apply_table_highlights(header_buf, header_lines, row_width, #header_lines)
 
   local text_offset = window_text_offset(anchor_win)
   local width = math.max(1, vim.api.nvim_win_get_width(anchor_win) - text_offset)
+  local height = math.max(1, #header_lines)
   local row = 0
   local col = text_offset
   local header_win = state[win_key]
@@ -302,7 +332,7 @@ local function update_header_window(state, prefix, anchor_win, header_line, row_
       row = row,
       col = col,
       width = width,
-      height = 1,
+      height = height,
       zindex = 40,
     })
   else
@@ -312,7 +342,7 @@ local function update_header_window(state, prefix, anchor_win, header_line, row_
       row = row,
       col = col,
       width = width,
-      height = 1,
+      height = height,
       style = "minimal",
       focusable = false,
       noautocmd = true,
@@ -334,12 +364,12 @@ local function update_header_windows(state)
     return
   end
 
-  update_header_window(state, "grid", state.grid_win, state.grid_header_line, state.grid_header_row_width)
-  update_header_window(state, "pinned", state.pinned_win, state.pinned_header_line, state.pinned_header_row_width)
+  update_header_window(state, "grid", state.grid_win, state.grid_header_lines, state.grid_header_row_width)
+  update_header_window(state, "pinned", state.pinned_win, state.pinned_header_lines, state.pinned_header_row_width)
 end
 
 local function apply_grid_highlights(state, lines, row_width)
-  apply_table_highlights(state.grid_buf, lines, row_width)
+  apply_table_highlights(state.grid_buf, lines, row_width, header_line_count(state))
 end
 
 local function apply_sidebar_highlights(state, lines)
@@ -532,10 +562,10 @@ local function current_row_index(state)
     return nil
   end
   local line = vim.api.nvim_win_get_cursor(win)[1]
-  if line < 2 then
+  if line <= header_line_count(state) then
     return nil
   end
-  local data_row = row_for_buffer_line(state, win, line) or (line - 1)
+  local data_row = row_for_buffer_line(state, win, line) or (line - header_line_count(state))
   if data_row < 1 or data_row > #(state.rows or {}) then
     return nil
   end
@@ -730,6 +760,7 @@ local function show_help_window(state)
     "  <Tab>  toggle grid/columns focus",
     "  <CR>   inspect current grid cell or jump from columns to grid",
     "  H/L    previous/next column",
+    "  J/K    down/up half page",
     "  zz     center cursor in the current view",
     "  ]p     next page",
     "  [p     previous page",
@@ -740,7 +771,8 @@ local function show_help_window(state)
     "  =      set selected column width; blank resets",
     "  w      wrap/unwrap selected column at its width",
     "  s      toggle sort on selected column",
-    "  /      set text or numeric filter; empty clears",
+    "  /      set text filter; empty clears",
+    "  < / >  set numeric less/greater filter",
     "  f      pick exact value filter",
     "  C      clear all filters and sort",
     "  d      describe selected column",
@@ -823,7 +855,11 @@ local function desired_column_widths(state)
         widths[index] = clamp_width(override, grid_column_override_min_width, grid_column_override_max_width)
         fixed[index] = true
       else
-        widths[index] = clamp_width(display_width(item.name or ""), grid_column_min_width, grid_column_max_width)
+        widths[index] = clamp_width(
+          math.max(display_width(item.name or ""), display_width(column_class_label(item))),
+          grid_column_min_width,
+          grid_column_max_width
+        )
       end
     end
   end
@@ -909,7 +945,11 @@ local function column_width_for_rows(state, column_index, row_width)
     widths[column_index] = clamp_width(override, grid_column_override_min_width, grid_column_override_max_width)
     fixed[column_index] = true
   else
-    widths[column_index] = clamp_width(display_width(item and item.name or ""), grid_column_min_width, grid_column_max_width)
+    widths[column_index] = clamp_width(
+      math.max(display_width(item and item.name or ""), display_width(column_class_label(item))),
+      grid_column_min_width,
+      grid_column_max_width
+    )
   end
   for _, row in ipairs(state.rows or {}) do
     if not fixed[column_index] then
@@ -1026,6 +1066,7 @@ local function render_pinned_column(state, row_width)
   if not column_index then
     close_pinned_window(state)
     state.pinned_header_line = nil
+    state.pinned_header_lines = nil
     state.pinned_header_row_width = nil
     if valid_buf(state.pinned_buf) then
       set_buffer_lines(state.pinned_buf, {})
@@ -1042,8 +1083,12 @@ local function render_pinned_column(state, row_width)
 
   local win = ensure_pinned_window(state)
   local width = column_width_for_rows(state, column_index, row_width)
-  local lines = { table.concat({ pad_text("#", row_width), pad_text(item.name or ("V" .. tostring(column_index)), width) }, " | ") }
+  local lines = {
+    table.concat({ pad_text("#", row_width), pad_text(item.name or ("V" .. tostring(column_index)), width) }, " | "),
+    table.concat({ blank_text(row_width), pad_text(column_class_label(item), width) }, " | "),
+  }
   state.pinned_header_line = lines[1]
+  state.pinned_header_lines = vim.deepcopy(lines)
   state.pinned_header_row_width = row_width
   local row_by_line = {}
   local primary_line_by_row = {}
@@ -1055,14 +1100,14 @@ local function render_pinned_column(state, row_width)
       row_by_line[#lines] = row_index
     end
   end
-  if #lines == 1 then
+  if #lines == #state.pinned_header_lines then
     lines[#lines + 1] = "(no rows)"
   end
 
   state.pinned_row_by_line = row_by_line
   state.pinned_primary_line_by_row = primary_line_by_row
   set_buffer_lines(state.pinned_buf, lines)
-  apply_table_highlights(state.pinned_buf, lines, row_width)
+  apply_table_highlights(state.pinned_buf, lines, row_width, #state.pinned_header_lines)
 
   if valid_win(win) then
     local target_width = math.min(
@@ -1087,7 +1132,10 @@ local function move_grid_cursor_to_selected_column(state)
   end
 
   local selected_row = tonumber(state.selected_row) or 1
-  local row = math.max(1, primary_line_for_row(state, state.grid_win, selected_row) or (selected_row + 1))
+  local row = math.max(
+    1,
+    primary_line_for_row(state, state.grid_win, selected_row) or (selected_row + header_line_count(state))
+  )
   if valid_buf(state.grid_buf) then
     row = math.min(row, math.max(1, vim.api.nvim_buf_line_count(state.grid_buf)))
   end
@@ -1136,6 +1184,27 @@ local function center_current_view()
   vim.fn.winrestview(view)
 end
 
+local function move_current_view_half_page(state, direction)
+  local win = vim.api.nvim_get_current_win()
+  if not valid_win(win) then
+    return
+  end
+
+  local buf = vim.api.nvim_win_get_buf(win)
+  local height = math.max(1, vim.api.nvim_win_get_height(win))
+  local amount = math.max(1, math.floor(height / 2))
+  local line_count = math.max(1, vim.api.nvim_buf_line_count(buf))
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local target_line = math.max(1, math.min(line_count, cursor[1] + (direction * amount)))
+  vim.api.nvim_win_set_cursor(win, { target_line, cursor[2] })
+
+  local view = vim.fn.winsaveview()
+  local max_topline = math.max(1, line_count - height + 1)
+  view.topline = math.max(1, math.min(max_topline, view.topline + (direction * amount)))
+  vim.fn.winrestview(view)
+  update_header_windows(state)
+end
+
 local function render_grid(state)
   local rows = state.rows or {}
   local row_width = math.max(4, display_width(tostring(state.total_rows or 0)))
@@ -1143,12 +1212,14 @@ local function render_grid(state)
   state.column_widths = widths
 
   local header_parts = { pad_text("#", row_width) }
+  local class_parts = { blank_text(row_width) }
   local column_spans = {}
   local current_col = row_width + 3
   for _, item in ipairs(state.schema or {}) do
     local index = tonumber(item.index) or 0
     local text = pad_text(item.name or ("V" .. tostring(index)), widths[index] or 8)
     header_parts[#header_parts + 1] = text
+    class_parts[#class_parts + 1] = pad_text(column_class_label(item), widths[index] or 8)
     column_spans[#column_spans + 1] = {
       column_index = index,
       start_col = current_col,
@@ -1157,8 +1228,12 @@ local function render_grid(state)
     current_col = current_col + display_width(text) + 3
   end
 
-  local lines = { table.concat(header_parts, " | ") }
+  local lines = {
+    table.concat(header_parts, " | "),
+    table.concat(class_parts, " | "),
+  }
   state.grid_header_line = lines[1]
+  state.grid_header_lines = vim.deepcopy(lines)
   state.grid_header_row_width = row_width
   local row_by_line = {}
   local primary_line_by_row = {}
@@ -1171,7 +1246,7 @@ local function render_grid(state)
     end
   end
 
-  if #lines == 1 then
+  if #lines == #state.grid_header_lines then
     lines[#lines + 1] = "(no rows)"
   end
 
@@ -1545,6 +1620,30 @@ local function open_value_filter_picker(state)
   }, choose)
 end
 
+local function prompt_numeric_filter(state, mode, symbol, label)
+  sync_selected_column(state)
+  local column_index = tonumber(state.selected_column)
+  local item = schema_by_index(state, column_index)
+  if not item then
+    return
+  end
+
+  vim.ui.input({
+    prompt = label .. " filter " .. (item.name or "column") .. " (" .. symbol .. "): ",
+  }, function(input)
+    if input == nil then
+      return
+    end
+
+    if vim.trim(tostring(input or "")) == "" then
+      apply_filter(state, column_index, "", "contains", "", "")
+      return
+    end
+
+    apply_filter(state, column_index, input, mode, "", "")
+  end)
+end
+
 local function toggle_pinned_column(state)
   if not state then
     return
@@ -1794,6 +1893,14 @@ local function setup_keymaps(state)
     open_value_filter_picker(state)
   end)
 
+  map("<lt>", function()
+    prompt_numeric_filter(state, "lt", "<", "Less than")
+  end)
+
+  map(">", function()
+    prompt_numeric_filter(state, "gt", ">", "Greater than")
+  end)
+
   map("C", function()
     local changed = false
 
@@ -1855,6 +1962,14 @@ local function setup_keymaps(state)
 
   map("L", function()
     move_selected_column(state, 1)
+  end)
+
+  map("J", function()
+    move_current_view_half_page(state, 1)
+  end)
+
+  map("K", function()
+    move_current_view_half_page(state, -1)
   end)
 
   map("<Tab>", function()
@@ -2021,8 +2136,10 @@ function M.open(opts)
     pinned_row_by_line = {},
     pinned_primary_line_by_row = {},
     grid_header_line = nil,
+    grid_header_lines = nil,
     grid_header_row_width = nil,
     pinned_header_line = nil,
+    pinned_header_lines = nil,
     pinned_header_row_width = nil,
     page_offset = tonumber(page.offset or 0) or 0,
     page_limit = tonumber(page.limit) or page_limit,

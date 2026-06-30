@@ -157,8 +157,11 @@ Responsibilities:
   constrain data-grid inspection
 - answer bridge requests for live data-explorer sessions and table paging
 - support ArkView filtering through free-text contains filters, numeric
-  comparison filters entered as `< n` or `>n` on numeric columns, and exact
-  value filters chosen from bridge-provided unique values with counts
+  comparison filters driven by the `<` and `>` prompts on numeric columns, and
+  exact value filters chosen from bridge-provided unique values with counts
+- render each ArkView column header as a two-row block with the column name
+  above its `<class>` label, and keep both rows visible in sticky floating
+  headers while scrolling
 - format ArkView display-only string cells so empty strings, boundary spaces,
   and repeated spaces remain visually distinguishable without changing raw
   export, filter, sort, or cell-copy semantics

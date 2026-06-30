@@ -209,7 +209,10 @@ local ok, err = xpcall(function()
   local captured_lines = vim.split(captured, "\n", { plain = true })
   local winbar_line = nil
   local header_line = nil
+  local class_line = nil
   local header_col = nil
+  local header_value_col = nil
+  local class_value_col = nil
   local data_col = nil
   for index, line in ipairs(captured_lines) do
     if line:find("mtcars | Rows", 1, true) then
@@ -218,20 +221,30 @@ local ok, err = xpcall(function()
     if line:find("^%s*#%s+|%s+mpg") then
       header_line = index
       header_col = line:find("%S")
-      local data_line = captured_lines[index + 1] or ""
+      header_value_col = line:find("mpg", 1, true)
+      class_line = index + 1
+      local class_text = captured_lines[class_line] or ""
+      class_value_col = class_text:find("<numeric>", 1, true)
+      local data_line = captured_lines[index + 2] or ""
       data_col = data_line:find("%S")
       break
     end
   end
 
-  -- Regression: the sticky header must occupy the top visible grid row and
-  -- align with grid text when the user's config reserves sign/status columns.
+  -- Regression: the sticky header must occupy the top visible grid rows,
+  -- include the class row, and align with grid text when the user's config
+  -- reserves sign/status columns.
   if
     not winbar_line
     or not header_line
+    or not class_line
     or header_line ~= winbar_line + 1
+    or class_line ~= winbar_line + 2
     or not header_col
+    or not header_value_col
+    or not class_value_col
     or header_col ~= data_col
+    or class_value_col ~= header_value_col
   then
     ark_test.fail("expected visible sticky ArkView column header after scrolling, captured pane:\n" .. captured)
   end

@@ -158,25 +158,6 @@
       return(NULL)
     }
 
-    trimmed <- trimws(query)
-    comparator <- regexec("^([<>])\\s*(.+)$", trimmed)
-    parts <- regmatches(trimmed, comparator)[[1L]]
-    if (length(parts) == 3L) {
-      threshold <- suppressWarnings(as.numeric(parts[[3L]]))
-      if (is.na(threshold) || !is.finite(threshold)) {
-        .ark_view_fail("E_IPC_REQUEST", "invalid numeric comparison filter", "ipc_view_filter")
-      }
-      if (!.ark_view_numeric_filter_column(column)) {
-        .ark_view_fail("E_IPC_REQUEST", "numeric comparison filters require a numeric column", "ipc_view_filter")
-      }
-
-      return(list(
-        mode = if (identical(parts[[2L]], "<")) "lt" else "gt",
-        query = paste(parts[[2L]], format(threshold, trim = TRUE, scientific = FALSE)),
-        threshold = threshold
-      ))
-    }
-
     return(list(mode = "contains", query = query))
   }
 
