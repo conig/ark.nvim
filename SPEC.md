@@ -196,6 +196,11 @@ part of the default supported path.
   handing control to the interactive REPL.
 - R Markdown / Quarto fenced chunks work for completion and diagnostics, and
   inline `` `r ...` `` expressions complete as R code.
+- Function-call completion should respect R's actual argument model. Before
+  `=`, Ark may offer formal argument names; after `=`, Ark should treat the
+  cursor as an ordinary argument value and must not infer data-frame column
+  completions from a nearby `data` argument or nested `ggplot(..., aes(...))`
+  context unless a future explicit semantic contract declares that value domain.
 - Blink integration stays on the normal `lsp` source, with Ark-specific provider
   policy handled in plugin code rather than a generic snippets completion source.
 - Structural code templates are exposed explicitly through the Ark Snacks picker

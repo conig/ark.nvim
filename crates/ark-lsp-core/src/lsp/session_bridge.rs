@@ -1242,6 +1242,10 @@ impl SessionBridge {
             return Ok(None);
         }
 
+        if call_argument_syntax_position(context) {
+            return Ok(None);
+        }
+
         if argument_prefix(context)?.is_some() {
             return Ok(None);
         }
@@ -3459,6 +3463,10 @@ fn completion_request_from_call(
         return Ok(None);
     }
 
+    if !call_argument_name_completion_target(context) {
+        return Ok(None);
+    }
+
     let mut prefix = argument_prefix(context)?;
     if prefix.is_none() {
         if let Some((text_callee, text_prefix)) = text_argument_slot {
@@ -3477,6 +3485,27 @@ fn completion_request_from_call(
         quote_insert: false,
         subset_kind: None,
     }))
+}
+
+fn call_argument_syntax_position(context: &DocumentContext) -> bool {
+    matches!(
+        call_node_position_type(&context.node, context.point),
+        CallNodePositionType::Name | CallNodePositionType::Ambiguous | CallNodePositionType::Value
+    )
+}
+
+fn call_argument_name_completion_target(context: &DocumentContext) -> bool {
+    matches!(
+        call_node_position_type(&context.node, context.point),
+        CallNodePositionType::Name | CallNodePositionType::Ambiguous
+    )
+}
+
+fn call_argument_value_completion_target(context: &DocumentContext) -> bool {
+    matches!(
+        call_node_position_type(&context.node, context.point),
+        CallNodePositionType::Value
+    )
 }
 
 fn completion_request_from_call_text(
@@ -3590,6 +3619,10 @@ fn call_text_argument_slot_after_named_argument(
 fn completion_request_from_pipe(
     context: &DocumentContext,
 ) -> anyhow::Result<Option<CompletionRequest>> {
+    if call_argument_value_completion_target(context) {
+        return Ok(None);
+    }
+
     let Some(call_node) = node_find_containing_call(context.node) else {
         return Ok(completion_request_from_pipe_text(context));
     };
@@ -3787,6 +3820,10 @@ fn completion_request_from_explicit_pipe_root(
     context: &DocumentContext,
 ) -> anyhow::Result<Option<CompletionRequest>> {
     if !context.explicit_completion_request {
+        return Ok(None);
+    }
+
+    if call_argument_value_completion_target(context) {
         return Ok(None);
     }
 

@@ -6,6 +6,7 @@ local pane_id, client = ark_test.setup_managed_buffer(test_file, {
   "library(ggplot2)",
   "",
   "ggplot(mtcars, aes(",
+  "ggplot(mtcars, aes(x",
 })
 
 ark_test.tmux({
@@ -43,32 +44,51 @@ ark_test.wait_for("ggplot2 attach", 10000, function()
   return capture:find("%[1%] TRUE") ~= nil
 end)
 
-local line = vim.api.nvim_buf_get_lines(0, 2, 3, false)[1]
-local items = ark_test.completion_items(ark_test.request(client, "textDocument/completion", {
-  textDocument = vim.lsp.util.make_text_document_params(0),
-  position = {
-    line = 2,
-    character = #line,
-  },
-  context = {
-    triggerKind = 1,
-  },
-}, 10000))
+local function completion_at(line_nr, column)
+  return ark_test.completion_items(ark_test.request(client, "textDocument/completion", {
+    textDocument = vim.lsp.util.make_text_document_params(0),
+    position = {
+      line = line_nr - 1,
+      character = column,
+    },
+    context = {
+      triggerKind = 1,
+    },
+  }, 10000))
+end
 
--- Regression coverage for an empty-prefix mapping context. `aes(cy|)` already
--- worked; this checks the user-visible spot right after typing `aes(`.
-local labels = ark_test.item_labels(items)
-for _, label in ipairs({ "mpg", "cyl", "disp", "hp", "drat", "wt", "qsec", "vs", "am", "gear", "carb" }) do
-  local item = ark_test.find_item(items, label)
+local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+local empty_items = completion_at(3, #lines[3])
+local prefixed_items = completion_at(4, #lines[4])
+
+local function assert_argument_item(label, items, argument)
+  local item = ark_test.find_item(items, argument)
   if not item then
-    ark_test.fail("ggplot(mtcars, aes( completion missing " .. label .. ": " .. vim.inspect(labels))
+    ark_test.fail(label .. " ggplot(mtcars, aes( completion missing " .. argument .. ": " .. vim.inspect(ark_test.item_labels(items)))
   end
-  if ark_test.insert_text(item) ~= label then
-    ark_test.fail("ggplot(mtcars, aes( completion inserted unexpected text for " .. label .. ": " .. vim.inspect(item))
+  local expected_insert = argument == "..." and "... = " or (argument .. " = ")
+  if ark_test.insert_text(item) ~= expected_insert then
+    ark_test.fail(label .. " ggplot(mtcars, aes( completion inserted unexpected text for " .. argument .. ": " .. vim.inspect(item))
+  end
+end
+
+-- Empty and prefixed positions before `=` are formal-name slots. They should
+-- complete `aes()` arguments, not infer columns from a nearby `ggplot(data)`.
+for _, argument in ipairs({ "x", "y", "..." }) do
+  assert_argument_item("empty", empty_items, argument)
+end
+assert_argument_item("prefixed", prefixed_items, "x")
+
+for _, label in ipairs({ "mpg", "cyl", "disp", "hp", "drat", "wt", "qsec", "vs", "am", "gear", "carb" }) do
+  for case, items in pairs({ empty = empty_items, prefixed = prefixed_items }) do
+    local item = ark_test.find_item(items, label)
+    if item then
+      ark_test.fail(case .. " ggplot(mtcars, aes( completion unexpectedly included data column " .. label .. ": " .. vim.inspect(ark_test.item_labels(items)))
+    end
   end
 end
 
 print(vim.json.encode({
-  count = #items,
-  labels = labels,
+  empty = ark_test.item_labels(empty_items),
+  prefixed = ark_test.item_labels(prefixed_items),
 }))
