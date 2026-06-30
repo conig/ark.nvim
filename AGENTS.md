@@ -238,7 +238,7 @@ When a feature seems broken, first identify which bucket it belongs to before ch
 
 ### 2. The session bridge is the runtime boundary
 
-Runtime-aware completions, hover, and signature help should flow through `crates/ark/src/lsp/session_bridge.rs`.
+Runtime-aware completions, hover, and signature help should flow through `crates/ark-lsp-core/src/lsp/session_bridge.rs`.
 
 Important rule:
 
@@ -250,7 +250,7 @@ Otherwise detached fallback sources may run afterward and accidentally touch emb
 
 If a completion works through an explicit `textDocument/completion` request but not while typing, inspect:
 
-- `crates/ark/src/lsp/state_handlers.rs`
+- `crates/ark-lsp/src/lsp/state_handlers.rs`
 - the server's advertised `completionProvider.triggerCharacters`
 - the user's Blink trigger configuration
 
@@ -400,5 +400,7 @@ Some upstream conventions remain useful unless and until the code moves:
 - avoid `.unwrap()` / `.expect()` in production code
 - keep functions ordered top-down in call flow where practical
 - keep `Cargo.toml` dependency order alphabetical
+- use the new async closure syntax, e.g. `async move || { ... }` instead of `|| async move { ... }`
+- name closure and pattern bindings after what they hold, not by a single letter, while still using short names where clear
 
 If these conventions conflict with a cleaner Neovim-only architecture, choose the cleaner architecture and update this file.

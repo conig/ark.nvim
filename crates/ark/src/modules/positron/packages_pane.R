@@ -16,7 +16,7 @@
 # active project, so the same call works for pak/base/renv callers.
 #' @export
 .ps.rpc.pkg_list <- function(method = c("pak", "base", "renv")) {
-    ip <- utils::installed.packages(fields = "Description")
+    ip <- utils::installed.packages(fields = c("Description", "URL"))
     name <- ip[, "Package"]
     version <- ip[, "Version"]
     id <- paste0(name, "-", version)
@@ -34,18 +34,35 @@
         ifelse(is.na(ip[, "Description"]), "", ip[, "Description"]),
         perl = TRUE
     ))
-    # `Map(list, id = ...)` would name the output list by `id`'s values
-    # (mapply USE.NAMES semantics for a character first arg), and a named
-    # list serializes to a JSON object instead of the array the frontend
-    # expects. Strip the names with unname().
+    # DESCRIPTION's URL field can list several URLs separated by commas and/or
+    # whitespace; the first is conventionally the package's canonical website.
+    # Surface it as the single best URL (Positron validates the scheme before
+    # opening). Drop everything from the first separator on; "" when absent.
+    url <- sub("[[:space:],].*$", "", trimws(ip[, "URL"]))
+    # Build each package as a list so `url` can be omitted entirely when a
+    # package advertises none -- a vectorized `Map(list, url = url)` forces the
+    # key onto every package (serializing "" rather than leaving it absent).
+    # `Map`'s first argument (`id`, a character vector) would name the result,
+    # so `unname()` keeps it a JSON array rather than an object keyed by id.
     unname(Map(
-        list,
-        id = id,
-        name = name,
-        displayName = name,
-        version = version,
-        attached = attached,
-        description = description
+        function(id, name, version, attached, description, url) {
+            entry <- list(
+                id = id,
+                name = name,
+                displayName = name,
+                version = version,
+                attached = attached,
+                description = description
+            )
+            entry$url <- if (!is.na(url)) url
+            entry
+        },
+        id,
+        name,
+        version,
+        attached,
+        description,
+        url
     ))
 }
 
@@ -98,13 +115,90 @@
     as.list(version)
 }
 
-# Return the list of outdated pacakages.
+# Return detail fields for a single installed package by name.
+#' @export
+.ps.rpc.pkg_detail <- function(name) {
+    if (!nzchar(name)) {
+        return(NULL)
+    }
+    fields <- c(
+        "Title",
+        "Author",
+        "Maintainer",
+        "License",
+        "Repository",
+        "Date/Publication"
+    )
+    # Read straight from the package's DESCRIPTION. packageDescription() returns
+    # a length-1 NA (and warns) when the package isn't installed, which is far
+    # cheaper than installed.packages() -- that parses every installed package's
+    # DESCRIPTION just to answer an existence check.
+    d <- suppressWarnings(utils::packageDescription(name, fields = fields))
+    if (!inherits(d, "packageDescription")) {
+        return(NULL)
+    }
+
+    # Collapse DCF whitespace; return NULL for missing (NA) fields.
+    clean <- function(x) {
+        if (is.null(x) || is.na(x)) {
+            return(NULL)
+        }
+        trimws(gsub("\\s+", " ", x, perl = TRUE))
+    }
+
+    # Reduce an R License field to its primary license: the first alternative
+    # (before "|"), without the "+ file LICENSE" clause.
+    primary_license <- function(x) {
+        if (is.null(x)) {
+            return(NULL)
+        }
+        first <- trimws(strsplit(x, "\\|")[[1]][1])
+        first <- trimws(sub(
+            "\\s*\\+\\s*file\\s+.*$",
+            "",
+            first,
+            ignore.case = TRUE
+        ))
+        if (!nzchar(first)) {
+            return(NULL)
+        }
+        first
+    }
+
+    # Prefer Maintainer for author display; fall back to Author.
+    author <- clean(d$Maintainer)
+    if (is.null(author)) {
+        author <- clean(d$Author)
+    }
+
+    # Drop absent (NULL) fields so the other side only sees populated keys.
+    out <- list(
+        name = name,
+        title = clean(d$Title),
+        author = author,
+        license = primary_license(clean(d$License)),
+        sourceRepository = clean(d$Repository),
+        publishedDate = clean(d[["Date/Publication"]])
+    )
+    Filter(Negate(is.null), out)
+}
+
+
+# Return the list of outdated packages with their latest available versions.
+#
+# `utils::old.packages()` queries the user's configured repositories, so
+# `ReposVer` is the authoritative latest version for this session -- it reflects
+# what an upgrade would actually fetch, which P3M (a generic upstream mirror)
+# cannot guarantee.
 #' @export
 .ps.rpc.pkg_outdated <- function() {
     outdated <- utils::old.packages()
     if (is.null(outdated) || nrow(outdated) == 0) {
         return(list())
     }
-    # Return as list to ensure it serializes as an array
-    as.list(outdated[, "Package"])
+    unname(Map(
+        list,
+        name = outdated[, "Package"],
+        latestVersion = outdated[, "ReposVer"]
+    ))
 }

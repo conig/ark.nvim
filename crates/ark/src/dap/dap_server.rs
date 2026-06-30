@@ -11,10 +11,11 @@ use std::io::BufWriter;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use aether_url::UrlId;
+use aether_path::FilePath;
 use amalthea::comm::comm_channel::CommMsg;
 use amalthea::comm::server_comm::ServerStartMessage;
 use amalthea::comm::server_comm::ServerStartedMessage;
@@ -36,11 +37,13 @@ use stdext::result::ResultExt;
 use stdext::spawn;
 
 use super::dap_state::Breakpoint;
+use super::dap_state::BreakpointEntry;
 use super::dap_state::BreakpointState;
 use super::dap_state::Dap;
 use super::dap_state::DapBackendEvent;
 use super::dap_state::THREAD_ID;
 use crate::console::Console;
+use crate::console::ConsoleOutputCapture;
 use crate::console::FrameInfo;
 use crate::console::FrameSource;
 use crate::dap::dap_variables::object_variables;
@@ -122,8 +125,10 @@ impl DapHandler {
 
     /// Dispatch a parsed DAP request to the appropriate handler.
     ///
-    /// `Evaluate` is intentionally not handled here because it requires
-    /// transport-specific async response delivery.
+    /// `Evaluate` is not handled here because `dispatch()` returns
+    /// synchronously, while Evaluate requires an async round-trip through the
+    /// R thread. Each transport calls [`DapHandler::evaluate()`] directly
+    /// inside its own async mechanism.
     pub fn dispatch(&self, req: Request) -> DapOutput {
         let cmd = req.command.clone();
 
@@ -240,18 +245,15 @@ impl DapHandler {
         // We currently only support "path" URIs as Positron never sends URIs.
         // In principle the DAP frontend can negotiate whether it sends URIs or
         // file paths via the `pathFormat` field of the `Initialize` request.
-        let uri = match UrlId::from_file_path(path) {
-            Ok(uri) => uri,
-            Err(err) => {
-                log::warn!("Can't set breakpoints for non-file path: '{path}': {err}");
-                return Ok(DapHandlerOutput {
-                    body: ResponseBody::SetBreakpoints(SetBreakpointsResponse {
-                        breakpoints: vec![],
-                    }),
-                    dap_events: vec![],
-                    console_events: vec![],
-                });
-            },
+        let Some(uri) = FilePath::from_path_buf(PathBuf::from(path)) else {
+            log::warn!("Can't set breakpoints for non-file path: '{path}'");
+            return Ok(DapHandlerOutput {
+                body: ResponseBody::SetBreakpoints(SetBreakpointsResponse {
+                    breakpoints: vec![],
+                }),
+                dap_events: vec![],
+                console_events: vec![],
+            });
         };
 
         // Read document content to compute hash. We currently assume UTF-8 even
@@ -293,7 +295,7 @@ impl DapHandler {
         // changed after a reconnection, the breakpoints are no longer valid.
         let doc_hash = blake3::hash(doc_content.as_bytes());
         let doc_changed = match &old_breakpoints {
-            Some((existing_hash, _)) => existing_hash != &doc_hash,
+            Some(entry) => entry.hash != doc_hash,
             None => true,
         };
 
@@ -322,7 +324,7 @@ impl DapHandler {
             log::trace!("DAP: Document unchanged for {uri}, preserving breakpoint states");
 
             // Unwrap Safety: `doc_changed` is false, so `old_breakpoints` is Some
-            let (_, old_breakpoints) = old_breakpoints.unwrap();
+            let old_breakpoints = old_breakpoints.unwrap().breakpoints;
             // Use original_line for lookup since that's what the frontend sends back
             let mut old_by_line: HashMap<u32, Breakpoint> = old_breakpoints
                 .into_iter()
@@ -426,7 +428,11 @@ impl DapHandler {
             })
             .collect();
 
-        state.breakpoints.insert(uri, (doc_hash, new_breakpoints));
+        state.breakpoints.insert(uri, BreakpointEntry {
+            verbatim_path: path.clone(),
+            hash: doc_hash,
+            breakpoints: new_breakpoints,
+        });
 
         drop(state);
 
@@ -459,8 +465,10 @@ impl DapHandler {
         drop(state);
 
         let console_events = if is_debugging {
+            log::trace!("DAP: Disconnect while debugging, injecting `Quit` to exit the browser");
             vec![DapConsoleEvent::DebugCommand(DebugRequest::Quit)]
         } else {
+            log::trace!("DAP: Disconnect while not debugging, no `Quit` needed");
             vec![]
         };
 
@@ -664,6 +672,52 @@ impl DapHandler {
             dap_events: vec![],
             console_events: vec![DapConsoleEvent::Interrupt],
         })
+    }
+
+    /// Core evaluate logic, must be called on the R thread.
+    pub(crate) fn evaluate(
+        state: &Mutex<Dap>,
+        expression: &str,
+        frame_id: Option<i64>,
+        capture: &mut ConsoleOutputCapture,
+    ) -> anyhow::Result<ResponseBody> {
+        if expression == SELECTED_FRAME_EXPRESSION {
+            log::trace!("DAP: Received frame selection sentinel, frame_id: {frame_id:?}");
+            Console::get_mut().set_debug_selected_frame_id(frame_id);
+            return Ok(ResponseBody::Evaluate(EvaluateResponse {
+                result: String::new(),
+                type_field: None,
+                presentation_hint: None,
+                variables_reference: 0,
+                named_variables: None,
+                indexed_variables: None,
+                memory_reference: None,
+            }));
+        }
+
+        let (expr, print) = match expression.strip_prefix("/print ") {
+            Some(expr) => (expr, true),
+            None => (expression, false),
+        };
+
+        // Resolve the frame environment under the lock, then release it before
+        // evaluating. The `Dap` lock must not be held across R evaluation: an R
+        // error longjumps over this frame and skips the guard's `Drop`, which
+        // would leave the mutex locked forever. The env stays valid without the
+        // lock because its owning `RObject` remains in the state's map, which
+        // only the R thread mutates.
+        let env = state
+            .lock()
+            .unwrap()
+            .frame_env(frame_id)
+            .map_err(|err| anyhow::anyhow!("{err}"))?;
+
+        let capture = if print { Some(capture) } else { None };
+        let variable = Dap::evaluate(expr, env, capture)?;
+        log::trace!("DAP: Evaluate completed");
+
+        let response = state.lock().unwrap().into_evaluate_response(variable);
+        Ok(ResponseBody::Evaluate(response))
     }
 }
 
@@ -957,36 +1011,9 @@ impl<R: Read, W: Write> DapServer<R, W> {
         r_task::spawn(RTask::send_idle_any_prompt(async move |mut capture| {
             log::trace!("DAP: Idle task started for evaluate");
 
-            // If expression starts with "/print ", evaluate and print result
-            let (expr, print) = match expression.strip_prefix("/print ") {
-                Some(expr) => (expr, true),
-                None => (expression.as_str(), false),
-            };
-
-            let rsp = if expression == SELECTED_FRAME_EXPRESSION {
-                log::trace!("DAP: Received frame selection sentinel, frame_id: {frame_id:?}");
-                Console::get_mut().set_debug_selected_frame_id(frame_id);
-                req.success(ResponseBody::Evaluate(EvaluateResponse {
-                    result: String::new(),
-                    type_field: None,
-                    presentation_hint: None,
-                    variables_reference: 0,
-                    named_variables: None,
-                    indexed_variables: None,
-                    memory_reference: None,
-                }))
-            } else {
-                let capture = if print { Some(&mut capture) } else { None };
-                let result = state.lock().unwrap().evaluate(expr, frame_id, capture);
-                log::trace!("DAP: Evaluate completed, success: {}", result.is_ok());
-
-                match result {
-                    Ok(variable) => {
-                        let response = state.lock().unwrap().into_evaluate_response(variable);
-                        req.success(ResponseBody::Evaluate(response))
-                    },
-                    Err(err) => req.error(&format!("Error: {err}")),
-                }
+            let rsp = match DapHandler::evaluate(&state, &expression, frame_id, &mut capture) {
+                Ok(body) => req.success(body),
+                Err(err) => req.error(&format!("Error: {err}")),
             };
 
             responses_tx.send(rsp).log_err();
@@ -1009,6 +1036,14 @@ fn into_dap_frame(frame: &FrameInfo, fallback_sources: &HashMap<String, String>)
     // Retrieve either `path` or `source_reference` depending on the `source` type.
     // In the `Text` case, a `source_reference` should always exist because we loaded
     // the map with all possible text values in `start_debug()`.
+    //
+    // We report R's view of the path (the srcref filename), not the verbatim
+    // path the frontend sent for a breakpoint. A breakpoint's `verbatim_path` can
+    // differ (e.g. a symlinked path that R resolved through `normalizePath()`),
+    // and we could match a frame back to it through `BreakpointMap`'s canonical
+    // index. But that would only reach files that happen to have a breakpoint,
+    // so a frame's path would flip form depending on whether a breakpoint is
+    // set. Using R's path keeps every frame consistent regardless.
     let path = match source {
         FrameSource::File(path) => Some(path),
         FrameSource::Text(source) => fallback_sources.get(&source).cloned().or_else(|| {

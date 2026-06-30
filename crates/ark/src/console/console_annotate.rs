@@ -4,13 +4,13 @@
 // Copyright (C) 2026 Posit Software, PBC. All rights reserved.
 //
 
+use aether_path::FilePath;
 use aether_syntax::RBracedExpressions;
 use aether_syntax::RExpressionList;
 use aether_syntax::RLanguage;
 use aether_syntax::RSyntaxElement;
 use aether_syntax::RSyntaxKind;
 use aether_syntax::RSyntaxNode;
-use aether_url::UrlId;
 use amalthea::wire::execute_request::CodeLocation;
 use anyhow::anyhow;
 use biome_line_index::LineIndex;
@@ -256,6 +256,79 @@ fn annotate_source_impl(
     breakpoints: &mut [Breakpoint],
     with_visible: bool,
 ) -> anyhow::Result<String> {
+    let block = annotate_braced_block(code, uri, breakpoints)?;
+
+    // Add a trailing verify call to handle any injected breakpoint in trailing
+    // position. Normally we'd inject a verify call as well as a line directive
+    // that ensures source references remain correct after the verify call.
+    // But for the last expression in a list, there is no sibling node to attach
+    // the line directive trivia to. So, instead of adding a verify call, we
+    // rely on verification in a parent list instead. If trailing, there won't
+    // be any verification calls at all though, so we manually add one here.
+    //
+    // Wrap in `base::list({...}, verify_call)[[1]]` to:
+    // 1. Execute the code block (first element)
+    // 2. Execute the trailing verify call (second element)
+    // 3. Return only the code block's result via `[[1]]`
+    //
+    // This ensures breakpoints in the last expression get verified while
+    // preserving the return value for callers that depend on it.
+    //
+    // When `with_visible` is true, wrap the code block in `withVisible()` so
+    // callers can access the visibility of the last expression. This is needed
+    // e.g. for `source()` which returns `list(value = ..., visible = ...)`.
+    let last_line = code.lines().count() as u32;
+    let trailing_verify = format_verify_call(uri, &(0..last_line));
+
+    let block = if with_visible {
+        format!("base::withVisible({block})")
+    } else {
+        block
+    };
+
+    Ok(format!("base::list({block}, {trailing_verify})[[1]]"))
+}
+
+/// Annotate a notebook cell for execution with breakpoints.
+///
+/// Like [`annotate_source`], the cell is wrapped in `{}` so R can step through
+/// top-level expressions and breakpoints become injectable (R can only step
+/// statement-by-statement within a single braced evaluation). Unlike `source()`,
+/// we return the *bare* instrumented brace block, with no outer
+/// `base::list({...}, verify)[[1]]` wrapper. This matters because:
+///
+/// - The block evaluates to its last expression's value *with its visibility*,
+///   so a cell ending in an invisible assignment (`x <- 1`) does not print.
+///   The `list(...)[[1]]` wrapper used by `source()` always forces the result
+///   visible, which is wrong for notebook output semantics.
+/// - It keeps the debugger call stack clean: unlike the `withVisible()` wrapper
+///   that `source()` uses to capture visibility, the bare block adds no extra
+///   frame.
+///
+/// Trade-off: there is no outer trailing verify call, so a breakpoint inside a
+/// dead branch of the cell's *last* top-level statement is verified lazily when
+/// reached (via `.ark_breakpoint`) rather than pre-verified. Reachable
+/// breakpoints, and breakpoints in non-last statements, verify as usual.
+pub(super) fn annotate_notebook(
+    code: &str,
+    uri: &Url,
+    breakpoints: &mut [Breakpoint],
+) -> anyhow::Result<String> {
+    annotate_braced_block(code, uri, breakpoints)
+}
+
+/// Wrap `code` in `{}` and instrument the braced block: inject breakpoint calls,
+/// `#line` directives, and inter-statement verify calls. Returns the rewritten
+/// brace block as a string.
+///
+/// Shared by [`annotate_source`] (which adds an outer `base::list(..., verify)[[1]]`
+/// wrapper to verify trailing breakpoints) and [`annotate_notebook`] (which uses
+/// the bare block to preserve the final expression's visibility).
+fn annotate_braced_block(
+    code: &str,
+    uri: &Url,
+    breakpoints: &mut [Breakpoint],
+) -> anyhow::Result<String> {
     // Wrap code in braces first. This:
     // 1. Allows R to step through top-level expressions
     // 2. Makes all breakpoints valid (they're now inside braces, at top-level they'd be invalid)
@@ -266,7 +339,7 @@ fn annotate_source_impl(
     let parse = aether_parser::parse(&wrapped, Default::default());
     if let Some(err) = parse.error() {
         // Shouldn't happen since we're only operating on code that was parsed by R
-        return Err(anyhow!("Parse error in `annotate_input()`: {err}"));
+        return Err(anyhow!("Parse error in `annotate_braced_block()`: {err}"));
     }
 
     let root = parse.tree();
@@ -293,37 +366,7 @@ fn annotate_source_impl(
     let initial_directive = format!("#line 1 \"{}\"", uri);
     let annotated_code = annotated_code.replacen("{\n", &format!("{{\n{}\n", initial_directive), 1);
 
-    // Add a trailing verify call to handle any injected breakpoint in trailing
-    // position. Normally we'd inject a verify call as well as a line directive
-    // that ensures source references remain correct after the verify call.
-    // But for the last expression in a list, there is no sibling node to attach
-    // the line directive trivia to. So, instead of adding a verify call, we
-    // rely on verification in a parent list instead. If trailing, there won't
-    // be any verification calls at all though, so we manually add one here.
-    //
-    // Wrap in `base::list({...}, verify_call)[[1]]` to:
-    // 1. Execute the code block (first element)
-    // 2. Execute the trailing verify call (second element)
-    // 3. Return only the code block's result via `[[1]]`
-    //
-    // This ensures breakpoints in the last expression get verified while
-    // preserving the return value for callers that depend on it.
-    //
-    // When `with_visible` is true, wrap the code block in `withVisible()` so
-    // callers can access the visibility of the last expression. This is needed
-    // e.g. for `source()` which returns `list(value = ..., visible = ...)`.
-    let last_line = code.lines().count() as u32;
-    let trailing_verify = format_verify_call(uri, &(0..last_line));
-
-    let annotated_code = if with_visible {
-        format!("base::withVisible({})", annotated_code.trim())
-    } else {
-        annotated_code.trim().to_string()
-    };
-
-    Ok(format!(
-        "base::list({annotated_code}, {trailing_verify})[[1]]"
-    ))
+    Ok(annotated_code.trim().to_string())
 }
 
 /// Rewriter that handles all code annotation inside braced expression lists:
@@ -933,16 +976,17 @@ pub unsafe extern "C-unwind" fn ps_annotate_source(
     // R source references may flow back to the frontend, which expects its
     // own URI representation.
     let uri = Url::parse(&uri)?;
-    let uri_id = UrlId::from_url(uri.clone());
+    let path = FilePath::from_url(&uri);
 
     let mut dap_guard = Console::get().debug_dap.lock().unwrap();
 
     // If there are no breakpoints for this file, return NULL to signal no
     // annotation needed. Scope the mutable borrow so we can re-borrow after.
     let annotated = {
-        let Some((_, breakpoints)) = dap_guard.breakpoints.get_mut(&uri_id) else {
+        let Some(entry) = dap_guard.breakpoints.get_mut(&path) else {
             return Ok(harp::r_null());
         };
+        let breakpoints = &mut entry.breakpoints;
         if breakpoints.is_empty() {
             return Ok(harp::r_null());
         }
@@ -955,13 +999,15 @@ pub unsafe extern "C-unwind" fn ps_annotate_source(
     };
 
     // Notify frontend about any breakpoints marked invalid during annotation
-    dap_guard.notify_invalid_breakpoints(&uri_id);
+    dap_guard.notify_invalid_breakpoints(&path);
 
     // Remove disabled breakpoints. Their verification state is now stale since
     // they weren't injected during this annotation. If the user re-enables
     // them, they'll be treated as new unverified breakpoints.
-    if let Some((_, breakpoints)) = dap_guard.breakpoints.get_mut(&uri_id) {
-        breakpoints.retain(|bp| !matches!(bp.state, BreakpointState::Disabled));
+    if let Some(entry) = dap_guard.breakpoints.get_mut(&path) {
+        entry
+            .breakpoints
+            .retain(|bp| !matches!(bp.state, BreakpointState::Disabled));
     }
 
     Ok(RObject::from(annotated).sexp)
@@ -1768,6 +1814,59 @@ mod tests {
         assert_eq!(breakpoints[0].state, BreakpointState::Unverified);
         assert_eq!(breakpoints[1].state, BreakpointState::Unverified);
         insta::assert_snapshot!(result);
+    }
+
+    #[test]
+    fn test_annotate_notebook_top_level_breakpoint() {
+        // A notebook cell with a breakpoint on a top-level line. The cell is
+        // brace-wrapped and instrumented, but unlike `annotate_source` there is
+        // no outer `base::list(..., verify)[[1]]` wrapper.
+        let code = "x <- 1\ny <- 2\nz <- x + y";
+        let uri = Url::parse("file:///cell.R").unwrap();
+        // Breakpoint on line 1 (`y <- 2`, 0-indexed)
+        let mut breakpoints = vec![Breakpoint::new(1, 1, BreakpointState::Unverified)];
+        let result = annotate_notebook(code, &uri, &mut breakpoints).unwrap();
+        insta::assert_snapshot!(result);
+
+        // Bare brace block, no source()-style wrapper
+        assert!(result.trim_start().starts_with('{'));
+        assert!(result.trim_end().ends_with('}'));
+        assert!(!result.contains("base::list("));
+        // Breakpoint was injected and is not invalid
+        assert!(result.contains(".ark_breakpoint"));
+        assert!(!matches!(breakpoints[0].state, BreakpointState::Invalid(_)));
+    }
+
+    #[test]
+    fn test_annotate_notebook_preserves_final_invisible() {
+        // A cell ending in an invisible assignment. The bare brace block must
+        // end with the user's last statement (so its visibility is preserved)
+        // rather than a trailing verify call or `[[1]]` subscript.
+        let code = "x <- 1\ny <- 2";
+        let uri = Url::parse("file:///cell.R").unwrap();
+        let mut breakpoints = vec![Breakpoint::new(1, 0, BreakpointState::Unverified)];
+        let result = annotate_notebook(code, &uri, &mut breakpoints).unwrap();
+        insta::assert_snapshot!(result);
+
+        // No outer wrapper that would force the result visible
+        assert!(!result.contains("base::list("));
+        assert!(!result.contains("[[1]]"));
+        // The block's last statement is the user's `y <- 2`, not a verify call
+        let last_line = result.trim_end().lines().rev().nth(1).unwrap().trim();
+        assert_eq!(last_line, "y <- 2");
+    }
+
+    #[test]
+    fn test_annotate_notebook_breakpoint_on_closing_brace_invalid() {
+        // A breakpoint on a closing `}` line is invalid, same as for source().
+        let code = "f <- function() {\n  x <- 1\n}\ny <- 2";
+        let uri = Url::parse("file:///cell.R").unwrap();
+        // Breakpoint on line 2 (the `}`)
+        let mut breakpoints = vec![Breakpoint::new(1, 2, BreakpointState::Unverified)];
+        let result = annotate_notebook(code, &uri, &mut breakpoints).unwrap();
+        insta::assert_snapshot!(result);
+
+        assert!(matches!(breakpoints[0].state, BreakpointState::Invalid(_)));
     }
 
     #[test]

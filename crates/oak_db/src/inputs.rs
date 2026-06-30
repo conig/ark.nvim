@@ -1,8 +1,10 @@
-use aether_url::UrlId;
-use oak_package_metadata::namespace::Namespace;
+use std::collections::HashSet;
+
+use aether_path::FilePath;
 
 use crate::Db;
 use crate::File;
+use crate::Package;
 
 /// Salsa-tracked root directory.
 ///
@@ -20,11 +22,17 @@ use crate::File;
 #[salsa::input(debug)]
 pub struct Root {
     #[returns(ref)]
-    pub path: UrlId,
+    pub path: FilePath,
     pub kind: RootKind,
     /// Top-level R scripts directly under this root. Each entry is a
     /// `File` with `package(db) == None`. Always empty for `Library`
     /// roots.
+    ///
+    /// **Placement invariant.** A file present here must have
+    /// `package(db) == None`, and a file with `package == None` must
+    /// live here, in another `Root.scripts`, or in
+    /// `OrphanRoot.files`. Call this setter only through `oak_scan`'s
+    /// helpers, which keep the back-pointer and the container in sync.
     #[returns(ref)]
     pub scripts: Vec<File>,
     /// Packages discovered under this root (workspace packages for
@@ -37,6 +45,31 @@ pub struct Root {
 pub enum RootKind {
     Workspace,
     Library,
+}
+
+/// A live root container that participates in analysis lookups.
+///
+/// Bundles the three salsa inputs that hold files / packages the user is
+/// actively working with: workspace [`Root`]s, library [`Root`]s, and the
+/// [`OrphanRoot`] that catches unanchored buffers. Stale entities in
+/// [`StaleRoot`] aren't included -- they have separate access patterns
+/// (scanner upsert only, never analysis), so they stay as their own input.
+///
+/// `Db::live_roots()` yields these in lookup precedence (workspace first, then
+/// library, then orphan).
+///
+/// TODO(salsa): this enum carries the workspace-vs-library distinction in its
+/// variant tag, which makes the `Root.kind` field redundant. Drop the field
+/// once callers route through `LiveRoot` everywhere instead of reading
+/// `root.kind(db)` directly. Further out, splitting `Root` into separate
+/// `WorkspaceRoot` and `LibraryRoot` salsa inputs (each with the fields that
+/// actually apply to its kind: scripts only on workspace, etc.) frees up
+/// the name `Root` to be this enum.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LiveRoot {
+    Workspace(Root),
+    Library(Root),
+    Orphan(OrphanRoot),
 }
 
 /// The set of workspace folders the user has open.
@@ -87,44 +120,62 @@ impl LibraryRoots {
 ///
 /// Singleton: there is one `OrphanRoot` per concrete database, lazily
 /// initialised by the implementation. The `files` field is what
-/// [`crate::Db::file_by_url`] consults to find unanchored files.
-#[salsa::input]
+/// [`crate::Db::file_by_path`] consults to find unanchored files.
+#[salsa::input(debug)]
 pub struct OrphanRoot {
+    /// **Placement invariant.** Files here must have `package(db) ==
+    /// None`. Call this setter only through `oak_scan`'s helpers,
+    /// which keep the back-pointer and the container in sync.
+    ///
+    /// Unordered: these are unanchored files looked up by URL, with no
+    /// collation chain among them, so membership is all that matters.
     #[returns(ref)]
-    pub files: Vec<File>,
+    pub files: HashSet<File>,
 }
 
 impl OrphanRoot {
     pub fn empty(db: &dyn Db) -> Self {
-        Self::new(db, vec![])
+        Self::new(db, HashSet::new())
     }
 }
 
-#[salsa::input(debug)]
-pub struct Package {
-    /// The `Root` this package belongs to. Workspace packages live under
-    /// a [`RootKind::Workspace`] root, installed packages live under a
-    /// [`RootKind::Library`] root. Read `root.kind(db)` to distinguish.
-    pub root: Root,
+/// Files and packages from workspace or library roots that were removed
+/// during a `set_*_paths` call.
+///
+/// Salsa doesn't garbage-collect entities, so dropping a `Root` doesn't
+/// free its `File` and `Package` entities. They'd just leak. Instead we
+/// move them here and consult this bucket on the next `set_*_paths`,
+/// reusing entities by URL when their paths come back. This matters for
+/// agent / multi-repo workflows where the same workspace folder gets
+/// added and removed repeatedly across a session.
+///
+/// **Not consulted by analysis.** `Db::file_by_path` and
+/// `Db::package_by_name` walk workspace / library roots and (for files)
+/// `OrphanRoot` only. Entities in `StaleRoot` are invisible to
+/// completions, goto-def, etc. — they correspond to folders the user
+/// has explicitly removed.
+///
+/// **Consulted by scanners.** The scanner's package-by-URL lookup walks
+/// live roots then falls back to stale. Scanner upsert helpers do the same
+/// for files. On reuse, the entity is moved out of stale back into a live
+/// container.
+///
+/// Singleton like `OrphanRoot`. The `files` and `packages` fields are
+/// independent: a stale file's `package` may still point at a stale
+/// package, and that's fine. Both are invisible to analysis until one
+/// of them gets pulled back into a live container.
+#[salsa::input]
+pub struct StaleRoot {
+    /// Unordered: entity-reuse storage looked up by URL, no collation chain,
+    /// so membership is all that matters.
     #[returns(ref)]
-    pub name: String,
-    /// Installed-package version (from `DESCRIPTION`). `None` for
-    /// workspace packages.
+    pub files: HashSet<File>,
     #[returns(ref)]
-    pub version: Option<String>,
-    #[returns(ref)]
-    pub namespace: Namespace,
-    /// R source files belonging to this package (the `R/*.R` files).
-    /// Per-package granularity: adding or removing a file in one
-    /// package doesn't invalidate tracked queries reading another
-    /// package's files.
-    #[returns(ref)]
-    pub files: Vec<File>,
-    /// The basename ordering from `DESCRIPTION`'s `Collate` field, if
-    /// present. `None` when the field is absent (R defaults to
-    /// alphabetical load order). Changes only when `DESCRIPTION`
-    /// itself changes, so this anchor is independent of `files` (which
-    /// bumps when R/ files are added or removed).
-    #[returns(ref)]
-    pub collation: Option<Vec<String>>,
+    pub packages: Vec<Package>,
+}
+
+impl StaleRoot {
+    pub fn empty(db: &dyn Db) -> Self {
+        Self::new(db, HashSet::new(), vec![])
+    }
 }

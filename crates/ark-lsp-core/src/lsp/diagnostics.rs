@@ -1511,7 +1511,7 @@ mtcars$mp";
                 },
             );
             let state = WorldState {
-                library: Library::new(vec![], None).insert("datasets", datasets),
+                library: Library::new(vec![]).insert("datasets", datasets),
                 ..Default::default()
             };
 
@@ -1551,13 +1551,10 @@ mtcars$mp";
             let (corx_library, _) = create_temp_library_package("corx", "export(corx)\n");
 
             let state = WorldState {
-                library: Library::new(
-                    vec![
-                        base_library.path().to_path_buf(),
-                        corx_library.path().to_path_buf(),
-                    ],
-                    None,
-                ),
+                library: Library::new(vec![
+                    base_library.path().to_path_buf(),
+                    corx_library.path().to_path_buf(),
+                ]),
                 ..Default::default()
             };
 
@@ -1611,7 +1608,7 @@ mtcars$mp";
 
             let state = WorldState {
                 console_scopes: vec![vec![String::from("library"), String::from("require")]],
-                library: Library::new(vec![corx_library.path().to_path_buf()], None),
+                library: Library::new(vec![corx_library.path().to_path_buf()]),
                 ..Default::default()
             };
 
@@ -2060,6 +2057,7 @@ mtcars$mp";
                 name: "mockpkg".to_string(),
                 version: "1.0.0".to_string(),
                 depends: vec![],
+                imports: vec![],
                 repository: None,
                 priority: None,
                 fields: Dcf::new(),
@@ -2067,7 +2065,7 @@ mtcars$mp";
             let package = Package::from_parts(PathBuf::from("/mock/path"), description, namespace);
 
             // Create a library with `mockpkg` installed
-            let library = Library::new(vec![], None).insert("mockpkg", package);
+            let library = Library::new(vec![]).insert("mockpkg", package);
 
             // Simulate a search path with `library` in scope
             let console_scopes = vec![vec!["library".to_string()]];
@@ -2158,6 +2156,7 @@ mtcars$mp";
                 name: "pkg1".to_string(),
                 version: "1.0.0".to_string(),
                 depends: vec![],
+                imports: vec![],
                 repository: None,
                 priority: None,
                 fields: Dcf::new(),
@@ -2175,6 +2174,7 @@ mtcars$mp";
                 name: "pkg2".to_string(),
                 version: "1.0.0".to_string(),
                 depends: vec![],
+                imports: vec![],
                 repository: None,
                 priority: None,
                 fields: Dcf::new(),
@@ -2182,7 +2182,7 @@ mtcars$mp";
             let package2 =
                 Package::from_parts(PathBuf::from("/mock/path2"), description2, namespace2);
 
-            let library = Library::new(vec![], None)
+            let library = Library::new(vec![])
                 .insert("pkg1", package1)
                 .insert("pkg2", package2);
 
@@ -2234,13 +2234,14 @@ mtcars$mp";
                 name: "pkg".to_string(),
                 version: "1.0.0".to_string(),
                 depends: vec![],
+                imports: vec![],
                 repository: None,
                 priority: None,
                 fields: Dcf::new(),
             };
             let package = Package::from_parts(PathBuf::from("/mock/path"), description, namespace);
 
-            let library = Library::new(vec![], None).insert("pkg", package);
+            let library = Library::new(vec![]).insert("pkg", package);
 
             let console_scopes = vec![vec!["require".to_string()]];
             let state = WorldState {
@@ -2293,7 +2294,7 @@ mtcars$mp";
                     ..Default::default()
                 },
             );
-            let library = Library::new(vec![], None)
+            let library = Library::new(vec![])
                 .insert("data.table", data_table)
                 .insert("dplyr", dplyr);
 
@@ -2384,7 +2385,7 @@ library(tarchetypes)
                     ..Default::default()
                 },
             );
-            let library = Library::new(vec![], None).insert("tarchetypes", tarchetypes);
+            let library = Library::new(vec![]).insert("tarchetypes", tarchetypes);
 
             let targets_uri = Url::from_file_path(&targets_path).expect("expected targets uri");
             indexer::create(&targets_uri).expect("expected configured targets script indexing");
@@ -2633,7 +2634,7 @@ tar_make(names = c("clean_data", "missing_report"))
             let palmerpenguins_pkg = Package::load_from_folder(palmerpenguins_dir.path())
                 .unwrap()
                 .unwrap();
-            let library = Library::new(vec![], None).insert("penguins", palmerpenguins_pkg);
+            let library = Library::new(vec![]).insert("penguins", palmerpenguins_pkg);
 
             // Simulate a world state with the penguins package installed and attached
             let mut state = DEFAULT_STATE.clone();

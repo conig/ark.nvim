@@ -20,6 +20,7 @@ use crate::dap::dap_notebook;
 use crate::data_explorer::r_data_explorer::POSITRON_DATA_EXPLORER_MIME;
 use crate::r_task::QueuedRTask;
 use crate::r_task::RTask;
+use crate::r_task::TryIdleTask;
 use crate::request::DebugRequest;
 
 static RE_DEBUG_PROMPT: Lazy<Regex> = Lazy::new(|| Regex::new(r"Browse\[\d+\]").unwrap());
@@ -68,7 +69,7 @@ pub enum SessionMode {
 #[derive(Debug)]
 pub(crate) enum ConsoleNotification {
     /// Notification that a document has changed, requiring breakpoint invalidation.
-    DidChangeDocument(UrlId),
+    DidChangeDocument(FilePath),
 }
 
 /// Stack of pending inputs
@@ -93,9 +94,32 @@ impl PendingInputs {
         code: &str,
         location: Option<CodeLocation>,
         breakpoints: Option<&mut [Breakpoint]>,
+        notebook_cell: bool,
     ) -> anyhow::Result<ParseResult<PendingInputs>> {
         let input = if let Some(location) = location {
-            match annotate_input(code, location, breakpoints) {
+            // Annotate the code with breakpoint calls and `#line` directives. A
+            // notebook cell with breakpoints needs special treatment: it is
+            // evaluated as top-level input, where R can't stop at top-level
+            // breakpoints (it only steps statement-by-statement within a single
+            // braced evaluation). So we brace-wrap and instrument the whole cell
+            // as one `{ ... }` block, which lets top-level breakpoints fire. This
+            // mirrors how `source()` enables top-level breakpoints. Cells without
+            // breakpoints fall through to the usual top-level input annotation.
+            let annotated = match breakpoints {
+                Some(breakpoints) if notebook_cell && !breakpoints.is_empty() => {
+                    annotate_notebook(code, &location.uri, breakpoints).or_else(|err| {
+                        // Fall back to plain annotation so the user still gets the
+                        // normal R error for their code.
+                        log::warn!(
+                            "Notebook cell annotation failed, falling back to plain parse: {err:?}"
+                        );
+                        annotate_input(code, location, None)
+                    })
+                },
+                breakpoints => annotate_input(code, location, breakpoints),
+            };
+
+            match annotated {
                 Ok(annotated_code) => {
                     log::trace!("Annotated code: \n```\n{annotated_code}\n```");
                     harp::ParseInput::SrcFile(&SrcFile::new_virtual_empty_filename(
@@ -113,6 +137,11 @@ impl PendingInputs {
             harp::ParseInput::Text(code)
         };
 
+        Self::from_parse_input(input)
+    }
+
+    /// Parse a prepared [`harp::ParseInput`] into pending expressions.
+    fn from_parse_input(input: harp::ParseInput) -> anyhow::Result<ParseResult<PendingInputs>> {
         let status = match harp::parse_status(&input) {
             Err(err) => {
                 // Failed to even attempt to parse the input, something is seriously wrong
@@ -375,13 +404,15 @@ impl Console {
             };
         }
 
-        let (tasks_interrupt_rx, tasks_idle_rx, tasks_idle_any_rx) = r_task::take_receivers();
+        let (tasks_interrupt_rx, tasks_idle_rx, tasks_idle_any_rx, try_idle_rx) =
+            r_task::take_receivers();
 
         CONSOLE.set(UnsafeCell::new(Console::new(
             r_home,
             tasks_interrupt_rx,
             tasks_idle_rx,
             tasks_idle_any_rx,
+            try_idle_rx,
             comm_event_tx,
             r_request_rx,
             stdin_request_tx,
@@ -616,6 +647,7 @@ impl Console {
         tasks_interrupt_rx: Receiver<QueuedRTask>,
         tasks_idle_rx: Receiver<QueuedRTask>,
         tasks_idle_any_rx: Receiver<QueuedRTask>,
+        try_idle_rx: Receiver<TryIdleTask>,
         comm_event_tx: Sender<CommEvent>,
         r_request_rx: Receiver<RRequest>,
         stdin_request_tx: Sender<StdInRequest>,
@@ -651,6 +683,7 @@ impl Console {
             tasks_interrupt_rx,
             tasks_idle_rx,
             tasks_idle_any_rx,
+            try_idle_rx,
             pending_futures: HashMap::new(),
             session_mode,
             positron_ns: None,
@@ -759,6 +792,7 @@ impl Console {
             let (_, tasks_interrupt_rx) = crossbeam::channel::unbounded();
             let (_, tasks_idle_rx) = crossbeam::channel::unbounded();
             let (_, tasks_idle_any_rx) = crossbeam::channel::unbounded();
+            let (_, try_idle_rx) = crossbeam::channel::unbounded();
             let (comm_event_tx, _) = crossbeam::channel::unbounded();
             let (r_request_tx, r_request_rx) = crossbeam::channel::unbounded();
             let (stdin_request_tx, _) = crossbeam::channel::unbounded();
@@ -772,6 +806,7 @@ impl Console {
                 tasks_interrupt_rx,
                 tasks_idle_rx,
                 tasks_idle_any_rx,
+                try_idle_rx,
                 comm_event_tx,
                 r_request_rx,
                 stdin_request_tx,
@@ -1088,6 +1123,7 @@ impl Console {
         let tasks_interrupt_rx = self.tasks_interrupt_rx.clone();
         let tasks_idle_rx = self.tasks_idle_rx.clone();
         let tasks_idle_any_rx = self.tasks_idle_any_rx.clone();
+        let try_idle_rx = self.try_idle_rx.clone();
 
         // Process R's polled events regularly while waiting for console input.
         // We used to poll every 200ms but that lead to visible delays for the
@@ -1127,6 +1163,12 @@ impl Console {
             } else {
                 None
             };
+
+        let try_idle_index = if matches!(info.kind, PromptKind::TopLevel | PromptKind::Browser) {
+            Some(select.recv(&try_idle_rx))
+        } else {
+            None
+        };
 
         loop {
             // If an interrupt was signaled and we are waiting for user
@@ -1222,6 +1264,13 @@ impl Console {
                 i if Some(i) == tasks_idle_any_index => {
                     let task = oper.recv(&tasks_idle_any_rx).unwrap();
                     self.handle_task(task);
+                },
+
+                // A try-idle task woke us up
+                i if Some(i) == try_idle_index => {
+                    let task = oper.recv(&try_idle_rx).unwrap();
+                    let mut capture = self.start_capture();
+                    (task.fun)(&mut capture);
                 },
 
                 // It's time to run R's polled events
@@ -1513,30 +1562,32 @@ impl Console {
                 // Keep the DAP lock while we are updating breakpoints
                 let mut dap_guard = self.debug_dap.lock().unwrap();
 
-                let uri_id = loc.as_ref().map(crate::url::url_id_from_code_location);
+                let path = loc.as_ref().map(crate::url::file_path_from_code_location);
 
                 // For notebook cells (`cellId` present in metadata), synthesize
                 // a `CodeLocation` pointing to the temp file that `dumpCell`
                 // wrote. This gives `annotate_input()` the file URI it needs
                 // for the `#line` directive and breakpoint injection.
-                let (uri_id, loc) = if cell_id.is_some() {
+                let (path, loc) = if cell_id.is_some() {
                     match dap_notebook::notebook_code_location(&code) {
                         Some(notebook_loc) => {
-                            let id = UrlId::from_url(notebook_loc.uri.clone());
+                            let id = FilePath::from_url(&notebook_loc.uri);
                             (Some(id), Some(notebook_loc))
                         },
-                        None => (uri_id, loc),
+                        None => (path, loc),
                     }
                 } else {
-                    (uri_id, loc)
+                    (path, loc)
                 };
 
-                let breakpoints = uri_id
+                let breakpoints = path
                     .as_ref()
-                    .and_then(|uri_id| dap_guard.breakpoints.get_mut(uri_id))
-                    .map(|(_, v)| v.as_mut_slice());
+                    .and_then(|path| dap_guard.breakpoints.get_mut(path))
+                    .map(|entry| entry.breakpoints.as_mut_slice());
 
-                match PendingInputs::read(&code, loc, breakpoints) {
+                let parse_result = PendingInputs::read(&code, loc, breakpoints, cell_id.is_some());
+
+                match parse_result {
                     Ok(ParseResult::Success(inputs)) => {
                         self.pending_inputs = inputs;
                     },
@@ -1552,9 +1603,9 @@ impl Console {
 
                 // Notify frontend about any breakpoints marked invalid during annotation.
                 // Remove disabled breakpoints.
-                if let Some(uri_id) = &uri_id {
-                    dap_guard.notify_invalid_breakpoints(uri_id);
-                    dap_guard.remove_disabled_breakpoints(uri_id);
+                if let Some(path) = &path {
+                    dap_guard.notify_invalid_breakpoints(path);
+                    dap_guard.remove_disabled_breakpoints(path);
                 }
 
                 drop(dap_guard);
@@ -3024,4 +3075,16 @@ pub unsafe extern "C-unwind" fn ps_get_active_request() -> anyhow::Result<SEXP> 
     let json = serde_json::to_value(req)?;
     let r_obj = RObject::try_from(json)?;
     Ok(r_obj.sexp)
+}
+
+/// Returns the current session mode as a length-1 character vector:
+/// `"console"`, `"notebook"`, or `"background"`.
+#[harp::register]
+pub unsafe extern "C-unwind" fn ps_session_mode() -> anyhow::Result<SEXP> {
+    let mode = match Console::get().session_mode() {
+        SessionMode::Console => "console",
+        SessionMode::Notebook => "notebook",
+        SessionMode::Background => "background",
+    };
+    Ok(RObject::from(mode).sexp)
 }

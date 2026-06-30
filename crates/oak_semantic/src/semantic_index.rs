@@ -80,6 +80,16 @@ pub struct SemanticIndex {
     // Cross-file call sites recorded during indexing, such as `library()`
     // attachments or `source()` injections.
     semantic_calls: Vec<SemanticCall>,
+
+    // Namespace accesses recorded during indexing, i.e. `package::symbol` or
+    // `package:::symbol`
+    namespace_accesses: Vec<NamespaceAccess>,
+
+    // The file scope's exit flow state: for each top-level symbol, the
+    // definitions still in effect once the file has run top to bottom. This is
+    // the file's exports (see `exports()`). Only the file scope's exit state is
+    // ever needed, so we keep this one copy rather than per-scope state.
+    final_bindings: IndexVec<SymbolId, Bindings>,
 }
 
 impl SemanticIndex {
@@ -91,6 +101,8 @@ impl SemanticIndex {
         use_def_maps: IndexVec<ScopeId, Arc<UseDefMap>>,
         enclosing_snapshots: FxHashMap<EnclosingSnapshotKey, (ScopeId, EnclosingSnapshotId)>,
         semantic_calls: Vec<SemanticCall>,
+        namespace_accesses: Vec<NamespaceAccess>,
+        final_bindings: IndexVec<SymbolId, Bindings>,
     ) -> Self {
         Self {
             scopes,
@@ -100,6 +112,8 @@ impl SemanticIndex {
             use_def_maps,
             enclosing_snapshots,
             semantic_calls,
+            namespace_accesses,
+            final_bindings,
         }
     }
 
@@ -125,15 +139,29 @@ impl SemanticIndex {
 
     /// Top-level definitions exported by this file (definitions in the file scope).
     /// Includes `Import`-kind forwarding definitions from `source()` calls.
-    /// Last definition of each name wins (later assignments shadow earlier ones).
-    pub fn exports(&self) -> FxHashMap<&str, &Definition> {
+    ///
+    /// For each name, the definitions still in effect once the file has run top
+    /// to bottom, which is what another file sees after `source()`-ing this one.
+    /// A name rebound in sequence keeps only the last def (the earlier one was
+    /// overwritten), so `x <- 1; x <- 2` exports just the second. A name bound
+    /// on both arms of an `if`/`else` (`if (cond) x <- 1 else x <- 2`) keeps
+    /// both, since either could be the one that ran. Definitions come back in
+    /// definition order.
+    pub fn exports(&self) -> FxHashMap<&str, Vec<(DefinitionId, &Definition)>> {
         let file_scope = ScopeId::from(0);
         let symbols = &self.symbol_tables[file_scope];
+        let defs = &self.definitions[file_scope];
 
-        let mut exports = FxHashMap::default();
-        for (_id, def) in self.definitions[file_scope].iter() {
-            let name = symbols.symbol(def.symbol()).name();
-            exports.insert(name, def);
+        let mut exports: FxHashMap<&str, Vec<(DefinitionId, &Definition)>> = FxHashMap::default();
+        for (symbol_id, bindings) in self.final_bindings.iter() {
+            if bindings.definitions().is_empty() {
+                continue;
+            }
+            let name = symbols.symbol(symbol_id).name();
+            let list = exports.entry(name).or_default();
+            for &def_id in bindings.definitions() {
+                list.push((def_id, &defs[def_id]));
+            }
         }
 
         exports
@@ -156,12 +184,18 @@ impl SemanticIndex {
         &self.semantic_calls
     }
 
+    /// Namespace accesses recorded during indexing, i.e. `package::symbol` or
+    /// `package:::symbol`
+    pub fn namespace_accesses(&self) -> &[NamespaceAccess] {
+        &self.namespace_accesses
+    }
+
     /// Find the innermost scope containing `offset`.
     pub fn scope_at(&self, offset: biome_rowan::TextSize) -> (ScopeId, &Scope) {
         // Start at the file scope
         let mut current = ScopeId::from(0);
         'outer: loop {
-            for child_id in self.child_scopes(current) {
+            for child_id in self.child_scope_ids(current) {
                 if self.scopes[child_id].range.contains(offset) {
                     current = child_id;
                     continue 'outer;
@@ -188,22 +222,45 @@ impl SemanticIndex {
         Some((scope, id, use_site))
     }
 
+    /// All use sites for `name`, across every scope in the file. The
+    /// many-sites counterpart to [`use_at`](Self::use_at), with the same
+    /// `(ScopeId, UseId, &Use)` element.
+    pub fn uses_of(&self, name: &str) -> Vec<(ScopeId, UseId, &Use)> {
+        let mut uses = Vec::new();
+        for scope_id in self.scope_ids() {
+            let Some(symbol_id) = self.symbols(scope_id).id(name) else {
+                continue;
+            };
+            for (use_id, use_site) in self.uses(scope_id).iter() {
+                if use_site.symbol() == symbol_id {
+                    uses.push((scope_id, use_id, use_site));
+                }
+            }
+        }
+        uses
+    }
+
     /// Iterate direct child scopes of `scope`.
-    pub fn child_scopes(&self, scope: ScopeId) -> ChildScopesIter<'_> {
-        let descendants = &self.scopes[scope].descendants;
-        ChildScopesIter {
+    pub fn child_scope_ids(&self, scope_id: ScopeId) -> ChildScopeIdsIter<'_> {
+        let descendants = &self.scopes[scope_id].descendants;
+        ChildScopeIdsIter {
             index: self,
             current: descendants.start,
             end: descendants.end,
         }
     }
 
+    /// Iterate over every scope in the file (source order, file scope first).
+    pub fn scope_ids(&self) -> impl Iterator<Item = ScopeId> + '_ {
+        self.scopes.iter().map(|(id, _)| id)
+    }
+
     /// Walk from `scope` up through ancestors to the file root. Note that
     /// `scope` itself is included in the ancestors.
-    pub fn ancestor_scopes(&self, scope: ScopeId) -> AncestorsIter<'_> {
-        AncestorsIter {
+    pub fn ancestor_scope_ids(&self, scope_id: ScopeId) -> AncestorScopeIdsIter<'_> {
+        AncestorScopeIdsIter {
             index: self,
-            current: Some(scope),
+            current: Some(scope_id),
         }
     }
 
@@ -216,7 +273,7 @@ impl SemanticIndex {
         name: &str,
         scope: ScopeId,
     ) -> Option<(ScopeId, DefinitionId, &Definition)> {
-        for ancestor in self.ancestor_scopes(scope) {
+        for ancestor in self.ancestor_scope_ids(scope) {
             let Some(symbol_id) = self.symbol_tables[ancestor].id(name) else {
                 continue;
             };
@@ -245,6 +302,37 @@ impl SemanticIndex {
         }
 
         None
+    }
+
+    /// All definitions that could reach the use at `(scope, use_id)`.
+    ///
+    /// The local use-def bindings always count. The enclosing-scope snapshot
+    /// also counts when `may_be_unbound` is true. That happens when the local
+    /// binding doesn't cover every control-flow path, so execution can fall
+    /// through to the outer scope.
+    ///
+    /// When `may_be_unbound` is false we deliberately skip the enclosing scope.
+    /// Otherwise a shadowed inner use would also bind to the outer def of the
+    /// same name.
+    pub fn reaching_definitions(
+        &self,
+        scope_id: ScopeId,
+        use_id: UseId,
+    ) -> impl Iterator<Item = (ScopeId, DefinitionId)> + '_ {
+        let bindings = self.use_def_map(scope_id).bindings_at_use(use_id);
+        let local = bindings.definitions().iter().map(move |&d| (scope_id, d));
+
+        let enclosing = if bindings.may_be_unbound() {
+            let symbol_id = self.uses(scope_id)[use_id].symbol();
+            self.enclosing_bindings(scope_id, symbol_id)
+        } else {
+            None
+        };
+        let enclosing_iter = enclosing.into_iter().flat_map(|(scope, bindings)| {
+            bindings.definitions().iter().map(move |&def| (scope, def))
+        });
+
+        local.chain(enclosing_iter)
     }
 
     /// Resolve a free variable's bindings from the enclosing scope.
@@ -626,15 +714,65 @@ impl SemanticCall {
     }
 }
 
+/// Namespace access recorded during indexing, i.e. `package::symbol` or
+/// `package:::symbol`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamespaceAccess {
+    pub(crate) package: String,
+    pub(crate) symbol: String,
+    pub(crate) kind: NamespaceAccessKind,
+    pub(crate) offset: TextSize,
+}
+
+impl NamespaceAccess {
+    pub(crate) fn new(
+        package: String,
+        symbol: String,
+        kind: NamespaceAccessKind,
+        offset: TextSize,
+    ) -> Self {
+        Self {
+            package,
+            symbol,
+            kind,
+            offset,
+        }
+    }
+
+    pub fn package(&self) -> &str {
+        &self.package
+    }
+
+    pub fn symbol(&self) -> &str {
+        &self.symbol
+    }
+
+    pub fn kind(&self) -> NamespaceAccessKind {
+        self.kind
+    }
+
+    pub fn offset(&self) -> TextSize {
+        self.offset
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamespaceAccessKind {
+    /// `::`
+    Export,
+    /// `:::`
+    Internal,
+}
+
 // --- Iterators ---
 
-pub struct ChildScopesIter<'a> {
+pub struct ChildScopeIdsIter<'a> {
     index: &'a SemanticIndex,
     current: ScopeId,
     end: ScopeId,
 }
 
-impl<'a> Iterator for ChildScopesIter<'a> {
+impl<'a> Iterator for ChildScopeIdsIter<'a> {
     type Item = ScopeId;
 
     fn next(&mut self) -> Option<ScopeId> {
@@ -648,12 +786,12 @@ impl<'a> Iterator for ChildScopesIter<'a> {
     }
 }
 
-pub struct AncestorsIter<'a> {
+pub struct AncestorScopeIdsIter<'a> {
     index: &'a SemanticIndex,
     current: Option<ScopeId>,
 }
 
-impl<'a> Iterator for AncestorsIter<'a> {
+impl<'a> Iterator for AncestorScopeIdsIter<'a> {
     type Item = ScopeId;
 
     fn next(&mut self) -> Option<ScopeId> {

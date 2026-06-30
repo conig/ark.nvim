@@ -7,7 +7,7 @@
 
 #![allow(clippy::items_after_test_module)]
 
-use aether_url::UrlId;
+use aether_path::FilePath;
 use anyhow::anyhow;
 use oak_semantic::library::Library;
 use oak_semantic::package::Package;
@@ -236,7 +236,7 @@ pub(crate) fn finish_detached_session_hydration(
             );
             state.console_scopes = vec![bootstrap.search_path_symbols];
             state.installed_packages = bootstrap.installed_packages;
-            state.library = Library::new(bootstrap.library_paths, None);
+            state.library = Library::new(bootstrap.library_paths);
             state.detached_session_status.last_bootstrap_success_ms = Some(now_ms());
             state.detached_session_status.last_bootstrap_duration_ms =
                 Some(bootstrap.timings.total_ms);
@@ -493,8 +493,8 @@ pub(crate) fn did_change(
     // Notify console about document change to invalidate breakpoints.
     lsp_state
         .console_notification_tx
-        .send(ConsoleNotification::DidChangeDocument(UrlId::from_url(
-            uri.clone(),
+        .send(ConsoleNotification::DidChangeDocument(FilePath::from_url(
+            uri,
         )))
         .log_err();
 

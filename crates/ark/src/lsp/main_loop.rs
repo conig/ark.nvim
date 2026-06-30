@@ -21,8 +21,6 @@ use anyhow::anyhow;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use oak_semantic::library::Library;
-use oak_sources::PackageCache;
-use stdext::result::ResultExt;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::unbounded_channel as tokio_unbounded_channel;
 use tokio::task;
@@ -180,7 +178,7 @@ impl GlobalState {
     ///   and auxiliary loop.
     pub(crate) fn new_with_runtime_mode(
         client: Client,
-        r_home: PathBuf,
+        _r_home: PathBuf,
         console_notification_tx: TokioUnboundedSender<ConsoleNotification>,
         runtime_mode: RuntimeMode,
         notification_barrier: Arc<NotificationBarrier>,
@@ -217,12 +215,7 @@ impl GlobalState {
 
                 log::info!("Using library paths: {library_paths:#?}");
 
-                let r = harp::command::r_executable(&r_home);
-                let package_sources = r
-                    .and_then(|r| PackageCache::new(r, library_paths.clone()).log_err())
-                    .map(|cache| Arc::new(cache) as Arc<dyn oak_sources::PackageSources>);
-
-                WorldState::new(Library::new(library_paths, package_sources))
+                WorldState::new(Library::new(library_paths))
             },
             RuntimeMode::Detached => {
                 // Detached session hydration is driven by `ark/updateSession`

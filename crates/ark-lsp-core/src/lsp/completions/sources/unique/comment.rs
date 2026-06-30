@@ -267,7 +267,7 @@ fn temp_roxygen2_library() -> (tempfile::TempDir, WorldState) {
     .unwrap();
 
     let state = WorldState {
-        library: Library::new(vec![library_dir.path().to_path_buf()], None),
+        library: Library::new(vec![library_dir.path().to_path_buf()]),
         ..WorldState::default()
     };
 

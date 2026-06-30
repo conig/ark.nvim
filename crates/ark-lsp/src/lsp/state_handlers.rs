@@ -235,7 +235,7 @@ pub(crate) fn finish_detached_session_hydration(
             );
             state.console_scopes = vec![bootstrap.search_path_symbols];
             state.installed_packages = bootstrap.installed_packages;
-            state.library = Library::new(bootstrap.library_paths, None);
+            state.library = Library::new(bootstrap.library_paths);
             state.detached_session_status.last_bootstrap_success_ms = Some(now_ms());
             state.detached_session_status.last_bootstrap_duration_ms =
                 Some(bootstrap.timings.total_ms);

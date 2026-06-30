@@ -257,9 +257,7 @@ mod tests {
         for (code, expected) in cases {
             let (text, point) = point_from_cursor(code);
             let document = Document::new(&text, None);
-            let position = document
-                .lsp_position_from_tree_sitter_point(point)
-                .unwrap();
+            let position = document.lsp_position_from_tree_sitter_point(point).unwrap();
 
             let response = help_topic(point, &document)
                 .unwrap()
@@ -281,9 +279,7 @@ mod tests {
         for (code, expected) in cases {
             let (text, point) = point_from_cursor(code);
             let document = Document::new(&text, None);
-            let position = document
-                .lsp_position_from_tree_sitter_point(point)
-                .unwrap();
+            let position = document.lsp_position_from_tree_sitter_point(point).unwrap();
 
             let response = help_topic(point, &document)
                 .unwrap()

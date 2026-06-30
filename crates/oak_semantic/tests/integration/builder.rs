@@ -4,6 +4,7 @@ use aether_syntax::RSyntaxKind;
 use oak_semantic::build_index;
 use oak_semantic::semantic_index::DefinitionId;
 use oak_semantic::semantic_index::DefinitionKind;
+use oak_semantic::semantic_index::NamespaceAccessKind;
 use oak_semantic::semantic_index::ScopeId;
 use oak_semantic::semantic_index::ScopeKind;
 use oak_semantic::semantic_index::SemanticCallKind;
@@ -273,7 +274,7 @@ fn test_child_scopes() {
     let index = index("f <- function(x) x\ng <- function(y) y");
     let file = ScopeId::from(0);
 
-    let children: Vec<_> = index.child_scopes(file).collect();
+    let children: Vec<_> = index.child_scope_ids(file).collect();
     assert_eq!(children.len(), 2);
 }
 
@@ -284,7 +285,7 @@ fn test_ancestor_scopes() {
     let outer = ScopeId::from(1);
     let file = ScopeId::from(0);
 
-    let ancestors: Vec<_> = index.ancestor_scopes(inner).collect();
+    let ancestors: Vec<_> = index.ancestor_scope_ids(inner).collect();
     assert_eq!(ancestors, vec![inner, outer, file]);
 }
 
@@ -523,12 +524,15 @@ fn test_at_extraction() {
 
 #[test]
 fn test_namespace_expression_no_uses() {
+    // Both sides of `::` are selectors, not variable references in the current
+    // scope, so neither the package nor the symbol becomes a use or a symbol.
     let index = index("dplyr::filter");
     let file = ScopeId::from(0);
 
     assert!(index.symbols(file).get("dplyr").is_none());
     assert!(index.symbols(file).get("filter").is_none());
     assert_eq!(index.symbols(file).len(), 0);
+    assert_eq!(index.uses(file).len(), 0);
 }
 
 #[test]
@@ -562,8 +566,9 @@ fn test_repeat_loop() {
 
 #[test]
 fn test_super_assignment_at_file_scope() {
-    // At file scope, `<<-` targets the file scope itself (no parent to
-    // walk to), so the symbol gets both IS_SUPER_BOUND and IS_BOUND.
+    // At file scope, `<<-` targets the file scope itself (no parent to walk
+    // to), so the marker scope and the binding scope coincide. The symbol gets
+    // both IS_SUPER_BOUND and IS_BOUND from a single recording.
     let index = index("x <<- 1");
     let file = ScopeId::from(0);
 
@@ -573,15 +578,10 @@ fn test_super_assignment_at_file_scope() {
         SymbolFlags::IS_SUPER_BOUND.union(SymbolFlags::IS_BOUND)
     );
 
-    // Two definitions: one from the current-scope recording, one from the
-    // target-scope recording (same scope in this case).
-    assert_eq!(index.definitions(file).len(), 2);
+    // One definition, not a self-duplicate.
+    assert_eq!(index.definitions(file).len(), 1);
     assert!(matches!(
         index.definitions(file)[DefinitionId::from(0)].kind(),
-        DefinitionKind::SuperAssignment(_)
-    ));
-    assert!(matches!(
-        index.definitions(file)[DefinitionId::from(1)].kind(),
         DefinitionKind::SuperAssignment(_)
     ));
     assert_eq!(index.uses(file).len(), 0);
@@ -598,7 +598,7 @@ fn test_super_assignment_right_at_file_scope() {
         SymbolFlags::IS_SUPER_BOUND.union(SymbolFlags::IS_BOUND)
     );
 
-    assert_eq!(index.definitions(file).len(), 2);
+    assert_eq!(index.definitions(file).len(), 1);
     assert!(matches!(
         index.definitions(file)[DefinitionId::from(0)].kind(),
         DefinitionKind::SuperAssignment(_)
@@ -1296,12 +1296,16 @@ fn test_file_exports_empty() {
 }
 
 #[test]
-fn test_file_exports_multiple_defs_same_symbol() {
+fn test_file_exports_sequential_redef_keeps_last() {
     let index = index("x <- 1\nx <- 2");
     let exports = index.exports();
-    // Deduplicates: last definition wins
+    // The second assignment overwrites the first, so only the last def is in
+    // effect at end of file.
     assert_eq!(exports.len(), 1);
-    assert!(exports.contains_key("x"));
+    let x = exports.get("x").unwrap();
+    assert_eq!(x.len(), 1);
+    // The surviving def is the second `x` (offset 7), not the first (offset 0).
+    assert_eq!(x[0].1.range().start(), biome_rowan::TextSize::from(7));
 }
 
 // --- File directives ---
@@ -1504,16 +1508,111 @@ fn test_source_call_emitted_without_resolver() {
     assert_eq!(index.semantic_calls().len(), 1);
 }
 
+/// Project each access into a comparable tuple via the public accessors.
+fn accesses(index: &SemanticIndex) -> Vec<(&str, &str, NamespaceAccessKind, u32)> {
+    index
+        .namespace_accesses()
+        .iter()
+        .map(|access| {
+            (
+                access.package(),
+                access.symbol(),
+                access.kind(),
+                access.offset().into(),
+            )
+        })
+        .collect()
+}
+
 #[test]
-fn test_file_exports_last_def_wins() {
-    // When the same name is defined multiple times at file scope,
-    // file_exports() returns only the last definition.
-    let index = index("foo <- 1\nfoo <- 2\nbar <- 3\n");
+fn test_namespace_access_export() {
+    let index = index("dplyr::filter");
+    assert_eq!(accesses(&index), [(
+        "dplyr",
+        "filter",
+        NamespaceAccessKind::Export,
+        0
+    )]);
+}
+
+#[test]
+fn test_namespace_access_internal() {
+    let index = index("rlang:::abort");
+    assert_eq!(accesses(&index), [(
+        "rlang",
+        "abort",
+        NamespaceAccessKind::Internal,
+        0
+    )]);
+}
+
+#[test]
+fn test_namespace_access_backtick_quoted() {
+    let index = index("`my pkg`::`my fn`");
+    assert_eq!(accesses(&index), [(
+        "my pkg",
+        "my fn",
+        NamespaceAccessKind::Export,
+        0
+    )]);
+}
+
+#[test]
+fn test_namespace_access_string_selectors() {
+    let index = index("dplyr::\"filter\"");
+    assert_eq!(accesses(&index), [(
+        "dplyr",
+        "filter",
+        NamespaceAccessKind::Export,
+        0
+    )]);
+}
+
+#[test]
+fn test_namespace_accesses_in_order() {
+    let index = index("dplyr::filter\nrlang:::abort\ntidyr::pivot_longer");
+    assert_eq!(accesses(&index), [
+        ("dplyr", "filter", NamespaceAccessKind::Export, 0),
+        ("rlang", "abort", NamespaceAccessKind::Internal, 14),
+        ("tidyr", "pivot_longer", NamespaceAccessKind::Export, 28),
+    ]);
+}
+
+#[test]
+fn test_namespace_access_inside_call() {
+    let index = index("dplyr::filter(x, y > 1)");
+    assert_eq!(accesses(&index), [(
+        "dplyr",
+        "filter",
+        NamespaceAccessKind::Export,
+        0
+    )]);
+}
+
+#[test]
+fn test_no_namespace_accesses() {
+    let index = index("x <- 1\nf(y)");
+    assert!(accesses(&index).is_empty());
+}
+
+#[test]
+fn test_file_exports_if_else_keeps_both_branches() {
+    // Both arms of a top-level `if`/`else` could run, so both bindings are in
+    // effect at end of file. exports() keeps both, in definition order.
+    let index = index("if (cond) foo <- 1 else foo <- 2\nbar <- 3\n");
     let exports = index.exports();
     assert_eq!(exports.len(), 2);
-    // The range should be the second `foo` (offset 9..12)
-    let def = exports.get("foo").unwrap();
-    assert_eq!(def.range().start(), biome_rowan::TextSize::from(9));
+
+    let foo = exports.get("foo").unwrap();
+    let starts: Vec<biome_rowan::TextSize> = foo
+        .iter()
+        .map(|(_def_id, def)| def.range().start())
+        .collect();
+    // `foo <- 1` at offset 10, `foo <- 2` at offset 24.
+    assert_eq!(starts, vec![
+        biome_rowan::TextSize::from(10),
+        biome_rowan::TextSize::from(24),
+    ]);
 }
 
 // --- source() semantic calls: bail paths ---

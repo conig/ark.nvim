@@ -5,20 +5,20 @@
 //
 //
 
-use aether_url::UrlId;
+use aether_path::FilePath;
 use amalthea::wire::execute_request::CodeLocation;
 use url::Url;
 
-/// Extract a canonical [`UrlId`] from a [`CodeLocation`].
-pub fn url_id_from_code_location(loc: &CodeLocation) -> UrlId {
-    UrlId::from_url(loc.uri.clone())
+/// Extract a canonical [`FilePath`] from a [`CodeLocation`].
+pub fn file_path_from_code_location(loc: &CodeLocation) -> FilePath {
+    FilePath::from_url(&loc.uri)
 }
 
 /// Extended URL utilities.
 ///
 /// These operate on raw `Url` values and don't require canonicalization.
 /// For identity-sensitive operations (HashMap keys, breakpoint matching),
-/// use [`UrlId`] instead.
+/// use [`FilePath`] instead.
 pub struct ExtUrl;
 
 impl ExtUrl {
@@ -29,9 +29,9 @@ impl ExtUrl {
         !Self::is_ark_virtual_doc(uri)
     }
 
-    /// Whether this URI should get diagnostics. Currently uses the same
-    /// exclude list as [`Self::is_indexable`] but kept separate so the
-    /// criteria can diverge independently.
+    /// Whether this URI should get diagnostics. Currently uses an exclude list:
+    /// only `ark://` virtual documents are excluded since they show foreign
+    /// code the user can't edit.
     pub fn should_diagnose(uri: &Url) -> bool {
         !Self::is_ark_virtual_doc(uri)
     }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
-use aether_url::UrlId;
+use aether_path::FilePath;
 use url::Url;
 
 use crate::Db;
@@ -18,6 +18,7 @@ use crate::LibraryRoots;
 use crate::OrphanRoot;
 use crate::Root;
 use crate::RootKind;
+use crate::StaleRoot;
 use crate::WorkspaceRoots;
 
 type Events = Arc<Mutex<Vec<salsa::Event>>>;
@@ -30,6 +31,7 @@ pub(super) struct TestDb {
     workspace_roots: Arc<OnceLock<WorkspaceRoots>>,
     library_roots: Arc<OnceLock<LibraryRoots>>,
     orphan_root: Arc<OnceLock<OrphanRoot>>,
+    stale_root: Arc<OnceLock<StaleRoot>>,
 }
 
 impl TestDb {
@@ -47,6 +49,7 @@ impl TestDb {
             workspace_roots: Arc::new(OnceLock::new()),
             library_roots: Arc::new(OnceLock::new()),
             orphan_root: Arc::new(OnceLock::new()),
+            stale_root: Arc::new(OnceLock::new()),
         }
     }
 
@@ -89,20 +92,32 @@ impl DbInputs for TestDb {
     fn orphan_root(&self) -> OrphanRoot {
         *self.orphan_root.get_or_init(|| OrphanRoot::empty(self))
     }
+
+    fn stale_root(&self) -> StaleRoot {
+        *self.stale_root.get_or_init(|| StaleRoot::empty(self))
+    }
 }
 
 #[salsa::db]
 impl Db for TestDb {
-    fn file_by_url(&self, url: &UrlId) -> Option<crate::File> {
-        crate::db::file_by_url_query(self, url)
+    fn file_by_path(&self, path: &FilePath) -> Option<crate::File> {
+        crate::db::file_by_path_query(self, path)
     }
 
     fn package_by_name(&self, name: &str) -> Option<crate::Package> {
         crate::db::package_by_name_query(self, name)
     }
+
+    fn root_by_package(&self, pkg: crate::Package) -> Option<crate::Root> {
+        crate::db::root_by_package_query(self, pkg)
+    }
+
+    fn live_roots(&self) -> &[crate::LiveRoot] {
+        crate::db::live_roots_query(self)
+    }
 }
 
-pub(super) fn file_url(name: &str) -> UrlId {
+pub(super) fn file_path(name: &str) -> FilePath {
     // `Url::to_file_path` on Windows requires a drive-letter prefix, so
     // synthesize one for tests. Linux is happy with rootless paths.
     let url = if cfg!(windows) {
@@ -110,17 +125,17 @@ pub(super) fn file_url(name: &str) -> UrlId {
     } else {
         Url::parse(&format!("file:///{name}")).unwrap()
     };
-    UrlId::from_canonical(url)
+    FilePath::from_url(&url)
 }
 
 /// Build a fresh empty `RootKind::Workspace` `Root` at `path`. Each
 /// call allocates a new salsa entity; tests that need to assert on
 /// root identity should retain the returned value.
 pub(super) fn workspace_root(db: &impl Db, path: &str) -> Root {
-    Root::new(db, file_url(path), RootKind::Workspace, vec![], vec![])
+    Root::new(db, file_path(path), RootKind::Workspace, vec![], vec![])
 }
 
 /// Build a fresh empty `RootKind::Library` `Root` at `path`.
 pub(super) fn library_root(db: &impl Db, path: &str) -> Root {
-    Root::new(db, file_url(path), RootKind::Library, vec![], vec![])
+    Root::new(db, file_path(path), RootKind::Library, vec![], vec![])
 }

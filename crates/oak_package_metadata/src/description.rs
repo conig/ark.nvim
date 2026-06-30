@@ -1,13 +1,16 @@
 use crate::dcf::Dcf;
 
 /// Parsed DESCRIPTION file
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Description {
     pub name: String,
     pub version: String,
 
     /// `Depends` field. Currently doesn't contain versions.
     pub depends: Vec<String>,
+
+    /// `Imports` field. Currently doesn't contain versions.
+    pub imports: Vec<String>,
 
     pub repository: Option<Repository>,
 
@@ -17,12 +20,12 @@ pub struct Description {
     pub fields: Dcf,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Repository {
     CRAN,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Priority {
     Base,
     Recommended,
@@ -56,6 +59,11 @@ impl Description {
             })
             .unwrap_or_default();
 
+        let imports = fields
+            .get("Imports")
+            .map(parse_comma_separated)
+            .unwrap_or_default();
+
         let repository = fields.get("Repository").and_then(|repository| {
             if repository == "CRAN" {
                 return Some(Repository::CRAN);
@@ -77,6 +85,7 @@ impl Description {
             name,
             version,
             depends,
+            imports,
             repository,
             priority,
             fields,
@@ -84,10 +93,16 @@ impl Description {
     }
 
     /// Parse the `Collate` field, if present, returning the whitespace-separated
-    /// file names in the order specified.
+    /// file names in the order specified. R's DCF format quotes each filename
+    /// (`Collate: 'foo.R' 'bar.R'`) so surrounding quotes are stripped.
     pub fn collate(&self) -> Option<Vec<String>> {
         let collate = self.fields.get("Collate")?;
-        Some(collate.split_whitespace().map(|s| s.to_string()).collect())
+        Some(
+            collate
+                .split_whitespace()
+                .map(|s| s.trim_matches(['\'', '"']).to_string())
+                .collect(),
+        )
     }
 }
 
@@ -137,6 +152,17 @@ Title: My Package"#;
     }
 
     #[test]
+    fn parses_description_with_imports() {
+        let desc = r#"Package: mypackage
+Version: 1.0.0
+Imports: rlang (>= 1.0.0), dplyr, tidyr
+Title: My Package"#;
+        let parsed = Description::parse(desc).unwrap();
+        assert_eq!(parsed.imports, vec!["rlang", "dplyr", "tidyr"]);
+        assert!(parsed.depends.is_empty());
+    }
+
+    #[test]
     fn parses_description_with_multiline_field() {
         let desc = r#"Package: mypackage
 Version: 1.0.0
@@ -176,6 +202,34 @@ Priority: recommended"#;
 Version: 1.0.0"#;
         let parsed = Description::parse(desc).unwrap();
         assert!(parsed.priority.is_none());
+    }
+
+    #[test]
+    fn parses_collate_strips_surrounding_quotes() {
+        // Real R DESCRIPTION files quote each filename in the `Collate` field.
+        let desc = r#"Package: mypackage
+Version: 1.0.0
+Collate:
+    'utils.R'
+    'core.R'
+    'zzz.R'"#;
+        let parsed = Description::parse(desc).unwrap();
+        assert_eq!(
+            parsed.collate(),
+            Some(vec![
+                "utils.R".to_string(),
+                "core.R".to_string(),
+                "zzz.R".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn parses_collate_returns_none_when_field_absent() {
+        let desc = r#"Package: mypackage
+Version: 1.0.0"#;
+        let parsed = Description::parse(desc).unwrap();
+        assert_eq!(parsed.collate(), None);
     }
 
     #[test]

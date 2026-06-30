@@ -116,8 +116,9 @@ mod console_graphics;
 mod console_integration;
 mod console_repl;
 
-use aether_url::UrlId;
+use aether_path::FilePath;
 use console_annotate::annotate_input;
+use console_annotate::annotate_notebook;
 pub(crate) use console_debug::DebugCallText;
 pub(crate) use console_debug::DebugStoppedReason;
 pub(crate) use console_debug::FrameInfo;
@@ -166,6 +167,7 @@ use crate::r_task::BoxFuture;
 use crate::r_task::QueuedRTask;
 use crate::r_task::RTaskStartInfo;
 use crate::r_task::RTaskStatus;
+use crate::r_task::TryIdleTask;
 use crate::repos::apply_default_repos;
 use crate::repos::DefaultRepos;
 use crate::request::debug_request_command;
@@ -238,6 +240,7 @@ pub struct Console {
     tasks_interrupt_rx: Receiver<QueuedRTask>,
     tasks_idle_rx: Receiver<QueuedRTask>,
     tasks_idle_any_rx: Receiver<QueuedRTask>,
+    try_idle_rx: Receiver<TryIdleTask>,
     pending_futures: HashMap<Uuid, (BoxFuture<'static, ()>, RTaskStartInfo, Option<String>)>,
 
     /// The UI comm, stored separately from `comms` so that `ui_comm()` can
