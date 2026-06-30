@@ -477,6 +477,32 @@ function M.ensure_current_runtime(config, opts)
   }, "::")
 
   if installed_exists and installed_revision_current and opts.force ~= true then
+    if opts.user_initiated == true then
+      local newest_mtime, newest_path = newest_source_state()
+      local source_stale = installed_source_mtime == 0
+        or (type(newest_mtime) == "number" and newest_mtime > installed_source_mtime)
+      if source_stale then
+        local ok, install_err = start_install(config, {
+          source_mtime = newest_mtime,
+          on_complete = opts.on_build_complete,
+          background = false,
+          user_initiated = true,
+        })
+        if ok then
+          return nil, {
+            kind = "build_pending",
+            message = "Installing pane-side arkbridge runtime...",
+          }
+        end
+
+        return nil, string.format(
+          "arkbridge runtime is stale relative to %s and install failed to start: %s",
+          newest_path or "bridge sources",
+          tostring(install_err)
+        )
+      end
+    end
+
     if checked[cache_key] then
       maybe_schedule_freshness_probe(config, opts, installed_source_mtime)
       return true, nil

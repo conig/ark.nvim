@@ -24,18 +24,36 @@ on.exit({
   }
 }, add = TRUE)
 
-if (dir.exists(lock_dir)) {
-  info <- tryCatch(file.info(lock_dir), error = function(e) NULL)
-  lock_age_seconds <- if (!is.null(info) && nrow(info) > 0L && !is.na(info$mtime[[1]])) {
-    as.numeric(difftime(Sys.time(), info$mtime[[1]], units = "secs"))
-  } else {
-    0
+lock_age_seconds <- function(path) {
+  info <- tryCatch(file.info(path), error = function(e) NULL)
+  if (!is.null(info) && nrow(info) > 0L && !is.na(info$mtime[[1]])) {
+    return(as.numeric(difftime(Sys.time(), info$mtime[[1]], units = "secs")))
   }
 
-  if (is.finite(lock_age_seconds) && lock_age_seconds >= 600) {
-    unlink(lock_dir, recursive = TRUE, force = TRUE)
-  }
+  0
 }
+
+clear_install_lock <- function(path) {
+  if (!dir.exists(path)) {
+    return(invisible(TRUE))
+  }
+
+  age <- lock_age_seconds(path)
+  if (is.finite(age) && age < 600) {
+    deadline <- Sys.time() + 2
+    while (dir.exists(path) && Sys.time() < deadline) {
+      Sys.sleep(0.1)
+    }
+  }
+
+  if (dir.exists(path)) {
+    unlink(path, recursive = TRUE, force = TRUE)
+  }
+
+  invisible(!dir.exists(path))
+}
+
+clear_install_lock(lock_dir)
 
 .libPaths(unique(c(lib_path, .libPaths())))
 
