@@ -72,7 +72,7 @@ local ok, err = pcall(function()
   lsp.view_page = function(_opts, _bufnr, _session_id, offset, limit)
     return {
       offset = offset or 0,
-      limit = limit or 200,
+      limit = limit or 0,
       total_rows = #backend.rows,
       row_numbers = { 1 },
       rows = vim.deepcopy(backend.rows),

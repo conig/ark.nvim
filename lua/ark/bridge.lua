@@ -10,6 +10,7 @@ end
 local ROOT = repo_root()
 local INSTALL_SCRIPT = ROOT .. "/scripts/ark-install-bridge.R"
 local FRESHNESS_PROBE_DEFER_MS = 250
+local REQUIRED_RUNTIME_REVISION = 2
 local SOURCE_SCAN_CACHE_TTL_MS = 1000
 local checked = {}
 local freshness_checks = {}
@@ -188,6 +189,7 @@ local function read_stamp(lib_path)
   end
 
   payload.source_mtime = tonumber(payload.source_mtime) or nil
+  payload.runtime_revision = tonumber(payload.runtime_revision) or nil
   return payload
 end
 
@@ -198,6 +200,19 @@ local function current_install_source_mtime(lib_path)
   end
 
   return nil
+end
+
+local function current_install_runtime_revision(lib_path)
+  local stamp = read_stamp(lib_path)
+  if type(stamp) == "table" and type(stamp.runtime_revision) == "number" then
+    return stamp.runtime_revision
+  end
+
+  return nil
+end
+
+local function runtime_revision_current(lib_path)
+  return current_install_runtime_revision(lib_path) == REQUIRED_RUNTIME_REVISION
 end
 
 local function install_output_text()
@@ -319,6 +334,7 @@ local function start_install(config, opts)
     lib_path,
     stamp,
     tostring(source_mtime),
+    tostring(REQUIRED_RUNTIME_REVISION),
   }
 
   local job_id = vim.fn.jobstart(cmd, {
@@ -453,12 +469,14 @@ function M.ensure_current_runtime(config, opts)
   local installed_path = installed_package_dir(lib_path)
   local installed_exists = dir_exists(installed_path)
   local installed_source_mtime = current_install_source_mtime(lib_path) or 0
+  local installed_revision_current = installed_exists and runtime_revision_current(lib_path)
   local cache_key = table.concat({
     lib_path,
     tostring(installed_source_mtime),
+    tostring(current_install_runtime_revision(lib_path) or 0),
   }, "::")
 
-  if installed_exists and opts.force ~= true then
+  if installed_exists and installed_revision_current and opts.force ~= true then
     if checked[cache_key] then
       maybe_schedule_freshness_probe(config, opts, installed_source_mtime)
       return true, nil
@@ -475,12 +493,12 @@ function M.ensure_current_runtime(config, opts)
   local newest_mtime, newest_path = newest_source_state()
   local ok, install_err = start_install(config, {
     source_mtime = newest_mtime,
-    on_complete = (not installed_exists or opts.force == true) and opts.on_build_complete or nil,
-    background = installed_exists and opts.force ~= true,
+    on_complete = (not installed_exists or not installed_revision_current or opts.force == true) and opts.on_build_complete or nil,
+    background = installed_exists and installed_revision_current and opts.force ~= true,
     user_initiated = opts.user_initiated == true,
   })
   if not ok then
-    if installed_exists and opts.force ~= true then
+    if installed_exists and installed_revision_current and opts.force ~= true then
       checked[cache_key] = true
       vim.schedule(function()
         notify(
@@ -501,7 +519,7 @@ function M.ensure_current_runtime(config, opts)
     )
   end
 
-  if installed_exists and opts.force ~= true then
+  if installed_exists and installed_revision_current and opts.force ~= true then
     return true, nil
   end
 

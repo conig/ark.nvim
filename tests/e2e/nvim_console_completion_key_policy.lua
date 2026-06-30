@@ -12,6 +12,8 @@ end
 
 local menu_visible = false
 local snippet_direction
+local submit_calls = 0
+local submit_bufnr
 local select_and_accept_calls = 0
 local accept_calls = 0
 local cancel_calls = 0
@@ -82,8 +84,10 @@ end
 local console = require("ark.console")
 
 menu_visible = true
+snippet_direction = 1
 assert(console.accept_completion_or_insert_tab() == true, "visible menu <Tab> should be handled")
 assert(select_and_accept_calls == 1, "visible menu <Tab> should select and accept completion")
+assert(snippet_forward_calls == 0, "visible menu <Tab> should accept completion before snippet jump")
 assert(fed_keys == nil, "visible menu <Tab> should not feed a literal tab")
 
 menu_visible = false
@@ -115,18 +119,42 @@ assert(fed_keys == nil, "snippet backward should not feed a key")
 menu_visible = true
 select_and_accept_calls = 0
 accept_calls = 0
-local ok = console.submit_or_accept_completion(0)
-assert(ok == true, "visible menu <CR> should accept completion")
-assert(select_and_accept_calls == 1, "visible menu <CR> should select and accept completion")
-assert(accept_calls == 0, "visible menu <CR> should not fall through to plain accept after select_and_accept")
+cancel_calls = 0
+undo_preview_calls = 0
+trigger_hide_calls = 0
+menu_close_calls = 0
+console.submit = function(bufnr)
+  submit_calls = submit_calls + 1
+  submit_bufnr = bufnr
+end
+local ok = console.submit_ignoring_completion(0)
+assert(ok == nil, "visible menu <CR> should call submit")
+assert(select_and_accept_calls == 0, "visible menu <CR> should not select and accept completion")
+assert(accept_calls == 0, "visible menu <CR> should not call plain accept")
+assert(cancel_calls == 0, "visible menu <CR> should not call cmp.cancel")
+assert(undo_preview_calls == 1, "visible menu <CR> should synchronously undo Blink completion preview")
+assert(trigger_hide_calls == 1, "visible menu <CR> should hide Blink completion trigger state")
+assert(menu_close_calls == 1, "visible menu <CR> should close Blink completion menu")
+assert(submit_calls == 1, "visible menu <CR> should submit input")
+assert(submit_bufnr == 0, "visible menu <CR> should preserve the console buffer")
 
 menu_visible = false
 select_and_accept_calls = 0
 accept_calls = 0
-ok = console.submit_or_accept_completion(0)
-assert(ok == nil, "hidden menu <CR> should still call submit without a console buffer")
+cancel_calls = 0
+undo_preview_calls = 0
+trigger_hide_calls = 0
+menu_close_calls = 0
+submit_calls = 0
+ok = console.submit_ignoring_completion(0)
+assert(ok == nil, "hidden menu <CR> should call submit")
 assert(select_and_accept_calls == 0, "hidden menu <CR> should not accept completion")
 assert(accept_calls == 0, "hidden menu <CR> should not call plain accept")
+assert(cancel_calls == 0, "hidden menu <CR> should not call cmp.cancel")
+assert(undo_preview_calls == 1, "hidden menu <CR> should still undo Blink completion preview")
+assert(trigger_hide_calls == 1, "hidden menu <CR> should still hide Blink completion trigger state")
+assert(menu_close_calls == 1, "hidden menu <CR> should still close Blink completion menu")
+assert(submit_calls == 1, "hidden menu <CR> should submit input")
 
 menu_visible = true
 accept_calls = 0

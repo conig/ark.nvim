@@ -8,7 +8,10 @@ local prompt_ns = vim.api.nvim_create_namespace("ArkConsole")
 local transcript_prompt_ns = vim.api.nvim_create_namespace("ArkConsoleTranscriptPrompt")
 local input_ns = vim.api.nvim_create_namespace("ArkConsoleInput")
 local ansi_ns = vim.api.nvim_create_namespace("ArkConsoleAnsi")
+local output_prefix_conceal_ns = vim.api.nvim_create_namespace("ArkConsoleOutputPrefixConceal")
 local console_server_fn = "__ark_console_rpc_send"
+local console_help_fn = "__ark_console_rpc_ark_help"
+local console_view_fn = "__ark_console_rpc_ark_view"
 local job_running
 local install_paste_handler
 local state = _G.__ark_nvim_console_state
@@ -68,8 +71,13 @@ local function tmux_session_id()
 end
 
 local function shell_env(config, session_id, status_path, backend)
+  local nvim_console = type(config.nvim_console) == "table" and config.nvim_console or {}
   local env = {
     ARK_STATUS_DIR = config.startup_status_dir,
+    ARK_NVIM_CONSOLE_NVIM = nvim_console.bin or config.nvim_console_bin or vim.v.progpath or "nvim",
+    ARK_NVIM_CONSOLE_FRONTEND = config.console_frontend or vim.env.ARK_NVIM_CONSOLE_FRONTEND or "raw",
+    ARK_NVIM_PARENT_NVIM = vim.env.ARK_NVIM_PARENT_NVIM or vim.v.progpath or "nvim",
+    ARK_NVIM_PARENT_SERVER = vim.env.ARK_NVIM_PARENT_SERVER or "",
     ARK_NVIM_SESSION_PKG_PATH = config.session_pkg_path,
     ARK_SESSION_KIND = config.session_kind or "ark",
     ARK_SESSION_BACKEND = backend or "nvim-console",
@@ -912,6 +920,7 @@ local input_start_line
 local place_prompt
 local focus_input
 local paste_text_at_input_cursor
+local refresh_output_prefix_conceal
 
 local function setup_highlights()
   pcall(vim.api.nvim_set_hl, 0, "ArkConsolePrompt", { link = "Question", default = true })
@@ -1039,6 +1048,56 @@ local function set_input_start(bufnr, info, line)
     opts.id = info.input_mark_id
   end
   info.input_mark_id = vim.api.nvim_buf_set_extmark(bufnr, input_ns, line, 0, opts)
+end
+
+refresh_output_prefix_conceal = function(bufnr, enabled)
+  if type(bufnr) ~= "number" or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+
+  vim.api.nvim_buf_clear_namespace(bufnr, output_prefix_conceal_ns, 0, -1)
+  if enabled ~= true then
+    return
+  end
+
+  local info = state.buffers[bufnr]
+  local end_line = type(info) == "table" and input_start_line(bufnr, info) or vim.api.nvim_buf_line_count(bufnr)
+  if end_line <= 0 then
+    return
+  end
+
+  local output_prefix = "#> "
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, end_line, false)
+  for index, line in ipairs(lines) do
+    if type(line) == "string" and line:sub(1, #output_prefix) == output_prefix then
+      vim.api.nvim_buf_set_extmark(bufnr, output_prefix_conceal_ns, index - 1, 0, {
+        end_col = #output_prefix,
+        conceal = "",
+        hl_group = "ArkConsoleOutputPrefix",
+        priority = 320,
+        right_gravity = false,
+        end_right_gravity = false,
+      })
+    end
+  end
+end
+
+local function output_prefix_conceal_enabled(bufnr)
+  if type(bufnr) ~= "number" or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+
+  for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
+    if type(winid) == "number"
+      and winid > 0
+      and vim.api.nvim_win_is_valid(winid)
+      and tonumber(vim.wo[winid].conceallevel) > 0
+    then
+      return true
+    end
+  end
+
+  return false
 end
 
 local function refresh_valid_snapshot(bufnr, info)
@@ -1811,6 +1870,7 @@ local function append_before_input(bufnr, lines)
     vim.bo[bufnr].modified = false
   end)
   place_prompt(bufnr)
+  refresh_output_prefix_conceal(bufnr, output_prefix_conceal_enabled(bufnr))
 end
 
 local function record_submission(info, text)
@@ -1978,7 +2038,7 @@ end
 
 local function apply_console_conceal_options(winid, conceal_output_prefixes)
   if type(winid) ~= "number" or winid <= 0 or not vim.api.nvim_win_is_valid(winid) then
-    return
+    return false
   end
 
   if conceal_output_prefixes == nil then
@@ -1987,6 +2047,7 @@ local function apply_console_conceal_options(winid, conceal_output_prefixes)
 
   vim.wo[winid].conceallevel = conceal_output_prefixes and 2 or 0
   vim.wo[winid].concealcursor = ""
+  return conceal_output_prefixes == true
 end
 
 local function refresh_console_number_options(bufnr, enabled, conceal_output_prefixes)
@@ -1994,10 +2055,15 @@ local function refresh_console_number_options(bufnr, enabled, conceal_output_pre
     return
   end
 
+  local should_conceal_prefixes = false
   for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
     apply_console_number_options(winid, enabled)
-    apply_console_conceal_options(winid, conceal_output_prefixes)
+    local prefixes_concealed = apply_console_conceal_options(winid, conceal_output_prefixes)
+    if prefixes_concealed then
+      should_conceal_prefixes = true
+    end
   end
+  refresh_output_prefix_conceal(bufnr, should_conceal_prefixes == true)
 end
 
 local function install_console_number_autocmds(bufnr)
@@ -2062,7 +2128,8 @@ local function apply_console_window_options(winid, bufnr)
     "SignColumn:ArkConsoleNormal",
   }, ",")
   vim.wo[winid].statusline = " "
-  apply_console_conceal_options(winid)
+  local prefixes_concealed = apply_console_conceal_options(winid)
+  refresh_output_prefix_conceal(bufnr, prefixes_concealed)
 end
 
 local function apply_terminal_ui(bufnr, opts)
@@ -2072,7 +2139,7 @@ local function apply_terminal_ui(bufnr, opts)
   vim.bo[bufnr].syntax = "r"
   vim.api.nvim_buf_call(bufnr, function()
     pcall(vim.cmd, "syntax match ArkConsoleOutput /^#>.*$/ contains=ArkConsoleOutputPrefix containedin=ALL")
-    pcall(vim.cmd, "syntax match ArkConsoleOutputPrefix /^#> / conceal contained containedin=ArkConsoleOutput")
+    pcall(vim.cmd, "syntax match ArkConsoleOutputPrefix /^#> / contained containedin=ArkConsoleOutput")
   end)
 
   local winid = vim.fn.bufwinid(bufnr)
@@ -2224,8 +2291,8 @@ end
 local function setup_keymaps(bufnr, opts)
   repl_keymaps.attach_view_keymap(bufnr, opts)
   vim.keymap.set({ "n", "i" }, "<CR>", function()
-    M.submit_or_accept_completion(bufnr)
-  end, { buffer = bufnr, desc = "Accept Ark console completion or submit input" })
+    M.submit_ignoring_completion(bufnr)
+  end, { buffer = bufnr, desc = "Submit Ark console input" })
   vim.keymap.set("i", "<Tab>", function()
     M.accept_completion_or_insert_tab()
   end, { buffer = bufnr, desc = "Accept Ark console completion or insert tab" })
@@ -2381,6 +2448,48 @@ function M.start(opts)
     return "ok"
   end
 
+  _G[console_help_fn] = function(topic)
+    if type(topic) ~= "string" or topic == "" then
+      error("Ark console help RPC requires a non-empty topic", 0)
+    end
+
+    vim.defer_fn(function()
+      if type(state.buffers[bufnr]) ~= "table" or not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+      end
+
+      local ok, err = pcall(function()
+        return require("ark").help_topic(topic, bufnr)
+      end)
+      if not ok then
+        vim.notify(tostring(err), vim.log.levels.WARN, { title = "ark.nvim" })
+      end
+    end, 25)
+
+    return "ok"
+  end
+
+  _G[console_view_fn] = function(expr)
+    if type(expr) ~= "string" or expr == "" then
+      error("Ark console View RPC requires a non-empty expression", 0)
+    end
+
+    vim.defer_fn(function()
+      if type(state.buffers[bufnr]) ~= "table" or not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+      end
+
+      local ok, err = pcall(function()
+        return require("ark").view_popup(expr, bufnr)
+      end)
+      if not ok then
+        vim.notify(tostring(err), vim.log.levels.WARN, { title = "ark.nvim" })
+      end
+    end, 25)
+
+    return "ok"
+  end
+
   setup_keymaps(bufnr, opts)
 
   vim.api.nvim_create_autocmd("WinResized", {
@@ -2441,25 +2550,13 @@ function M.start(opts)
   return bufnr
 end
 
-function M.submit_or_accept_completion(bufnr)
-  local cmp = blink_cmp()
-  if blink_menu_visible(cmp) then
-    if type(cmp.select_and_accept) == "function" then
-      local ok, accepted = pcall(cmp.select_and_accept)
-      if ok and accepted then
-        return true
-      end
-    end
-    if type(cmp.accept) == "function" then
-      local ok, accepted = pcall(cmp.accept)
-      if ok and accepted then
-        return true
-      end
-    end
-    return true
-  end
-
+function M.submit_ignoring_completion(bufnr)
+  M.cancel_completion_for_submit()
   return M.submit(bufnr)
+end
+
+function M.submit_or_accept_completion(bufnr)
+  return M.submit_ignoring_completion(bufnr)
 end
 
 function M.cancel_completion_for_submit()
@@ -2469,13 +2566,6 @@ end
 
 function M.accept_completion_or_insert_tab()
   local cmp = blink_cmp()
-  if blink_snippet_active(cmp, 1) and type(cmp.snippet_forward) == "function" then
-    local ok, jumped = pcall(cmp.snippet_forward)
-    if ok and jumped then
-      return true
-    end
-  end
-
   if blink_menu_visible(cmp) then
     if type(cmp.select_and_accept) == "function" then
       local ok, accepted = pcall(cmp.select_and_accept)
@@ -2490,6 +2580,13 @@ function M.accept_completion_or_insert_tab()
       end
     end
     return true
+  end
+
+  if blink_snippet_active(cmp, 1) and type(cmp.snippet_forward) == "function" then
+    local ok, jumped = pcall(cmp.snippet_forward)
+    if ok and jumped then
+      return true
+    end
   end
 
   feed_insert_key("<Tab>")

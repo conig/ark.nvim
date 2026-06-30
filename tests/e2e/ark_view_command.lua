@@ -124,7 +124,8 @@ end
 local function page(offset, limit)
   local rows = filtered_rows()
   local start_index = math.max(0, tonumber(offset or 0) or 0) + 1
-  local end_index = math.min(#rows, start_index + math.max(0, tonumber(limit or 200) or 200) - 1)
+  local page_limit = math.max(0, tonumber(limit or 0) or 0)
+  local end_index = page_limit == 0 and #rows or math.min(#rows, start_index + page_limit - 1)
   local page_rows = {}
   local row_numbers = {}
 
@@ -135,7 +136,7 @@ local function page(offset, limit)
 
   return {
     offset = start_index - 1,
-    limit = limit or 200,
+    limit = page_limit,
     total_rows = #rows,
     row_numbers = row_numbers,
     rows = page_rows,

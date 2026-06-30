@@ -145,6 +145,18 @@ function M.send_text(opts, text)
   return call_with_config(opts, "send_text", text)
 end
 
+function M.help_popup(opts, text, popup_opts)
+  return call_with_config(opts, "help_popup", text, popup_opts)
+end
+
+function M.nvim_ui_popup(opts, server, popup_opts)
+  return call_with_config(opts, "nvim_ui_popup", server, popup_opts)
+end
+
+function M.view_popup(opts, server, backend_id, expr, popup_opts)
+  return call_with_config(opts, "view_popup", server, backend_id, expr, popup_opts)
+end
+
 function M.tab_new(opts)
   return call_tab_operation(opts, "tab_new", opts)
 end

@@ -87,12 +87,46 @@ end
 
 local ok_blink, blink = pcall(require, "blink.cmp")
 if ok_blink then
+  local function feed_insert_key(lhs)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(lhs, true, false, true), "n", false)
+  end
+
   blink.setup({
     fuzzy = {
       implementation = "lua",
     },
     keymap = {
-      ["<CR>"] = { "accept", "fallback" },
+      ["<CR>"] = {
+        function(cmp)
+          if cmp.is_menu_visible() and type(cmp.cancel) == "function" then
+            pcall(cmp.cancel)
+          end
+        end,
+        "fallback",
+      },
+      ["<Tab>"] = {
+        function(cmp)
+          if cmp.is_menu_visible() then
+            return cmp.select_and_accept()
+          end
+        end,
+        "snippet_forward",
+        "fallback",
+      },
+      ["<S-Tab>"] = {
+        function(cmp)
+          if cmp.is_menu_visible() and type(cmp.cancel) == "function" then
+            local ok, cancelled = pcall(cmp.cancel, {
+              callback = function()
+                feed_insert_key("<Tab>")
+              end,
+            })
+            return ok and cancelled
+          end
+        end,
+        "snippet_backward",
+        "fallback",
+      },
     },
     completion = {
       documentation = {

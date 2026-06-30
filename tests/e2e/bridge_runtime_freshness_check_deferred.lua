@@ -10,6 +10,7 @@ vim.fn.mkdir(installed_dir, "p")
 vim.fn.writefile({
   vim.json.encode({
     source_mtime = 1,
+    runtime_revision = 2,
   }),
 }, stamp_path)
 
@@ -47,7 +48,7 @@ vim.fn.jobstart = function(cmd, opts)
     error("expected bridge install job command table", 0)
   end
 
-  local source_mtime = tonumber(cmd[#cmd])
+  local source_mtime = tonumber(cmd[#cmd - 1])
   if type(source_mtime) ~= "number" or source_mtime <= 1 then
     error("expected bridge install job to receive fresh source mtime, got " .. vim.inspect(cmd), 0)
   end
@@ -55,6 +56,7 @@ vim.fn.jobstart = function(cmd, opts)
   vim.fn.writefile({
     vim.json.encode({
       source_mtime = source_mtime,
+      runtime_revision = tonumber(cmd[#cmd]) or 0,
     }),
   }, stamp_path)
 

@@ -87,7 +87,7 @@ local ok, err = pcall(function()
   lsp.view_page = function()
     return {
       offset = 0,
-      limit = 200,
+      limit = 0,
       total_rows = 1,
       row_numbers = { 1 },
       rows = {

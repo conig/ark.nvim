@@ -6,6 +6,12 @@ local started_pane = 0
 local synced_sessions = 0
 local help_requests = {}
 
+package.loaded["ark.bridge"] = {
+  ensure_current_runtime = function()
+    return true
+  end,
+}
+
 local original_notify = vim.notify
 vim.notify = function(message, level, opts)
   notifications[#notifications + 1] = {
@@ -26,6 +32,9 @@ local ok, err = pcall(function()
     auto_start_lsp = false,
     async_startup = false,
     configure_slime = false,
+    help = {
+      display = "float",
+    },
   })
 
   local original_lsp_start = lsp.start
@@ -196,12 +205,65 @@ local ok, err = pcall(function()
     error("unexpected help buffer contents: " .. vim.inspect(lines), 0)
   end
 
-  if vim.bo[help_buf].filetype ~= "arkhelp" then
-    error("expected help buffer to use arkhelp filetype, got " .. tostring(vim.bo[help_buf].filetype), 0)
+  if vim.bo[help_buf].filetype ~= "markdown" then
+    error("expected help buffer to use markdown filetype for fenced R examples, got " .. tostring(vim.bo[help_buf].filetype), 0)
   end
 
   if vim.b[help_buf].ark_help_buffer ~= true then
     error("expected help buffer marker to be set", 0)
+  end
+
+  local example_col = lines[19]:find("cyl", 1, true)
+  if not example_col then
+    error("expected example line to contain an R symbol, got " .. vim.inspect(lines[19]), 0)
+  end
+  local example_captures = {}
+  local has_r_capture = vim.wait(1000, function()
+    pcall(function()
+      vim.treesitter.get_parser(help_buf, "markdown"):parse(true)
+    end)
+    example_captures = vim.treesitter.get_captures_at_pos(help_buf, 18, example_col - 1)
+    for _, capture in ipairs(example_captures) do
+      if capture.lang == "r" then
+        return true
+      end
+    end
+    return false
+  end, 20, false)
+
+  local assign_col = lines[19]:find("=", 1, true)
+  local syntax_groups = {}
+  if assign_col then
+    vim.api.nvim_buf_call(help_buf, function()
+      pcall(vim.cmd, "syntax sync fromstart")
+      for _, id in ipairs(vim.fn.synstack(19, assign_col)) do
+        syntax_groups[#syntax_groups + 1] = vim.fn.synIDattr(id, "name")
+      end
+    end)
+  end
+  local has_r_syntax = false
+  for _, group in ipairs(syntax_groups) do
+    if type(group) == "string" and group:find("^r") then
+      has_r_syntax = true
+      break
+    end
+  end
+  if not has_r_capture and not has_r_syntax then
+    error("expected fenced ArkHelp example to expose R highlighting, got captures="
+      .. vim.inspect(example_captures)
+      .. " syntax="
+      .. vim.inspect(syntax_groups), 0)
+  end
+
+  local help_keymaps = {}
+  for _, map in ipairs(vim.api.nvim_buf_get_keymap(help_buf, "n")) do
+    help_keymaps[map.lhs] = map
+  end
+  if not help_keymaps.q then
+    error("expected ArkHelp to close from normal-mode q", 0)
+  end
+  if help_keymaps["<Esc>"] then
+    error("expected ArkHelp to leave Escape unbound for close", 0)
   end
 
   local normal_float = vim.api.nvim_get_hl(0, { name = "NormalFloat", link = false })

@@ -118,10 +118,11 @@ end
 
 lsp.view_page = function(_opts, _bufnr, _session_id, offset, limit)
   offset = tonumber(offset or 0) or 0
-  limit = tonumber(limit or 200) or 200
+  limit = tonumber(limit or 0) or 0
+  local end_index = limit == 0 and #rows or math.min(#rows, offset + limit)
   local page_rows = {}
   local row_numbers = {}
-  for index = offset + 1, math.min(#rows, offset + limit) do
+  for index = offset + 1, end_index do
     page_rows[#page_rows + 1] = vim.deepcopy(rows[index])
     row_numbers[#row_numbers + 1] = index
   end

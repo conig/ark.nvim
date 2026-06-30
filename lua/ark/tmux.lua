@@ -72,7 +72,7 @@ local function monotonic_ms()
   return math.floor(clock() / 1e6)
 end
 
-local function run_tmux(args)
+local function tmux_command(args)
   local command = { "tmux" }
   local explicit_socket = vim.env.ARK_TMUX_SOCKET
   if type(explicit_socket) == "string" and explicit_socket ~= "" then
@@ -89,7 +89,11 @@ local function run_tmux(args)
     end
   end
   vim.list_extend(command, args)
+  return command
+end
 
+local function run_tmux(args)
+  local command = tmux_command(args)
   local output = vim.fn.system(command)
   if vim.v.shell_error ~= 0 then
     return nil, trim(output)
@@ -98,8 +102,64 @@ local function run_tmux(args)
   return trim(output), nil
 end
 
+local function start_tmux(args, job_opts)
+  local command = tmux_command(args)
+  job_opts = job_opts or { detach = true }
+  local ok, job_id = pcall(vim.fn.jobstart, command, job_opts)
+  if not ok then
+    return nil, tostring(job_id)
+  end
+  if type(job_id) ~= "number" or job_id <= 0 then
+    return nil, "failed to start tmux command"
+  end
+
+  return true, nil
+end
+
 local function strip_ansi(text)
   return (text or ""):gsub("\27%[[0-9;]*[%a]", "")
+end
+
+local function shell_join(args)
+  local escaped = {}
+  for _, arg in ipairs(args or {}) do
+    escaped[#escaped + 1] = vim.fn.shellescape(tostring(arg))
+  end
+  return table.concat(escaped, " ")
+end
+
+local function plugin_root()
+  local source = debug.getinfo(1, "S").source
+  if type(source) == "string" and source:sub(1, 1) == "@" then
+    local path = vim.fs.normalize(source:sub(2))
+    local lua_dir = vim.fs.dirname(vim.fs.dirname(path))
+    local root = vim.fs.dirname(lua_dir)
+    if type(root) == "string" and root ~= "" then
+      return root
+    end
+  end
+
+  return vim.fn.getcwd()
+end
+
+local function lua_literal(value)
+  return vim.inspect(value)
+end
+
+local popup_temp_seq = 0
+
+local function popup_temp_path(suffix)
+  popup_temp_seq = popup_temp_seq + 1
+  local tmpdir = vim.env.TMPDIR
+  if type(tmpdir) ~= "string" or tmpdir == "" then
+    tmpdir = "/tmp"
+  end
+  tmpdir = tmpdir:gsub("/+$", "")
+
+  local nonce = uv and type(uv.hrtime) == "function" and uv.hrtime() or monotonic_ms()
+  return vim.fs.normalize(
+    string.format("%s/ark-nvim-popup-%s-%s-%s%s", tmpdir, tostring(vim.fn.getpid()), tostring(nonce), tostring(popup_temp_seq), suffix or "")
+  )
 end
 
 local function parse_percent(value)
@@ -120,6 +180,77 @@ local function parse_percent(value)
   end
 
   return tostring(pct)
+end
+
+local function parse_positive_integer(value)
+  local number = tonumber(value)
+  if not number or number <= 0 then
+    return nil
+  end
+
+  return math.floor(number)
+end
+
+local function tmux_format_integer(args)
+  local output = run_tmux(args)
+  return parse_positive_integer(output)
+end
+
+local function popup_available_width(target_client, target)
+  local width
+  if type(target_client) == "string" and target_client ~= "" then
+    width = tmux_format_integer({ "display-message", "-p", "-c", target_client, "#{client_width}" })
+  end
+  if width then
+    return width
+  end
+
+  if type(target) == "string" and target ~= "" then
+    width = tmux_format_integer({ "display-message", "-p", "-t", target, "#{window_width}" })
+  end
+  if width then
+    return width
+  end
+
+  if type(target) == "string" and target ~= "" then
+    width = tmux_format_integer({ "display-message", "-p", "-t", target, "#{pane_width}" })
+  end
+
+  return width
+end
+
+local function help_popup_content_width(lines, title)
+  local width = 0
+  for _, line in ipairs(lines or {}) do
+    width = math.max(width, vim.fn.strdisplaywidth(strip_ansi(line or ""):gsub("%s+$", "")))
+  end
+
+  if type(title) == "string" and title ~= "" then
+    width = math.max(width, vim.fn.strdisplaywidth(title))
+  end
+
+  return width
+end
+
+local function help_popup_width(lines, title, opts, target_client, target)
+  if opts.width ~= nil and opts.width ~= "auto" then
+    return tostring(opts.width)
+  end
+
+  local available = popup_available_width(target_client, target)
+  local max_width = available and math.floor(available * 0.9) or nil
+  local min_width = parse_positive_integer(opts.min_width) or 40
+  if max_width then
+    min_width = math.min(min_width, max_width)
+  end
+
+  local desired = help_popup_content_width(lines, title) + 4
+  desired = math.max(min_width, desired)
+  if max_width then
+    desired = math.min(desired, max_width)
+  end
+
+  return tostring(math.max(1, desired))
 end
 
 local function pane_exists(pane_id)
@@ -306,9 +437,95 @@ local function current_session(pane_id)
   }, nil
 end
 
+local function attached_client_for_pane(pane_id)
+  if type(pane_id) ~= "string" or pane_id == "" then
+    return nil
+  end
+
+  local session_name = run_tmux({ "display-message", "-p", "-t", pane_id, "#{session_name}" })
+  if type(session_name) ~= "string" or session_name == "" then
+    return nil
+  end
+
+  local clients = run_tmux({ "list-clients", "-F", "#{client_name}\t#{client_session}" })
+  if type(clients) ~= "string" or clients == "" then
+    return nil
+  end
+
+  for line in (clients .. "\n"):gmatch("(.-)\n") do
+    local client_name, client_session = line:match("^([^\t]+)\t([^\t]+)$")
+    if client_name and client_session == session_name then
+      return client_name
+    end
+  end
+
+  return nil
+end
+
 local function tmux_context_available()
   return (type(vim.env.ARK_TMUX_SOCKET) == "string" and vim.env.ARK_TMUX_SOCKET ~= "")
     or (type(vim.env.TMUX) == "string" and vim.env.TMUX ~= "")
+end
+
+local function resolve_popup_target(opts)
+  opts = opts or {}
+  local target = type(opts.target) == "string" and opts.target ~= "" and opts.target or nil
+  if not target or not pane_exists(target) then
+    target = state.anchor_pane_id
+  end
+  if not target or not pane_exists(target) then
+    local current, current_err = current_tmux_pane()
+    if not current then
+      return nil, current_err
+    end
+    target = current
+  end
+
+  return target, nil
+end
+
+local function popup_display_args(opts)
+  opts = opts or {}
+  local args = {
+    "display-popup",
+    "-E",
+    "-w",
+    tostring(opts.width),
+    "-h",
+    tostring(opts.height),
+    "-y",
+    "0",
+  }
+
+  if opts.border == false then
+    args[#args + 1] = "-B"
+  end
+  if opts.border ~= false and type(opts.border_lines) == "string" and opts.border_lines ~= "" then
+    vim.list_extend(args, { "-b", opts.border_lines })
+  end
+  if type(opts.style) == "string" and opts.style ~= "" then
+    vim.list_extend(args, { "-s", opts.style })
+  end
+  if opts.border ~= false and type(opts.border_style) == "string" and opts.border_style ~= "" then
+    vim.list_extend(args, { "-S", opts.border_style })
+  end
+
+  for _, env in ipairs(opts.env or {}) do
+    vim.list_extend(args, { "-e", env })
+  end
+
+  if type(opts.target_client) == "string" and opts.target_client ~= "" then
+    vim.list_extend(args, { "-c", opts.target_client })
+  else
+    vim.list_extend(args, { "-t", opts.target })
+  end
+
+  if type(opts.title) == "string" and opts.title ~= "" then
+    vim.list_extend(args, { "-T", opts.title })
+  end
+
+  args[#args + 1] = opts.command
+  return args
 end
 
 local function standalone_console_context()
@@ -1287,6 +1504,8 @@ function M.pane_command(config)
     "ARK_NVIM_LAUNCHER=" .. vim.fn.shellescape(config.launcher),
     "ARK_NVIM_CONSOLE_FRONTEND=" .. vim.fn.shellescape(config.console_frontend or "raw"),
     "ARK_NVIM_MANAGED_PANE=1",
+    "ARK_NVIM_PARENT_NVIM=" .. vim.fn.shellescape(vim.v.progpath or "nvim"),
+    "ARK_NVIM_PARENT_SERVER=" .. vim.fn.shellescape(session_runtime.parent_server(config)),
     "ARK_STATUS_DIR=" .. vim.fn.shellescape(config.startup_status_dir),
     "ARK_NVIM_SESSION_PKG_PATH=" .. vim.fn.shellescape(config.session_pkg_path),
   }
@@ -1484,6 +1703,436 @@ function M.send_text(config_or_text, maybe_text)
   local _, err = run_tmux({ "paste-buffer", "-d", "-b", buffer_name, "-t", session.tmux_pane })
   if err then
     return nil, err
+  end
+
+  return true, nil
+end
+
+function M.help_popup(_config, text, opts)
+  opts = opts or {}
+
+  if not tmux_context_available() then
+    return nil, "tmux popup requires Neovim to run inside tmux"
+  end
+
+  if type(text) ~= "string" or text == "" then
+    return nil, "tmux popup requires non-empty help text"
+  end
+
+  local target = type(opts.target) == "string" and opts.target ~= "" and opts.target or nil
+  if not target or not pane_exists(target) then
+    target = state.anchor_pane_id
+  end
+  if not target or not pane_exists(target) then
+    local current, current_err = current_tmux_pane()
+    if not current then
+      return nil, current_err
+    end
+    target = current
+  end
+
+  local path = popup_temp_path(".arkhelp")
+  local script = popup_temp_path(".arkhelp-popup.sh")
+  local lines = vim.split(text, "\n", { plain = true })
+  local write_ok, write_err = pcall(vim.fn.writefile, lines, path, "b")
+  if not write_ok then
+    return nil, "failed to write ArkHelp popup text: " .. tostring(write_err)
+  end
+
+  local title = type(opts.title) == "string" and opts.title or "ArkHelp"
+  local viewer = type(opts.viewer) == "string" and opts.viewer ~= "" and opts.viewer or "nvim"
+  local popup_command_args
+  local popup_env = {}
+  local cleanup_from_parent = false
+
+  if viewer == "nvim" then
+    local nvim = type(opts.nvim) == "table" and opts.nvim or {}
+    local nvim_bin = type(nvim.bin) == "string" and nvim.bin ~= "" and nvim.bin or vim.v.progpath or "nvim"
+    local hide_chrome = "set laststatus=0 showtabline=0 noshowmode noruler noshowcmd | silent! set cmdheight=0"
+    local close_popup_lua = table.concat({
+      "lua _G.__ark_help_popup_close = function()",
+      "if vim.g.__ark_help_popup_closing == 1 then return end",
+      "vim.g.__ark_help_popup_closing = 1",
+      "pcall(vim.fn.jobstart, { 'tmux', 'display-popup', '-C' }, { detach = true })",
+      "end",
+    }, " ")
+    local cleanup_help_lua = table.concat({
+      "lua vim.api.nvim_create_autocmd('VimLeavePre', {",
+      "once = true,",
+      "callback = function() pcall(vim.fn.delete, " .. lua_literal(path) .. ") end,",
+      "})",
+    }, " ")
+    local close_popup_command =
+      "lua pcall(_G.__ark_help_popup_close); vim.defer_fn(function() vim.cmd('qa!') end, 20)"
+    popup_command_args = {
+      nvim_bin,
+      "-n",
+      "-R",
+      "-M",
+      "--cmd",
+      "let g:ark_help_popup = 1",
+      "--cmd",
+      "let g:ark_nvim_help_popup = 1",
+      "--cmd",
+      "let g:markdown_fenced_languages = ['r']",
+      "--cmd",
+      hide_chrome,
+      "--cmd",
+      close_popup_lua,
+      "--cmd",
+      cleanup_help_lua,
+      path,
+      "-c",
+      hide_chrome,
+      "-c",
+      "setlocal buftype=nowrite bufhidden=wipe noswapfile readonly nomodifiable filetype=markdown",
+      "-c",
+      "runtime! syntax/markdown.vim | syntax sync fromstart",
+      "-c",
+      "lua pcall(vim.treesitter.start, 0, 'markdown')",
+      "-c",
+      "autocmd QuitPre * lua pcall(_G.__ark_help_popup_close)",
+      "-c",
+      "nnoremap <buffer><silent> q <Cmd>" .. close_popup_command .. "<CR>",
+      "-c",
+      "stopinsert",
+      "-c",
+      "normal! gg0",
+    }
+    if type(nvim.init) == "string" and nvim.init ~= "" then
+      table.insert(popup_command_args, 2, nvim.init)
+      table.insert(popup_command_args, 2, "-u")
+    end
+    popup_env[#popup_env + 1] = "TERM=ansi"
+  elseif viewer == "pager" or viewer == "less" then
+    local pager = type(opts.pager) == "table" and opts.pager or {}
+    local pager_bin = type(pager.bin) == "string" and pager.bin ~= "" and pager.bin or "less"
+    popup_command_args = { pager_bin, "-X", "-R", path }
+    cleanup_from_parent = true
+  else
+    pcall(vim.fn.delete, path)
+    return nil, "unsupported ArkHelp tmux popup viewer: " .. tostring(opts.viewer)
+  end
+
+  local script_lines = {
+    "#!/bin/sh",
+    shell_join(popup_command_args),
+    "status=$?",
+    "rm -f -- " .. vim.fn.shellescape(script) .. " " .. vim.fn.shellescape(path),
+    "exit $status",
+  }
+  local script_ok, script_err = pcall(vim.fn.writefile, script_lines, script, "b")
+  if not script_ok then
+    pcall(vim.fn.delete, path)
+    return nil, "failed to write ArkHelp popup launcher: " .. tostring(script_err)
+  end
+  pcall(vim.fn.setfperm, script, "rwx------")
+
+  local target_client = attached_client_for_pane(target)
+  local width = help_popup_width(lines, title, opts, target_client, target)
+  local height = tostring(opts.height or "80%")
+
+  local args = popup_display_args({
+    width = width,
+    height = height,
+    env = popup_env,
+    target = target,
+    target_client = target_client,
+    title = title,
+    border = opts.border,
+    border_lines = opts.border_lines,
+    style = opts.style,
+    border_style = opts.border_style,
+    command = script,
+  })
+
+  local job_opts = nil
+  if cleanup_from_parent then
+    job_opts = {
+      on_exit = function()
+        pcall(vim.fn.delete, path)
+        pcall(vim.fn.delete, script)
+      end,
+    }
+  end
+
+  local _, popup_err = start_tmux(args, job_opts)
+  if popup_err then
+    pcall(vim.fn.delete, path)
+    pcall(vim.fn.delete, script)
+    return nil, "failed to open tmux ArkHelp popup: " .. tostring(popup_err)
+  end
+
+  return true, nil
+end
+
+local function view_popup_bootstrap_lines(root, server, backend_id, expr)
+  local rpc_source = table.concat({
+    "local rpc_name, backend_id, method, args = ...",
+    "local fn = _G[rpc_name]",
+    "if type(fn) ~= 'function' then",
+    "  return { ok = false, err = 'ArkView popup backend RPC is not registered' }",
+    "end",
+    "return fn(backend_id, method, args)",
+  }, "\n")
+
+  return {
+    "vim.opt.rtp:prepend(" .. lua_literal(root) .. ")",
+    "vim.g.ark_view_popup = 1",
+    "vim.opt.laststatus = 0",
+    "vim.opt.showtabline = 0",
+    "vim.opt.showmode = false",
+    "vim.opt.ruler = false",
+    "vim.opt.showcmd = false",
+    "pcall(function() vim.opt.cmdheight = 0 end)",
+    "pcall(function()",
+    "  local nvconfig = require('nvconfig')",
+    "  if type(nvconfig.nvdash) == 'table' then",
+    "    nvconfig.nvdash.load_on_startup = false",
+    "  end",
+    "end)",
+    "local server = " .. lua_literal(server),
+    "local backend_id = " .. lua_literal(backend_id),
+    "local expr = " .. lua_literal(expr),
+    "local rpc_name = " .. lua_literal("__ark_view_popup_backend"),
+    "local rpc_source = " .. lua_literal(rpc_source),
+    "local chan = nil",
+    "local disposed = false",
+    "local popup_closing = false",
+    "local function close_popup()",
+    "  if popup_closing then",
+    "    return",
+    "  end",
+    "  popup_closing = true",
+    "  pcall(vim.fn.jobstart, { 'tmux', 'display-popup', '-C' }, { detach = true })",
+    "end",
+    "vim.api.nvim_create_autocmd('QuitPre', {",
+    "  once = true,",
+    "  callback = function() close_popup() end,",
+    "})",
+    "local function connect()",
+    "  if type(chan) == 'number' and chan > 0 then",
+    "    return chan, nil",
+    "  end",
+    "  local ok, result = pcall(vim.fn.sockconnect, 'pipe', server, { rpc = true })",
+    "  if not ok or type(result) ~= 'number' or result <= 0 then",
+    "    return nil, 'failed to connect ArkView popup to ' .. tostring(server) .. ': ' .. tostring(result)",
+    "  end",
+    "  chan = result",
+    "  return chan, nil",
+    "end",
+    "local function request(method, args)",
+    "  local rpc_chan, connect_err = connect()",
+    "  if not rpc_chan then",
+    "    return nil, connect_err",
+    "  end",
+    "  local ok, response = pcall(vim.rpcrequest, rpc_chan, 'nvim_exec_lua', rpc_source, { rpc_name, backend_id, method, args or {} })",
+    "  if not ok then",
+    "    return nil, tostring(response)",
+    "  end",
+    "  if type(response) ~= 'table' then",
+    "    return nil, 'invalid ArkView popup backend response'",
+    "  end",
+    "  if response.ok == false then",
+    "    return nil, tostring(response.err or 'ArkView popup backend request failed')",
+    "  end",
+    "  return response.value, nil",
+    "end",
+    "local function dispose()",
+    "  if disposed then",
+    "    return",
+    "  end",
+    "  disposed = true",
+    "  pcall(request, 'dispose', {})",
+    "  if type(chan) == 'number' then",
+    "    pcall(vim.fn.chanclose, chan)",
+    "  end",
+    "end",
+    "local proxy = {}",
+    "for _, method in ipairs({",
+    "  'view_open',",
+    "  'view_state',",
+    "  'view_page',",
+    "  'view_sort',",
+    "  'view_filter',",
+    "  'view_schema_search',",
+    "  'view_profile',",
+    "  'view_code',",
+    "  'view_export',",
+    "  'view_cell',",
+    "  'view_close',",
+    "}) do",
+    "  proxy[method] = function(_options, _source_bufnr, ...)",
+    "    return request(method, { ... })",
+    "  end",
+    "end",
+    "local notify = function(message, level)",
+    "  vim.notify(message, level or vim.log.levels.INFO, { title = 'ark.nvim' })",
+    "end",
+    "local ok, opened, err = pcall(function()",
+    "  return require('ark.view').open({",
+    "    expr = expr,",
+    "    source_bufnr = 0,",
+    "    options = {},",
+    "    lsp = proxy,",
+    "    notify = notify,",
+    "    on_close = function()",
+    "      dispose()",
+    "      close_popup()",
+    "      vim.defer_fn(function() vim.cmd('qa!') end, 20)",
+    "    end,",
+    "  })",
+    "end)",
+    "if not ok then",
+    "  notify(tostring(opened), vim.log.levels.ERROR)",
+    "  dispose()",
+    "  close_popup()",
+    "  vim.defer_fn(function() vim.cmd('cq') end, 50)",
+    "elseif not opened then",
+    "  notify(tostring(err or 'failed to open ArkView'), vim.log.levels.ERROR)",
+    "  dispose()",
+    "  close_popup()",
+    "  vim.defer_fn(function() vim.cmd('cq') end, 50)",
+    "end",
+  }
+end
+
+function M.view_popup(_config, server, backend_id, expr, opts)
+  opts = opts or {}
+
+  if not tmux_context_available() then
+    return nil, "tmux popup requires Neovim to run inside tmux"
+  end
+
+  if type(server) ~= "string" or server == "" then
+    return nil, "tmux ArkView popup requires an RPC server"
+  end
+  if type(backend_id) ~= "string" or backend_id == "" then
+    return nil, "tmux ArkView popup requires a backend id"
+  end
+  if type(expr) ~= "string" or expr == "" then
+    return nil, "tmux ArkView popup requires a non-empty expression"
+  end
+
+  local target, target_err = resolve_popup_target(opts)
+  if not target then
+    return nil, target_err
+  end
+
+  local title = type(opts.title) == "string" and opts.title or "ArkView"
+  local nvim = type(opts.nvim) == "table" and opts.nvim or {}
+  local nvim_bin = type(nvim.bin) == "string" and nvim.bin ~= "" and nvim.bin or vim.v.progpath or "nvim"
+  local root = plugin_root()
+  local script = popup_temp_path(".arkview.lua")
+  local startup_buffer = popup_temp_path(".arkview-startup")
+  local hide_chrome = "set laststatus=0 showtabline=0 noshowmode noruler noshowcmd shortmess+=I | silent! set cmdheight=0"
+  local write_ok, write_err = pcall(vim.fn.writefile, view_popup_bootstrap_lines(root, server, backend_id, expr), script, "b")
+  if not write_ok then
+    return nil, "failed to write ArkView popup bootstrap: " .. tostring(write_err)
+  end
+  local startup_ok, startup_err = pcall(vim.fn.writefile, {}, startup_buffer, "b")
+  if not startup_ok then
+    pcall(vim.fn.delete, script)
+    return nil, "failed to write ArkView popup startup buffer: " .. tostring(startup_err)
+  end
+
+  local nvim_args = {
+    nvim_bin,
+    "-n",
+    "--cmd",
+    hide_chrome,
+    "--cmd",
+    "set rtp^=" .. root,
+    "--cmd",
+    "let g:ark_view_popup = 1",
+    "--cmd",
+    "let g:ark_view_popup_server = " .. vim.fn.string(server),
+    "--cmd",
+    "let g:ark_view_popup_backend_id = " .. vim.fn.string(backend_id),
+    startup_buffer,
+    "-c",
+    hide_chrome,
+    "-c",
+    "luafile " .. script,
+  }
+  if type(nvim.init) == "string" and nvim.init ~= "" then
+    table.insert(nvim_args, 2, nvim.init)
+    table.insert(nvim_args, 2, "-u")
+  end
+
+  local escaped_script = vim.fn.shellescape(script)
+  local escaped_startup_buffer = vim.fn.shellescape(startup_buffer)
+  local command_body = shell_join(nvim_args)
+    .. "; status=$?; rm -f -- "
+    .. escaped_script
+    .. " "
+    .. escaped_startup_buffer
+    .. "; exit $status"
+  local command = "sh -lc " .. vim.fn.shellescape(command_body)
+
+  local target_client = attached_client_for_pane(target)
+  local args = popup_display_args({
+    width = tostring(opts.width or "90%"),
+    height = tostring(opts.height or "90%"),
+    target = target,
+    target_client = target_client,
+    title = title,
+    border = opts.border,
+    border_lines = opts.border_lines,
+    style = opts.style,
+    border_style = opts.border_style,
+    command = command,
+  })
+
+  local _, popup_err = start_tmux(args)
+  if popup_err then
+    pcall(vim.fn.delete, script)
+    pcall(vim.fn.delete, startup_buffer)
+    return nil, "failed to open tmux ArkView popup: " .. tostring(popup_err)
+  end
+
+  return true, nil
+end
+
+function M.nvim_ui_popup(_config, server, opts)
+  opts = opts or {}
+
+  if not tmux_context_available() then
+    return nil, "tmux popup requires Neovim to run inside tmux"
+  end
+
+  if type(server) ~= "string" or server == "" then
+    return nil, "tmux Neovim popup requires an RPC server"
+  end
+
+  local target, target_err = resolve_popup_target(opts)
+  if not target then
+    return nil, target_err
+  end
+
+  local title = type(opts.title) == "string" and opts.title or "ArkView"
+  local nvim = type(opts.nvim) == "table" and opts.nvim or {}
+  local nvim_bin = type(nvim.bin) == "string" and nvim.bin ~= "" and nvim.bin or vim.v.progpath or "nvim"
+  local command_body = shell_join({ nvim_bin, "--server", server, "--remote-ui" })
+  local command = "sh -lc " .. vim.fn.shellescape(command_body)
+
+  local target_client = attached_client_for_pane(target)
+  local args = popup_display_args({
+    width = tostring(opts.width or "90%"),
+    height = tostring(opts.height or "90%"),
+    target = target,
+    target_client = target_client,
+    title = title,
+    border = opts.border,
+    border_lines = opts.border_lines,
+    style = opts.style,
+    border_style = opts.border_style,
+    command = command,
+  })
+
+  local _, popup_err = start_tmux(args)
+  if popup_err then
+    return nil, "failed to open tmux Neovim popup: " .. tostring(popup_err)
   end
 
   return true, nil

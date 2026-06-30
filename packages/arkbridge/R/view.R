@@ -7,7 +7,7 @@
     "view-",
     as.integer(Sys.getpid()),
     "-",
-    format(as.integer(as.numeric(Sys.time()) * 1000), scientific = FALSE),
+    sprintf("%.0f", as.numeric(Sys.time()) * 1000),
     "-",
     paste(sample(c(letters, LETTERS, 0:9), 8L, replace = TRUE), collapse = "")
   )
@@ -64,6 +64,12 @@
 
 .ark_view_column_accessor <- function(name) {
   sprintf("[[%s]]", .ark_view_escape_code_string(name))
+}
+
+.ark_view_fixed_search <- function(query, values) {
+  query <- tolower(as.character(query %||% ""))
+  values <- tolower(as.character(values))
+  grepl(query, values, fixed = TRUE)
 }
 
 .ark_view_is_rectangular <- function(x) {
@@ -246,7 +252,7 @@
     }
 
     values <- vapply(data[[index]], .ark_view_stringify_value, character(1))
-    matches <- grepl(query, values, fixed = TRUE, ignore.case = TRUE)
+    matches <- .ark_view_fixed_search(query, values)
     matches[is.na(matches)] <- FALSE
     keep <- keep & matches
   }
@@ -334,21 +340,21 @@
   })
 }
 
-.ark_view_page_payload <- function(session, session_id, offset = 0L, limit = 200L) {
+.ark_view_page_payload <- function(session, session_id, offset = 0L, limit = 0L) {
   .ark_view_safe(session, {
     view <- .ark_view_require_session_id(session, session_id)
     data <- .ark_view_current_data(view)
     offset <- suppressWarnings(as.integer(offset))
     limit <- suppressWarnings(as.integer(limit))
     if (is.na(offset) || offset < 0L) offset <- 0L
-    if (is.na(limit) || limit < 1L) limit <- 200L
+    if (is.na(limit) || limit < 0L) limit <- 0L
 
     total_rows <- nrow(data)
     if (offset >= total_rows) {
       page <- data[0, , drop = FALSE]
       row_numbers <- integer()
     } else {
-      end <- min(total_rows, offset + limit)
+      end <- if (identical(limit, 0L)) total_rows else min(total_rows, offset + limit)
       rows <- seq.int(offset + 1L, end)
       page <- data[rows, , drop = FALSE]
       row_numbers <- rows
@@ -433,9 +439,9 @@
       if (!nzchar(query)) {
         return(TRUE)
       }
-      grepl(query, item$name, fixed = TRUE, ignore.case = TRUE) ||
-        grepl(query, item$class, fixed = TRUE, ignore.case = TRUE) ||
-        grepl(query, item$type, fixed = TRUE, ignore.case = TRUE)
+      .ark_view_fixed_search(query, item$name) ||
+        .ark_view_fixed_search(query, item$class) ||
+        .ark_view_fixed_search(query, item$type)
     }, schema)
 
     .emit_json(list(
@@ -569,7 +575,7 @@
       lines <- c(
         lines,
         sprintf(
-          ".ark_view <- .ark_view[grepl(%s, as.character(.ark_view%s), fixed = TRUE, ignore.case = TRUE), , drop = FALSE]",
+          ".ark_view <- .ark_view[grepl(tolower(%s), tolower(as.character(.ark_view%s)), fixed = TRUE), , drop = FALSE]",
           .ark_view_escape_code_string(query),
           .ark_view_column_accessor(column_name)
         )

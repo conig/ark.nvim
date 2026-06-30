@@ -14,6 +14,9 @@ local tmux_cmd = tmux.pane_command({
 if tmux_cmd:find("clear &&", 1, true) ~= nil then
   error("expected tmux pane command to skip clear, got " .. tmux_cmd, 0)
 end
+if tmux_cmd:find("ARK_NVIM_PARENT_SERVER=", 1, true) == nil then
+  error("expected tmux pane command to export parent Neovim server, got " .. tmux_cmd, 0)
+end
 
 local terminal_cmd = terminal.pane_command({
   startup_status_dir = "/tmp/ark-status",
@@ -23,4 +26,7 @@ local terminal_cmd = terminal.pane_command({
 
 if terminal_cmd:find("clear &&", 1, true) ~= nil then
   error("expected terminal pane command to skip clear, got " .. terminal_cmd, 0)
+end
+if terminal_cmd:find("ARK_NVIM_PARENT_SERVER=", 1, true) == nil then
+  error("expected terminal pane command to export parent Neovim server, got " .. terminal_cmd, 0)
 end

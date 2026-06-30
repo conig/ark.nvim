@@ -1905,7 +1905,7 @@ function M.view_page(opts, bufnr, session_id, offset, limit)
   return view_request(opts, bufnr, VIEW_PAGE_METHOD, {
     sessionId = session_id,
     offset = offset or 0,
-    limit = limit or 200,
+    limit = limit or 0,
   }, VIEW_REQUEST_TIMEOUT_MS)
 end
 

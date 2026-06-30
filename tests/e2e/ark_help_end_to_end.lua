@@ -3,6 +3,10 @@ local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test
 local test_file = "/tmp/ark_help_end_to_end.R"
 local _, _client = ark_test.setup_managed_buffer(test_file, {
   "mean",
+}, {
+  help = {
+    display = "float",
+  },
 })
 
 vim.api.nvim_win_set_cursor(0, { 1, 1 })
@@ -25,8 +29,8 @@ local ok, err = pcall(function()
   local help_buf = vim.api.nvim_get_current_buf()
   local lines = vim.api.nvim_buf_get_lines(help_buf, 0, math.min(15, vim.api.nvim_buf_line_count(help_buf)), false)
 
-  if vim.bo[help_buf].filetype ~= "arkhelp" then
-    error("expected ArkHelp to open an arkhelp buffer, got " .. tostring(vim.bo[help_buf].filetype), 0)
+  if vim.bo[help_buf].filetype ~= "markdown" then
+    error("expected ArkHelp to open a markdown buffer, got " .. tostring(vim.bo[help_buf].filetype), 0)
   end
 
   if vim.bo[help_buf].buftype ~= "nofile" then

@@ -4,6 +4,7 @@ pkg_path <- if (length(args) >= 1L) args[[1]] else ""
 lib_path <- if (length(args) >= 2L) args[[2]] else ""
 stamp_path <- if (length(args) >= 3L) args[[3]] else ""
 source_mtime <- suppressWarnings(as.integer(if (length(args) >= 4L) args[[4]] else "0"))
+runtime_revision <- suppressWarnings(as.integer(if (length(args) >= 5L) args[[5]] else "0"))
 
 if (!nzchar(pkg_path) || !dir.exists(pkg_path)) {
   stop("missing arkbridge package source path", call. = FALSE)
@@ -61,6 +62,7 @@ dir.create(stamp_dir, recursive = TRUE, showWarnings = FALSE)
 
 payload <- list(
   source_mtime = if (is.finite(source_mtime)) as.integer(source_mtime) else 0L,
+  runtime_revision = if (is.finite(runtime_revision)) as.integer(runtime_revision) else 0L,
   installed_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3%z"),
   installed_path = normalizePath(installed_path, winslash = "/", mustWork = FALSE)
 )

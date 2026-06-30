@@ -18,8 +18,10 @@ use crate::lsp::backend::LspResult;
 use crate::lsp::document::Document;
 use crate::lsp::frontmatter::frontmatter_output_help_topic;
 use crate::lsp::traits::node::NodeExt;
+use crate::treesitter::BinaryOperatorType;
 use crate::treesitter::NodeType;
 use crate::treesitter::NodeTypeExt;
+use crate::treesitter::UnaryOperatorType;
 
 pub static ARK_HELP_TOPIC_REQUEST: &str = "ark/textDocument/helpTopic";
 
@@ -62,7 +64,7 @@ pub(crate) fn help_topic(
         return Ok(None);
     };
 
-    let text = node.node_to_string(&document.contents)?;
+    let text = help_topic_text(node, &document.contents)?;
     let response = HelpTopicResponse { topic: text };
 
     lsp::log_info!(
@@ -81,6 +83,10 @@ fn locate_help_node(tree: &Tree, point: Point) -> Option<Node<'_>> {
         .find_smallest_spanning_node(point)
         .or_else(|| root.find_closest_node_to_point(point))?;
 
+    if let Some(operator) = enclosing_help_operator(node) {
+        return Some(operator);
+    }
+
     // Find the nearest node that is an identifier.
     while !node.is_identifier() {
         if let Some(sibling) = node.prev_sibling() {
@@ -92,6 +98,14 @@ fn locate_help_node(tree: &Tree, point: Point) -> Option<Node<'_>> {
         } else {
             return None;
         }
+
+        if let Some(operator) = enclosing_help_operator(node) {
+            return Some(operator);
+        }
+    }
+
+    if let Some(operator) = enclosing_help_operator(node) {
+        return Some(operator);
     }
 
     // Check if this identifier is part of a namespace operator. If it is, we send
@@ -105,6 +119,57 @@ fn locate_help_node(tree: &Tree, point: Point) -> Option<Node<'_>> {
     };
 
     Some(node)
+}
+
+fn enclosing_help_operator(node: Node<'_>) -> Option<Node<'_>> {
+    node.ancestors().find(|node| is_help_operator(*node))
+}
+
+fn is_help_operator(node: Node<'_>) -> bool {
+    matches!(
+        node.node_type(),
+        NodeType::UnaryOperator(UnaryOperatorType::Help) |
+            NodeType::BinaryOperator(BinaryOperatorType::Help)
+    )
+}
+
+fn help_topic_text(node: Node<'_>, contents: &str) -> LspResult<String> {
+    match node.node_type() {
+        NodeType::UnaryOperator(UnaryOperatorType::Help) => {
+            let Some(rhs) = node.child_by_field_name("rhs") else {
+                return Ok(node.node_to_string(contents)?);
+            };
+
+            help_operand_text(rhs, contents)
+        },
+        NodeType::BinaryOperator(BinaryOperatorType::Help) => {
+            let Some(rhs) = node.child_by_field_name("rhs") else {
+                return Ok(node.node_to_string(contents)?);
+            };
+
+            let topic = help_operand_text(rhs, contents)?;
+
+            let Some(lhs) = node.child_by_field_name("lhs") else {
+                return Ok(topic);
+            };
+
+            let package = help_operand_text(lhs, contents)?;
+            if package.is_empty() {
+                return Ok(topic);
+            }
+
+            Ok(format!("{package}::{topic}"))
+        },
+        _ => Ok(node.node_to_string(contents)?),
+    }
+}
+
+fn help_operand_text(node: Node<'_>, contents: &str) -> LspResult<String> {
+    if node.is_identifier_or_string() {
+        return Ok(node.get_identifier_or_string_text(contents)?.to_string());
+    }
+
+    Ok(node.node_to_string(contents)?)
 }
 
 #[cfg(test)]
@@ -177,6 +242,54 @@ mod tests {
                 .unwrap()
                 .expect("expected help topic response");
             assert_eq!(response.topic, "geom_point");
+        }
+    }
+
+    #[test]
+    fn test_help_topic_supports_unary_help_operator() {
+        let cases = [
+            ("@?geom_point", "geom_point"),
+            ("?@geom_point", "geom_point"),
+            ("?geom@_point", "geom_point"),
+            ("?geom_point@", "geom_point"),
+        ];
+
+        for (code, expected) in cases {
+            let (text, point) = point_from_cursor(code);
+            let document = Document::new(&text, None);
+            let position = document
+                .lsp_position_from_tree_sitter_point(point)
+                .unwrap();
+
+            let response = help_topic(point, &document)
+                .unwrap()
+                .unwrap_or_else(|| panic!("expected help topic response at {position:?}"));
+
+            assert_eq!(response.topic, expected);
+        }
+    }
+
+    #[test]
+    fn test_help_topic_supports_binary_help_operator() {
+        let cases = [
+            ("@utils?help", "utils::help"),
+            ("utils@?help", "utils::help"),
+            ("utils?@help", "utils::help"),
+            ("utils?help@", "utils::help"),
+        ];
+
+        for (code, expected) in cases {
+            let (text, point) = point_from_cursor(code);
+            let document = Document::new(&text, None);
+            let position = document
+                .lsp_position_from_tree_sitter_point(point)
+                .unwrap();
+
+            let response = help_topic(point, &document)
+                .unwrap()
+                .unwrap_or_else(|| panic!("expected help topic response at {position:?}"));
+
+            assert_eq!(response.topic, expected);
         }
     }
 

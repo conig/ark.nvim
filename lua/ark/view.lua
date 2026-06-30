@@ -101,6 +101,17 @@ local function clamp_width(width, min_width, max_width)
   return math.max(min_width, math.min(max_width, width))
 end
 
+local function sidebar_split_width(total_width)
+  total_width = tonumber(total_width) or vim.o.columns
+  total_width = math.max(1, total_width)
+
+  local max_sidebar_width = math.max(1, math.floor((total_width - 1) / 4))
+  local target = math.floor(total_width * 0.2)
+  target = math.max(12, math.min(34, target))
+
+  return math.max(1, math.min(target, max_sidebar_width))
+end
+
 local function clip_text(text, width)
   text = tostring(text or "")
   if width <= 0 then
@@ -1293,9 +1304,11 @@ end
 
 local function teardown_state(state)
   if not state or state.closing then
-    return
+    return nil
   end
   state.closing = true
+  local on_close = state.on_close
+  state.on_close = nil
   close_float_window(state)
   close_header_window(state, "grid")
   close_pinned_window(state)
@@ -1304,6 +1317,7 @@ local function teardown_state(state)
   if state.augroup then
     pcall(vim.api.nvim_del_augroup_by_id, state.augroup)
   end
+  return on_close
 end
 
 local function request_or_error(state, title, fn, ...)
@@ -1370,11 +1384,14 @@ local function close_tab(state)
   if not state then
     return
   end
-  teardown_state(state)
+  local on_close = teardown_state(state)
   if valid_tab(state.tabpage) then
     with_tab(state.tabpage, function()
       vim.cmd("tabclose")
     end)
+  end
+  if type(on_close) == "function" then
+    pcall(on_close)
   end
 end
 
@@ -1616,6 +1633,10 @@ local function setup_keymaps(state)
     end
   end
 
+  for _, lhs in ipairs({ "i", "I", "a", "A", "o", "O", "R", "x", "X", "D" }) do
+    map(lhs, function() end)
+  end
+
   map("q", function()
     close_tab(state)
   end)
@@ -1829,14 +1850,22 @@ local function setup_keymaps(state)
   end, { state.sidebar_buf })
 
   map("]p", function()
-    if current_row_offset(state) + (state.page_limit or 200) >= tonumber(state.total_rows or 0) then
+    local page_limit = tonumber(state.page_limit or 0) or 0
+    if page_limit < 1 then
       return
     end
-    refresh_page(state, current_row_offset(state) + (state.page_limit or 200))
+    if current_row_offset(state) + page_limit >= tonumber(state.total_rows or 0) then
+      return
+    end
+    refresh_page(state, current_row_offset(state) + page_limit)
   end)
 
   map("[p", function()
-    refresh_page(state, math.max(0, current_row_offset(state) - (state.page_limit or 200)))
+    local page_limit = tonumber(state.page_limit or 0) or 0
+    if page_limit < 1 then
+      return
+    end
+    refresh_page(state, math.max(0, current_row_offset(state) - page_limit))
   end)
 end
 
@@ -1847,7 +1876,8 @@ function M.open(opts)
     return nil, err
   end
 
-  local page, page_err = opts.lsp.view_page(opts.options, opts.source_bufnr, opened.session_id, 0, opts.page_limit or 200)
+  local page_limit = tonumber(opts.page_limit or 0) or 0
+  local page, page_err = opts.lsp.view_page(opts.options, opts.source_bufnr, opened.session_id, 0, page_limit)
   if page_err then
     pcall(opts.lsp.view_close, opts.options, opts.source_bufnr, opened.session_id)
     return nil, page_err
@@ -1863,15 +1893,18 @@ function M.open(opts)
   local tabpage = vim.api.nvim_get_current_tabpage()
   local grid_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(grid_win, grid_buf)
+  local initial_width = vim.api.nvim_win_get_width(grid_win)
   vim.wo[grid_win].wrap = false
   vim.wo[grid_win].number = false
   vim.wo[grid_win].relativenumber = false
   vim.wo[grid_win].cursorline = true
   vim.wo[grid_win].cursorlineopt = "line"
 
-  vim.cmd("rightbelow 34vsplit")
+  local sidebar_width = sidebar_split_width(initial_width)
+  vim.cmd("rightbelow " .. tostring(sidebar_width) .. "vsplit")
   local sidebar_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(sidebar_win, sidebar_buf)
+  pcall(vim.api.nvim_win_set_width, sidebar_win, sidebar_width)
   vim.wo[sidebar_win].wrap = false
   vim.wo[sidebar_win].number = false
   vim.wo[sidebar_win].relativenumber = false
@@ -1907,7 +1940,7 @@ function M.open(opts)
     pinned_header_line = nil,
     pinned_header_row_width = nil,
     page_offset = tonumber(page.offset or 0) or 0,
-    page_limit = tonumber(page.limit or opts.page_limit or 200) or 200,
+    page_limit = tonumber(page.limit) or page_limit,
     selected_column = opened.schema and opened.schema[1] and tonumber(opened.schema[1].index) or 1,
     selected_row = 1,
     pinned_column = nil,
@@ -1925,6 +1958,7 @@ function M.open(opts)
     notify = opts.notify,
     options = opts.options,
     lsp = opts.lsp,
+    on_close = opts.on_close,
   }
 
   states[tabpage] = state
@@ -1980,6 +2014,7 @@ function M.open(opts)
   render_grid(state)
   render_sidebar(state)
   render_details(state, "ArkView", string.format("Rows: %d\nColumns: %d\nExpr: %s", state.total_rows, state.total_columns, state.expr))
+  pcall(vim.cmd, "stopinsert")
   return state
 end
 

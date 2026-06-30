@@ -528,6 +528,17 @@ local({
         force = TRUE
       )
 
+      try(
+        arkbridge:::.ark_install_help_hook(list(
+          status_file = .status_file_path(),
+          nvim_bin = Sys.getenv(
+            "ARK_NVIM_PARENT_NVIM",
+            unset = Sys.getenv("ARK_NVIM_CONSOLE_NVIM", unset = "nvim")
+          )
+        )),
+        silent = TRUE
+      )
+
       .bootstrap_cache <- tryCatch(
         .collect_bootstrap_cache(),
         error = function(e) {

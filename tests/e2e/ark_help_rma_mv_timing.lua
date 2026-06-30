@@ -11,6 +11,9 @@ local test_file = vim.fs.normalize(ark_test.run_tmpdir() .. "/ark_help_rma_mv_ti
 local pane_id = ark_test.setup_managed_buffer(test_file, {
   "metafor::rma.mv(",
 }, {
+  help = {
+    display = "float",
+  },
   tmux = {
     session_lib_path = vim.fs.normalize(ark_test.run_tmpdir() .. "/r-lib"),
   },
@@ -100,9 +103,9 @@ session.status = original_session_status
 local help_buf = vim.api.nvim_get_current_buf()
 local lines = vim.api.nvim_buf_get_lines(help_buf, 0, math.min(30, vim.api.nvim_buf_line_count(help_buf)), false)
 local text = table.concat(lines, "\n")
-if vim.bo[help_buf].filetype ~= "arkhelp" then
+if vim.bo[help_buf].filetype ~= "markdown" then
   stop_watchdog()
-  ark_test.fail("expected ArkHelp to open an arkhelp buffer, got " .. tostring(vim.bo[help_buf].filetype))
+  ark_test.fail("expected ArkHelp to open a markdown buffer, got " .. tostring(vim.bo[help_buf].filetype))
 end
 if not text:find("rma%.mv", 1) then
   stop_watchdog()

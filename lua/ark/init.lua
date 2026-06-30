@@ -11,6 +11,7 @@ local session_backend = require("ark.session")
 local snippets = require("ark.snippets")
 local target_tools = require("ark.targets")
 local view = require("ark.view")
+local view_popup_backend = require("ark.view_popup_backend")
 local uv = vim.uv or vim.loop
 
 local M = {}
@@ -23,7 +24,9 @@ local readiness_waiters = {}
 local readiness_waiter_seq = 0
 local pending_session_sync = 0
 local help_float_ns = vim.api.nvim_create_namespace("ArkHelpFloat")
-local help_filetype = "arkhelp"
+local help_filetype = "markdown"
+local help_rpc_fn = "__ark_nvim_help_rpc"
+local view_rpc_fn = "__ark_nvim_view_rpc"
 local is_ark_buffer
 local is_ark_runtime_buffer
 local runtime_ready
@@ -869,6 +872,38 @@ local function render_help_display(raw_lines)
   return rendered
 end
 
+local function start_help_markdown_parser(buf)
+  return pcall(vim.treesitter.start, buf, "markdown")
+end
+
+local function ensure_markdown_fenced_r_syntax()
+  local languages = vim.g.markdown_fenced_languages
+  if type(languages) ~= "table" then
+    languages = {}
+  else
+    languages = vim.deepcopy(languages)
+  end
+
+  for _, language in ipairs(languages) do
+    if language == "r" or language == "r=R" then
+      vim.g.markdown_fenced_languages = languages
+      return
+    end
+  end
+
+  languages[#languages + 1] = "r"
+  vim.g.markdown_fenced_languages = languages
+end
+
+local function start_help_markdown_syntax(buf)
+  ensure_markdown_fenced_r_syntax()
+  vim.api.nvim_buf_call(buf, function()
+    vim.bo[buf].syntax = "markdown"
+    pcall(vim.cmd, "runtime! syntax/markdown.vim")
+    pcall(vim.cmd, "syntax sync fromstart")
+  end)
+end
+
 local function apply_help_highlights(buf, rendered, references)
   local lines = rendered.lines
   ensure_help_highlights()
@@ -971,7 +1006,7 @@ local function open_readonly_float(text, opts)
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].filetype = help_filetype
-  local treesitter_started = pcall(vim.treesitter.start, buf, "markdown")
+  local treesitter_started = start_help_markdown_parser(buf)
   vim.b[buf].ark_help_treesitter = treesitter_started
   vim.bo[buf].modifiable = false
   vim.bo[buf].readonly = true
@@ -995,6 +1030,11 @@ local function open_readonly_float(text, opts)
   vim.wo[win].concealcursor = ""
 
   apply_help_highlights(buf, rendered, opts.references or {})
+  vim.defer_fn(function()
+    if vim.api.nvim_buf_is_valid(buf) then
+      start_help_markdown_syntax(buf)
+    end
+  end, 20)
 
   local close = function()
     if vim.api.nvim_win_is_valid(win) then
@@ -1006,7 +1046,6 @@ local function open_readonly_float(text, opts)
   vim.b[buf].ark_help_buffer = true
 
   vim.keymap.set("n", "q", close, { buffer = buf, nowait = true, silent = true })
-  vim.keymap.set("n", "<Esc>", close, { buffer = buf, nowait = true, silent = true })
   vim.keymap.set("n", "<CR>", function()
     local match = reference_under_cursor(buf)
     if not match then
@@ -1021,6 +1060,140 @@ local function open_readonly_float(text, opts)
   end, { buffer = buf, nowait = true, silent = true })
 
   return buf, win
+end
+
+local function normalize_help_display(value)
+  if type(value) ~= "string" or value == "" then
+    return "auto"
+  end
+
+  value = value:lower():gsub("-", "_")
+  if value == "float" or value == "nvim" or value == "nvim_float" then
+    return "float"
+  end
+  if value == "popup" or value == "tmux" or value == "tmux_popup" then
+    return "tmux_popup"
+  end
+  if value == "auto" then
+    return "auto"
+  end
+
+  return "auto"
+end
+
+local function normalize_view_display(value)
+  if type(value) ~= "string" or value == "" then
+    return "auto"
+  end
+
+  value = value:lower():gsub("-", "_")
+  if value == "tab" or value == "nvim" or value == "nvim_tab" then
+    return "tab"
+  end
+  if value == "popup" or value == "tmux" or value == "tmux_popup" then
+    return "tmux_popup"
+  end
+  if value == "auto" then
+    return "auto"
+  end
+
+  return "auto"
+end
+
+local function should_use_tmux_help_popup()
+  local help_opts = type(options) == "table" and type(options.help) == "table" and options.help or {}
+  local display = normalize_help_display(help_opts.display)
+  if display == "float" then
+    return false
+  end
+  if display == "tmux_popup" then
+    return true
+  end
+
+  if session_backend.backend_name(options) ~= "tmux" then
+    return false
+  end
+
+  local status = session_backend.status(options)
+  return type(status) == "table" and status.inside_tmux == true
+end
+
+local function open_help_popup(text, topic)
+  local help_opts = type(options) == "table" and type(options.help) == "table" and options.help or {}
+  local rendered = render_help_display(split_lines(text))
+  local popup_opts = vim.tbl_deep_extend("force", help_opts.popup or {}, {
+    title = topic and ("ArkHelp: " .. topic) or "ArkHelp",
+  })
+
+  return session_backend.help_popup(options, table.concat(rendered.lines, "\n"), popup_opts)
+end
+
+local function should_use_tmux_view_popup()
+  local view_opts = type(options) == "table" and type(options.view) == "table" and options.view or {}
+  local display = normalize_view_display(view_opts.display)
+  if display == "tab" then
+    return false
+  end
+  if display == "tmux_popup" then
+    return true
+  end
+
+  if session_backend.backend_name(options) ~= "tmux" then
+    return false
+  end
+
+  local status = session_backend.status(options)
+  return type(status) == "table" and status.inside_tmux == true
+end
+
+local function current_nvim_server()
+  if type(vim.v.servername) == "string" and vim.v.servername ~= "" then
+    return vim.v.servername
+  end
+  if type(vim.fn.serverstart) ~= "function" then
+    return nil
+  end
+
+  local ok, server = pcall(vim.fn.serverstart)
+  if ok and type(server) == "string" and server ~= "" then
+    return server
+  end
+  if type(vim.v.servername) == "string" and vim.v.servername ~= "" then
+    return vim.v.servername
+  end
+
+  return nil
+end
+
+local function open_view_tmux_popup(expr, source_bufnr, server)
+  if not should_use_tmux_view_popup() then
+    return nil, nil
+  end
+
+  server = server or current_nvim_server()
+  if type(server) ~= "string" or server == "" then
+    return nil, "tmux ArkView popup requires this Neovim instance to have an RPC server"
+  end
+
+  local backend_id, backend_err = view_popup_backend.register({
+    options = options,
+    source_bufnr = source_bufnr,
+  })
+  if not backend_id then
+    return nil, backend_err
+  end
+
+  local view_opts = type(options) == "table" and type(options.view) == "table" and options.view or {}
+  local popup_opts = vim.tbl_deep_extend("force", view_opts.popup or {}, {
+    title = "ArkView: " .. expr,
+  })
+  local popup_ok, popup_err = session_backend.view_popup(options, server, backend_id, expr, popup_opts)
+  if not popup_ok then
+    view_popup_backend.unregister(backend_id)
+    return nil, popup_err or "failed to open tmux ArkView popup"
+  end
+
+  return true, nil
 end
 
 local function wait_for_help_runtime(bufnr)
@@ -1148,6 +1321,78 @@ local function active_console_status(bufnr)
   end
 
   return status
+end
+
+local function resolve_explicit_help_bufnr(bufnr)
+  bufnr = resolve_bufnr(bufnr)
+  if is_ark_buffer(bufnr) or active_console_status(bufnr) then
+    return bufnr
+  end
+
+  local source_bufnr = resolve_view_source_bufnr(bufnr)
+  if type(source_bufnr) == "number" and vim.api.nvim_buf_is_valid(source_bufnr) then
+    return source_bufnr
+  end
+
+  for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_win_is_valid(winid) then
+      local candidate = vim.api.nvim_win_get_buf(winid)
+      if is_ark_buffer(candidate) then
+        return candidate
+      end
+    end
+  end
+
+  for _, candidate in ipairs(vim.api.nvim_list_bufs()) do
+    if is_ark_buffer(candidate) then
+      return candidate
+    end
+  end
+
+  return bufnr
+end
+
+local function register_help_rpc()
+  _G[help_rpc_fn] = function(topic)
+    if type(topic) ~= "string" or topic == "" then
+      error("ArkHelp RPC requires a non-empty topic", 0)
+    end
+
+    vim.defer_fn(function()
+      local help_bufnr = resolve_explicit_help_bufnr(0)
+      local ok, err = pcall(function()
+        return M.help_topic(topic, help_bufnr)
+      end)
+      if not ok then
+        notify(tostring(err), vim.log.levels.WARN)
+      end
+    end, 25)
+
+    return "ok"
+  end
+end
+
+local function register_view_rpc()
+  _G[view_rpc_fn] = function(expr)
+    if type(expr) ~= "string" or expr == "" then
+      error("ArkView RPC requires a non-empty expression", 0)
+    end
+
+    vim.defer_fn(function()
+      local view_bufnr = resolve_explicit_help_bufnr(0)
+      local ok, err = pcall(function()
+        if should_use_tmux_view_popup() then
+          return M.view_popup(expr, view_bufnr)
+        end
+        return M.view(expr, view_bufnr)
+      end)
+      if not ok then
+        notify(tostring(err), vim.log.levels.WARN)
+      end
+    end, 25)
+
+    return "ok"
+  end
 end
 
 local function console_runtime_ready(bufnr)
@@ -1618,16 +1863,49 @@ local function slime_target()
   return nil
 end
 
+local pending_slime_config_key = "__ark_pending"
+
+local function is_pending_slime_config(config)
+  return type(config) == "table" and config[pending_slime_config_key] == true
+end
+
 local function slime_config(fallback)
-  if type(vim.b.slime_config) == "table" then
-    return vim.b.slime_config
+  local buffer_config = vim.b.slime_config
+  local default_config = vim.g.slime_default_config
+
+  if type(buffer_config) == "table" and not is_pending_slime_config(buffer_config) then
+    return buffer_config
   end
 
-  if type(vim.g.slime_default_config) == "table" then
-    return vim.g.slime_default_config
+  if type(default_config) == "table" and not is_pending_slime_config(default_config) then
+    return default_config
+  end
+
+  if type(buffer_config) == "table" then
+    return buffer_config
+  end
+
+  if type(default_config) == "table" then
+    return default_config
   end
 
   return fallback
+end
+
+local function seed_pending_slime_config()
+  if session_backend.backend_name(options) ~= "tmux" then
+    return
+  end
+  if type(vim.g.slime_default_config) == "table" then
+    return
+  end
+
+  vim.g.slime_target = "tmux"
+  vim.g.slime_default_config = {
+    socket_name = "",
+    target_pane = "",
+    [pending_slime_config_key] = true,
+  }
 end
 
 local function default_slime_send(config_arg, text)
@@ -1683,6 +1961,7 @@ local function install_slime_override()
   end
 
   if vim.g.ark_slime_override_send_installed == 1 then
+    seed_pending_slime_config()
     return
   end
 
@@ -1695,6 +1974,7 @@ local function install_slime_override()
   end
 
   vim.g.ark_slime_override_send_installed = 1
+  seed_pending_slime_config()
   vim.cmd([[
 function! SlimeOverrideSend(config, text) abort
   let l:ark_err = v:lua.__ark_slime_override_send(a:config, a:text)
@@ -1806,6 +2086,8 @@ end
 
 function M.setup(opts)
   options = merged_opts(options, opts)
+  register_help_rpc()
+  register_view_rpc()
   if type(lsp.set_startup_ready_callback) == "function" then
     lsp.set_startup_ready_callback(function(bufnr, payload)
       record_startup_unlock(bufnr, type(payload) == "table" and payload.source or "LspBootstrap", {
@@ -2219,7 +2501,9 @@ end
 local function show_help_page(bufnr, topic)
   bufnr = resolve_bufnr(bufnr)
 
-  if not is_ark_buffer(bufnr) then
+  local explicit_topic = type(topic) == "string" and topic ~= ""
+  local use_console_runtime = explicit_topic and active_console_status(bufnr) ~= nil
+  if not is_ark_buffer(bufnr) and not use_console_runtime then
     local err = "ark.nvim help requires an R-family buffer"
     notify(err, vim.log.levels.WARN)
     return nil, err
@@ -2248,6 +2532,14 @@ local function show_help_page(bufnr, topic)
       return nil, page_err
     end
 
+    if should_use_tmux_help_popup() then
+      local popup_ok, popup_err = open_help_popup(page.text, topic)
+      if popup_ok then
+        return topic, nil
+      end
+      notify(popup_err or "tmux ArkHelp popup failed; opening Neovim help float", vim.log.levels.WARN)
+    end
+
     open_readonly_float(page.text, {
       references = page.references,
       source_bufnr = bufnr,
@@ -2259,7 +2551,12 @@ local function show_help_page(bufnr, topic)
     return topic, nil
   end
 
-  local opened_topic, runtime_err, err_source = with_runtime_ready(bufnr, "ark.nvim help", open_help, {
+  local runtime_ready_fn = with_runtime_ready
+  if use_console_runtime then
+    runtime_ready_fn = with_console_session_ready
+  end
+
+  local opened_topic, runtime_err, err_source = runtime_ready_fn(bufnr, "ark.nvim help", open_help, {
     start_lsp = false,
   })
   if not opened_topic and runtime_err and err_source ~= "callback" then
@@ -2326,7 +2623,17 @@ function M.help(bufnr)
   return show_help_page(bufnr, nil)
 end
 
-function M.view(expr, bufnr)
+function M.help_topic(topic, bufnr)
+  ensure_setup()
+  if type(topic) ~= "string" or topic == "" then
+    local err = "ark.nvim help topic requires a non-empty topic"
+    notify(err, vim.log.levels.WARN)
+    return nil, err
+  end
+  return show_help_page(bufnr, topic)
+end
+
+function M.view_popup(expr, bufnr)
   ensure_setup()
   bufnr = resolve_bufnr(bufnr)
 
@@ -2346,8 +2653,100 @@ function M.view(expr, bufnr)
     return nil, err
   end
 
+  local function open_current_ui()
+    local opened, open_err = view.open({
+      expr = expr,
+      source_bufnr = source_bufnr,
+      options = options,
+      lsp = lsp,
+      notify = notify,
+    })
+    if not opened then
+      notify(open_err or "failed to open ArkView", vim.log.levels.WARN)
+      return nil, open_err
+    end
+
+    return opened
+  end
+
+  local function open_popup(runtime_err)
+    if runtime_err then
+      notify(runtime_err, vim.log.levels.WARN)
+      return nil, runtime_err
+    end
+
+    local console_status = active_console_status(bufnr)
+    local server = console_status and console_status.rpc_socket or nil
+    local opened, popup_err = open_view_tmux_popup(expr, source_bufnr, server)
+    if opened then
+      return opened
+    end
+
+    local view_opts = type(options) == "table" and type(options.view) == "table" and options.view or {}
+    if normalize_view_display(view_opts.display) == "tmux_popup" then
+      local err = popup_err or "failed to open tmux ArkView popup"
+      notify(err, vim.log.levels.WARN)
+      return nil, err
+    end
+
+    return open_current_ui()
+  end
+
+  local runtime_bufnr = source_bufnr
+  local runtime_ready_fn = with_runtime_ready
+  local runtime_opts = nil
+  if active_console_status(bufnr) then
+    runtime_bufnr = bufnr
+    runtime_ready_fn = with_console_session_ready
+    runtime_opts = {
+      request_bufnr = source_bufnr,
+    }
+  end
+
+  local opened, runtime_err, err_source =
+    runtime_ready_fn(runtime_bufnr, "ark.nvim data explorer", open_popup, runtime_opts)
+  if not opened and runtime_err and err_source ~= "callback" then
+    notify(runtime_err, vim.log.levels.WARN)
+    return nil, runtime_err
+  end
+  if not opened and runtime_err then
+    return nil, runtime_err
+  end
+
+  return opened
+end
+
+function M.view(expr, bufnr, view_opts)
+  ensure_setup()
+  bufnr = resolve_bufnr(bufnr)
+  view_opts = type(view_opts) == "table" and view_opts or {}
+  local function close_view_popup()
+    if type(view_opts.on_close) == "function" then
+      pcall(view_opts.on_close)
+    end
+  end
+
+  if type(expr) ~= "string" or expr == "" then
+    expr = expression.current()
+  end
+  if type(expr) ~= "string" or expr == "" then
+    local err = "no ArkView expression found"
+    close_view_popup()
+    notify(err, vim.log.levels.WARN)
+    return nil, err
+  end
+
+  local source_bufnr = resolve_view_source_bufnr(bufnr)
+  if type(source_bufnr) ~= "number" then
+    local err = "ark.nvim data explorer requires an R-family buffer"
+    close_view_popup()
+    notify(err, vim.log.levels.WARN)
+    return nil, err
+  end
+
   local function open_view(runtime_err)
     if runtime_err then
+      close_view_popup()
       notify(runtime_err, vim.log.levels.WARN)
       return nil, runtime_err
     end
@@ -2358,8 +2757,10 @@ function M.view(expr, bufnr)
       options = options,
       lsp = lsp,
       notify = notify,
+      on_close = view_opts.on_close,
     })
     if not opened then
+      close_view_popup()
       notify(open_err or "failed to open ArkView", vim.log.levels.WARN)
       return nil, open_err
     end
@@ -2381,10 +2782,12 @@ function M.view(expr, bufnr)
   local opened, runtime_err, err_source =
     runtime_ready_fn(runtime_bufnr, "ark.nvim data explorer", open_view, runtime_opts)
   if not opened and runtime_err and err_source ~= "callback" then
+    close_view_popup()
     notify(runtime_err, vim.log.levels.WARN)
     return nil, runtime_err
   end
   if not opened and runtime_err then
+    close_view_popup()
     return nil, runtime_err
   end
 

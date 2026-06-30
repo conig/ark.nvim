@@ -79,6 +79,18 @@ Responsibilities:
 - relay session metadata through `ark/updateSession`
 - expose a lazy-load-friendly `:Ark` dispatcher plus compatibility commands such
   as `ArkPaneStart`, `ArkTab*`, `ArkHelp`, and `ArkStatus`
+- present `ArkHelp` through a tmux popup containing a read-only Neovim help
+  buffer by default when running on the tmux backend inside tmux, with the
+  existing in-process Neovim floating help buffer as the fallback and explicit
+  float mode
+- build tmux popup surfaces for ArkHelp, ArkView, and source-Neovim UI attach
+  through one shared popup envelope helper; each invocation supplies width,
+  height, target pane/client, optional environment, command payload, top-border
+  title, and border policy, with bordered titled popups as the default and
+  explicit borderless mode reserved for callers that request it
+- accept explicit ArkHelp topics from the managed R runtime so R help syntax
+  such as `?lm` in managed R panes can route to ArkHelp without reinterpreting
+  submitted console input
 - expose a dedicated `ArkView` tabpage data explorer for live tabular objects
 - expose `:checkhealth ark` for install/runtime diagnostics
 
@@ -131,6 +143,15 @@ Responsibilities:
 - keep the control-plane status file small and store cached bootstrap payloads in
   a separate trusted artifact
 - answer bridge requests for bootstrap, help text, and runtime inspection
+- install a scoped managed-session help hook that routes simple R `?topic`
+  requests back to ArkHelp through the `nvim-console` RPC socket or the parent
+  Neovim RPC server, while preserving base R help behavior as fallback
+- install a scoped managed-session `View()` hook that routes data-viewer
+  requests back to ArkView through the same Neovim RPC path, while preserving
+  base R `View()` behavior as fallback
+- present console-originated ArkView tabs through a tmux popup UI in auto mode
+  when the Ark console is running inside tmux, so small console panes do not
+  constrain data-grid inspection
 - answer bridge requests for live data-explorer sessions and table paging
 - format ArkView display-only string cells so empty strings, boundary spaces,
   and repeated spaces remain visually distinguishable without changing raw

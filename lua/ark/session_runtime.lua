@@ -20,6 +20,34 @@ local function mode_has(mode, mask)
   return bitops.band(mode, mask) ~= 0
 end
 
+function M.parent_server(config)
+  if type(vim.v.servername) == "string" and vim.v.servername ~= "" then
+    return vim.v.servername
+  end
+
+  if type(vim.fn.serverstart) ~= "function" then
+    return ""
+  end
+
+  local root = M.status_root(config or {})
+  if type(root) ~= "string" or root == "" then
+    root = vim.fn.tempname()
+  end
+
+  pcall(vim.fn.mkdir, root, "p")
+  local path = vim.fs.normalize(root .. "/ark-parent-" .. tostring(vim.fn.getpid()) .. ".sock")
+  local ok, servername = pcall(vim.fn.serverstart, path)
+  if ok and type(servername) == "string" and servername ~= "" then
+    return servername
+  end
+
+  if type(vim.v.servername) == "string" and vim.v.servername ~= "" then
+    return vim.v.servername
+  end
+
+  return ""
+end
+
 local function session_key(session)
   if type(session) ~= "table" then
     return ""

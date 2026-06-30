@@ -84,6 +84,39 @@ function M.defaults()
       target_prefix = "<leader>t",
       snippets = "<leader>as",
     },
+    help = {
+      display = vim.env.ARK_NVIM_HELP_DISPLAY or "auto",
+      popup = {
+        width = vim.env.ARK_NVIM_HELP_POPUP_WIDTH or "auto",
+        height = vim.env.ARK_NVIM_HELP_POPUP_HEIGHT or "80%",
+        viewer = vim.env.ARK_NVIM_HELP_POPUP_VIEWER or "nvim",
+        pager = {
+          bin = first_executable(compact(vim.env.ARK_NVIM_HELP_POPUP_PAGER, "less")) or "less",
+        },
+        nvim = {
+          bin = first_executable(compact(
+            vim.env.ARK_NVIM_HELP_POPUP_NVIM,
+            vim.v.progpath,
+            "nvim"
+          )) or "nvim",
+          init = expand_candidate(vim.env.ARK_NVIM_HELP_POPUP_INIT),
+        },
+      },
+    },
+    view = {
+      display = vim.env.ARK_NVIM_VIEW_DISPLAY or "auto",
+      popup = {
+        width = vim.env.ARK_NVIM_VIEW_POPUP_WIDTH or "90%",
+        height = vim.env.ARK_NVIM_VIEW_POPUP_HEIGHT or "90%",
+        nvim = {
+          bin = first_executable(compact(
+            vim.env.ARK_NVIM_VIEW_POPUP_NVIM,
+            vim.v.progpath,
+            "nvim"
+          )) or "nvim",
+        },
+      },
+    },
     lsp = {
       name = "ark_lsp",
       cmd = { lsp_bin, "--runtime-mode", "detached" },

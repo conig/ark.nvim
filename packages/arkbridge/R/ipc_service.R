@@ -221,7 +221,7 @@
       session,
       req$session_id %||% "",
       req$offset %||% 0L,
-      req$limit %||% 200L
+      req$limit %||% 0L
     ))
   }
 
