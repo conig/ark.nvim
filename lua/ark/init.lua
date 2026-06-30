@@ -1358,7 +1358,7 @@ local function register_help_rpc()
       error("ArkHelp RPC requires a non-empty topic", 0)
     end
 
-    vim.defer_fn(function()
+    vim.schedule(function()
       local help_bufnr = resolve_explicit_help_bufnr(0)
       local ok, err = pcall(function()
         return M.help_topic(topic, help_bufnr)
@@ -1366,7 +1366,7 @@ local function register_help_rpc()
       if not ok then
         notify(tostring(err), vim.log.levels.WARN)
       end
-    end, 25)
+    end)
 
     return "ok"
   end
@@ -1378,7 +1378,7 @@ local function register_view_rpc()
       error("ArkView RPC requires a non-empty expression", 0)
     end
 
-    vim.defer_fn(function()
+    vim.schedule(function()
       local view_bufnr = resolve_explicit_help_bufnr(0)
       local ok, err = pcall(function()
         if should_use_tmux_view_popup() then
@@ -1389,7 +1389,7 @@ local function register_view_rpc()
       if not ok then
         notify(tostring(err), vim.log.levels.WARN)
       end
-    end, 25)
+    end)
 
     return "ok"
   end

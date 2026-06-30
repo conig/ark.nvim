@@ -2453,7 +2453,7 @@ function M.start(opts)
       error("Ark console help RPC requires a non-empty topic", 0)
     end
 
-    vim.defer_fn(function()
+    vim.schedule(function()
       if type(state.buffers[bufnr]) ~= "table" or not vim.api.nvim_buf_is_valid(bufnr) then
         return
       end
@@ -2464,7 +2464,7 @@ function M.start(opts)
       if not ok then
         vim.notify(tostring(err), vim.log.levels.WARN, { title = "ark.nvim" })
       end
-    end, 25)
+    end)
 
     return "ok"
   end
@@ -2474,7 +2474,7 @@ function M.start(opts)
       error("Ark console View RPC requires a non-empty expression", 0)
     end
 
-    vim.defer_fn(function()
+    vim.schedule(function()
       if type(state.buffers[bufnr]) ~= "table" or not vim.api.nvim_buf_is_valid(bufnr) then
         return
       end
@@ -2485,7 +2485,7 @@ function M.start(opts)
       if not ok then
         vim.notify(tostring(err), vim.log.levels.WARN, { title = "ark.nvim" })
       end
-    end, 25)
+    end)
 
     return "ok"
   end
