@@ -5,6 +5,7 @@ local uv = vim.uv or vim.loop
 local M = {}
 local prompt_ready_cache = {}
 local PROMPT_READY_CACHE_TTL_MS = 100
+local FAST_TAB_PRUNE_TTL_MS = 1000
 
 local state = _G.__ark_nvim_state
 if type(state) ~= "table" then
@@ -757,7 +758,16 @@ local function tab_badge_text(index, count)
   return string.format("[%d/%d]", index, count or #state.tabs)
 end
 
-local function prune_dead_tabs()
+local function prune_dead_tabs(opts)
+  opts = opts or {}
+  local max_age_ms = tonumber(opts.max_age_ms)
+  if max_age_ms and max_age_ms > 0 and type(state.last_prune_ms) == "number" then
+    if monotonic_ms() - state.last_prune_ms < max_age_ms then
+      return
+    end
+  end
+
+  state.last_prune_ms = monotonic_ms()
   local removed_active = false
   for index = #state.tabs, 1, -1 do
     local tab = state.tabs[index]
@@ -1439,26 +1449,6 @@ local function swap_active_tab(index, config)
     return nil, "ark.nvim tab swap requires live panes"
   end
 
-  local current_session = refresh_visible_tab_session(current_index)
-  if current_session then
-    current.session = current_session
-  end
-
-  local layout, layout_err = active_pane_layout(current.pane_id, config or {})
-  if not layout then
-    return nil, layout_err
-  end
-
-  local size = nil
-  if layout.name == "stacked" then
-    size = current_pane_height(current.pane_id)
-  else
-    size = current_pane_width(current.pane_id)
-  end
-  if size then
-    set_slot_size_cells(layout, size)
-  end
-
   local _, swap_err = run_tmux({
     "swap-pane",
     "-d",
@@ -1476,8 +1466,7 @@ local function swap_active_tab(index, config)
   target.visible = true
   target.parking_window_id = nil
 
-  refresh_visible_tab_session(index)
-  set_active_tab(index)
+  update_active_index(index)
   return target.pane_id, nil
 end
 
@@ -2485,7 +2474,7 @@ function M.tab_new(opts)
 end
 
 function M.tab_select(index, opts)
-  prune_dead_tabs()
+  prune_dead_tabs({ max_age_ms = FAST_TAB_PRUNE_TTL_MS })
   if #state.tabs == 0 then
     return nil, "ark.nvim has no managed tabs"
   end
@@ -2544,7 +2533,7 @@ function M.tab_go(index, opts)
 end
 
 function M.tab_next(opts)
-  prune_dead_tabs()
+  prune_dead_tabs({ max_age_ms = FAST_TAB_PRUNE_TTL_MS })
   if #state.tabs == 0 then
     return nil, "ark.nvim has no managed tabs"
   end
@@ -2559,7 +2548,7 @@ function M.tab_next(opts)
 end
 
 function M.tab_prev(opts)
-  prune_dead_tabs()
+  prune_dead_tabs({ max_age_ms = FAST_TAB_PRUNE_TTL_MS })
   if #state.tabs == 0 then
     return nil, "ark.nvim has no managed tabs"
   end

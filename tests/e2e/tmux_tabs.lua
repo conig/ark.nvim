@@ -405,9 +405,34 @@ local ok, err = pcall(function()
     error("expected tab state after ArkTabNew to report the new active tab, got " .. vim.inspect(tab_state_after_new), 0)
   end
 
+  local switch_command_start = #commands
   local restored = assert(tmux.tab_prev(opts))
   if restored ~= first_pane then
     error("expected ArkTabPrev to restore " .. first_pane .. ", got " .. tostring(restored), 0)
+  end
+  local switch_commands = {}
+  for index = switch_command_start + 1, #commands do
+    switch_commands[#switch_commands + 1] = commands[index]
+  end
+  local switch_swap_count = 0
+  for _, command in ipairs(switch_commands) do
+    if type(command) == "table" and command[2] == "swap-pane" then
+      switch_swap_count = switch_swap_count + 1
+    end
+    if type(command) == "table" and command[2] == "list-panes" then
+      error("expected Ark tab switching not to recalculate pane layout, got " .. vim.inspect(switch_commands), 0)
+    end
+    if type(command) == "table"
+      and command[2] == "display-message"
+      and command[3] == "-p"
+      and command[4] == "-t"
+      and command[6] == "#{socket_path}\n#{session_name}"
+    then
+      error("expected Ark tab switching to use cached session metadata, got " .. vim.inspect(switch_commands), 0)
+    end
+  end
+  if switch_swap_count ~= 1 then
+    error("expected Ark tab switching to use one tmux swap-pane, got " .. vim.inspect(switch_commands), 0)
   end
   local saw_swap = false
   local saw_join = false
