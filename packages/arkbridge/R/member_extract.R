@@ -61,6 +61,64 @@
   envs
 }
 
+.member_lookup_types <- function(member_names, envs) {
+  member_names <- as.character(member_names %||% character())
+  if (length(member_names) == 0L || is.null(envs)) {
+    return(stats::setNames(character(), character()))
+  }
+
+  types <- stats::setNames(rep.int("unknown", length(member_names)), member_names)
+  remaining <- member_names
+  sentinel <- new.env(parent = emptyenv())
+
+  for (env in envs) {
+    if (length(remaining) == 0L) {
+      break
+    }
+
+    values <- tryCatch(
+      mget(
+        remaining,
+        envir = env,
+        inherits = FALSE,
+        ifnotfound = rep.int(list(sentinel), length(remaining))
+      ),
+      error = function(e) NULL
+    )
+
+    if (is.null(values)) {
+      found <- vapply(
+        remaining,
+        function(name) exists(name, envir = env, inherits = FALSE),
+        logical(1)
+      )
+      hit_names <- remaining[found]
+      if (length(hit_names) > 0L) {
+        hit_types <- vapply(hit_names, function(name) {
+          value <- tryCatch(get(name, envir = env, inherits = FALSE), error = function(e) sentinel)
+          if (identical(value, sentinel)) {
+            "unknown"
+          } else {
+            typeof(value)
+          }
+        }, character(1))
+        types[hit_names] <- hit_types
+      }
+      remaining <- remaining[!found]
+      next
+    }
+
+    found <- !vapply(values, function(value) identical(value, sentinel), logical(1))
+    hit_names <- remaining[found]
+    if (length(hit_names) > 0L) {
+      types[hit_names] <- vapply(values[found], typeof, character(1))
+    }
+    remaining <- remaining[!found]
+  }
+
+  types
+}
+
 .member_value <- function(obj, accessor, name) {
   lookup_envs <- .member_lookup_envs(obj)
   if (!is.null(lookup_envs)) {

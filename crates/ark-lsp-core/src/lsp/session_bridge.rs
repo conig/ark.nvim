@@ -2077,6 +2077,12 @@ fn completion_item(
     object_meta: Option<&ObjectMeta>,
     index: usize,
 ) -> CompletionItem {
+    let label = if member.name_display.is_empty() {
+        member.name_raw.clone()
+    } else {
+        member.name_display.clone()
+    };
+
     let insert_text = match request.flavor {
         CompletionFlavor::Argument => {
             if !member.insert_text.is_empty() {
@@ -2118,7 +2124,7 @@ fn completion_item(
     };
 
     let mut item = CompletionItem {
-        label: member.name_display.clone(),
+        label,
         detail: if member.r#type.is_empty() ||
             member.r#type == "unknown" ||
             matches!(request.flavor, CompletionFlavor::Package) && member.r#type == "NULL"
@@ -3682,7 +3688,7 @@ fn completion_request_from_search_path(
     let expr = if prefix.is_none() && allow_empty_prefix {
         prioritized_empty_search_path_completion_expr()
     } else {
-        search_path_completion_expr()
+        search_path_completion_expr(prefix.as_deref())
     };
 
     Ok(Some(CompletionRequest {
@@ -4559,11 +4565,25 @@ fn browser_aware_symbol_lookup_envs_expr() -> &'static str {
     )
 }
 
-fn search_path_completion_expr() -> String {
+fn search_path_completion_expr(prefix: Option<&str>) -> String {
     let mut expr = String::from("local({ ");
     expr.push_str(browser_aware_symbol_lookup_envs_expr());
+    if let Some(prefix) = prefix.filter(|prefix| !prefix.is_empty()) {
+        expr.push_str(".prefix <- tolower(\"");
+        expr.push_str(escape_r_string(prefix).as_str());
+        expr.push_str("\"); ");
+        expr.push_str(concat!(
+            ".names <- unique(unlist(lapply(.envs, function(.env) { ",
+            ".x <- ls(envir = .env, all.names = TRUE); ",
+            ".x[startsWith(tolower(.x), .prefix)] ",
+            "}), use.names = FALSE)); ",
+        ));
+    } else {
+        expr.push_str(concat!(
+            ".names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); ",
+        ));
+    }
     expr.push_str(concat!(
-        ".names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); ",
         ".out <- stats::setNames(vector(\"list\", length(.names)), .names); ",
         "attr(.out, \"rscope_source_class\") <- \"symbol_lookup_envs\"; ",
         "attr(.out, \"rscope_lookup_envs\") <- .envs; ",
@@ -5870,6 +5890,22 @@ mod tests {
     }
 
     #[test]
+    fn test_search_path_request_pushes_typed_prefix_into_bridge_expr() {
+        let (text, point) = point_from_cursor("arkenv_@");
+        let document = Document::new(text.as_str(), None);
+        let context = DocumentContext::new(&document, point, None);
+
+        let request = completion_request_from_search_path(&context)
+            .unwrap()
+            .expect("expected search-path completion request");
+
+        assert!(matches!(request.flavor, CompletionFlavor::Symbol));
+        assert_eq!(request.prefix, Some(String::from("arkenv_")));
+        assert!(request.expr.contains(".prefix <- tolower(\"arkenv_\")"));
+        assert!(request.expr.contains("startsWith(tolower(.x), .prefix)"));
+    }
+
+    #[test]
     fn test_subset_completion_items_use_priority_sort_text() {
         let item = completion_item(
             BridgeMember {
@@ -5993,6 +6029,32 @@ mod tests {
         );
 
         assert_eq!(item.kind, Some(CompletionItemKind::VARIABLE));
+    }
+
+    #[test]
+    fn test_completion_item_label_falls_back_to_raw_name() {
+        let item = completion_item(
+            BridgeMember {
+                name_raw: String::from("arkenv_candidate_001"),
+                r#type: String::from("integer"),
+                ..Default::default()
+            },
+            &CompletionRequest {
+                expr: String::from("baseenv()"),
+                flavor: CompletionFlavor::Symbol,
+                prefix: Some(String::from("arkenv_")),
+                accessor: None,
+                close_string: false,
+                quote_insert: false,
+                subset_kind: None,
+            },
+            None,
+            0,
+        );
+
+        assert_eq!(item.label, "arkenv_candidate_001");
+        assert_eq!(item.filter_text, Some(String::from("arkenv_candidate_001")));
+        assert_eq!(item.insert_text, Some(String::from("arkenv_candidate_001")));
     }
 
     #[test]

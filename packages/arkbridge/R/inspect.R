@@ -171,6 +171,13 @@ inspect_object <- function(obj, options = list()) {
   }
 
   lean_member_type_error <- new.env(parent = emptyenv())
+  lean_symbol_types <- NULL
+  if (lean_mode) {
+    lookup_envs <- .member_lookup_envs(obj)
+    if (!is.null(lookup_envs)) {
+      lean_symbol_types <- .member_lookup_types(names_all, lookup_envs)
+    }
+  }
 
   lean_member_type <- function(name) {
     if (identical(accessor, "arg") && is.function(obj)) {
@@ -179,6 +186,13 @@ inspect_object <- function(obj, options = list()) {
 
     if (meta_only_mode) {
       return("unknown")
+    }
+
+    if (!is.null(lean_symbol_types)) {
+      type <- unname(lean_symbol_types[name])
+      if (!is.na(type)) {
+        return(type)
+      }
     }
 
     value <- tryCatch(.member_value(obj, accessor, name), error = function(e) lean_member_type_error)
@@ -193,27 +207,14 @@ inspect_object <- function(obj, options = list()) {
     if (identical(accessor, "arg") && is.function(obj)) {
       return(list(
         name_raw = name,
-        name_display = name,
-        accessor = accessor,
         insert_text = .member_insert_text(name, accessor),
-        completion_text = .member_completion_text(name, accessor),
-        summary = "",
-        type = "argument",
-        size = 1L,
-        member_stats = NULL
+        type = "argument"
       ))
     }
 
     list(
       name_raw = name,
-      name_display = name,
-      accessor = accessor,
-      insert_text = .member_insert_text(name, accessor),
-      completion_text = .member_completion_text(name, accessor),
-      summary = "",
-      type = lean_member_type(name),
-      size = 0L,
-      member_stats = NULL
+      type = lean_member_type(name)
     )
   }
 
