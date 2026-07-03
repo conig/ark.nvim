@@ -64,7 +64,8 @@ oak_ide.workspace = true
 oak_package_metadata.workspace = true
 oak_scan.workspace = true
 oak_semantic.workspace = true
-oak_sources.workspace = true
+oak_source.workspace = true
+oak_srcref.workspace = true
 once_cell.workspace = true
 regex.workspace = true
 reqwest.workspace = true
@@ -97,6 +98,7 @@ yaml-rust2.workspace = true
 [dev-dependencies]
 assert_matches.workspace = true
 insta.workspace = true
+oak_r_process.workspace = true
 oak_semantic = { workspace = true, features = ["testing"] }
 oak_package_metadata.workspace = true
 stdext = { workspace = true, features = ["testing"] }

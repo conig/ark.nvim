@@ -2059,6 +2059,7 @@ mtcars$mp";
                 imports: vec![],
                 repository: None,
                 priority: None,
+                built: None,
                 fields: Dcf::new(),
             };
             let package = Package::from_parts(PathBuf::from("/mock/path"), description, namespace);
@@ -2158,6 +2159,7 @@ mtcars$mp";
                 imports: vec![],
                 repository: None,
                 priority: None,
+                built: None,
                 fields: Dcf::new(),
             };
             let package1 =
@@ -2176,6 +2178,7 @@ mtcars$mp";
                 imports: vec![],
                 repository: None,
                 priority: None,
+                built: None,
                 fields: Dcf::new(),
             };
             let package2 =
@@ -2236,6 +2239,7 @@ mtcars$mp";
                 imports: vec![],
                 repository: None,
                 priority: None,
+                built: None,
                 fields: Dcf::new(),
             };
             let package = Package::from_parts(PathBuf::from("/mock/path"), description, namespace);

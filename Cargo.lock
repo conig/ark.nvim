@@ -437,9 +437,11 @@ dependencies = [
  "oak_db",
  "oak_ide",
  "oak_package_metadata",
+ "oak_r_process",
  "oak_scan",
  "oak_semantic",
- "oak_sources",
+ "oak_source",
+ "oak_srcref",
  "once_cell",
  "regex",
  "reqwest",
@@ -2711,6 +2713,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "oak_cache"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "etcetera",
+ "log",
+ "oak_fs",
+ "tempfile",
+]
+
+[[package]]
 name = "oak_core"
 version = "0.1.0"
 dependencies = [
@@ -2849,24 +2862,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "oak_sources"
+name = "oak_source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
- "etcetera",
  "flate2",
- "hex",
  "log",
+ "oak_cache",
  "oak_fs",
- "oak_package_metadata",
- "oak_r_process",
- "serde",
- "serde_json",
- "sha2 0.11.0",
  "tar",
  "tempfile",
  "ureq",
+]
+
+[[package]]
+name = "oak_srcref"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "log",
+ "oak_cache",
+ "oak_fs",
+ "oak_r_process",
+ "sha2 0.11.0",
+ "tempfile",
 ]
 
 [[package]]

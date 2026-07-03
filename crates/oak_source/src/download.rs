@@ -6,6 +6,9 @@ const HTTP_SERVICE_UNAVAILABLE: u16 = 503;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const GLOBAL_TIMEOUT: Duration = Duration::from_secs(40);
 
+/// CRAN mirrors to try, in order
+pub(crate) const MIRRORS: &[&str] = &["https://cran.r-project.org", "https://cran.rstudio.com"];
+
 /// Outcome of a CRAN mirror HTTP request
 pub(crate) enum Outcome {
     Success(ureq::http::Response<ureq::Body>),

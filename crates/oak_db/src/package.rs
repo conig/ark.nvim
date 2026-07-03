@@ -3,6 +3,7 @@ use std::io;
 
 use aether_path::FilePath;
 use oak_package_metadata::description::Description;
+use oak_package_metadata::description::Priority;
 use oak_package_metadata::namespace::Namespace;
 use stdext::result::ResultExt;
 
@@ -138,6 +139,27 @@ impl Package {
         self.description(db)
             .as_ref()
             .map(|description| description.version.clone())
+    }
+
+    /// The package's `Built:`, parsed lazily from `DESCRIPTION`. `None` when
+    /// the file is missing or has no `Built:` field (only installed packages have one).
+    ///
+    /// Build timestamps change on every install, so backdating probably isn't that
+    /// important here, so we don't track this method.
+    pub fn built(self, db: &dyn Db) -> Option<String> {
+        self.description(db)
+            .as_ref()
+            .and_then(|description| description.built.clone())
+    }
+
+    /// The package's `Priority:`, parsed lazily from `DESCRIPTION`. `None` when the file
+    /// is missing or has no `Priority:` field (only base and recommended packages have
+    /// one)
+    #[salsa::tracked(returns(ref))]
+    pub fn priority(self, db: &dyn Db) -> Option<Priority> {
+        self.description(db)
+            .as_ref()
+            .and_then(|description| description.priority.clone())
     }
 
     /// The basename order from `DESCRIPTION`'s `Collate:` field, parsed

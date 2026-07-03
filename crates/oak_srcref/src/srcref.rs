@@ -1,39 +1,37 @@
 use std::path::Path;
 
-use oak_fs::file_lock::FileLock;
-
 const SCRIPT: &str = include_str!("../scripts/srcrefs.R");
 
-/// Extracts an R package's source files from srcref metadata if possible and adds
-/// them to the cache at the parent folder containing `destination_lock`
+/// Recover an installed package's sources from `srcref` metadata into `dir`
 ///
-/// Launches a sidecar R session to read the srcrefs from the installed package.
-pub(crate) fn cache_srcref<P: AsRef<Path>, Q: AsRef<Path>>(
-    package: &str,
+/// Launches a sidecar R session to read the srcrefs from the installed package, then
+/// writes a flat directory of `.R` files. Files are marked read only to discourage
+/// accidental edits.
+///
+/// Returns `Ok(false)` if the package wasn't installed with srcrefs preserved, which we
+/// treat as "source unavailable" rather than an error.
+pub(crate) fn populate(
+    r: &Path,
+    name: &str,
     version: &str,
-    destination_lock: &FileLock,
-    r: P,
-    library_paths: &[Q],
+    library_path: &Path,
+    dir: &Path,
 ) -> anyhow::Result<bool> {
-    let args = &[package, version];
+    let args = &[name, version];
 
-    // Set `R_LIBS` to ensure the correct R package libraries are checked
-    // `:` on Unix, `;` on Windows, see `?R_LIBS`
-    let library_paths = library_paths
-        .iter()
-        .map(|library_path| library_path.as_ref().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(if cfg!(windows) { ";" } else { ":" });
-    let env = &[("R_LIBS", library_paths.as_str())];
+    // Set `R_LIBS` so the sidecar session finds the package in the same library it was
+    // discovered in (see `?R_LIBS`)
+    let library_path = library_path.to_string_lossy();
+    let env = &[("R_LIBS", library_path.as_ref())];
 
-    let output = oak_r_process::run_text(r.as_ref(), SCRIPT, args, env)?;
+    let output = oak_r_process::run_text(r, SCRIPT, args, env)?;
 
     let code = output.status.code().unwrap_or(1);
 
     // Exit code 2 means no srcrefs
     if code == 2 {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        log::trace!("R script returned with exit code {code} for {package} {version}: {stderr}");
+        log::trace!("R script returned with exit code {code} for {name} {version}: {stderr}");
         return Ok(false);
     }
 
@@ -41,23 +39,18 @@ pub(crate) fn cache_srcref<P: AsRef<Path>, Q: AsRef<Path>>(
     if code != 0 {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(anyhow::anyhow!(
-            "R script failed with exit code {code} for {package} {version}: {stderr}"
+            "R script failed with exit code {code} for {name} {version}: {stderr}"
         ));
     }
 
     let stdout = String::from_utf8(output.stdout).map_err(|err| {
-        anyhow::anyhow!("R script output was not valid UTF-8 for {package} {version}: {err}")
+        anyhow::anyhow!("R script output was not valid UTF-8 for {name} {version}: {err}")
     })?;
 
-    let files = parse_output(&stdout);
-
-    let destination = destination_lock.parent().join("R");
-    std::fs::create_dir(&destination)?;
-
-    for (name, contents) in files {
-        let path = destination.join(name);
+    for (file, contents) in parse_output(&stdout) {
+        let path = dir.join(file);
         std::fs::write(&path, contents)?;
-        crate::fs::set_readonly(&path)?;
+        oak_fs::permissions::set_readonly(&path)?;
     }
 
     Ok(true)
@@ -88,10 +81,8 @@ fn parse_output(output: &str) -> Vec<(String, String)> {
                 current_lines.clear();
             }
             current_name = Some(name);
-        } else {
-            if current_name.is_some() {
-                current_lines.push(line);
-            }
+        } else if current_name.is_some() {
+            current_lines.push(line);
         }
     }
 
@@ -120,8 +111,6 @@ fn parse_line_directive(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-
-    use oak_fs::file_lock::Filesystem;
 
     use super::*;
 
@@ -193,7 +182,7 @@ fn_a <- function() {
     /// Requires R on the PATH and internet access
     ///
     /// Installs source version of {generics} from CRAN into a temporary library, then
-    /// extracts the R source files via srcref metadata. We use {generics} because it
+    /// recovers the R source files via srcref metadata. We use {generics} because it
     /// is very easy to install from source and lightweight.
     #[test]
     fn test_srcref_extraction() {
@@ -218,37 +207,19 @@ fn_a <- function() {
                 .expect("R should exist"),
         );
 
-        // Get base libpaths from R
-        let output = oak_r_process::run_text(
-            &r,
-            r#"cat(normalizePath(.libPaths()), sep = "\n")"#,
-            &[],
-            &[],
-        )
-        .expect("Failed to get .libPaths()");
-        assert!(output.status.success(), "Failed to query .libPaths()");
-
-        let r_libpaths_original: Vec<PathBuf> = String::from_utf8(output.stdout)
-            .expect("Non-UTF8 libpaths")
-            .trim()
-            .lines()
-            .map(PathBuf::from)
-            .collect();
-
         // Temporary library for installing generics
-        let r_libpaths = tempfile::TempDir::new().unwrap();
+        let library = tempfile::TempDir::new().unwrap();
 
         // Use forward slashes so the path is safe inside R string literals on Windows
         // (backslashes would be interpreted as escape sequences).
-        let r_libpaths_for_interpolation =
-            r_libpaths.path().display().to_string().replace('\\', "/");
+        let library_for_interpolation = library.path().display().to_string().replace('\\', "/");
 
         // Install generics from CRAN source with srcrefs preserved
         let output = oak_r_process::run_text(
             &r,
             &format!(
-                    r#"install.packages("generics", lib = "{r_libpaths_for_interpolation}", repos = "https://cran.r-project.org", type = "source", INSTALL_opts = "--with-keep.source")"#,
-                ),
+                r#"install.packages("generics", lib = "{library_for_interpolation}", repos = "https://cran.r-project.org", type = "source", INSTALL_opts = "--with-keep.source")"#,
+            ),
             &[],
             &[],
         )
@@ -259,8 +230,8 @@ fn_a <- function() {
         let output = oak_r_process::run_text(
             &r,
             &format!(
-                    r#"cat(as.character(packageVersion("generics", lib.loc = "{r_libpaths_for_interpolation}")))"#,
-                ),
+                r#"cat(as.character(packageVersion("generics", lib.loc = "{library_for_interpolation}")))"#,
+            ),
             &[],
             &[],
         )
@@ -272,23 +243,14 @@ fn_a <- function() {
             .trim()
             .to_string();
 
-        // Prepend our temp library so generics is found there first
-        let mut all_libpaths = vec![r_libpaths.path().to_path_buf()];
-        all_libpaths.extend(r_libpaths_original);
+        // Recover sources into a destination directory
+        let destination = tempfile::TempDir::new().unwrap();
 
-        // Cache destination
-        let destination_tempdir = tempfile::TempDir::new().unwrap();
-        let destination = Filesystem::new(destination_tempdir.path().to_path_buf());
-        let destination_lock = destination.open_rw_exclusive_create(".lock").unwrap();
-
-        let ok = cache_srcref("generics", &version, &destination_lock, &r, &all_libpaths).unwrap();
+        let ok = populate(&r, "generics", &version, library.path(), destination.path()).unwrap();
         assert!(ok);
 
-        // Verify R source files were written
-        let r_dir = destination_lock.parent().join("R");
-        assert!(r_dir.exists());
-
-        let entries: Vec<_> = std::fs::read_dir(&r_dir)
+        // Verify R source files were written flat into the destination
+        let entries: Vec<_> = std::fs::read_dir(destination.path())
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
