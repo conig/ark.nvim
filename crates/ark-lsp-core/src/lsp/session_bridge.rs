@@ -4579,9 +4579,9 @@ fn search_path_completion_expr(prefix: Option<&str>) -> String {
             "}), use.names = FALSE)); ",
         ));
     } else {
-        expr.push_str(concat!(
+        expr.push_str(
             ".names <- unique(unlist(lapply(.envs, ls, all.names = TRUE), use.names = FALSE)); ",
-        ));
+        );
     }
     expr.push_str(concat!(
         ".out <- stats::setNames(vector(\"list\", length(.names)), .names); ",

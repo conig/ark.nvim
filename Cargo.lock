@@ -591,7 +591,6 @@ dependencies = [
  "oak_package_metadata",
  "oak_scan",
  "oak_semantic",
- "oak_sources",
  "once_cell",
  "parking_lot",
  "regex",

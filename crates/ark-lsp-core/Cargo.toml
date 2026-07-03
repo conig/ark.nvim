@@ -49,7 +49,6 @@ oak_ide.workspace = true
 oak_package_metadata.workspace = true
 oak_scan.workspace = true
 oak_semantic.workspace = true
-oak_sources.workspace = true
 once_cell.workspace = true
 parking_lot.workspace = true
 regex.workspace = true

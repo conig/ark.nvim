@@ -158,6 +158,9 @@ local ok, err = pcall(function()
   if not popup.text:find("mutate {dplyr}", 1, true) then
     error("expected popup text to contain help page text, got " .. vim.inspect(popup.text), 0)
   end
+  if not popup.text:find("Contents:", 1, true) or not popup.text:find("  - Usage", 1, true) then
+    error("expected popup text to contain ArkHelp table of contents, got " .. vim.inspect(popup.text), 0)
+  end
   if not popup.text:find("```r", 1, true) then
     error("expected popup text to preserve rendered code fences, got " .. vim.inspect(popup.text), 0)
   end
@@ -194,6 +197,16 @@ local ok, err = pcall(function()
   local popup_refs = popup.opts.help.initial and popup.opts.help.initial.references or {}
   if type(popup_refs[1]) ~= "table" or popup_refs[1].target ~= "dplyr::group_by" then
     error("expected ArkHelp tmux popup to receive initial link targets, got " .. vim.inspect(popup.opts.help), 0)
+  end
+  local saw_section_ref = false
+  for _, ref in ipairs(popup_refs) do
+    if ref.label == "Usage" and type(ref.section_line) == "number" and ref.section_line > 0 then
+      saw_section_ref = true
+      break
+    end
+  end
+  if not saw_section_ref then
+    error("expected ArkHelp tmux popup to receive TOC section targets, got " .. vim.inspect(popup.opts.help), 0)
   end
 
   if #notifications ~= 0 then

@@ -181,6 +181,13 @@ local ok, err = pcall(function()
   if not vim.deep_equal(lines, {
     "mutate {dplyr}",
     "",
+    "Contents:",
+    "",
+    "  - Description",
+    "  - Usage",
+    "  - Arguments",
+    "  - Examples",
+    "",
     "Description:",
     "",
     "     Modify columns. See also group_by().",
@@ -213,16 +220,16 @@ local ok, err = pcall(function()
     error("expected help buffer marker to be set", 0)
   end
 
-  local example_col = lines[19]:find("cyl", 1, true)
+  local example_col = lines[26]:find("cyl", 1, true)
   if not example_col then
-    error("expected example line to contain an R symbol, got " .. vim.inspect(lines[19]), 0)
+    error("expected example line to contain an R symbol, got " .. vim.inspect(lines[26]), 0)
   end
   local example_captures = {}
   local has_r_capture = vim.wait(1000, function()
     pcall(function()
       vim.treesitter.get_parser(help_buf, "markdown"):parse(true)
     end)
-    example_captures = vim.treesitter.get_captures_at_pos(help_buf, 18, example_col - 1)
+    example_captures = vim.treesitter.get_captures_at_pos(help_buf, 25, example_col - 1)
     for _, capture in ipairs(example_captures) do
       if capture.lang == "r" then
         return true
@@ -231,12 +238,12 @@ local ok, err = pcall(function()
     return false
   end, 20, false)
 
-  local assign_col = lines[19]:find("=", 1, true)
+  local assign_col = lines[26]:find("=", 1, true)
   local syntax_groups = {}
   if assign_col then
     vim.api.nvim_buf_call(help_buf, function()
       pcall(vim.cmd, "syntax sync fromstart")
-      for _, id in ipairs(vim.fn.synstack(19, assign_col)) do
+      for _, id in ipairs(vim.fn.synstack(26, assign_col)) do
         syntax_groups[#syntax_groups + 1] = vim.fn.synIDattr(id, "name")
       end
     end)
@@ -295,7 +302,7 @@ local ok, err = pcall(function()
     if mark[4].hl_group == "ArkHelpReference" then
       has_reference_highlight = true
       local line = mark[2] + 1
-      if line >= 8 and line <= 10 or line >= 18 and line <= 22 then
+      if line >= 15 and line <= 17 or line >= 25 and line <= 29 then
         code_reference_highlights[#code_reference_highlights + 1] = {
           line = line,
           col = mark[3],
@@ -310,59 +317,62 @@ local ok, err = pcall(function()
   end
 
   if line_groups[3] ~= "ArkHelpSectionHeader" then
-    error("expected Description header highlight, got " .. vim.inspect(line_groups[3]), 0)
+    error("expected Contents header highlight, got " .. vim.inspect(line_groups[3]), 0)
   end
 
-  if line_groups[7] ~= "ArkHelpUsageHeader" then
-    error("expected Usage header highlight, got " .. vim.inspect(line_groups[7]), 0)
+  if line_groups[10] ~= "ArkHelpSectionHeader" then
+    error("expected Description header highlight, got " .. vim.inspect(line_groups[10]), 0)
   end
 
-  if line_groups[12] ~= "ArkHelpArgumentsHeader" then
-    error("expected Arguments header highlight, got " .. vim.inspect(line_groups[12]), 0)
+  if line_groups[14] ~= "ArkHelpUsageHeader" then
+    error("expected Usage header highlight, got " .. vim.inspect(line_groups[14]), 0)
   end
 
-  if line_groups[14] ~= "ArkHelpArgumentsBody" or line_groups[15] ~= "ArkHelpArgumentsBody" then
+  if line_groups[19] ~= "ArkHelpArgumentsHeader" then
+    error("expected Arguments header highlight, got " .. vim.inspect(line_groups[19]), 0)
+  end
+
+  if line_groups[21] ~= "ArkHelpArgumentsBody" or line_groups[22] ~= "ArkHelpArgumentsBody" then
     error("expected argument body highlights, got " .. vim.inspect({
-      line_14 = line_groups[14],
-      line_15 = line_groups[15],
-    }), 0)
-  end
-
-  if line_groups[17] ~= "ArkHelpUsageHeader"
-  then
-    error("expected examples block highlights, got " .. vim.inspect({
-      line_17 = line_groups[17],
-    }), 0)
-  end
-
-  if line_groups[8] ~= "ArkHelpCodeFence" or line_groups[10] ~= "ArkHelpCodeFence" then
-    error("expected Usage fences to use line highlights, got " .. vim.inspect({
-      line_8 = line_groups[8],
-      line_10 = line_groups[10],
-    }), 0)
-  end
-
-  if line_groups[9] ~= "ArkHelpUsageBody" then
-    error("expected Usage body to use line highlights, got " .. vim.inspect({
-      line_9 = line_groups[9],
-    }), 0)
-  end
-
-  if line_groups[18] ~= "ArkHelpCodeFence" or line_groups[22] ~= "ArkHelpCodeFence" then
-    error("expected Examples fences to use line highlights, got " .. vim.inspect({
-      line_18 = line_groups[18],
+      line_21 = line_groups[21],
       line_22 = line_groups[22],
     }), 0)
   end
 
-  if line_groups[19] ~= "ArkHelpUsageBody"
-    or line_groups[20] ~= "ArkHelpUsageBody"
-    or line_groups[21] ~= "ArkHelpUsageBody"
+  if line_groups[24] ~= "ArkHelpUsageHeader" then
+    error("expected examples block highlights, got " .. vim.inspect({
+      line_24 = line_groups[24],
+    }), 0)
+  end
+
+  if line_groups[15] ~= "ArkHelpCodeFence" or line_groups[17] ~= "ArkHelpCodeFence" then
+    error("expected Usage fences to use line highlights, got " .. vim.inspect({
+      line_15 = line_groups[15],
+      line_17 = line_groups[17],
+    }), 0)
+  end
+
+  if line_groups[16] ~= "ArkHelpUsageBody" then
+    error("expected Usage body to use line highlights, got " .. vim.inspect({
+      line_16 = line_groups[16],
+    }), 0)
+  end
+
+  if line_groups[25] ~= "ArkHelpCodeFence" or line_groups[29] ~= "ArkHelpCodeFence" then
+    error("expected Examples fences to use line highlights, got " .. vim.inspect({
+      line_25 = line_groups[25],
+      line_29 = line_groups[29],
+    }), 0)
+  end
+
+  if line_groups[26] ~= "ArkHelpUsageBody"
+    or line_groups[27] ~= "ArkHelpUsageBody"
+    or line_groups[28] ~= "ArkHelpUsageBody"
   then
     error("expected Examples body to use line highlights, got " .. vim.inspect({
-      line_19 = line_groups[19],
-      line_20 = line_groups[20],
-      line_21 = line_groups[21],
+      line_26 = line_groups[26],
+      line_27 = line_groups[27],
+      line_28 = line_groups[28],
     }), 0)
   end
 
@@ -382,8 +392,20 @@ local ok, err = pcall(function()
     error("expected ArkHelp highlights to persist after delayed redraw, got " .. tostring(#extmarks_after_delay), 0)
   end
 
-  local reference_column = assert(lines[5]:find("group_by%(%s*%)", 1)) - 1
-  vim.api.nvim_win_set_cursor(help_win, { 5, reference_column })
+  local toc_usage_column = assert(lines[6]:find("Usage", 1, true)) - 1
+  vim.api.nvim_win_set_cursor(help_win, { 6, toc_usage_column })
+  vim.api.nvim_feedkeys(vim.keycode("<CR>"), "xt", false)
+  vim.wait(1000, function()
+    local cursor = vim.api.nvim_win_get_cursor(help_win)
+    return cursor[1] == 14
+  end, 20, false)
+  local toc_cursor = vim.api.nvim_win_get_cursor(help_win)
+  if toc_cursor[1] ~= 14 then
+    error("expected ArkHelp TOC entry to jump to Usage, got cursor " .. vim.inspect(toc_cursor), 0)
+  end
+
+  local reference_column = assert(lines[12]:find("group_by%(%s*%)", 1)) - 1
+  vim.api.nvim_win_set_cursor(help_win, { 12, reference_column })
   vim.api.nvim_feedkeys(vim.keycode("<CR>"), "xt", false)
   vim.wait(1000, function()
     local current_lines = vim.api.nvim_buf_get_lines(vim.api.nvim_get_current_buf(), 0, -1, false)

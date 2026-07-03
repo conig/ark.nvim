@@ -819,7 +819,11 @@ end
 
 local function help_reference_matches(rendered, references)
   rendered = rendered or {}
-  return build_help_reference_matches(rendered.lines or {}, references or {}, help_code_lines(rendered))
+  local matches = build_help_reference_matches(rendered.lines or {}, references or {}, help_code_lines(rendered))
+  for _, entry in ipairs(rendered.toc_entries or {}) do
+    matches[#matches + 1] = entry
+  end
+  return matches
 end
 
 local function reference_under_cursor(buf)
@@ -838,6 +842,7 @@ local function render_help_display(raw_lines)
   local rendered = {
     lines = {},
     code_blocks = {},
+    toc_entries = {},
   }
 
   local sections = {}
@@ -896,6 +901,75 @@ local function render_help_display(raw_lines)
 
   if #rendered.lines == 0 then
     rendered.lines = { "" }
+    return rendered
+  end
+
+  local rendered_sections = {}
+  local title_line = nil
+  for index, line in ipairs(rendered.lines) do
+    if title_line == nil and line ~= "" then
+      title_line = index
+    end
+
+    local header = help_section_name(line)
+    if header then
+      rendered_sections[#rendered_sections + 1] = {
+        name = header,
+        line = index,
+      }
+    end
+  end
+
+  if #rendered_sections >= 2 then
+    local insert_after = title_line or 0
+    if insert_after > 0 and rendered.lines[insert_after + 1] == "" then
+      insert_after = insert_after + 1
+    end
+
+    local toc_lines = { "Contents:", "" }
+    for _, section in ipairs(rendered_sections) do
+      toc_lines[#toc_lines + 1] = "  - " .. section.name
+    end
+    toc_lines[#toc_lines + 1] = ""
+
+    local next_lines = {}
+    for index = 1, insert_after do
+      next_lines[#next_lines + 1] = rendered.lines[index]
+    end
+    for _, line in ipairs(toc_lines) do
+      next_lines[#next_lines + 1] = line
+    end
+    for index = insert_after + 1, #rendered.lines do
+      next_lines[#next_lines + 1] = rendered.lines[index]
+    end
+    rendered.lines = next_lines
+
+    local shift = #toc_lines
+    local function shift_line(line)
+      if line > insert_after then
+        return line + shift
+      end
+      return line
+    end
+
+    for _, block in ipairs(rendered.code_blocks) do
+      block.header_line = shift_line(block.header_line)
+      block.fence_start = shift_line(block.fence_start)
+      block.body_start = shift_line(block.body_start)
+      block.body_end = shift_line(block.body_end)
+      block.fence_end = shift_line(block.fence_end)
+    end
+
+    for index, section in ipairs(rendered_sections) do
+      local entry_line = insert_after + 2 + index
+      rendered.toc_entries[#rendered.toc_entries + 1] = {
+        line = entry_line,
+        start_col = 4,
+        end_col = 4 + #section.name,
+        label = section.name,
+        section_line = shift_line(section.line),
+      }
+    end
   end
 
   return rendered
@@ -1208,6 +1282,11 @@ local function open_readonly_float(text, opts)
   vim.keymap.set("n", "<CR>", function()
     local match = reference_under_cursor(buf)
     if not match then
+      return
+    end
+
+    if type(match.section_line) == "number" and match.section_line > 0 then
+      pcall(vim.api.nvim_win_set_cursor, win, { match.section_line, 0 })
       return
     end
 
