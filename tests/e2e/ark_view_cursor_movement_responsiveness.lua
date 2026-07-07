@@ -7,18 +7,18 @@ vim.o.lines = 40
 
 local schema = {}
 local rows = {}
-for column_index = 1, 24 do
+for column_index = 1, 338 do
   schema[column_index] = {
     index = column_index,
-    name = string.format("wide_%02d", column_index),
+    name = string.format("wide_%03d", column_index),
     class = "character",
     type = "character",
   }
 end
-for row_index = 1, 80 do
+for row_index = 1, 148 do
   local row = {}
-  for column_index = 1, 24 do
-    row[column_index] = string.format("r%d_c%02d", row_index, column_index)
+  for column_index = 1, 338 do
+    row[column_index] = string.format("r%03d_c%03d", row_index, column_index)
   end
   rows[row_index] = row
 end
@@ -134,7 +134,7 @@ local ok, err = pcall(function()
   local grid_win = state.grid_win
   local grid_buf = state.grid_buf
   local grid_lines = vim.api.nvim_buf_get_lines(grid_buf, 0, -1, false)
-  local wide_col = header_column(grid_lines, "wide_12")
+  local wide_col = header_column(grid_lines, "wide_012")
 
   move_cursor(grid_win, 40, wide_col)
   vim.cmd("normal! zt")
@@ -153,6 +153,7 @@ local ok, err = pcall(function()
   local original_win_set_config = vim.api.nvim_win_set_config
   local sticky_buf_repaints = 0
   local sticky_win_reconfigs = 0
+  local samples = {}
 
   vim.api.nvim_buf_set_lines = function(buf, start, stop, strict, replacement)
     if buf == sticky.buf then
@@ -167,9 +168,11 @@ local ok, err = pcall(function()
     return original_win_set_config(win, config)
   end
 
-  local move_count = 12
+  local move_count = 80
   for line = 41, 40 + move_count do
+    local started = vim.uv.hrtime()
     move_cursor(grid_win, line, wide_col)
+    samples[#samples + 1] = (vim.uv.hrtime() - started) / 1000000
   end
 
   vim.api.nvim_buf_set_lines = original_buf_set_lines
@@ -191,6 +194,22 @@ local ok, err = pcall(function()
         .. tostring(sticky_buf_repaints)
         .. " reconfigs="
         .. tostring(sticky_win_reconfigs),
+      0
+    )
+  end
+
+  table.sort(samples)
+  local p95_index = math.max(1, math.min(#samples, math.ceil(#samples * 0.95)))
+  local p95_ms = samples[p95_index]
+  local max_ms = samples[#samples]
+  if p95_ms > 8 or max_ms > 16 then
+    error(
+      string.format(
+        "expected 148x338 ArkView cursor movement to stay responsive, got p95=%.3fms max=%.3fms n=%d",
+        p95_ms,
+        max_ms,
+        #samples
+      ),
       0
     )
   end
