@@ -1622,6 +1622,23 @@ runtime_ready = function(bufnr)
     and detached_status.lastSessionUpdateStatus == "ready"
 end
 
+local function live_lsp_client_attached(bufnr)
+  if type(bufnr) ~= "number" or not options or type(options.lsp) ~= "table" then
+    return false
+  end
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+
+  for _, client in ipairs(vim.lsp.get_clients({ name = options.lsp.name, bufnr = bufnr })) do
+    if client.initialized == true and not (client.is_stopped and client:is_stopped()) then
+      return true
+    end
+  end
+
+  return false
+end
+
 local function active_console_status(bufnr)
   if not console_view_source_buffer(bufnr) then
     return nil
@@ -1933,6 +1950,11 @@ local function with_managed_session_ready(bufnr, label, callback, runtime_opts)
     end
     callback_done = true
     return callback(err)
+  end
+
+  if live_lsp_client_attached(bufnr) and runtime_ready(bufnr) then
+    local result, err = done(nil)
+    return result, err, "callback"
   end
 
   local function finish_after_bridge()

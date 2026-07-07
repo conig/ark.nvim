@@ -58,14 +58,20 @@ local ok, err = pcall(function()
 
   vim.ui.input = original_input
 
-  local grid_lines = vim.api.nvim_buf_get_lines(view_state.grid_buf, 0, -1, false)
-  if #grid_lines ~= 2 then
-    error("expected first-column filter to keep exactly one row, got " .. vim.inspect(grid_lines), 0)
+  local grid_lines = {}
+  ark_test.wait_for("first-column filtered page", 5000, function()
+    grid_lines = vim.api.nvim_buf_get_lines(view_state.grid_buf, 0, -1, false)
+    local text = table.concat(grid_lines, "\n")
+    return not text:find("loading rows", 1, true) and text:find("one", 1, true) ~= nil
+  end)
+
+  if #grid_lines ~= 3 then
+    error("expected first-column filter to keep exactly one row below the typed header, got " .. vim.inspect(grid_lines), 0)
   end
   if not (grid_lines[1] or ""):find("level", 1, true) then
     error("expected grid header to include level, got " .. vim.inspect(grid_lines), 0)
   end
-  if (grid_lines[2] or ""):find("(no rows)", 1, true) or not (grid_lines[2] or ""):find("1", 1, true) then
+  if (grid_lines[3] or ""):find("(no rows)", 1, true) or not (grid_lines[3] or ""):find("1", 1, true) then
     error("expected filtered grid to keep the level=1 row, got " .. vim.inspect(grid_lines), 0)
   end
 

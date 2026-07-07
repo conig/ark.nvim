@@ -511,22 +511,18 @@
       row_numbers <- rows
     }
 
-    if (projected) {
-      page_rows <- lapply(seq_len(nrow(page)), function(index) {
-        row <- page[index, columns, drop = FALSE]
-        values <- lapply(seq_along(columns), function(position) {
-          .ark_view_display_value(row[[position]][[1L]])
-        })
-        names(values) <- as.character(columns)
-        values
-      })
-    } else {
-      page_rows <- lapply(seq_len(nrow(page)), function(index) {
-        row <- page[index, , drop = FALSE]
-        unname(lapply(seq_len(ncol(row)), function(column_index) {
-          .ark_view_display_value(row[[column_index]][[1L]])
-        }))
-      })
+    page_column_indices <- if (projected) columns else seq_len(ncol(page))
+    displayed_columns <- lapply(page_column_indices, function(column_index) {
+      vapply(page[[column_index]], .ark_view_display_value, character(1), USE.NAMES = FALSE)
+    })
+    page_rows <- vector("list", nrow(page))
+    column_names <- if (projected) as.character(columns) else NULL
+    for (index in seq_len(nrow(page))) {
+      values <- lapply(displayed_columns, `[[`, index)
+      if (projected) {
+        names(values) <- column_names
+      }
+      page_rows[[index]] <- values
     }
 
     .emit_json(list(

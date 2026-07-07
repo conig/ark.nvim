@@ -11,6 +11,7 @@ local grid_column_separator_width = 3
 local grid_horizontal_render_min_width = 420
 local grid_horizontal_render_width_multiplier = 3
 local refresh_page
+local request_page_async
 
 local function ensure_highlights()
   vim.api.nvim_set_hl(0, "ArkViewHeader", { link = "Title", default = true })
@@ -237,7 +238,7 @@ local function apply_table_highlights(buf, lines, row_width, header_rows)
     elseif index <= header_rows then
       set_highlight(buf, "ArkViewHeaderClass", row, 0, #line, 100)
       set_highlight(buf, "ArkViewRowNumber", row, 0, math.min(row_width, #line), 110)
-    elseif line ~= "(no rows)" then
+    elseif line ~= "(no rows)" and line ~= "(loading rows)" then
       set_highlight(buf, "ArkViewRowNumber", row, 0, math.min(row_width, #line), 110)
     end
     highlight_pipe_separators(buf, row, line)
@@ -1297,7 +1298,7 @@ local function render_pinned_column(state, row_width)
     end
   end
   if #lines == #state.pinned_header_lines then
-    lines[#lines + 1] = "(no rows)"
+    lines[#lines + 1] = state.page_loading and "(loading rows)" or "(no rows)"
   end
 
   state.pinned_row_by_line = row_by_line
@@ -1447,7 +1448,7 @@ local function render_grid(state)
   end
 
   if #lines == #state.grid_header_lines then
-    lines[#lines + 1] = "(no rows)"
+    lines[#lines + 1] = state.page_loading and "(loading rows)" or "(no rows)"
   end
 
   state.column_spans = column_spans
@@ -1471,8 +1472,8 @@ local function render_grid_if_selected_column_hidden(state)
     return false
   end
 
-  if not page_includes_column(state, state.selected_column) and type(refresh_page) == "function" then
-    refresh_page(state, state.page_offset)
+  if not page_includes_column(state, state.selected_column) and type(request_page_async) == "function" then
+    request_page_async(state, state.page_offset, { clear_rows = true })
     return true
   end
 
@@ -1628,6 +1629,44 @@ local function request_or_error(state, title, fn, ...)
   return result, nil
 end
 
+local function state_is_active(state)
+  return state and not state.closing and valid_tab(state.tabpage) and states[state.tabpage] == state
+end
+
+local function show_page_error(state, err)
+  if not state_is_active(state) then
+    return
+  end
+  state.page_loading = false
+  state.last_page_error = err
+  show_details(state, "ArkView Error", err)
+  notify(state, err, vim.log.levels.WARN)
+  render_grid(state)
+  render_sidebar(state)
+end
+
+local function apply_page(state, page, columns)
+  if not state_is_active(state) then
+    return nil, "ArkView is closed"
+  end
+
+  state.rows = page.rows or {}
+  state.row_numbers = page.row_numbers or {}
+  state.page_columns = columns or page.columns or {}
+  state.total_rows = tonumber(page.total_rows) or tonumber(state.total_rows) or 0
+  state.page_offset = math.max(0, tonumber(page.offset or state.page_offset or 0) or 0)
+  state.page_limit = tonumber(page.limit) or state.page_limit
+  state.page_loading = false
+  state.last_page_error = nil
+  if state.selected_row == nil then
+    state.selected_row = 1
+  end
+  state.selected_row = math.max(1, math.min(state.selected_row, math.max(#state.rows, 1)))
+  render_grid(state)
+  render_sidebar(state)
+  return page
+end
+
 function refresh_page(state, offset)
   state.page_offset = math.max(0, tonumber(offset or state.page_offset or 0) or 0)
   local columns = grid_page_columns(state)
@@ -1637,17 +1676,68 @@ function refresh_page(state, offset)
     return nil, err
   end
 
-  state.rows = page.rows or {}
-  state.row_numbers = page.row_numbers or {}
-  state.page_columns = columns
-  state.total_rows = tonumber(page.total_rows) or tonumber(state.total_rows) or 0
-  if state.selected_row == nil then
-    state.selected_row = 1
+  return apply_page(state, page, columns)
+end
+
+function request_page_async(state, offset, opts)
+  opts = opts or {}
+  if not state_is_active(state) then
+    return nil, "ArkView is closed"
   end
-  state.selected_row = math.max(1, math.min(state.selected_row, math.max(#state.rows, 1)))
+  if type(state.lsp.view_page_async) ~= "function" then
+    return refresh_page(state, offset)
+  end
+
+  state.page_offset = math.max(0, tonumber(offset or state.page_offset or 0) or 0)
+  local columns = grid_page_columns(state)
+  state.page_request_generation = (tonumber(state.page_request_generation or 0) or 0) + 1
+  local generation = state.page_request_generation
+  state.page_loading = true
+  state.last_page_error = nil
+  state.page_columns = columns
+  if opts.clear_rows == true then
+    state.rows = {}
+    state.row_numbers = {}
+  end
   render_grid(state)
   render_sidebar(state)
-  return page
+
+  local _, err = state.lsp.view_page_async(
+    state.options,
+    state.source_bufnr,
+    state.session_id,
+    state.page_offset,
+    state.page_limit,
+    columns,
+    function(page, page_err)
+      vim.schedule(function()
+        if not state_is_active(state) or generation ~= state.page_request_generation then
+          return
+        end
+        if page_err then
+          show_page_error(state, page_err)
+          return
+        end
+        if type(page) ~= "table" then
+          show_page_error(state, "ArkView page request returned no data")
+          return
+        end
+        apply_page(state, page, columns)
+      end)
+    end
+  )
+  if err then
+    state.page_request_generation = state.page_request_generation + 1
+    if type(state.lsp.view_page) == "function" then
+      state.page_loading = false
+      state.last_page_error = nil
+      return refresh_page(state, state.page_offset)
+    end
+    show_page_error(state, err)
+    return nil, err
+  end
+
+  return true
 end
 
 local function refresh_state(state, preserve_offset)
@@ -1778,7 +1868,7 @@ local function apply_filter(state, column_index, query, mode, value_key, label)
   state.sort = updated.sort or state.sort
   state.filters = updated.filters or {}
   state.total_rows = tonumber(updated.total_rows) or state.total_rows
-  refresh_page(state, 0)
+  request_page_async(state, 0, { clear_rows = true })
   return updated
 end
 
@@ -2079,7 +2169,7 @@ local function setup_keymaps(state)
     if old_session and old_session ~= state.session_id then
       pcall(state.lsp.view_close, state.options, state.source_bufnr, old_session)
     end
-    refresh_page(state, 0)
+    request_page_async(state, 0, { clear_rows = true })
   end)
 
   map("s", function()
@@ -2095,7 +2185,7 @@ local function setup_keymaps(state)
     state.sort = updated.sort or {}
     state.filters = updated.filters or state.filters
     state.total_rows = tonumber(updated.total_rows) or state.total_rows
-    refresh_page(state, 0)
+    request_page_async(state, 0, { clear_rows = true })
   end)
 
   map("/", function()
@@ -2158,7 +2248,7 @@ local function setup_keymaps(state)
     end
 
     if changed then
-      refresh_page(state, 0)
+      request_page_async(state, 0, { clear_rows = true })
     end
   end)
 
@@ -2283,7 +2373,7 @@ local function setup_keymaps(state)
     if current_row_offset(state) + page_limit >= tonumber(state.total_rows or 0) then
       return
     end
-    refresh_page(state, current_row_offset(state) + page_limit)
+    request_page_async(state, current_row_offset(state) + page_limit, { clear_rows = true })
   end)
 
   map("[p", function()
@@ -2291,7 +2381,7 @@ local function setup_keymaps(state)
     if page_limit < 1 then
       return
     end
-    refresh_page(state, math.max(0, current_row_offset(state) - page_limit))
+    request_page_async(state, math.max(0, current_row_offset(state) - page_limit), { clear_rows = true })
   end)
 end
 
@@ -2315,11 +2405,15 @@ function M.open(opts)
     column_width_overrides = {},
     grid_width_override = initial_grid_width,
   })
-  local page, page_err =
-    opts.lsp.view_page(opts.options, opts.source_bufnr, opened.session_id, 0, page_limit, initial_page_columns)
-  if page_err then
-    pcall(opts.lsp.view_close, opts.options, opts.source_bufnr, opened.session_id)
-    return nil, page_err
+  local has_async_page = type(opts.lsp.view_page_async) == "function"
+  local page = nil
+  if not has_async_page then
+    local page_err = nil
+    page, page_err = opts.lsp.view_page(opts.options, opts.source_bufnr, opened.session_id, 0, page_limit, initial_page_columns)
+    if page_err then
+      pcall(opts.lsp.view_close, opts.options, opts.source_bufnr, opened.session_id)
+      return nil, page_err
+    end
   end
 
   local source_tab = vim.api.nvim_get_current_tabpage()
@@ -2363,10 +2457,10 @@ function M.open(opts)
     schema = opened.schema or {},
     filters = opened.filters or {},
     sort = opened.sort or {},
-    total_rows = tonumber(opened.total_rows) or tonumber(page.total_rows) or 0,
+    total_rows = tonumber(opened.total_rows) or tonumber(page and page.total_rows) or 0,
     total_columns = tonumber(opened.total_columns) or #(opened.schema or {}),
-    rows = page.rows or {},
-    row_numbers = page.row_numbers or {},
+    rows = page and page.rows or {},
+    row_numbers = page and page.row_numbers or {},
     column_width_overrides = {},
     column_wraps = {},
     column_widths = {},
@@ -2381,8 +2475,11 @@ function M.open(opts)
     pinned_header_lines = nil,
     pinned_header_row_width = nil,
     page_columns = initial_page_columns,
-    page_offset = tonumber(page.offset or 0) or 0,
-    page_limit = tonumber(page.limit) or page_limit,
+    page_offset = tonumber(page and page.offset or 0) or 0,
+    page_limit = tonumber(page and page.limit) or page_limit,
+    page_loading = has_async_page,
+    page_request_generation = 0,
+    last_page_error = nil,
     selected_column = selected_column,
     selected_row = 1,
     pinned_column = nil,
@@ -2456,6 +2553,9 @@ function M.open(opts)
   render_grid(state)
   render_sidebar(state)
   render_details(state, "ArkView", string.format("Rows: %d\nColumns: %d\nExpr: %s", state.total_rows, state.total_columns, state.expr))
+  if has_async_page then
+    request_page_async(state, 0, { clear_rows = true })
+  end
   pcall(vim.cmd, "stopinsert")
   return state
 end
