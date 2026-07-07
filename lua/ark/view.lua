@@ -248,6 +248,9 @@ local function close_header_window(state, prefix)
 
   local win_key = prefix .. "_header_win"
   local buf_key = prefix .. "_header_buf"
+  local content_key = prefix .. "_header_content_signature"
+  local config_key = prefix .. "_header_config_signature"
+  local view_key = prefix .. "_header_view_signature"
   if valid_win(state[win_key]) then
     pcall(vim.api.nvim_win_close, state[win_key], true)
   end
@@ -256,6 +259,9 @@ local function close_header_window(state, prefix)
   end
   state[win_key] = nil
   state[buf_key] = nil
+  state[content_key] = nil
+  state[config_key] = nil
+  state[view_key] = nil
 end
 
 local function window_text_offset(win)
@@ -291,6 +297,10 @@ local function sync_header_window_view(header_win, anchor_win)
   end)
 end
 
+local function header_content_signature(header_lines, row_width)
+  return tostring(row_width or "") .. "\n" .. table.concat(header_lines or {}, "\n")
+end
+
 local function update_header_window(state, prefix, anchor_win, header_lines, row_width)
   if type(header_lines) == "string" and header_lines ~= "" then
     header_lines = { header_lines }
@@ -310,31 +320,55 @@ local function update_header_window(state, prefix, anchor_win, header_lines, row
 
   local buf_key = prefix .. "_header_buf"
   local win_key = prefix .. "_header_win"
+  local content_key = prefix .. "_header_content_signature"
+  local config_key = prefix .. "_header_config_signature"
+  local view_key = prefix .. "_header_view_signature"
   local header_buf = state[buf_key]
+  local created_buf = false
   if not valid_buf(header_buf) then
     header_buf = new_scratch_buffer("")
     state[buf_key] = header_buf
+    created_buf = true
   end
 
-  set_buffer_lines(header_buf, header_lines)
-  apply_table_highlights(header_buf, header_lines, row_width, #header_lines)
+  local content_signature = header_content_signature(header_lines, row_width)
+  if created_buf or state[content_key] ~= content_signature then
+    set_buffer_lines(header_buf, header_lines)
+    apply_table_highlights(header_buf, header_lines, row_width, #header_lines)
+    state[content_key] = content_signature
+  end
 
   local text_offset = window_text_offset(anchor_win)
   local width = math.max(1, vim.api.nvim_win_get_width(anchor_win) - text_offset)
   local height = math.max(1, #header_lines)
   local row = 0
   local col = text_offset
+  local config_signature = table.concat({
+    tostring(anchor_win),
+    tostring(row),
+    tostring(col),
+    tostring(width),
+    tostring(height),
+  }, ":")
+  local view_signature = table.concat({
+    tostring(tonumber(anchor_view.leftcol or 0) or 0),
+    tostring(tonumber(anchor_view.skipcol or 0) or 0),
+  }, ":")
   local header_win = state[win_key]
+  local created_win = false
   if valid_win(header_win) then
-    pcall(vim.api.nvim_win_set_config, header_win, {
-      relative = "win",
-      win = anchor_win,
-      row = row,
-      col = col,
-      width = width,
-      height = height,
-      zindex = 40,
-    })
+    if state[config_key] ~= config_signature then
+      pcall(vim.api.nvim_win_set_config, header_win, {
+        relative = "win",
+        win = anchor_win,
+        row = row,
+        col = col,
+        width = width,
+        height = height,
+        zindex = 40,
+      })
+      state[config_key] = config_signature
+    end
   else
     header_win = vim.api.nvim_open_win(header_buf, false, {
       relative = "win",
@@ -349,14 +383,22 @@ local function update_header_window(state, prefix, anchor_win, header_lines, row
       zindex = 40,
     })
     state[win_key] = header_win
+    state[config_key] = config_signature
+    created_win = true
   end
 
-  vim.wo[header_win].wrap = false
-  vim.wo[header_win].number = false
-  vim.wo[header_win].relativenumber = false
-  vim.wo[header_win].cursorline = false
-  vim.wo[header_win].winhighlight = "Normal:Normal"
-  sync_header_window_view(header_win, anchor_win)
+  if created_win then
+    vim.wo[header_win].wrap = false
+    vim.wo[header_win].number = false
+    vim.wo[header_win].relativenumber = false
+    vim.wo[header_win].cursorline = false
+    vim.wo[header_win].winhighlight = "Normal:Normal"
+  end
+
+  if created_win or state[view_key] ~= view_signature then
+    sync_header_window_view(header_win, anchor_win)
+    state[view_key] = view_signature
+  end
 end
 
 local function update_header_windows(state)
