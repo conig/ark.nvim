@@ -1902,12 +1902,16 @@ function M.view_state(opts, bufnr, session_id)
   }, VIEW_REQUEST_TIMEOUT_MS)
 end
 
-function M.view_page(opts, bufnr, session_id, offset, limit)
-  return view_request(opts, bufnr, VIEW_PAGE_METHOD, {
+function M.view_page(opts, bufnr, session_id, offset, limit, columns)
+  local params = {
     sessionId = session_id,
     offset = offset or 0,
     limit = limit or 0,
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  }
+  if vim.islist(columns) and #columns > 0 then
+    params.columns = columns
+  end
+  return view_request(opts, bufnr, VIEW_PAGE_METHOD, params, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 function M.view_sort(opts, bufnr, session_id, column_index, direction)

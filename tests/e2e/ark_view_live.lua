@@ -64,8 +64,8 @@ local ok, err = pcall(function()
 
   -- Regression: ArkView is a user-initiated table operation and must not use
   -- the same tight bridge timeout as latency-sensitive completion requests.
-  -- Real wide targets such as DAvalidate's final_data can legitimately take
-  -- more than one second to evaluate and serialize their schema.
+  -- Real wide tabular targets can legitimately take more than one second to
+  -- evaluate and serialize their schema.
   local slow_view = ark_test.request(client, "ark/internal/viewOpen", {
     expr = [[local({ Sys.sleep(1.2); as.data.frame(setNames(as.list(seq_len(12)), sprintf("col_%02d", seq_len(12)))) })]],
   }, 10000)

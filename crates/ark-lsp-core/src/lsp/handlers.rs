@@ -204,6 +204,8 @@ pub(crate) struct ViewPageParams {
     pub offset: u32,
     #[serde(default)]
     pub limit: u32,
+    #[serde(default)]
+    pub columns: Vec<u32>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -560,7 +562,12 @@ pub(crate) fn handle_view_rpc(params: ViewRpcRequest, state: &WorldState) -> Lsp
         ViewRpcRequest::Open(params) => session_bridge.view_open(params.expr.as_str()),
         ViewRpcRequest::State(params) => session_bridge.view_state(params.session_id.as_str()),
         ViewRpcRequest::Page(params) => {
-            session_bridge.view_page(params.session_id.as_str(), params.offset, params.limit)
+            session_bridge.view_page(
+                params.session_id.as_str(),
+                params.offset,
+                params.limit,
+                params.columns.as_slice(),
+            )
         },
         ViewRpcRequest::Sort(params) => session_bridge.view_sort(
             params.session_id.as_str(),

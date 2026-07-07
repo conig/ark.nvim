@@ -8,6 +8,9 @@ local grid_column_override_max_width = 200
 local grid_column_max_width = grid_column_override_max_width
 local grid_column_width_step = 8
 local grid_column_separator_width = 3
+local grid_horizontal_render_min_width = 420
+local grid_horizontal_render_width_multiplier = 3
+local refresh_page
 
 local function ensure_highlights()
   vim.api.nvim_set_hl(0, "ArkViewHeader", { link = "Title", default = true })
@@ -474,6 +477,15 @@ local function schema_by_index(state, column_index)
   return nil
 end
 
+local function row_value(row, column_index)
+  if type(row) ~= "table" then
+    return nil
+  end
+
+  local numeric = tonumber(column_index)
+  return row[numeric] or row[tostring(numeric)]
+end
+
 local function column_label(state, column_index)
   local item = schema_by_index(state, column_index)
   return (item and item.name) or ("#" .. tostring(column_index))
@@ -634,6 +646,21 @@ local function selected_column_from_grid(state)
     end
   end
   return state.selected_column
+end
+
+local function grid_column_is_visible(state, column_index)
+  local target = tonumber(column_index)
+  if not target then
+    return false
+  end
+
+  for _, span in ipairs(state.column_spans or {}) do
+    if tonumber(span.column_index) == target then
+      return true
+    end
+  end
+
+  return false
 end
 
 local function schema_position_for_column(state, column_index)
@@ -883,41 +910,30 @@ local function show_details(state, title, text)
   render_details(state, title, text)
 end
 
-local function desired_column_widths(state)
-  local widths = {}
-  local fixed = {}
-  local indices = {}
-  local overrides = state.column_width_overrides or {}
-  for _, item in ipairs(state.schema or {}) do
-    local index = tonumber(item.index) or 0
-    if index > 0 then
-      indices[#indices + 1] = index
-      local override = tonumber(overrides[index])
-      if override then
-        widths[index] = clamp_width(override, grid_column_override_min_width, grid_column_override_max_width)
-        fixed[index] = true
-      else
-        widths[index] = clamp_width(
-          math.max(display_width(item.name or ""), display_width(column_class_label(item))),
-          grid_column_min_width,
-          grid_column_max_width
-        )
-      end
-    end
+local function column_width_for_schema_item(state, item)
+  local column_index = tonumber(item and item.index)
+  if not column_index then
+    return grid_column_min_width
   end
 
+  local override = tonumber((state.column_width_overrides or {})[column_index])
+  if override then
+    return clamp_width(override, grid_column_override_min_width, grid_column_override_max_width)
+  end
+
+  local width = clamp_width(
+    math.max(display_width(item.name or ""), display_width(column_class_label(item))),
+    grid_column_min_width,
+    grid_column_max_width
+  )
   for _, row in ipairs(state.rows or {}) do
-    for index, value in ipairs(row or {}) do
-      if widths[index] and not fixed[index] then
-        widths[index] = math.max(
-          widths[index],
-          clamp_width(display_width(value), grid_column_min_width, grid_column_max_width)
-        )
-      end
-    end
+    width = math.max(
+      width,
+      clamp_width(display_width(row_value(row, column_index)), grid_column_min_width, grid_column_max_width)
+    )
   end
 
-  return widths, indices, fixed
+  return clamp_width(width, grid_column_min_width, grid_column_max_width)
 end
 
 local function fit_column_widths(widths, indices, available, fixed)
@@ -965,16 +981,154 @@ local function fit_column_widths(widths, indices, available, fixed)
   return widths
 end
 
-local function grid_column_widths(state)
-  local widths, indices, fixed = desired_column_widths(state)
-  for _, index in ipairs(indices) do
-    if fixed[index] then
-      widths[index] = clamp_width(widths[index], grid_column_override_min_width, grid_column_override_max_width)
+local function grid_render_width_budget(state)
+  local width = tonumber(vim.o.columns) or 80
+  if tonumber(state.grid_width_override) then
+    width = tonumber(state.grid_width_override)
+  elseif valid_win(state.grid_win) then
+    width = vim.api.nvim_win_get_width(state.grid_win)
+  end
+  return math.max(grid_horizontal_render_min_width, width * grid_horizontal_render_width_multiplier)
+end
+
+local function visible_grid_columns(state, row_width)
+  local schema = state.schema or {}
+  if #schema == 0 then
+    return {}, {}, {}
+  end
+
+  local selected_position = schema_position_for_column(state, state.selected_column) or 1
+  selected_position = math.max(1, math.min(#schema, selected_position))
+
+  local widths = {}
+  local positions = {}
+  local total_width = row_width
+  local budget = grid_render_width_budget(state)
+
+  local function add_position(position, at_start, force)
+    local item = schema[position]
+    if not item then
+      return false
+    end
+
+    local column_index = tonumber(item.index) or 0
+    local width = column_width_for_schema_item(state, item)
+    local next_width = total_width + grid_column_separator_width + width
+    if not force and #positions > 0 and next_width > budget then
+      return false
+    end
+
+    widths[column_index] = width
+    if at_start then
+      table.insert(positions, 1, position)
     else
-      widths[index] = clamp_width(widths[index], grid_column_min_width, grid_column_max_width)
+      positions[#positions + 1] = position
+    end
+    total_width = next_width
+    return true
+  end
+
+  add_position(selected_position, false, true)
+
+  local left = selected_position - 1
+  local right = selected_position + 1
+  local left_open = left >= 1
+  local right_open = right <= #schema
+  local prefer_left = selected_position > 1
+
+  while left_open or right_open do
+    local progressed = false
+
+    if prefer_left then
+      if left_open then
+        if add_position(left, true, false) then
+          left = left - 1
+          left_open = left >= 1
+          progressed = true
+        else
+          left_open = false
+        end
+      end
+      if right_open then
+        if add_position(right, false, false) then
+          right = right + 1
+          right_open = right <= #schema
+          progressed = true
+        else
+          right_open = false
+        end
+      end
+    else
+      if right_open then
+        if add_position(right, false, false) then
+          right = right + 1
+          right_open = right <= #schema
+          progressed = true
+        else
+          right_open = false
+        end
+      end
+      if left_open then
+        if add_position(left, true, false) then
+          left = left - 1
+          left_open = left >= 1
+          progressed = true
+        else
+          left_open = false
+        end
+      end
+    end
+
+    prefer_left = not prefer_left
+    if not progressed then
+      break
     end
   end
-  return widths
+
+  local visible_schema = {}
+  for _, position in ipairs(positions) do
+    visible_schema[#visible_schema + 1] = schema[position]
+  end
+
+  return visible_schema, widths, positions
+end
+
+local function grid_page_columns(state)
+  local row_width = math.max(4, display_width(tostring(state.total_rows or 0)))
+  local visible_schema = visible_grid_columns(state, row_width)
+  local columns = {}
+  local seen = {}
+  local function add(column_index)
+    column_index = tonumber(column_index)
+    if not column_index or seen[column_index] then
+      return
+    end
+    seen[column_index] = true
+    columns[#columns + 1] = column_index
+  end
+  for _, item in ipairs(visible_schema or {}) do
+    add(item.index)
+  end
+  add(state.pinned_column)
+  return columns
+end
+
+local function page_includes_column(state, column_index)
+  local columns = state and state.page_columns
+  if type(columns) ~= "table" or #columns == 0 then
+    return true
+  end
+
+  local target = tonumber(column_index)
+  if not target then
+    return false
+  end
+  for _, loaded_column in ipairs(columns) do
+    if tonumber(loaded_column) == target then
+      return true
+    end
+  end
+  return false
 end
 
 local function column_width_for_rows(state, column_index, row_width)
@@ -997,7 +1151,7 @@ local function column_width_for_rows(state, column_index, row_width)
     if not fixed[column_index] then
       widths[column_index] = math.max(
         widths[column_index],
-        clamp_width(display_width((row or {})[column_index]), grid_column_min_width, grid_column_max_width)
+        clamp_width(display_width(row_value(row, column_index)), grid_column_min_width, grid_column_max_width)
       )
     end
   end
@@ -1068,20 +1222,20 @@ local function rendered_cell_lines(state, column_index, value, width)
   return { clip_text(value, width) }
 end
 
-local function render_grid_row_lines(state, row, row_width, widths, number)
+local function render_grid_row_lines(state, row, row_width, widths, number, visible_schema)
   local cells = {}
   local max_lines = 1
-  for _, item in ipairs(state.schema or {}) do
+  for _, item in ipairs(visible_schema or {}) do
     local index = tonumber(item.index) or 0
     local cell_width = widths[index] or grid_column_min_width
-    cells[index] = rendered_cell_lines(state, index, (row or {})[index], cell_width)
+    cells[index] = rendered_cell_lines(state, index, row_value(row, index), cell_width)
     max_lines = math.max(max_lines, #cells[index])
   end
 
   local lines = {}
   for line_index = 1, max_lines do
     local parts = { line_index == 1 and pad_text(number, row_width) or blank_text(row_width) }
-    for _, item in ipairs(state.schema or {}) do
+    for _, item in ipairs(visible_schema or {}) do
       local index = tonumber(item.index) or 0
       parts[#parts + 1] = pad_text((cells[index] or {})[line_index] or "", widths[index] or grid_column_min_width)
     end
@@ -1091,7 +1245,7 @@ local function render_grid_row_lines(state, row, row_width, widths, number)
 end
 
 local function render_pinned_row_lines(state, row, row_width, width, column_index, number)
-  local cells = rendered_cell_lines(state, column_index, (row or {})[column_index], width)
+  local cells = rendered_cell_lines(state, column_index, row_value(row, column_index), width)
   local lines = {}
   for line_index = 1, #cells do
     local parts = {
@@ -1250,14 +1404,18 @@ end
 local function render_grid(state)
   local rows = state.rows or {}
   local row_width = math.max(4, display_width(tostring(state.total_rows or 0)))
-  local widths = grid_column_widths(state)
-  state.column_widths = widths
+  local visible_schema, widths, visible_positions = visible_grid_columns(state, row_width)
+  state.column_widths = state.column_widths or {}
+  for column_index, width in pairs(widths) do
+    state.column_widths[column_index] = width
+  end
+  state.grid_visible_column_positions = visible_positions
 
   local header_parts = { pad_text("#", row_width) }
   local class_parts = { blank_text(row_width) }
   local column_spans = {}
   local current_col = row_width + 3
-  for _, item in ipairs(state.schema or {}) do
+  for _, item in ipairs(visible_schema) do
     local index = tonumber(item.index) or 0
     local text = pad_text(item.name or ("V" .. tostring(index)), widths[index] or 8)
     header_parts[#header_parts + 1] = text
@@ -1282,7 +1440,7 @@ local function render_grid(state)
   for row_index, row in ipairs(rows) do
     local number = state.row_numbers and state.row_numbers[row_index] or (current_row_offset(state) + row_index)
     primary_line_by_row[row_index] = #lines + 1
-    for _, line in ipairs(render_grid_row_lines(state, row, row_width, widths, number)) do
+    for _, line in ipairs(render_grid_row_lines(state, row, row_width, widths, number, visible_schema)) do
       lines[#lines + 1] = line
       row_by_line[#lines] = row_index
     end
@@ -1303,6 +1461,23 @@ local function render_grid(state)
     move_grid_cursor_to_selected_column(state)
   end
   update_header_windows(state)
+end
+
+local function render_grid_if_selected_column_hidden(state)
+  if not state then
+    return false
+  end
+  if grid_column_is_visible(state, state.selected_column) then
+    return false
+  end
+
+  if not page_includes_column(state, state.selected_column) and type(refresh_page) == "function" then
+    refresh_page(state, state.page_offset)
+    return true
+  end
+
+  render_grid(state)
+  return true
 end
 
 local function sync_selected_column(state)
@@ -1333,6 +1508,9 @@ local function sync_selected_column(state)
   end
 
   if tonumber(state.selected_column) ~= previous_column then
+    if win == state.sidebar_win then
+      render_grid_if_selected_column_hidden(state)
+    end
     render_sidebar(state)
     if win == state.sidebar_win then
       move_grid_cursor_to_selected_column(state)
@@ -1380,6 +1558,7 @@ local function move_selected_column(state, delta)
   end
 
   state.selected_column = target_column
+  render_grid_if_selected_column_hidden(state)
   if current_win == state.sidebar_win then
     move_grid_cursor_to_selected_column(state)
     render_sidebar(state)
@@ -1401,6 +1580,7 @@ local function toggle_grid_sidebar_focus(state)
   sync_selected_column(state)
 
   if vim.api.nvim_get_current_win() == state.sidebar_win then
+    render_grid_if_selected_column_hidden(state)
     focus_selected_column_in_grid(state)
     return
   end
@@ -1448,15 +1628,18 @@ local function request_or_error(state, title, fn, ...)
   return result, nil
 end
 
-local function refresh_page(state, offset)
+function refresh_page(state, offset)
   state.page_offset = math.max(0, tonumber(offset or state.page_offset or 0) or 0)
-  local page, err = request_or_error(state, "ArkView Error", state.lsp.view_page, state.session_id, state.page_offset, state.page_limit)
+  local columns = grid_page_columns(state)
+  local page, err =
+    request_or_error(state, "ArkView Error", state.lsp.view_page, state.session_id, state.page_offset, state.page_limit, columns)
   if not page then
     return nil, err
   end
 
   state.rows = page.rows or {}
   state.row_numbers = page.row_numbers or {}
+  state.page_columns = columns
   state.total_rows = tonumber(page.total_rows) or tonumber(state.total_rows) or 0
   if state.selected_row == nil then
     state.selected_row = 1
@@ -1532,6 +1715,7 @@ local function open_schema_picker(state)
       return
     end
     state.selected_column = tonumber(item.index) or state.selected_column
+    render_grid_if_selected_column_hidden(state)
     focus_selected_column_in_grid(state)
     render_sidebar(state)
     center_current_view()
@@ -2119,7 +2303,20 @@ function M.open(opts)
   end
 
   local page_limit = tonumber(opts.page_limit or 0) or 0
-  local page, page_err = opts.lsp.view_page(opts.options, opts.source_bufnr, opened.session_id, 0, page_limit)
+  local selected_column = opened.schema and opened.schema[1] and tonumber(opened.schema[1].index) or 1
+  local editor_width = tonumber(vim.o.columns) or 80
+  local initial_sidebar_width = sidebar_split_width(editor_width)
+  local initial_grid_width = math.max(1, editor_width - initial_sidebar_width - 1)
+  local initial_page_columns = grid_page_columns({
+    schema = opened.schema or {},
+    rows = {},
+    total_rows = tonumber(opened.total_rows) or 0,
+    selected_column = selected_column,
+    column_width_overrides = {},
+    grid_width_override = initial_grid_width,
+  })
+  local page, page_err =
+    opts.lsp.view_page(opts.options, opts.source_bufnr, opened.session_id, 0, page_limit, initial_page_columns)
   if page_err then
     pcall(opts.lsp.view_close, opts.options, opts.source_bufnr, opened.session_id)
     return nil, page_err
@@ -2183,9 +2380,10 @@ function M.open(opts)
     pinned_header_line = nil,
     pinned_header_lines = nil,
     pinned_header_row_width = nil,
+    page_columns = initial_page_columns,
     page_offset = tonumber(page.offset or 0) or 0,
     page_limit = tonumber(page.limit) or page_limit,
-    selected_column = opened.schema and opened.schema[1] and tonumber(opened.schema[1].index) or 1,
+    selected_column = selected_column,
     selected_row = 1,
     pinned_column = nil,
     grid_buf = grid_buf,

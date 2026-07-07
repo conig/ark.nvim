@@ -777,6 +777,7 @@ impl SessionBridge {
         session_id: &str,
         offset: u32,
         limit: u32,
+        columns: &[u32],
     ) -> anyhow::Result<Value> {
         self.view_command(
             "view_page",
@@ -784,6 +785,7 @@ impl SessionBridge {
                 "session_id": session_id,
                 "offset": offset,
                 "limit": limit,
+                "columns": columns,
             }),
         )
     }

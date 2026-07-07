@@ -488,7 +488,7 @@
   })
 }
 
-.ark_view_page_payload <- function(session, session_id, offset = 0L, limit = 0L) {
+.ark_view_page_payload <- function(session, session_id, offset = 0L, limit = 0L, columns = integer()) {
   .ark_view_safe(session, {
     view <- .ark_view_require_session_id(session, session_id)
     data <- .ark_view_current_data(view)
@@ -496,6 +496,9 @@
     limit <- suppressWarnings(as.integer(limit))
     if (is.na(offset) || offset < 0L) offset <- 0L
     if (is.na(limit) || limit < 0L) limit <- 0L
+    columns <- suppressWarnings(as.integer(unlist(columns, use.names = FALSE)))
+    columns <- unique(columns[!is.na(columns) & columns >= 1L & columns <= ncol(data)])
+    projected <- length(columns) > 0L
 
     total_rows <- nrow(data)
     if (offset >= total_rows) {
@@ -508,12 +511,23 @@
       row_numbers <- rows
     }
 
-    page_rows <- lapply(seq_len(nrow(page)), function(index) {
-      row <- page[index, , drop = FALSE]
-      unname(lapply(seq_len(ncol(row)), function(column_index) {
-        .ark_view_display_value(row[[column_index]][[1L]])
-      }))
-    })
+    if (projected) {
+      page_rows <- lapply(seq_len(nrow(page)), function(index) {
+        row <- page[index, columns, drop = FALSE]
+        values <- lapply(seq_along(columns), function(position) {
+          .ark_view_display_value(row[[position]][[1L]])
+        })
+        names(values) <- as.character(columns)
+        values
+      })
+    } else {
+      page_rows <- lapply(seq_len(nrow(page)), function(index) {
+        row <- page[index, , drop = FALSE]
+        unname(lapply(seq_len(ncol(row)), function(column_index) {
+          .ark_view_display_value(row[[column_index]][[1L]])
+        }))
+      })
+    }
 
     .emit_json(list(
       schema_version = .ark_schema_version(),
@@ -522,6 +536,7 @@
       session_id = session_id,
       offset = as.integer(offset),
       limit = as.integer(limit),
+      columns = if (projected) I(as.integer(columns)) else NULL,
       total_rows = as.integer(total_rows),
       row_numbers = I(as.integer(row_numbers)),
       rows = page_rows
