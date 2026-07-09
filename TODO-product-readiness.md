@@ -17,7 +17,7 @@ deliberate as the feature set.
 
 ## Status
 
-- TODO 1: pending — release foundation and product-owned CI
+- TODO 1: complete — release foundation and product-owned CI (`b3ecb540`)
 - TODO 2: pending — non-blocking and portable runtime boundary
 - TODO 3: pending — maintainable source and state boundaries
 - TODO 4: pending — fast test pyramid and performance governance

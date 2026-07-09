@@ -1,3 +1,8 @@
 useDynLib(arkbridge, .registration = TRUE)
 export(emit_menu)
 export(inspect_object)
+importFrom(graphics, hist)
+importFrom(stats, setNames)
+importFrom(utils, capture.output)
+importFrom(utils, getFromNamespace)
+importFrom(utils, str)

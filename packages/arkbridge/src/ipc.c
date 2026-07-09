@@ -16,10 +16,6 @@ static int rscope_server_fd = -1;
 static int rscope_server_port = 0;
 static InputHandler *rscope_input_handler = NULL;
 static SEXP rscope_request_callback = NULL;
-static void (*rscope_prev_polled_events)(void) = NULL;
-static int rscope_prev_wait_usec = 0;
-static int rscope_poll_hook_active = 0;
-static int rscope_poll_hook_running = 0;
 static int rscope_server_ready_active = 0;
 static size_t rscope_max_request_bytes = 65536;
 static int rscope_read_timeout_ms = 250;
@@ -257,23 +253,6 @@ static void rscope_server_ready(void *data) {
   rscope_server_ready_active = 0;
 }
 
-static void rscope_poll_hook(void) {
-  if (rscope_poll_hook_running) {
-    return;
-  }
-  rscope_poll_hook_running = 1;
-
-  if (rscope_prev_polled_events != NULL) {
-    rscope_prev_polled_events();
-  }
-
-  if (rscope_server_fd >= 0) {
-    rscope_server_ready(NULL);
-  }
-
-  rscope_poll_hook_running = 0;
-}
-
 static void rscope_ipc_stop_internal(void) {
   if (rscope_input_handler != NULL) {
     (void) removeInputHandler(&R_InputHandlers, rscope_input_handler);
@@ -288,14 +267,6 @@ static void rscope_ipc_stop_internal(void) {
   if (rscope_request_callback != NULL) {
     R_ReleaseObject(rscope_request_callback);
     rscope_request_callback = NULL;
-  }
-
-  if (rscope_poll_hook_active) {
-    R_PolledEvents = rscope_prev_polled_events;
-    R_wait_usec = rscope_prev_wait_usec;
-    rscope_prev_polled_events = NULL;
-    rscope_prev_wait_usec = 0;
-    rscope_poll_hook_active = 0;
   }
 
   rscope_server_port = 0;
@@ -360,16 +331,6 @@ SEXP C_ark_ipc_start(SEXP port, SEXP callback) {
   rscope_request_callback = callback;
   rscope_server_fd = server_fd;
   rscope_server_port = port_value;
-
-  if (!rscope_poll_hook_active) {
-    rscope_prev_polled_events = R_PolledEvents;
-    rscope_prev_wait_usec = R_wait_usec;
-    R_PolledEvents = rscope_poll_hook;
-    if (R_wait_usec <= 0 || R_wait_usec > 50000) {
-      R_wait_usec = 10000;
-    }
-    rscope_poll_hook_active = 1;
-  }
 
   if (R_InputHandlers != NULL) {
     rscope_input_handler = addInputHandler(R_InputHandlers, server_fd, rscope_server_ready, XActivity);

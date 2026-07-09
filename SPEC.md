@@ -203,6 +203,9 @@ Responsibilities:
 - keep the control-plane status file small and store cached bootstrap payloads in
   a separate trusted artifact
 - answer bridge requests for bootstrap, help text, and runtime inspection
+- service the loopback socket from R's public `InputHandler` API only; the
+  product runtime does not mutate `R_PolledEvents`, `R_wait_usec`, or other
+  non-public R event-loop globals
 - install a scoped managed-session help hook that routes simple R `?topic`
   requests back to ArkHelp through the `nvim-console` RPC socket or the parent
   Neovim RPC server, while preserving base R help behavior as fallback

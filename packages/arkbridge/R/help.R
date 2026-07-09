@@ -34,6 +34,11 @@
 .ark_help_hook_state$last_topic <- NULL
 .ark_help_hook_state$last_success_at <- NULL
 
+.ark_unlock_binding <- function(name, env) {
+  unlock <- get("unlockBinding", envir = baseenv(), inherits = FALSE)
+  unlock(name, env)
+}
+
 .ark_help_hook_enabled <- function() {
   value <- tolower(Sys.getenv("ARK_NVIM_HELP_HOOK", unset = "1"))
   !value %in% c("0", "false", "no", "off")
@@ -566,7 +571,7 @@
   tryCatch({
     was_locked <- bindingIsLocked("help", utils_ns)
     if (was_locked) {
-      unlockBinding("help", utils_ns)
+      .ark_unlock_binding("help", utils_ns)
     }
     on.exit({
       if (was_locked && !bindingIsLocked("help", utils_ns)) {
@@ -596,7 +601,7 @@
   tryCatch({
     was_locked <- bindingIsLocked("print.help_files_with_topic", utils_ns)
     if (was_locked) {
-      unlockBinding("print.help_files_with_topic", utils_ns)
+      .ark_unlock_binding("print.help_files_with_topic", utils_ns)
     }
     on.exit({
       if (was_locked && !bindingIsLocked("print.help_files_with_topic", utils_ns)) {
@@ -647,7 +652,7 @@
   tryCatch({
     was_locked <- bindingIsLocked("View", utils_ns)
     if (was_locked) {
-      unlockBinding("View", utils_ns)
+      .ark_unlock_binding("View", utils_ns)
     }
     on.exit({
       if (was_locked && !bindingIsLocked("View", utils_ns)) {
