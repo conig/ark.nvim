@@ -801,3 +801,6 @@ Treat `ark.nvim` as:
 - not architecture-complete in the broader “final form” sense
 - primarily in a polish, identity, and hardening phase rather than a broad
   feature-expansion phase
+
+The discrete implementation roadmap for that hardening phase is tracked in
+[TODO-product-readiness.md](/home/marine/repos/ark.nvim/TODO-product-readiness.md).
