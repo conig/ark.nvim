@@ -138,12 +138,14 @@ local ok, err = pcall(function()
     error("expected ArkHelp popup to ensure ark_lsp is started once, got " .. tostring(started_lsp), 0)
   end
 
-  if started_pane ~= 1 then
-    error("expected ArkHelp popup to ensure the managed pane is started once, got " .. tostring(started_pane), 0)
+  -- Regression: tmux ArkHelp popup only needs a tmux context and help text.
+  -- It should not force the managed R pane to exist.
+  if started_pane ~= 0 then
+    error("expected ArkHelp popup to avoid starting the managed pane, got " .. tostring(started_pane), 0)
   end
 
-  if synced_sessions ~= 1 then
-    error("expected ArkHelp popup to sync sessions once, got " .. tostring(synced_sessions), 0)
+  if synced_sessions ~= 0 then
+    error("expected ArkHelp popup to avoid syncing a managed session, got " .. tostring(synced_sessions), 0)
   end
 
   if vim.api.nvim_get_current_buf() ~= buf then

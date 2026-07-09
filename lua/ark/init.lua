@@ -1346,11 +1346,12 @@ local function should_use_tmux_help_popup()
     return true
   end
 
-  if session_backend.backend_name(options) ~= "tmux" then
+  local backend_name = type(session_backend.backend_name) == "function" and session_backend.backend_name(options) or "tmux"
+  if backend_name ~= "tmux" then
     return false
   end
 
-  local status = session_backend.status(options)
+  local status = type(session_backend.status) == "function" and session_backend.status(options) or nil
   return type(status) == "table" and status.inside_tmux == true
 end
 
@@ -2892,12 +2893,11 @@ local function show_help_page(bufnr, topic)
     return topic, nil
   end
 
-  local runtime_ready_fn = with_runtime_ready
-  if use_console_runtime then
-    runtime_ready_fn = with_console_session_ready
+  if not use_console_runtime then
+    return open_help(nil)
   end
 
-  local opened_topic, runtime_err, err_source = runtime_ready_fn(bufnr, "ark.nvim help", open_help, {
+  local opened_topic, runtime_err, err_source = with_console_session_ready(bufnr, "ark.nvim help", open_help, {
     start_lsp = false,
   })
   if not opened_topic and runtime_err and err_source ~= "callback" then

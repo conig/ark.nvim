@@ -143,12 +143,14 @@ local ok, err = pcall(function()
     error("expected ArkHelp to ensure ark_lsp is started once, got " .. tostring(started_lsp), 0)
   end
 
-  if started_pane ~= 1 then
-    error("expected ArkHelp to ensure the managed pane is started once, got " .. tostring(started_pane), 0)
+  -- Regression: normal ArkHelp should not force a managed R pane. The LSP
+  -- help-text request can use its bridge or detached Rscript fallback.
+  if started_pane ~= 0 then
+    error("expected ArkHelp to avoid starting the managed pane, got " .. tostring(started_pane), 0)
   end
 
-  if synced_sessions ~= 1 then
-    error("expected ArkHelp to sync sessions once, got " .. tostring(synced_sessions), 0)
+  if synced_sessions ~= 0 then
+    error("expected ArkHelp to avoid syncing a managed session, got " .. tostring(synced_sessions), 0)
   end
 
   local help_buf = vim.api.nvim_get_current_buf()
