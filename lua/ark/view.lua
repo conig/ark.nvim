@@ -10,8 +10,12 @@ local grid_column_width_step = 8
 local grid_column_separator_width = 3
 local grid_horizontal_render_min_width = 420
 local grid_horizontal_render_width_multiplier = 3
+local grid_vertical_render_min_rows = 160
+local grid_vertical_render_height_multiplier = 4
+local grid_vertical_render_max_rows = 400
 local refresh_page
 local request_page_async
+local move_virtual_rows
 
 local function ensure_highlights()
   vim.api.nvim_set_hl(0, "ArkViewHeader", { link = "Title", default = true })
@@ -992,6 +996,68 @@ local function grid_render_width_budget(state)
   return math.max(grid_horizontal_render_min_width, width * grid_horizontal_render_width_multiplier)
 end
 
+local function grid_row_window_height(state)
+  if tonumber(state and state.grid_height_override) then
+    return tonumber(state.grid_height_override)
+  end
+  if state and valid_win(state.grid_win) then
+    return vim.api.nvim_win_get_height(state.grid_win)
+  end
+  return tonumber(vim.o.lines) or 24
+end
+
+local function virtual_row_limit(state)
+  local height = math.max(1, tonumber(grid_row_window_height(state)) or 24)
+  local limit = math.floor(height * grid_vertical_render_height_multiplier)
+  return math.max(grid_vertical_render_min_rows, math.min(grid_vertical_render_max_rows, limit))
+end
+
+local function requested_page_limit(state)
+  return math.max(0, tonumber(state and state.requested_page_limit or 0) or 0)
+end
+
+local function virtual_rows_allowed(state)
+  return not (state and state.virtual_rows_allowed == false)
+end
+
+local function should_virtualize_rows(state)
+  return virtual_rows_allowed(state)
+    and requested_page_limit(state) == 0
+    and (tonumber(state and state.total_rows or 0) or 0) > virtual_row_limit(state)
+end
+
+local function update_virtual_rows(state)
+  if not state then
+    return false
+  end
+  state.virtual_rows = should_virtualize_rows(state)
+  return state.virtual_rows
+end
+
+local function row_request_limit(state)
+  if update_virtual_rows(state) then
+    return virtual_row_limit(state)
+  end
+  return requested_page_limit(state)
+end
+
+local function max_page_offset(state, limit)
+  limit = tonumber(limit or row_request_limit(state)) or 0
+  if limit < 1 then
+    return 0
+  end
+  return math.max(0, (tonumber(state and state.total_rows or 0) or 0) - limit)
+end
+
+local function normalize_page_offset(state, offset, limit)
+  offset = math.max(0, tonumber(offset or (state and state.page_offset) or 0) or 0)
+  limit = tonumber(limit or row_request_limit(state)) or 0
+  if limit > 0 then
+    offset = math.min(offset, max_page_offset(state, limit))
+  end
+  return offset
+end
+
 local function visible_grid_columns(state, row_width)
   local schema = state.schema or {}
   if #schema == 0 then
@@ -1387,9 +1453,14 @@ local function move_current_view_half_page(state, direction)
     return
   end
 
-  local buf = vim.api.nvim_win_get_buf(win)
   local height = math.max(1, vim.api.nvim_win_get_height(win))
   local amount = math.max(1, math.floor(height / 2))
+  if state and state.virtual_rows and type(move_virtual_rows) == "function" and (win == state.grid_win or win == state.pinned_win) then
+    move_virtual_rows(state, direction * amount, { align = "center" })
+    return
+  end
+
+  local buf = vim.api.nvim_win_get_buf(win)
   local line_count = math.max(1, vim.api.nvim_buf_line_count(buf))
   local cursor = vim.api.nvim_win_get_cursor(win)
   local target_line = math.max(1, math.min(line_count, cursor[1] + (direction * amount)))
@@ -1655,7 +1726,13 @@ local function apply_page(state, page, columns)
   state.page_columns = columns or page.columns or {}
   state.total_rows = tonumber(page.total_rows) or tonumber(state.total_rows) or 0
   state.page_offset = math.max(0, tonumber(page.offset or state.page_offset or 0) or 0)
-  state.page_limit = tonumber(page.limit) or state.page_limit
+  update_virtual_rows(state)
+  local response_limit = tonumber(page.limit)
+  if state.virtual_rows then
+    state.page_limit = (response_limit and response_limit > 0) and response_limit or row_request_limit(state)
+  else
+    state.page_limit = response_limit or requested_page_limit(state)
+  end
   state.page_loading = false
   state.last_page_error = nil
   if state.selected_row == nil then
@@ -1668,10 +1745,12 @@ local function apply_page(state, page, columns)
 end
 
 function refresh_page(state, offset)
-  state.page_offset = math.max(0, tonumber(offset or state.page_offset or 0) or 0)
+  local limit = row_request_limit(state)
+  state.page_limit = limit
+  state.page_offset = normalize_page_offset(state, offset, limit)
   local columns = grid_page_columns(state)
   local page, err =
-    request_or_error(state, "ArkView Error", state.lsp.view_page, state.session_id, state.page_offset, state.page_limit, columns)
+    request_or_error(state, "ArkView Error", state.lsp.view_page, state.session_id, state.page_offset, limit, columns)
   if not page then
     return nil, err
   end
@@ -1688,7 +1767,9 @@ function request_page_async(state, offset, opts)
     return refresh_page(state, offset)
   end
 
-  state.page_offset = math.max(0, tonumber(offset or state.page_offset or 0) or 0)
+  local limit = row_request_limit(state)
+  state.page_limit = limit
+  state.page_offset = normalize_page_offset(state, offset, limit)
   local columns = grid_page_columns(state)
   state.page_request_generation = (tonumber(state.page_request_generation or 0) or 0) + 1
   local generation = state.page_request_generation
@@ -1707,7 +1788,7 @@ function request_page_async(state, offset, opts)
     state.source_bufnr,
     state.session_id,
     state.page_offset,
-    state.page_limit,
+    limit,
     columns,
     function(page, page_err)
       vim.schedule(function()
@@ -1740,6 +1821,70 @@ function request_page_async(state, offset, opts)
   return true
 end
 
+local function clamp_absolute_row(state, row)
+  local total = tonumber(state and state.total_rows or 0) or 0
+  if total < 1 then
+    return nil
+  end
+
+  row = math.floor(tonumber(row or 1) or 1)
+  return math.max(1, math.min(total, row))
+end
+
+local function goto_absolute_row(state, absolute_row, opts)
+  opts = opts or {}
+  absolute_row = clamp_absolute_row(state, absolute_row)
+  if not absolute_row then
+    return false
+  end
+
+  local offset = current_row_offset(state)
+  local loaded = #(state.rows or {})
+  local first = offset + 1
+  local last = offset + loaded
+  if loaded > 0 and absolute_row >= first and absolute_row <= last and opts.force_request ~= true then
+    state.selected_row = absolute_row - offset
+    move_grid_cursor_to_selected_column(state)
+    update_header_windows(state)
+    return true
+  end
+
+  local limit = row_request_limit(state)
+  if limit < 1 then
+    return false
+  end
+
+  local align = opts.align or "center"
+  local new_offset
+  if align == "start" then
+    new_offset = absolute_row - 1
+  elseif align == "end" then
+    new_offset = absolute_row - limit
+  else
+    new_offset = absolute_row - math.floor(limit / 2)
+  end
+  new_offset = math.max(0, math.min(max_page_offset(state, limit), new_offset))
+  state.selected_row = math.max(1, math.min(limit, absolute_row - new_offset))
+  request_page_async(state, new_offset, { clear_rows = true })
+  return true
+end
+
+move_virtual_rows = function(state, delta, opts)
+  if not state or not state.virtual_rows then
+    return false
+  end
+
+  opts = opts or {}
+  sync_selected_column(state)
+  local current_absolute_row = absolute_row_index(state)
+  if not current_absolute_row then
+    current_absolute_row = current_row_offset(state) + (tonumber(state.selected_row or 1) or 1)
+  end
+
+  local target = current_absolute_row + (tonumber(delta or 0) or 0)
+  return goto_absolute_row(state, target, { align = opts.align or "center" })
+end
+
 local function refresh_state(state, preserve_offset)
   local info, err = request_or_error(state, "ArkView Error", state.lsp.view_state, state.session_id)
   if not info then
@@ -1758,7 +1903,7 @@ local function refresh_state(state, preserve_offset)
   if state.selected_column == nil and state.schema[1] then
     state.selected_column = tonumber(state.schema[1].index) or 1
   end
-  return refresh_page(state, state.page_offset)
+  return request_page_async(state, state.page_offset, { clear_rows = true })
 end
 
 local function next_sort_direction(direction)
@@ -2135,6 +2280,29 @@ local function setup_keymaps(state)
       vim.keymap.set("n", lhs, rhs, { buffer = buf, nowait = true, silent = true })
     end
   end
+  local row_motion_buffers = { state.grid_buf, state.pinned_buf }
+  local function normal_motion(keys)
+    local count = math.max(1, tonumber(vim.v.count1) or 1)
+    pcall(vim.cmd, "normal! " .. tostring(count) .. keys)
+    sync_selected_column(state)
+    update_header_windows(state)
+  end
+  local function normal_goto(keys)
+    local count = tonumber(vim.v.count or 0) or 0
+    local prefix = count > 0 and tostring(count) or ""
+    pcall(vim.cmd, "normal! " .. prefix .. keys)
+    sync_selected_column(state)
+    update_header_windows(state)
+  end
+  local function row_motion(delta, fallback_keys)
+    return function()
+      local count = math.max(1, tonumber(vim.v.count1) or 1)
+      if move_virtual_rows(state, delta * count, { align = "center" }) then
+        return
+      end
+      normal_motion(fallback_keys)
+    end
+  end
 
   for _, lhs in ipairs({ "i", "I", "a", "A", "o", "O", "R", "x", "X", "D" }) do
     map(lhs, function() end)
@@ -2280,6 +2448,11 @@ local function setup_keymaps(state)
     move_selected_column(state, 1)
   end)
 
+  map("j", row_motion(1, "j"), row_motion_buffers)
+  map("<Down>", row_motion(1, "j"), row_motion_buffers)
+  map("k", row_motion(-1, "k"), row_motion_buffers)
+  map("<Up>", row_motion(-1, "k"), row_motion_buffers)
+
   map("J", function()
     move_current_view_half_page(state, 1)
   end)
@@ -2365,8 +2538,28 @@ local function setup_keymaps(state)
     render_sidebar(state)
   end, { state.sidebar_buf })
 
+  map("G", function()
+    if not state.virtual_rows then
+      normal_goto("G")
+      return
+    end
+    local count = tonumber(vim.v.count or 0) or 0
+    local target = count > 0 and count or tonumber(state.total_rows or 1) or 1
+    goto_absolute_row(state, target, { align = count > 0 and "center" or "end" })
+  end, row_motion_buffers)
+
+  map("gg", function()
+    if not state.virtual_rows then
+      normal_goto("gg")
+      return
+    end
+    local count = tonumber(vim.v.count or 0) or 0
+    local target = count > 0 and count or 1
+    goto_absolute_row(state, target, { align = "start" })
+  end, row_motion_buffers)
+
   map("]p", function()
-    local page_limit = tonumber(state.page_limit or 0) or 0
+    local page_limit = row_request_limit(state)
     if page_limit < 1 then
       return
     end
@@ -2377,7 +2570,7 @@ local function setup_keymaps(state)
   end)
 
   map("[p", function()
-    local page_limit = tonumber(state.page_limit or 0) or 0
+    local page_limit = row_request_limit(state)
     if page_limit < 1 then
       return
     end
@@ -2393,10 +2586,18 @@ function M.open(opts)
   end
 
   local page_limit = tonumber(opts.page_limit or 0) or 0
+  local virtual_rows_allowed_option = opts.virtual_rows ~= false
   local selected_column = opened.schema and opened.schema[1] and tonumber(opened.schema[1].index) or 1
   local editor_width = tonumber(vim.o.columns) or 80
   local initial_sidebar_width = sidebar_split_width(editor_width)
   local initial_grid_width = math.max(1, editor_width - initial_sidebar_width - 1)
+  local initial_page_probe = {
+    requested_page_limit = page_limit,
+    total_rows = tonumber(opened.total_rows) or 0,
+    virtual_rows_allowed = virtual_rows_allowed_option,
+    grid_height_override = vim.o.lines,
+  }
+  local initial_page_limit = row_request_limit(initial_page_probe)
   local initial_page_columns = grid_page_columns({
     schema = opened.schema or {},
     rows = {},
@@ -2409,7 +2610,8 @@ function M.open(opts)
   local page = nil
   if not has_async_page then
     local page_err = nil
-    page, page_err = opts.lsp.view_page(opts.options, opts.source_bufnr, opened.session_id, 0, page_limit, initial_page_columns)
+    page, page_err =
+      opts.lsp.view_page(opts.options, opts.source_bufnr, opened.session_id, 0, initial_page_limit, initial_page_columns)
     if page_err then
       pcall(opts.lsp.view_close, opts.options, opts.source_bufnr, opened.session_id)
       return nil, page_err
@@ -2476,7 +2678,10 @@ function M.open(opts)
     pinned_header_row_width = nil,
     page_columns = initial_page_columns,
     page_offset = tonumber(page and page.offset or 0) or 0,
-    page_limit = tonumber(page and page.limit) or page_limit,
+    requested_page_limit = page_limit,
+    virtual_rows_allowed = virtual_rows_allowed_option,
+    virtual_rows = false,
+    page_limit = tonumber(page and page.limit) or initial_page_limit,
     page_loading = has_async_page,
     page_request_generation = 0,
     last_page_error = nil,
@@ -2501,6 +2706,10 @@ function M.open(opts)
   }
 
   states[tabpage] = state
+  update_virtual_rows(state)
+  if state.virtual_rows and (tonumber(state.page_limit or 0) or 0) < 1 then
+    state.page_limit = row_request_limit(state)
+  end
 
   local group = vim.api.nvim_create_augroup("ArkView" .. tostring(tabpage), { clear = true })
   state.augroup = group

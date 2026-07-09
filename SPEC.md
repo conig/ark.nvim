@@ -158,6 +158,9 @@ Responsibilities:
   when the Ark console is running inside tmux, so small console panes do not
   constrain data-grid inspection
 - answer bridge requests for live data-explorer sessions and table paging
+- serve ArkView table pages by `offset` and `limit`, preserving `limit = 0` as
+  the bridge-layer request for all rows while allowing the Neovim UI to request
+  bounded row windows for tall objects
 - support ArkView filtering through free-text contains filters, numeric
   comparison filters driven by the `<` and `>` prompts on numeric columns, and
   exact value filters chosen from bridge-provided unique values with counts
@@ -248,6 +251,10 @@ part of the default supported path.
   next data column and clamp at table edges.
 - ArkView keeps the grid column header visible as a sticky header when vertical
   scrolling moves the canonical header line out of view.
+- ArkView defaults to whole-object utility, but tall tables are rendered through
+  bounded row windows. `]p`, `[p`, `j`, `k`, `gg`, `G`, and half-page movement
+  fetch adjacent windows as needed, while export, cell inspection, filter, and
+  sort behavior continues to operate on bridge-side full data.
 
 ## What Is Essentially Complete
 
