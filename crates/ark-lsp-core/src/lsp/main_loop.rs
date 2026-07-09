@@ -373,16 +373,20 @@ impl GlobalState {
                             respond(tx, || response, LspResponse::ExecuteCommand)?;
                         },
                         LspRequest::Completion(params) => {
-                            respond(tx, || handlers::handle_completion(params, &self.world), LspResponse::Completion)?;
+                            let world = self.world.clone();
+                            Self::spawn_handler(tx, move || handlers::handle_completion(params, &world), LspResponse::Completion);
                         },
                         LspRequest::CompletionResolve(params) => {
-                            respond(tx, || handlers::handle_completion_resolve(params, &self.world), LspResponse::CompletionResolve)?;
+                            let world = self.world.clone();
+                            Self::spawn_handler(tx, move || handlers::handle_completion_resolve(params, &world), LspResponse::CompletionResolve);
                         },
                         LspRequest::Hover(params) => {
-                            respond(tx, || handlers::handle_hover(params, &self.world), LspResponse::Hover)?;
+                            let world = self.world.clone();
+                            Self::spawn_handler(tx, move || handlers::handle_hover(params, &world), LspResponse::Hover);
                         },
                         LspRequest::SignatureHelp(params) => {
-                            respond(tx, || handlers::handle_signature_help(params, &self.world), LspResponse::SignatureHelp)?;
+                            let world = self.world.clone();
+                            Self::spawn_handler(tx, move || handlers::handle_signature_help(params, &world), LspResponse::SignatureHelp);
                         },
                         LspRequest::GotoDefinition(params) => {
                             respond(tx, || handlers::handle_goto_definition(params, &self.world), LspResponse::GotoDefinition)?;
@@ -417,10 +421,12 @@ impl GlobalState {
                             respond(tx, || handlers::handle_status(params, &self.world), LspResponse::Status)?;
                         },
                         LspRequest::HelpText(params) => {
-                            respond(tx, || handlers::handle_help_text(params, &self.world), LspResponse::HelpText)?;
+                            let world = self.world.clone();
+                            Self::spawn_handler(tx, move || handlers::handle_help_text(params, &world), LspResponse::HelpText);
                         },
                         LspRequest::PackageInstall(params) => {
-                            respond(tx, || handlers::handle_package_install(params, &self.world), LspResponse::PackageInstall)?;
+                            let world = self.world.clone();
+                            Self::spawn_handler(tx, move || handlers::handle_package_install(params, &world), LspResponse::PackageInstall);
                         },
                         LspRequest::InputBoundaries(params) => {
                             respond(tx, || handlers::handle_input_boundaries(params), LspResponse::InputBoundaries)?;
@@ -429,10 +435,12 @@ impl GlobalState {
                             respond(tx, || state_handlers::bootstrap_session(params, &mut self.world), LspResponse::SessionBootstrap)?;
                         },
                         LspRequest::ViewRpc(params) => {
-                            respond(tx, || handlers::handle_view_rpc(params, &self.world), LspResponse::ViewRpc)?;
+                            let world = self.world.clone();
+                            Self::spawn_handler(tx, move || handlers::handle_view_rpc(params, &world), LspResponse::ViewRpc);
                         },
                         LspRequest::TargetsRpc(params) => {
-                            respond(tx, || handlers::handle_targets_rpc(params, &self.world), LspResponse::TargetsRpc)?;
+                            let world = self.world.clone();
+                            Self::spawn_handler(tx, move || handlers::handle_targets_rpc(params, &world), LspResponse::TargetsRpc);
                         },
                     };
                 },
@@ -471,7 +479,6 @@ impl GlobalState {
         Ok(())
     }
 
-    #[allow(dead_code)] // Currently unused
     /// Spawn blocking thread for LSP request handler
     ///
     /// Use this for handlers that might take too long to handle on the main

@@ -243,6 +243,46 @@ Responsibilities:
 The active runtime contract is Ark-native. Legacy `rscope` compatibility is not
 part of the default supported path.
 
+### Live runtime request contract
+
+Detached bridge work is isolated from the serialized LSP state loop. A handler
+receives an immutable `WorldState` snapshot; requests tied to a document also
+capture its URI and version, and every bridge-backed request captures the
+detached-session generation. A result is returned only while those values still
+match the latest world state. A newer document or session turns the old result
+into an LSP content-modified response rather than publishing stale runtime data.
+
+The interactive R process remains single-threaded. Ark admits at most one
+bridge operation into R and allows at most eight additional operations to wait.
+Queue admission, queue wait, transport, status refresh, and the one permitted
+retry all count toward one end-to-end deadline:
+
+- completion, completion resolve, hover, and signature help: at most 1000 ms
+- lifecycle/bootstrap work: at most 2000 ms
+- help and read-only view/target requests: at most 10 seconds
+- package installation and mutating target actions: at most 30 seconds
+
+The configured session timeout may make a latency-sensitive request shorter;
+it cannot extend that class beyond its product deadline. Queue saturation and
+deadline expiry are ordinary bridge-unavailable outcomes. Completion preserves
+its handled-empty precedence and otherwise falls back to the appropriate
+static result; hover and signature help fall back to static or empty results;
+user-initiated actions return an explicit actionable error.
+
+Dynamic transport retries are narrow: an authentication or stale-session
+response may refresh trusted status metadata and retry once when the connection
+identity changed. Connection refusal, timeout, decode failure, and an unchanged
+status identity are not sleep-retried. Three consecutive transport failures
+for one connection open a two-second circuit; a changed trusted connection
+identity closes it immediately, and a successful half-open probe closes it
+after cooldown. This prevents completion bursts from probing a dead pane while
+allowing a healthy replacement bridge to recover without restarting Neovim.
+
+Neovim/tower-lsp cancellation closes the response channel. Cancelled work is
+removed before it enters the R queue; once R has accepted an operation, Ark can
+only bound the wait with the transport deadline because interrupting arbitrary
+interactive R evaluation is not safe. The late result is discarded.
+
 ## Current Behavior That Should Be Preserved
 
 - tmux remains the canonical managed backend and must not become second-class in
