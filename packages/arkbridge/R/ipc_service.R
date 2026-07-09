@@ -343,6 +343,16 @@
     ))
   }
 
+  if (identical(req$command %||% "", "targets_view_open")) {
+    return(.ark_targets_view_open_payload(
+      session,
+      req$root %||% "",
+      req$script %||% "",
+      req$store %||% "",
+      req$name %||% ""
+    ))
+  }
+
   if (identical(req$command %||% "", "targets_action")) {
     return(.ark_targets_action_payload(
       session,

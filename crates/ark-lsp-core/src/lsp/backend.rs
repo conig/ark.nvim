@@ -43,6 +43,7 @@ use crate::lsp::handlers::TargetsMetaParams;
 use crate::lsp::handlers::TargetsObjectMetaParams;
 use crate::lsp::handlers::TargetsProjectParams;
 use crate::lsp::handlers::TargetsRpcRequest;
+use crate::lsp::handlers::TargetsViewOpenParams;
 use crate::lsp::handlers::ViewCellParams;
 use crate::lsp::handlers::ViewExportParams;
 use crate::lsp::handlers::ViewFilterParams;
@@ -67,6 +68,7 @@ use crate::lsp::handlers::ARK_TARGETS_META_REQUEST;
 use crate::lsp::handlers::ARK_TARGETS_NETWORK_REQUEST;
 use crate::lsp::handlers::ARK_TARGETS_OBJECT_META_REQUEST;
 use crate::lsp::handlers::ARK_TARGETS_PROJECT_INFO_REQUEST;
+use crate::lsp::handlers::ARK_TARGETS_VIEW_OPEN_REQUEST;
 use crate::lsp::handlers::ARK_VDOC_REQUEST;
 use crate::lsp::handlers::ARK_VIEW_CELL_REQUEST;
 use crate::lsp::handlers::ARK_VIEW_CLOSE_REQUEST;
@@ -848,6 +850,18 @@ impl Backend {
         )
     }
 
+    async fn targets_view_open(
+        &self,
+        params: TargetsViewOpenParams,
+    ) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::TargetsRpc(TargetsRpcRequest::ViewOpen(params)))
+                .await,
+            LspResponse::TargetsRpc
+        )
+    }
+
     async fn targets_action(
         &self,
         params: TargetsActionParams,
@@ -980,6 +994,7 @@ pub fn start_lsp(
                 ARK_TARGETS_OBJECT_META_REQUEST,
                 Backend::targets_object_meta,
             )
+            .custom_method(ARK_TARGETS_VIEW_OPEN_REQUEST, Backend::targets_view_open)
             .custom_method(ARK_TARGETS_ACTION_REQUEST, Backend::targets_action)
             // In principle this should probably be a Jupyter request
             .custom_method(
@@ -1073,6 +1088,7 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
             ARK_TARGETS_OBJECT_META_REQUEST,
             Backend::targets_object_meta,
         )
+        .custom_method(ARK_TARGETS_VIEW_OPEN_REQUEST, Backend::targets_view_open)
         .custom_method(ARK_TARGETS_ACTION_REQUEST, Backend::targets_action)
         .custom_method(
             input_boundaries::ARK_INPUT_BOUNDARIES_REQUEST,

@@ -455,6 +455,27 @@
   })
 }
 
+.ark_targets_view_open_payload <- function(session, root = "", script = "", store = "", name = "") {
+  .ark_targets_safe(session, {
+    if (!is.character(name) || length(name) != 1L || !nzchar(name)) {
+      return(.ark_targets_error_payload(session, "E_IPC_REQUEST", "missing target name", "ipc_targets_view_open"))
+    }
+
+    project <- .ark_targets_project(root, script, store)
+    value <- .ark_targets_with_project(project, {
+      .ark_targets_call_export("tar_read", list(name = name, store = project$store))
+    })
+    expr <- sprintf("targets::tar_read(name = %s)", encodeString(name, quote = "\""))
+
+    .ark_view_open_object_payload(
+      session,
+      value,
+      expr,
+      sprintf("Target: %s", name)
+    )
+  })
+}
+
 .ark_targets_action_payload <- function(session, action = "", root = "", script = "", store = "", names = character()) {
   .ark_targets_safe(session, {
     if (!is.character(action) || length(action) != 1L || !nzchar(action)) {

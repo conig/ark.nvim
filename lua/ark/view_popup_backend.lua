@@ -43,8 +43,14 @@ local function rpc_response(ok, value, err)
 end
 
 function M.unregister(id)
-  if type(id) == "string" then
-    backends[id] = nil
+  if type(id) ~= "string" then
+    return
+  end
+
+  local backend = backends[id]
+  backends[id] = nil
+  if type(backend) == "table" and type(backend.on_dispose) == "function" then
+    pcall(backend.on_dispose)
   end
 end
 
@@ -64,7 +70,7 @@ function M.dispatch(id, method, args)
   end
 
   args = type(args) == "table" and args or {}
-  local lsp = require("ark.lsp")
+  local lsp = backend.lsp or require("ark.lsp")
   local fn = lsp[method]
   if type(fn) ~= "function" then
     return rpc_response(false, nil, "ark.lsp does not implement " .. tostring(method))
@@ -97,6 +103,8 @@ function M.register(opts)
 
   local id = new_id()
   backends[id] = {
+    lsp = opts.lsp,
+    on_dispose = opts.on_dispose,
     options = opts.options or {},
     source_bufnr = opts.source_bufnr,
   }

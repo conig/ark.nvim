@@ -987,6 +987,24 @@ impl SessionBridge {
         )
     }
 
+    pub(crate) fn targets_view_open(
+        &self,
+        root: String,
+        script: String,
+        store: String,
+        name: String,
+    ) -> anyhow::Result<Value> {
+        self.view_command(
+            "targets_view_open",
+            serde_json::json!({
+                "root": root,
+                "script": script,
+                "store": store,
+                "name": name,
+            }),
+        )
+    }
+
     pub(crate) fn targets_action(
         &self,
         action: String,

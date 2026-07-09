@@ -9,6 +9,7 @@ local keymaps = require("ark.keymaps")
 local lsp = require("ark.lsp")
 local session_backend = require("ark.session")
 local snippets = require("ark.snippets")
+local target_view = require("ark.target_view")
 local target_tools = require("ark.targets")
 local view = require("ark.view")
 local view_popup_backend = require("ark.view_popup_backend")
@@ -33,6 +34,7 @@ local runtime_ready
 local repl_ready
 local ensure_bridge_runtime
 local start_or_recover_pane_after_runtime_ready
+local tar_read_target_name
 
 local function monotonic_ms()
   local clock = (uv and uv.hrtime) and uv.hrtime or vim.loop.hrtime
@@ -1457,11 +1459,12 @@ local function should_use_tmux_view_popup()
     return true
   end
 
-  if session_backend.backend_name(options) ~= "tmux" then
+  local backend_name = type(session_backend.backend_name) == "function" and session_backend.backend_name(options) or "tmux"
+  if backend_name ~= "tmux" then
     return false
   end
 
-  local status = session_backend.status(options)
+  local status = type(session_backend.status) == "function" and session_backend.status(options) or nil
   return type(status) == "table" and status.inside_tmux == true
 end
 
@@ -2994,6 +2997,11 @@ function M.view_popup(expr, bufnr)
     return nil, err
   end
 
+  local target_name = tar_read_target_name(expr)
+  if target_name and not active_console_status(bufnr) then
+    return M.targets_view(target_name, source_bufnr)
+  end
+
   local function open_current_ui()
     local opened, open_err = view.open({
       expr = expr,
@@ -3083,6 +3091,11 @@ function M.view(expr, bufnr, view_opts)
     close_view_popup()
     notify(err, vim.log.levels.WARN)
     return nil, err
+  end
+
+  local target_name = tar_read_target_name(expr)
+  if target_name and not active_console_status(bufnr) then
+    return M.targets_view(target_name, source_bufnr)
   end
 
   local function open_view(runtime_err)
@@ -3421,6 +3434,38 @@ local function target_load_expression(names)
     rendered[#rendered + 1] = r_symbol_or_string(name)
   end
   return string.format("targets::tar_load(c(%s))", table.concat(rendered, ", "))
+end
+
+tar_read_target_name = function(expr)
+  if type(expr) ~= "string" or expr == "" then
+    return nil
+  end
+
+  local callees = {
+    "tar_read",
+    "targets::tar_read",
+    "targets:::tar_read",
+  }
+  local arg_patterns = {
+    "name%s*=%s*\"([^\"]+)\"",
+    "name%s*=%s*'([^']+)'",
+    "\"([^\"]+)\"",
+    "'([^']+)'",
+    "name%s*=%s*([%.%a_][%w_.]*)",
+    "([%.%a_][%w_.]*)",
+  }
+
+  for _, callee in ipairs(callees) do
+    local escaped = vim.pesc(callee)
+    for _, arg_pattern in ipairs(arg_patterns) do
+      local name = expr:match("^%s*" .. escaped .. "%s*%(%s*" .. arg_pattern .. "%s*%)%s*$")
+      if type(name) == "string" and name ~= "" then
+        return name
+      end
+    end
+  end
+
+  return nil
 end
 
 local function description_file_for_buffer(bufnr)
@@ -4169,6 +4214,85 @@ function M.targets_pick(bufnr, callback)
   return true
 end
 
+function M.targets_view(name, bufnr)
+  ensure_setup()
+  bufnr = resolve_bufnr(bufnr)
+
+  if type(name) ~= "string" or name == "" then
+    local err = "missing target name"
+    notify(err, vim.log.levels.WARN)
+    return nil, err
+  end
+
+  local source_bufnr = resolve_view_source_bufnr(bufnr)
+  if type(source_bufnr) ~= "number" then
+    local err = "ark.nvim target ArkView requires an R-family buffer"
+    notify(err, vim.log.levels.WARN)
+    return nil, err
+  end
+
+  local project = targets_project(source_bufnr)
+
+  if should_use_tmux_view_popup() then
+    local backend = target_view.create({
+      name = name,
+      project = project,
+      source_bufnr = source_bufnr,
+      options = options,
+      notify = notify,
+    })
+    local server = current_nvim_server()
+    if type(server) == "string" and server ~= "" then
+      local backend_id, backend_err = view_popup_backend.register({
+        lsp = backend.lsp,
+        on_dispose = backend.stop,
+        options = options,
+        source_bufnr = source_bufnr,
+      })
+      local view_opts = type(options) == "table" and type(options.view) == "table" and options.view or {}
+      if backend_id then
+        local popup_opts = vim.tbl_deep_extend("force", view_opts.popup or {}, {
+          title = "ArkView: " .. backend.expr,
+        })
+        local opened, popup_err = session_backend.view_popup(options, server, backend_id, backend.expr, popup_opts)
+        if opened then
+          return opened
+        end
+
+        view_popup_backend.unregister(backend_id)
+        if normalize_view_display(view_opts.display) == "tmux_popup" then
+          local err = popup_err or "failed to open tmux ArkView popup"
+          notify(err, vim.log.levels.WARN)
+          return nil, err
+        end
+      else
+        backend.stop()
+        if normalize_view_display(view_opts.display) == "tmux_popup" then
+          local err = backend_err or "failed to register target ArkView popup backend"
+          notify(err, vim.log.levels.WARN)
+          return nil, err
+        end
+      end
+    else
+      backend.stop()
+      local view_opts = type(options) == "table" and type(options.view) == "table" and options.view or {}
+      if normalize_view_display(view_opts.display) == "tmux_popup" then
+        local err = "tmux ArkView popup requires this Neovim instance to have an RPC server"
+        notify(err, vim.log.levels.WARN)
+        return nil, err
+      end
+    end
+  end
+
+  return target_view.open({
+    name = name,
+    project = project,
+    source_bufnr = source_bufnr,
+    options = options,
+    notify = notify,
+  })
+end
+
 function M.targets_view_pick(bufnr)
   ensure_setup()
   bufnr = resolve_bufnr(bufnr)
@@ -4185,7 +4309,7 @@ function M.targets_view_pick(bufnr)
       return
     end
 
-    M.view("targets::tar_read(name = " .. r_string_literal(name) .. ")", bufnr)
+    M.targets_view(name, bufnr)
   end)
 end
 

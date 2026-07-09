@@ -451,16 +451,14 @@
   )
 }
 
-.ark_view_open_payload <- function(session, expr, options = list()) {
+.ark_view_open_object_payload <- function(session, object, expr, title = NULL) {
   .ark_view_safe(session, {
-    env <- .ark_resolve_eval_env(expr, options)
-    object <- eval(parse(text = expr, keep.source = FALSE), envir = env)
     data <- .ark_view_as_table(object)
     session_id <- .ark_view_generate_id()
     view <- list(
       session_id = session_id,
       expr = expr,
-      title = .ark_view_normalize_title(expr),
+      title = title %||% .ark_view_normalize_title(expr),
       data = data,
       filters = list(),
       sort = list(column_index = 0L, direction = "")
@@ -475,6 +473,14 @@
       ),
       .ark_view_state_payload_data(view)
     ))
+  })
+}
+
+.ark_view_open_payload <- function(session, expr, options = list()) {
+  .ark_view_safe(session, {
+    env <- .ark_resolve_eval_env(expr, options)
+    object <- eval(parse(text = expr, keep.source = FALSE), envir = env)
+    .ark_view_open_object_payload(session, object, expr)
   })
 }
 

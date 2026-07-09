@@ -12,6 +12,7 @@ local manifest_calls = 0
 local notifications = {}
 local printed = {}
 local view_open_calls = {}
+local target_view_calls = {}
 
 package.loaded["snacks"] = {
   picker = {
@@ -139,6 +140,17 @@ package.loaded["ark.view"] = {
   end,
   refresh = function() end,
   close = function() end,
+}
+
+package.loaded["ark.target_view"] = {
+  open = function(opts)
+    target_view_calls[#target_view_calls + 1] = opts
+    return {
+      target = opts.name,
+      project = opts.project,
+      source_bufnr = opts.source_bufnr,
+    }
+  end,
 }
 
 local original_select = vim.ui.select
@@ -289,14 +301,20 @@ end
 if picker_closed ~= 2 then
   error("expected target ArkView picker to close after selecting clean_data", 0)
 end
-if #view_open_calls ~= 1 then
-  error("expected target ArkView picker to open one view, got " .. vim.inspect(view_open_calls), 0)
+if #view_open_calls ~= 0 then
+  error("expected target ArkView picker to avoid expression ArkView, got " .. vim.inspect(view_open_calls), 0)
 end
-if view_open_calls[1].expr ~= 'targets::tar_read(name = "clean_data")' then
-  error("expected target ArkView expression for clean_data, got " .. vim.inspect(view_open_calls[1].expr), 0)
+if #target_view_calls ~= 1 then
+  error("expected target ArkView picker to open one target-store view, got " .. vim.inspect(target_view_calls), 0)
 end
-if view_open_calls[1].source_bufnr ~= source_buf then
-  error("expected target ArkView to use the source buffer, got " .. vim.inspect(view_open_calls[1]), 0)
+if target_view_calls[1].name ~= "clean_data" then
+  error("expected target ArkView target clean_data, got " .. vim.inspect(target_view_calls[1].name), 0)
+end
+if target_view_calls[1].source_bufnr ~= source_buf then
+  error("expected target ArkView to use the source buffer, got " .. vim.inspect(target_view_calls[1]), 0)
+end
+if type(target_view_calls[1].project) ~= "table" or target_view_calls[1].project.root ~= project_root then
+  error("expected target ArkView to pass project identity, got " .. vim.inspect(target_view_calls[1]), 0)
 end
 
 picker_spec = nil

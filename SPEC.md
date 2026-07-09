@@ -99,6 +99,9 @@ Responsibilities:
   such as `?lm` in managed R panes can route to ArkHelp without reinterpreting
   submitted console input
 - expose a dedicated `ArkView` tabpage data explorer for live tabular objects
+- open `{targets}` objects from the configured target store through a direct
+  target-store ArkView backend, including tmux popup display in auto mode,
+  without starting or reusing the managed R pane
 - expose `:checkhealth ark` for install/runtime diagnostics
 
 ### Detached LSP layer
@@ -449,6 +452,9 @@ pretending there is a precise source location.
   bytes, and path-like metadata
 - `targets_object_meta`: return bounded object metadata for one target without
   eagerly materializing large payloads unless allowed by config
+- `targets_view_open`: read one exact target name from the resolved project
+  store and open an ArkView session without evaluating a free-form expression;
+  the Neovim-facing custom request is `ark/internal/targetsViewOpen`
 - `targets_action`: run approved project-scoped actions such as make,
   invalidate, or downstream make against explicit target names
 
@@ -468,10 +474,12 @@ Bridge requests must be project-scoped and side-effect aware:
 - target object inspection must have size/time limits and should degrade to
   status-only metadata when an object is too expensive to inspect
 
-The managed R session remains the canonical runtime authority because it has
-the right `.Renviron`, `renv`, package library, project working directory, and
-local data mounts. A separate hidden R process may be considered later only if
-it can reproduce that environment without splitting the user's runtime state.
+The managed R session remains the canonical runtime authority for build, load,
+invalidate, and other state-changing actions because it has the right
+`.Renviron`, `renv`, package library, project working directory, and local data
+mounts. Read-only target ArkView is the exception: it may use a short-lived
+project-scoped worker when the request supplies explicit root, script, store,
+and target identity, so opening a cached target does not force a managed pane.
 
 ### LSP Feature Integration
 
@@ -533,8 +541,10 @@ while the managed R session works. Target invalidation should call the
 idempotent tidyselect-safe invalidate path immediately, without doing metadata
 or manifest preflight before the invalidation request.
 The optional keymap preset and managed REPL buffers should expose `<leader>tv`
-as the default target ArkView route, using the picker to open
-`targets::tar_read(name = ...)` for the selected target.
+as the default target ArkView route, using the picker to open the selected
+target through the direct target-store backend. Compatibility calls that use a
+simple `targets::tar_read(name = ...)` ArkView expression should be routed to
+the same backend instead of forcing the managed R pane.
 
 ### Cache And Invalidation
 
@@ -577,6 +587,9 @@ readiness, unless the user explicitly runs a target command.
   when the target exists
 - cached-object member or column completion works for at least data frames,
   data.tables, lists, and rendered target objects when inspection is safe
+- `<leader>tv`, `:ArkTargetView`, and simple `targets::tar_read(name = ...)`
+  ArkView calls open cached targets directly from the target store without
+  starting the managed R pane
 - build, invalidate, load, status, graph, and log actions operate on exact
   target identities
 - generated/dynamic targets degrade gracefully as manifest-only targets

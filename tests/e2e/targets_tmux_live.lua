@@ -59,6 +59,10 @@ local pane_id, client = ark_test.setup_managed_buffer(test_file, {
   'clean_data[["',
   'tar_read(clean_data)$indigenous == "',
   "targets::tar_read(clean_data)",
+}, {
+  view = {
+    display = "tab",
+  },
 })
 
 local ark = require("ark")
@@ -274,8 +278,11 @@ local target_view, target_view_err = ark.view(nil, 0)
 if not target_view then
   ark_test.fail("expected ArkView to open on targets::tar_read(clean_data): " .. tostring(target_view_err))
 end
-if target_view.expr ~= "targets::tar_read(clean_data)" then
-  ark_test.fail("expected ArkView to use tar_read expression, got " .. vim.inspect(target_view.expr))
+if target_view.expr ~= 'targets::tar_read(name = "clean_data")' then
+  ark_test.fail("expected ArkView to use direct target-store expression, got " .. vim.inspect(target_view.expr))
+end
+if target_view.title ~= "Target: clean_data" then
+  ark_test.fail("expected ArkView to use target-store title, got " .. vim.inspect(target_view.title))
 end
 if tonumber(target_view.total_rows or 0) ~= 3 or tonumber(target_view.total_columns or 0) ~= 3 then
   ark_test.fail("expected ArkView target dimensions 3x3, got " .. vim.inspect(target_view))

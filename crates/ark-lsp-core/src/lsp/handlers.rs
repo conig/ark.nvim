@@ -126,6 +126,7 @@ pub static ARK_TARGETS_MANIFEST_REQUEST: &str = "ark/internal/targetsManifest";
 pub static ARK_TARGETS_NETWORK_REQUEST: &str = "ark/internal/targetsNetwork";
 pub static ARK_TARGETS_META_REQUEST: &str = "ark/internal/targetsMeta";
 pub static ARK_TARGETS_OBJECT_META_REQUEST: &str = "ark/internal/targetsObjectMeta";
+pub static ARK_TARGETS_VIEW_OPEN_REQUEST: &str = "ark/internal/targetsViewOpen";
 pub static ARK_TARGETS_ACTION_REQUEST: &str = "ark/internal/targetsAction";
 
 #[derive(Debug, Eq, PartialEq, Clone, serde::Deserialize, serde::Serialize)]
@@ -338,6 +339,19 @@ pub(crate) struct TargetsObjectMetaParams {
 
 #[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct TargetsViewOpenParams {
+    #[serde(default)]
+    pub root: String,
+    #[serde(default)]
+    pub script: String,
+    #[serde(default)]
+    pub store: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+#[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct TargetsActionParams {
     #[serde(default)]
     pub action: String,
@@ -369,6 +383,7 @@ pub(crate) enum TargetsRpcRequest {
     Network(TargetsProjectParams),
     Meta(TargetsMetaParams),
     ObjectMeta(TargetsObjectMetaParams),
+    ViewOpen(TargetsViewOpenParams),
     Action(TargetsActionParams),
 }
 
@@ -561,14 +576,12 @@ pub(crate) fn handle_view_rpc(params: ViewRpcRequest, state: &WorldState) -> Lsp
     let response = match params {
         ViewRpcRequest::Open(params) => session_bridge.view_open(params.expr.as_str()),
         ViewRpcRequest::State(params) => session_bridge.view_state(params.session_id.as_str()),
-        ViewRpcRequest::Page(params) => {
-            session_bridge.view_page(
-                params.session_id.as_str(),
-                params.offset,
-                params.limit,
-                params.columns.as_slice(),
-            )
-        },
+        ViewRpcRequest::Page(params) => session_bridge.view_page(
+            params.session_id.as_str(),
+            params.offset,
+            params.limit,
+            params.columns.as_slice(),
+        ),
         ViewRpcRequest::Sort(params) => session_bridge.view_sort(
             params.session_id.as_str(),
             params.column_index,
@@ -639,6 +652,9 @@ pub(crate) fn handle_targets_rpc(
             params.store,
             params.name,
         ),
+        TargetsRpcRequest::ViewOpen(params) => {
+            session_bridge.targets_view_open(params.root, params.script, params.store, params.name)
+        },
         TargetsRpcRequest::Action(params) => session_bridge.targets_action(
             params.action,
             params.root,

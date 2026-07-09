@@ -9,6 +9,7 @@ local status_bufnrs = {}
 local sync_bufnrs = {}
 local view_open_bufnrs = {}
 local view_open_exprs = {}
+local target_view_calls = {}
 local sort_calls = {}
 local filter_calls = {}
 local value_calls = {}
@@ -302,6 +303,7 @@ end
 local ok, err = pcall(function()
   local ark = require("ark")
   local lsp = require("ark.lsp")
+  local target_view = require("ark.target_view")
   local tmux = require("ark.tmux")
 
   vim.o.cursorlineopt = "both"
@@ -333,6 +335,14 @@ local ok, err = pcall(function()
   lsp.sync_sessions = function(_opts, bufnr)
     synced_sessions = synced_sessions + 1
     sync_bufnrs[#sync_bufnrs + 1] = bufnr
+  end
+
+  target_view.open = function(opts)
+    target_view_calls[#target_view_calls + 1] = opts
+    return {
+      expr = "targets::tar_read(name = \"" .. tostring(opts.name) .. "\")",
+      target = opts.name,
+    }
   end
 
   lsp.view_open = function(_opts, bufnr, expr)
@@ -1368,13 +1378,19 @@ local ok, err = pcall(function()
   vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, { "targets::tar_read(clean_data)" })
   vim.api.nvim_win_set_cursor(0, { 1, 18 })
 
-  -- Regression: no-argument ArkView should use the full R expression under the
-  -- cursor. This lets `:ArkView` and the recommended ArkView keymap inspect a
-  -- tabular target with the cursor anywhere inside `tar_read(clean_data)`.
+  -- Regression: no-argument ArkView on a target read should use the target-store
+  -- backend directly instead of starting the managed R pane for expression eval.
+  local pane_starts_before_target_view = started_pane
   vim.cmd("ArkView")
 
-  if view_open_exprs[#view_open_exprs] ~= "targets::tar_read(clean_data)" then
-    error("expected no-arg ArkView to use tar_read() expression, got " .. vim.inspect(view_open_exprs), 0)
+  if #target_view_calls ~= 1 or target_view_calls[1].name ~= "clean_data" then
+    error("expected no-arg ArkView to use target-store view for clean_data, got " .. vim.inspect(target_view_calls), 0)
+  end
+  if target_view_calls[1].source_bufnr ~= source_buf then
+    error("expected target-store ArkView to use the source buffer, got " .. vim.inspect(target_view_calls[1]), 0)
+  end
+  if started_pane ~= pane_starts_before_target_view then
+    error("target-store ArkView should not start the managed pane, got " .. tostring(started_pane), 0)
   end
 
   local function assert_repl_view_uses_source_buffer(kind, line, cursor_col, expected_expr)
@@ -1421,7 +1437,27 @@ local ok, err = pcall(function()
     end
   end
 
-  assert_repl_view_uses_source_buffer("terminal", "> targets::tar_read(clean_data)", 15, "targets::tar_read(clean_data)")
+  local before_repl_target_views = #target_view_calls
+  vim.api.nvim_set_current_tabpage(source_tab)
+  local terminal_buf = vim.api.nvim_create_buf(true, false)
+  vim.api.nvim_set_current_buf(terminal_buf)
+  vim.bo[terminal_buf].filetype = ""
+  vim.api.nvim_buf_set_lines(terminal_buf, 0, -1, false, { "> targets::tar_read(clean_data)" })
+  vim.api.nvim_win_set_cursor(0, { 1, 15 })
+  vim.b[terminal_buf].ark_terminal = true
+  vim.b[terminal_buf].ark_terminal_source_bufnr = source_buf
+
+  local terminal_opened, terminal_view_err = ark.view(nil, terminal_buf)
+  if not terminal_opened then
+    error("expected target ArkView from terminal buffer to open: " .. tostring(terminal_view_err), 0)
+  end
+  if #target_view_calls ~= before_repl_target_views + 1 or target_view_calls[#target_view_calls].name ~= "clean_data" then
+    error("expected terminal target ArkView to use target-store backend, got " .. vim.inspect(target_view_calls), 0)
+  end
+  if target_view_calls[#target_view_calls].source_bufnr ~= source_buf then
+    error("expected terminal target ArkView to use source buffer, got " .. vim.inspect(target_view_calls), 0)
+  end
+
   assert_repl_view_uses_source_buffer("console", "mtcars", 0, "mtcars")
 end)
 

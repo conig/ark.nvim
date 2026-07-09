@@ -28,6 +28,7 @@ local TARGETS_MANIFEST_METHOD = "ark/internal/targetsManifest"
 local TARGETS_NETWORK_METHOD = "ark/internal/targetsNetwork"
 local TARGETS_META_METHOD = "ark/internal/targetsMeta"
 local TARGETS_OBJECT_META_METHOD = "ark/internal/targetsObjectMeta"
+local TARGETS_VIEW_OPEN_METHOD = "ark/internal/targetsViewOpen"
 local TARGETS_ACTION_METHOD = "ark/internal/targetsAction"
 
 local session_watches = {}
@@ -2022,6 +2023,12 @@ function M.targets_object_meta(opts, bufnr, project, name)
   local payload = targets_project_payload(project)
   payload.name = name or ""
   return view_request(opts, bufnr, TARGETS_OBJECT_META_METHOD, payload, 5000)
+end
+
+function M.targets_view_open(opts, bufnr, project, name)
+  local payload = targets_project_payload(project)
+  payload.name = name or ""
+  return view_request(opts, bufnr, TARGETS_VIEW_OPEN_METHOD, payload, VIEW_REQUEST_TIMEOUT_MS)
 end
 
 function M.targets_action(opts, bufnr, project, action, names)
