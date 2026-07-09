@@ -7,15 +7,11 @@
 
 #![allow(deprecated)]
 
-use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use amalthea::comm::server_comm::ServerStartMessage;
-use amalthea::comm::server_comm::ServerStartedMessage;
 use anyhow::Context;
-use crossbeam::channel::Sender;
 use serde_json::Value;
 use stdext::result::ResultExt;
 use tokio::net::TcpListener;
@@ -315,6 +311,38 @@ impl NotificationBarrier {
     pub(crate) fn mark_processed(&self, sequence: u64) {
         self.processed.store(sequence, Ordering::Release);
         self.wake.notify_waiters();
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LspStartConfig {
+    ip_address: String,
+}
+
+impl LspStartConfig {
+    pub fn new(ip_address: impl Into<String>) -> Self {
+        Self {
+            ip_address: ip_address.into(),
+        }
+    }
+
+    fn ip_address(&self) -> &str {
+        self.ip_address.as_str()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LspStarted {
+    port: u16,
+}
+
+impl LspStarted {
+    pub fn new(port: u16) -> Self {
+        Self { port }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
     }
 }
 
@@ -858,14 +886,13 @@ impl Backend {
 }
 
 pub fn start_lsp(
-    _r_home: PathBuf,
     runtime: Arc<Runtime>,
-    server_start: ServerStartMessage,
-    server_started_tx: Sender<ServerStartedMessage>,
+    start_config: LspStartConfig,
+    server_started: impl FnOnce(LspStarted) -> anyhow::Result<()> + Send + 'static,
     console_notification_tx: AsyncUnboundedSender<ConsoleNotification>,
 ) {
     runtime.block_on(async {
-        let ip_address = server_start.ip_address();
+        let ip_address = start_config.ip_address();
 
         // Binding to port `0` to allow the OS to allocate a port for us to bind to
         let listener = TcpListener::bind(format!("{ip_address}:0")).await.unwrap();
@@ -884,8 +911,7 @@ pub fn start_lsp(
         log::trace!("LSP: Thread starting at address {ip_address}:{port}.");
 
         // Send the port back to `Shell` and eventually out to the frontend so it can connect
-        server_started_tx
-            .send(ServerStartedMessage::new(port))
+        server_started(LspStarted::new(port))
             .context("LSP: Can't send server started notification")
             .log_err();
 
