@@ -66,7 +66,7 @@ utils::install.packages(
   type = "source",
   lib = lib_path,
   quiet = TRUE,
-  INSTALL_opts = "--preclean"
+  INSTALL_opts = c("--preclean", "--clean")
 )
 install_succeeded <- TRUE
 

@@ -81,6 +81,11 @@ local function command_arg(command, flag)
   return nil
 end
 
+local function split_percent(command)
+  local size = command_arg(command, "-l")
+  return tonumber(size and size:match("^(%d+)%%$")) or tonumber(command_arg(command, "-p")) or 33
+end
+
 local function normalize_tmux_command(command)
   local normalized = vim.deepcopy(command)
   if normalized[1] == "tmux" and normalized[2] == "-S" and type(normalized[3]) == "string" then
@@ -173,7 +178,7 @@ vim.fn.system = function(command)
   if normalized[2] == "split-window" then
     local target = command_arg(normalized, "-t")
     local target_pane = panes[target]
-    local pct = tonumber(command_arg(normalized, "-p")) or 33
+    local pct = split_percent(normalized)
     local pane_id = new_pane(main_session)
     if vim.tbl_contains(normalized, "-v") then
       local new_height = pane_size_from_percent((target_pane and target_pane.height) or window_height, pct)
@@ -356,7 +361,11 @@ local ok, err = pcall(function()
       break
     end
   end
-  if not split_command or not vim.tbl_contains(split_command, "-h") or not vim.tbl_contains(split_command, "33") then
+  if not split_command
+    or not vim.tbl_contains(split_command, "-h")
+    or command_arg(split_command, "-l") ~= "33%"
+    or vim.tbl_contains(split_command, "-p")
+  then
     error("expected default auto layout to keep landscape panes side-by-side at 33%, got " .. vim.inspect(split_command), 0)
   end
   local tab_state_after_start = tmux.tab_state()

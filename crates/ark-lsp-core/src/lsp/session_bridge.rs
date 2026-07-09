@@ -4547,10 +4547,8 @@ fn locate_bridge_hover_node<'tree>(context: &'tree DocumentContext) -> Option<No
     while !node.is_identifier() && !node.is_string() && !node.is_keyword() {
         if let Some(sibling) = node.prev_sibling() {
             node = sibling;
-        } else if let Some(parent) = node.parent() {
-            node = parent;
         } else {
-            return None;
+            node = node.parent()?;
         }
     }
 

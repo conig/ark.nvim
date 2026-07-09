@@ -297,6 +297,7 @@ cmd+=(
 )
 
 env \
+  ARK_NVIM_DEV_MODE="${ARK_NVIM_DEV_MODE:-1}" \
   ARK_TEST_RUN_ID="$run_id" \
   ARK_TEST_TMPDIR="$run_tmpdir" \
   ARK_TEST_TMUX_MANIFEST="$manifest" \

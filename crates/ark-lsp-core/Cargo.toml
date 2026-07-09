@@ -52,6 +52,9 @@ uuid.workspace = true
 walkdir.workspace = true
 yaml-rust2.workspace = true
 
+[build-dependencies]
+serde_json.workspace = true
+
 [dev-dependencies]
 assert_matches.workspace = true
 insta.workspace = true

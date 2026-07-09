@@ -14,7 +14,15 @@ test-insta:
 
 # Run clippy
 clippy:
-  cargo clippy --workspace --all-targets --all-features -- -D warnings
+  cargo clippy -p ark-lsp --all-targets -- -D warnings
+
+# Run the required Neovim product gate
+verify-product *ARGS:
+  ./scripts/verify-product.sh {{ARGS}}
+
+# Exercise retained upstream crates without making them part of the product gate
+verify-upstream-compat *ARGS:
+  cargo test --workspace {{ARGS}}
 
 # Run the full verification suite
 verify *ARGS:
@@ -22,4 +30,4 @@ verify *ARGS:
 
 # Reformat source files
 format:
-  cargo +nightly fmt --all
+  cargo +nightly-2025-07-18 fmt --all

@@ -1,56 +1,29 @@
 # Changelog
 
-# 0.1.9000
+All notable user-facing changes to Ark.nvim are documented here. This changelog
+covers the Neovim product; inherited Ark/Jupyter history remains available in
+the canonical `posit-dev/ark` repository.
 
-## 2026-03
+## Unreleased
 
-- Jupyter: `kernel_info_reply` now includes the mandatory `implementation` and `implementation_version` fields, which should allow ark to run in Zed (#1094).
+- Established the product-readiness roadmap and release contract.
 
+## 0.1.0-alpha.1 - 2026-07-10
 
-## 2025-02
+### Added
 
-- Jupyter: The `--install` command now works on Linux (#648).
+- Added the first Linux x86_64 release tier for glibc 2.35 or newer.
+- Added a checksummed, versioned `ark-lsp` installer with atomic activation and
+  one-step rollback.
+- Added embedded product/build metadata through `ark-lsp --version --json`.
+- Added product-owned Rust, Neovim, R-package, clean-install, and live-session
+  CI gates plus a tag-driven release workflow.
 
+### Changed
 
-## 2024-12
-
-- LSP: The statement range provider now has better support for expressions separated by `;` on a single line (posit-dev/positron#4317).
-
-
-## 2024-11
-
-- LSP: Assignments in function calls (e.g. `list(x <- 1)`) are now detected by the missing symbol linter to avoid annoying false positive diagnostics (https://github.com/posit-dev/positron/issues/3048). The downside is that this causes false negatives when the assignment happens in a call with local scope, e.g. in `local()` or `test_that()`. We prefer to be overly permissive than overly cautious in these matters.
-
-- Jupyter: The following environment variables are now set in the same way that R does:
-
-  - `R_SHARE_DIR`
-  - `R_INCLUDE_DIR`
-  - `R_DOC_DIR`
-
-  This solves a number of problems in situations that depend on these variables being defined (https://github.com/posit-dev/positron/issues/3637).
-
-
-## 2024-10
-
-- Objects assigned at top level are now indexed, in addition to assigned functions. When a name is assigned multiple times, we now only index the first occurrence. This allows you to jump to the first "declaration" of the variable. In the future we'll improve this mechanism so that you can jump to the most recent assignment.
-
-  We also index `method(generic, class) <-` assignment to help with S7 development. This might be replaced by a "Find implementations" mechanism in the future.
-
-- Results from completions have been improved with extra details.
-  Package functions now display the package name (posit-dev/positron#5225)
-  and namespace completions now display `::` to hint at what is being
-  completed.
-
-- The document symbol kind for assigned variables is now `VARIABLE` (@kv9898, posit-dev/positron#5071). This produces a clearer icon in the outline.
-
-- Added support for outline headers in comments (@kv9898, posit-dev/positron#3822).
-
-- Sending long inputs of more than 4096 bytes no longer fails (posit-dev/positron#4745).
-
-- Jupyter: Fixed a bug in the kernel-info reply where the `pygments_lexer` field
-  would be set incorrectly to `""` (#553).
-
-  Following this fix, syntax highlighting now works correctly in Jupyter applications.
-
-
-- Start of changelog.
+- Normal installs prefer the Ark-managed optimized release artifact. Repo-local
+  debug binaries now require explicit `ARK_NVIM_DEV_MODE=1`.
+- Default Cargo commands build the active `ark-lsp` product root rather than
+  inactive inherited kernel/Jupyter/DAP roots.
+- Pinned development Rust to 1.97.0 and formatting to
+  nightly-2025-07-18.

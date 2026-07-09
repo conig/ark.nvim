@@ -41,6 +41,15 @@ local function print_result(value)
   vim.print(value)
 end
 
+local function run_release_action(action)
+  local release = require("ark.release")
+  if action == "install" then
+    release.install()
+  elseif action == "rollback" then
+    release.rollback()
+  end
+end
+
 local function run_target_action(ark, action, names, bufnr)
   if type(ark.targets_action_user) == "function" then
     return ark.targets_action_user(action, names, bufnr)
@@ -78,6 +87,7 @@ local ark_command_completions = {
   "console stop",
   "help",
   "help pane",
+  "install",
   "lsp start",
   "pane command",
   "pane restart",
@@ -85,6 +95,7 @@ local ark_command_completions = {
   "pane stop",
   "packages install-missing",
   "refresh",
+  "rollback",
   "send",
   "snippets",
   "status",
@@ -238,6 +249,10 @@ local function dispatch_ark_command(args)
     run_command("ArkBuildLsp")
   elseif top == "build-bridge" then
     run_command("ArkBuildBridge")
+  elseif top == "install" then
+    run_release_action("install")
+  elseif top == "rollback" then
+    run_release_action("rollback")
   elseif top == "pane" then
     local subcommand = args[2]
     if subcommand == "start" then
@@ -315,6 +330,14 @@ end, {
   desc = "Run an ark.nvim command",
   nargs = "*",
 })
+
+vim.api.nvim_create_user_command("ArkInstall", function()
+  run_release_action("install")
+end, { desc = "Install the checksummed ark-lsp release artifact" })
+
+vim.api.nvim_create_user_command("ArkRollback", function()
+  run_release_action("rollback")
+end, { desc = "Roll back to the previous installed ark-lsp release" })
 
 vim.api.nvim_create_user_command("ArkPaneStart", function()
   require("ark").start_pane()

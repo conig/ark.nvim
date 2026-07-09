@@ -1,0 +1,33 @@
+{
+  "manifest_version": 1,
+  "product_version": "0.1.0-alpha.1",
+  "release_tag": "v0.1.0-alpha.1",
+  "repository": "conig/ark.nvim",
+  "compatibility": {
+    "policy": "exact-product-version",
+    "bridge_schema": "v1",
+    "plugin_api": 1,
+    "lsp_api": 1
+  },
+  "supported_environment": {
+    "neovim": ">=0.11.3",
+    "r": ">=4.2.0",
+    "platforms": [
+      "Linux x86_64 with glibc 2.35 or newer"
+    ],
+    "canonical_backend": "tmux",
+    "additional_backends": [
+      "terminal"
+    ]
+  },
+  "release_targets": [
+    {
+      "os": "Linux",
+      "arch": "x86_64",
+      "rust_target": "x86_64-unknown-linux-gnu",
+      "minimum_glibc": "2.35",
+      "asset": "ark-lsp-v0.1.0-alpha.1-x86_64-unknown-linux-gnu",
+      "checksum_asset": "ark-lsp-v0.1.0-alpha.1-x86_64-unknown-linux-gnu.sha256"
+    }
+  ]
+}

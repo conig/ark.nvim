@@ -1,0 +1,86 @@
+name: Product Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    name: Verify and publish Linux x86_64 release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Verify tag matches the release manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          manifest_tag=$(python3 -c 'import json; print(json.load(open("release-manifest.json"))["release_tag"])')
+          test "${RELEASE_TAG}" = "${manifest_tag}"
+          python3 scripts/verify-release-manifest.py
+      - uses: Swatinem/rust-cache@v2
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          version: v0.11.3
+          neovim: true
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.2'
+          use-public-rspm: true
+      - name: Install release verification dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tmux
+          rustup toolchain install nightly-2025-07-18 --profile minimal --component rustfmt
+          Rscript -e 'install.packages(c("jsonlite", "testthat", "data.table"), repos = "https://cloud.r-project.org")'
+      - name: Load release identity
+        run: |
+          python3 <<'PY' >>"${GITHUB_ENV}"
+          import json
+          manifest = json.load(open("release-manifest.json"))
+          target = manifest["release_targets"][0]
+          print(f"PRODUCT_VERSION={manifest['product_version']}")
+          print(f"RUST_TARGET={target['rust_target']}")
+          print(f"RELEASE_ASSET={target['asset']}")
+          PY
+      - name: Run required product gates
+        run: scripts/verify-product.sh --skip-e2e
+      - name: Build release assets
+        run: scripts/package-release.sh dist/release
+      - name: Clean-install the exact release asset
+        run: |
+          asset="dist/release/${RELEASE_ASSET}"
+          scripts/install-release.sh install \
+            --version "${PRODUCT_VERSION}" \
+            --target "${RUST_TARGET}" \
+            --asset-url "file://${GITHUB_WORKSPACE}/${asset}" \
+            --checksum-url "file://${GITHUB_WORKSPACE}/${asset}.sha256" \
+            --install-root "${RUNNER_TEMP}/ark"
+      - name: Smoke static and live product paths with installed artifact
+        env:
+          ARK_NVIM_DEV_MODE: '0'
+          ARK_NVIM_INSTALL_ROOT: ${{ runner.temp }}/ark
+        run: |
+          scripts/run-e2e-test.sh --init NONE tests/e2e/detached_parity.lua
+          scripts/run-e2e-test.sh --init NONE tests/e2e/current_env_completion_timing.lua
+      - name: Attest release binary provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/release/${{ env.RELEASE_ASSET }}
+      - name: Publish immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/release/* \
+            --verify-tag \
+            --title "Ark ${GITHUB_REF_NAME}" \
+            --notes-file "docs/releases/${GITHUB_REF_NAME}.md"

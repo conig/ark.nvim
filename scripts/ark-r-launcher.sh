@@ -12,6 +12,15 @@ SESSION_BACKEND="${ARK_SESSION_BACKEND:-tmux}"
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DEFAULT_PKG_PATH=$(CDPATH= cd -- "$SCRIPT_DIR/../packages/arkbridge" && pwd)
+PRODUCT_MANIFEST="${ARK_NVIM_PRODUCT_MANIFEST:-$SCRIPT_DIR/../release-manifest.json}"
+if [ -z "${ARK_NVIM_PRODUCT_VERSION:-}" ] && [ -r "$PRODUCT_MANIFEST" ]; then
+  ARK_NVIM_PRODUCT_VERSION=$(sed -n 's/^[[:space:]]*"product_version":[[:space:]]*"\([^"]*\)".*/\1/p' "$PRODUCT_MANIFEST" | sed -n '1p')
+  export ARK_NVIM_PRODUCT_VERSION
+fi
+if [ -z "${ARK_NVIM_BRIDGE_SCHEMA:-}" ] && [ -r "$PRODUCT_MANIFEST" ]; then
+  ARK_NVIM_BRIDGE_SCHEMA=$(sed -n 's/^[[:space:]]*"bridge_schema":[[:space:]]*"\([^"]*\)".*/\1/p' "$PRODUCT_MANIFEST" | sed -n '1p')
+  export ARK_NVIM_BRIDGE_SCHEMA
+fi
 
 escape_r_string() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -316,6 +325,8 @@ local({
     .payload <- utils::modifyList(
       list(
         status = as.character(status),
+        product_version = Sys.getenv("ARK_NVIM_PRODUCT_VERSION", unset = ""),
+        bridge_schema = Sys.getenv("ARK_NVIM_BRIDGE_SCHEMA", unset = ""),
         ts = as.integer(Sys.time()),
         ts_iso = .timestamp_iso(),
         pid = as.integer(Sys.getpid()),

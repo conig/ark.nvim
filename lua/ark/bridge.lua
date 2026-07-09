@@ -69,6 +69,19 @@ local function file_exists(path)
   return type(info) == "table" and info.type == "file"
 end
 
+local function generated_package_artifact(path)
+  local name = vim.fs.basename(path):lower()
+  if name == "symbols.rds" then
+    return true
+  end
+
+  return name:match("%.o$") ~= nil
+    or name:match("%.so$") ~= nil
+    or name:match("%.a$") ~= nil
+    or name:match("%.dll$") ~= nil
+    or name:match("%.dylib$") ~= nil
+end
+
 local function notify(message, level, opts)
   local id = vim.notify(message, level or vim.log.levels.INFO, vim.tbl_extend("force", {
     title = "ark.nvim",
@@ -116,7 +129,7 @@ local function bridge_source_paths()
   local seen = {}
   for _, path in ipairs(paths) do
     local normalized = normalize_path(path)
-    if normalized and not seen[normalized] and file_exists(normalized) then
+    if normalized and not seen[normalized] and file_exists(normalized) and not generated_package_artifact(normalized) then
       filtered[#filtered + 1] = normalized
       seen[normalized] = true
     end

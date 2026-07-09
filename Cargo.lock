@@ -480,6 +480,8 @@ version = "0.1.251"
 dependencies = [
  "anyhow",
  "ark-lsp-core",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

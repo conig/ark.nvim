@@ -1,5 +1,6 @@
 local config = require("ark.config")
 local console_frontend = require("ark.console_frontend")
+local release = require("ark.release")
 
 local M = {}
 
@@ -59,6 +60,13 @@ function M.check()
 
   report.ok("Configured session backend: " .. backend)
   report.ok("Configured console frontend: " .. frontend)
+
+  local release_status = release.status()
+  if release_status.product_version then
+    report.ok("Ark product version: " .. release_status.product_version)
+  else
+    report.error("Ark release manifest is invalid: " .. tostring(release_status.manifest_error))
+  end
 
   if backend == "tmux" then
     ok_or_error(
@@ -130,7 +138,29 @@ function M.check()
   elseif executable(lsp_bin) then
     report.ok("Detached `ark-lsp` binary is discoverable on PATH: " .. lsp_bin)
   else
-    report.warn("Detached `ark-lsp` binary is not discoverable. Build with `cargo build -p ark-lsp` or set `ARK_NVIM_LSP_BIN`.")
+    report.warn("Detached `ark-lsp` binary is not discoverable. Run `:Ark install`, set `ARK_NVIM_LSP_BIN`, or use the documented source-build fallback.")
+  end
+
+
+  if release_status.installed_metadata then
+    if release_status.installed_metadata.product_version == release_status.product_version then
+      report.ok("Installed ark-lsp matches the plugin product version")
+    else
+      report.error(string.format(
+        "Installed ark-lsp version %s is incompatible with plugin version %s; run `:Ark install` or `:Ark rollback`",
+        tostring(release_status.installed_metadata.product_version),
+        tostring(release_status.product_version)
+      ))
+    end
+    if release_status.installed_metadata.profile == "release" then
+      report.ok("Installed ark-lsp is an optimized release build")
+    else
+      report.error("Installed ark-lsp is not an optimized release build")
+    end
+  elseif release_status.installed_binary then
+    report.error("Installed ark-lsp version metadata is unreadable: " .. tostring(release_status.installed_metadata_error))
+  else
+    report.info("No Ark-managed release is installed under: " .. release_status.install_root)
   end
 
   ok_or_error(

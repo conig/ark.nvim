@@ -55,6 +55,11 @@ local function command_arg(command, flag)
   return nil
 end
 
+local function split_percent(command)
+  local size = command_arg(command, "-l")
+  return tonumber(size and size:match("^(%d+)%%$")) or tonumber(command_arg(command, "-p")) or 50
+end
+
 local function new_pane(session_name)
   next_pane = next_pane + 1
   local pane_id = "%" .. tostring(next_pane)
@@ -191,7 +196,7 @@ vim.fn.system = function(command)
 
   if normalized[2] == "split-window" then
     local target = command_arg(normalized, "-t")
-    local pct = tonumber(command_arg(normalized, "-p")) or 50
+    local pct = split_percent(normalized)
     local target_pane = panes[target]
     if not (target_pane and target_pane.exists) then
       return "failed split-window\n"
@@ -300,7 +305,8 @@ local ok, err = pcall(function()
   end
   if not split_command
     or command_arg(split_command, "-t") ~= "%right"
-    or command_arg(split_command, "-p") ~= "50"
+    or command_arg(split_command, "-l") ~= "50%"
+    or vim.tbl_contains(split_command, "-p")
     or not vim.tbl_contains(split_command, "-v")
     or not vim.tbl_contains(split_command, "-b")
     or vim.tbl_contains(split_command, "-h")

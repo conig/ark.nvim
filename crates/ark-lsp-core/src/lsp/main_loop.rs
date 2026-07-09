@@ -1160,7 +1160,7 @@ pub(crate) fn diagnostics_refresh_all_latest() {
         n = state.documents.len()
     );
 
-    for (uri, _document) in state.documents.iter() {
+    for uri in state.documents.keys() {
         if !ExtUrl::should_diagnose(uri) {
             continue;
         }

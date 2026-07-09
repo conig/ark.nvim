@@ -55,6 +55,11 @@ local function command_arg(command, flag)
   return nil
 end
 
+local function split_percent(command)
+  local size = command_arg(command, "-l")
+  return tonumber(size and size:match("^(%d+)%%$")) or tonumber(command_arg(command, "-p")) or 50
+end
+
 local function new_pane(session_name)
   next_pane = next_pane + 1
   local pane_id = "%" .. tostring(next_pane)
@@ -169,7 +174,7 @@ vim.fn.system = function(command)
   if normalized[2] == "split-window" then
     local target = command_arg(normalized, "-t")
     local target_pane = panes[target]
-    local pct = tonumber(command_arg(normalized, "-p")) or 50
+    local pct = split_percent(normalized)
     local new_height = pane_size_from_percent(window_height, pct)
     local pane_id = new_pane(main_session)
     target_pane.height = window_height - new_height - 1
@@ -293,8 +298,14 @@ local ok, err = pcall(function()
       break
     end
   end
-  if not split_command or not vim.tbl_contains(split_command, "-v") or not vim.tbl_contains(split_command, "33") then
-    error("expected portrait auto layout to keep the new pane in a 33% bottom slot, got " .. vim.inspect(split_command), 0)
+  -- tmux 3.4 removed split-window's legacy `-p` flag. Percentage sizes
+  -- must use the supported `-l <percent>%` spelling used by real sessions.
+  if not split_command
+    or not vim.tbl_contains(split_command, "-v")
+    or command_arg(split_command, "-l") ~= "33%"
+    or vim.tbl_contains(split_command, "-p")
+  then
+    error("expected portrait auto layout to use a tmux-compatible 33% bottom slot, got " .. vim.inspect(split_command), 0)
   end
 
   local second_pane = assert(tmux.tab_new(opts))

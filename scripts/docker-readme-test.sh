@@ -31,6 +31,22 @@ if (($# > 0)); then
   shift
 fi
 
+prepare_release_artifact() {
+  local dist_dir="${repo_root}/dist/readme"
+  local asset
+  asset=$(python3 - "${repo_root}/release-manifest.json" <<'PY'
+import json
+import sys
+print(json.load(open(sys.argv[1]))["release_targets"][0]["asset"])
+PY
+)
+
+  if [[ -x "${dist_dir}/${asset}" && -f "${dist_dir}/${asset}.sha256" ]]; then
+    return 0
+  fi
+  "${repo_root}/scripts/package-release.sh" "${dist_dir}"
+}
+
 context_fingerprint() {
   (
     cd "${repo_root}"
@@ -51,6 +67,7 @@ image_fingerprint() {
 build_image() {
   local fingerprint="$1"
   shift
+  prepare_release_artifact
   docker build \
     -f "${dockerfile}" \
     -t "${image_tag}" \
@@ -63,6 +80,7 @@ update_image() {
   local fingerprint
   local built_fingerprint
 
+  prepare_release_artifact
   fingerprint="$(context_fingerprint)"
   built_fingerprint="$(image_fingerprint)"
 

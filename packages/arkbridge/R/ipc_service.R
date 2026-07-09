@@ -101,6 +101,7 @@
 .ark_ping_payload <- function(session) {
   list(
     schema_version = .ark_schema_version(),
+    product_version = .ark_product_version(),
     status = "ok",
     session = session
   )
@@ -114,6 +115,7 @@
 
     .emit_json(list(
       schema_version = .ark_schema_version(),
+      product_version = .ark_product_version(),
       status = "ok",
       session = session,
       search_path_symbols = as.character(search_path_symbols),

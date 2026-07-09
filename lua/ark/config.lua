@@ -1,5 +1,7 @@
 local M = {}
 
+local release = require("ark.release")
+
 local function compact(...)
   local out = {}
 
@@ -30,7 +32,7 @@ local function first_executable(candidates)
   for _, raw_candidate in ipairs(candidates) do
     local candidate = expand_candidate(raw_candidate)
     if candidate:find("/") then
-      if vim.uv.fs_stat(candidate) then
+      if vim.uv.fs_stat(candidate) and vim.fn.executable(candidate) == 1 then
         return candidate
       end
     elseif vim.fn.executable(candidate) == 1 then
@@ -42,12 +44,26 @@ end
 local root = repo_root()
 
 function M.defaults()
-  local lsp_bin = first_executable(compact(
-    vim.env.ARK_NVIM_LSP_BIN,
-    root .. "/target/debug/ark-lsp",
-    root .. "/target/release/ark-lsp",
-    "ark-lsp"
-  )) or "ark-lsp"
+  local development_mode = vim.env.ARK_NVIM_DEV_MODE == "1"
+  local installed_lsp = release.installed_binary()
+  local lsp_bin
+  if development_mode then
+    lsp_bin = first_executable(compact(
+      vim.env.ARK_NVIM_LSP_BIN,
+      root .. "/target/debug/ark-lsp",
+      root .. "/target/release/ark-lsp",
+      installed_lsp,
+      "ark-lsp"
+    ))
+  else
+    lsp_bin = first_executable(compact(
+      vim.env.ARK_NVIM_LSP_BIN,
+      installed_lsp,
+      "ark-lsp",
+      root .. "/target/release/ark-lsp"
+    ))
+  end
+  lsp_bin = lsp_bin or "ark-lsp"
 
   local launcher = first_executable(compact(
     vim.env.ARK_NVIM_LAUNCHER,
@@ -73,6 +89,7 @@ function M.defaults()
   }
 
   return {
+    development_mode = development_mode,
     auto_start_pane = true,
     auto_start_lsp = true,
     async_startup = false,

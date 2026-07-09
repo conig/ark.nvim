@@ -196,7 +196,12 @@ local ark = {
     "vim-slime",
     "nvim-slimetree",
   },
-  build = "cargo build -p ark-lsp",
+  build = function()
+    local ok, err = require("ark.release").install_sync()
+    if not ok then
+      error(err, 0)
+    end
+  end,
   config = function()
     require("ark").setup({
       auto_start_pane = true,

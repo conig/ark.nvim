@@ -7,6 +7,7 @@ local dev = require("ark.dev")
 local expression = require("ark.expression")
 local keymaps = require("ark.keymaps")
 local lsp = require("ark.lsp")
+local release = require("ark.release")
 local session_backend = require("ark.session")
 local snippets = require("ark.snippets")
 local target_view = require("ark.target_view")
@@ -4464,6 +4465,7 @@ function M.status(opts)
   local status = session_backend.status(options)
   status.startup = startup_status(vim.api.nvim_get_current_buf())
   status.lsp_cmd = options.lsp.cmd
+  status.release = release.status()
   local runtime_config = session_backend.runtime_config(options) or {}
   status.backend = session_backend.backend_name(options)
   status.console_frontend = runtime_config.console_frontend

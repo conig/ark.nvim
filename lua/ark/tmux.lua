@@ -1262,8 +1262,8 @@ local function create_visible_tab(opts, insert_index)
   end
   vim.list_extend(args, {
     placement.layout.split_flag,
-    "-p",
-    placement.percent,
+    "-l",
+    placement.percent .. "%",
     "-d",
     "-P",
     "-F",

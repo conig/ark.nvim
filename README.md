@@ -106,13 +106,13 @@ do not want to run Neovim inside tmux.
 
 You need:
 
-- Neovim `0.12.1` or newer with built-in LSP support
+- Neovim `0.11.3` or newer with built-in LSP support
 - `R >= 4.2`
 - the R package `jsonlite`
+- `curl` and `sha256sum` for the release installer
 - the Tree-sitter parsers needed by `nvim-slimetree` for send-current mappings
   such as normal-mode `<CR>` and `<leader><CR>`; at minimum, `.R` buffers need
   the `r` parser
-- a Rust toolchain capable of building the workspace (`rust-version = 1.94`)
 
 For the default tmux backend, you also need `tmux`, and Neovim must itself be
 running inside tmux. If you set `session.backend = "terminal"`, Ark uses a
@@ -124,15 +124,8 @@ For `{targets}` workflows, install the R package `targets`. `data.table` is
 optional but improves coverage for data-table shaped completion and inspection
 workflows when your project uses it.
 
-The checked-in Docker README harness pins the same current stable Neovim release
-(`v0.12.1`) so the documented container path matches the supported editor floor.
-
-The repo defaults to the `stable` Rust channel. If your installed `stable`
-toolchain is older than `1.94`, update it first:
-
-```sh
-rustup update stable
-```
+The checked-in Docker README harness pins Neovim `v0.12.1` and also exercises
+the minimum supported `0.11` release line in product CI.
 
 Install the R dependency once:
 
@@ -149,8 +142,10 @@ The minimal recommended `lazy.nvim` setup keeps:
 - `nvim-slimetree` plus `vim-slime` as the send path from buffer to REPL
 - `ark.nvim` as the pane/LSP/session layer
 
-The simplest version is to let the plugin build `ark-lsp` inside its own
-checkout, then let `ark.nvim` find `target/debug/ark-lsp` automatically.
+The normal install downloads an optimized, checksummed `ark-lsp` release into
+Neovim's data directory. It does not require Rust or Cargo. The `lazy.nvim`
+build hook below uses Ark's synchronous installer; the same operation is
+available later as `:Ark install` or `:ArkInstall`.
 
 If you already run another R LSP such as `r_language_server`, disable it for
 `r`, `rmd`, `qmd`, and `quarto` first. `ark.nvim` is meant to be the only R LSP
@@ -306,7 +301,12 @@ return {
       "jpalardy/vim-slime",
       "conig/nvim-slimetree",
     },
-    build = "cargo build -p ark-lsp",
+    build = function()
+      local ok, err = require("ark.release").install_sync()
+      if not ok then
+        error(err, 0)
+      end
+    end,
     config = function()
       require("ark").setup({
         auto_start_pane = true,
@@ -322,9 +322,23 @@ return {
 ### Local checkout
 
 If you are developing from a local clone instead of GitHub, use
-`dir = "~/repos/ark.nvim"` in the `lazy.nvim` spec. The same build command
-works and `ark.nvim` will still auto-detect the freshly built
-`target/debug/ark-lsp`.
+`dir = "~/repos/ark.nvim"` in the `lazy.nvim` spec. Contributors can retain the
+source-build path explicitly:
+
+```lua
+{
+  dir = "~/repos/ark.nvim",
+  build = "cargo build -p ark-lsp",
+  init = function()
+    vim.env.ARK_NVIM_DEV_MODE = "1"
+  end,
+}
+```
+
+The repository pins the development compiler to Rust `1.97.0` and the
+formatting toolchain to `nightly-2025-07-18`. A normal user install does not use
+either toolchain. Use `cargo build --release -p ark-lsp` for an optimized manual
+source fallback when no release artifact exists for your platform.
 
 ## REPL Workflow
 
@@ -468,14 +482,14 @@ build.
 For a single branch-confidence run, use:
 
 ```sh
-just verify
+just verify-product
 ```
 
-That wrapper runs `cargo nextest`, `cargo clippy`, rebuilds `ark-lsp` from the
-dedicated `ark-lsp` package once, and
-then executes the Neovim E2E suite serially through `scripts/run-e2e-test.sh`
-using the checked-in Blink-backed fixture at
-`tests/e2e/init.lua`.
+That required product gate checks the pinned release manifest/toolchains,
+product Rust crates, `arkbridge`, release installer contracts, and focused
+Neovim product smokes. `just verify` remains the broader serial full-confidence
+suite, while `just verify-upstream-compat` explicitly exercises the retained
+upstream workspace.
 
 For extra ambient-user-config coverage, override the init explicitly:
 
@@ -514,10 +528,12 @@ For a noninteractive smoke run in the container:
 ./scripts/docker-readme-test.sh auto smoke
 ```
 
-That image prebuilds `ark-lsp`, installs the README-minimal plugins, installs
-the Debian `r-cran-tidyverse` bundle (which includes `jsonlite`), and bakes in
-the Tree-sitter `r` and `markdown` parsers needed by the isolated config. It
-currently pins Neovim `v0.12.1`, matching the repo's supported baseline.
+The wrapper packages the same optimized release artifact used by CI, then
+builds an Ubuntu 24.04 image with no Rust compiler or Cargo. The image installs the
+checksummed artifact through Ark's normal installer, installs the
+README-minimal plugins and Debian R dependencies, and bakes in the Tree-sitter
+`r` and `markdown` parsers needed by the isolated config. It currently pins
+Neovim `v0.12.1`.
 
 The explicit Docker wrapper subcommands are:
 
@@ -568,9 +584,14 @@ require("ark").setup({
 By default the plugin will try these `ark-lsp` locations in order:
 
 1. `ARK_NVIM_LSP_BIN`
-2. `target/debug/ark-lsp` inside the plugin checkout
-3. `target/release/ark-lsp` inside the plugin checkout
-4. `ark-lsp` on your `PATH`
+2. the current checksummed release under `stdpath("data") .. "/ark"`
+3. `ark-lsp` on your `PATH`
+4. `target/release/ark-lsp` as an explicit source-build fallback
+
+Set `ARK_NVIM_DEV_MODE=1` for a contributor checkout. Only that explicit mode
+allows `target/debug/ark-lsp` to take precedence over the installed release.
+Use `:Ark rollback` or `:ArkRollback` to atomically return to the previous
+installed release.
 
 The managed R pane uses the repo-local launcher:
 

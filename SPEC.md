@@ -48,6 +48,56 @@ code as retained extraction material. That is not the primary product surface.
 The legacy `ark` kernel binary is now treated as an opt-in extraction artifact
 rather than part of the default build or release path.
 
+## Release And Compatibility Contract
+
+`release-manifest.json` is the single product-version and compatibility source
+for the plugin, detached LSP build, bridge launcher metadata, release asset
+names, and release notes. The first product release line uses exact product
+version compatibility across plugin and `ark-lsp`, plus bridge schema `v1`.
+Version skew must be reported as an actionable incompatibility rather than
+silently treated as a healthy live session.
+
+The first release tier is deliberately narrow:
+
+- Linux x86_64
+- glibc 2.35 or newer, enforced by building release assets on Ubuntu 22.04
+- Neovim 0.11.3 or newer
+- R 4.2 or newer
+- tmux as the canonical backend, with the built-in terminal backend additive
+
+macOS remains a source-build/contributor path until it has a clean artifact and
+live-session release job. Windows managed sessions remain outside the product
+boundary.
+
+Normal installation uses a raw optimized `ark-lsp` GitHub release asset and a
+separate SHA-256 file. Ark installs immutable versions under
+`stdpath("data") .. "/ark/releases"`, smoke tests the embedded version, target,
+and release profile, then atomically changes the `current` symlink. The prior
+working target remains under `previous`; failed downloads, checksum failures,
+wrong component versions, and failed smoke checks leave `current` untouched.
+No elevated privileges or global `PATH` mutation are required.
+
+Binary discovery is explicit:
+
+1. `ARK_NVIM_LSP_BIN`
+2. the Ark-managed current release
+3. `ark-lsp` on `PATH`
+4. a repo-local optimized source build
+
+A repo-local debug build is considered only when `ARK_NVIM_DEV_MODE=1`.
+Contributor rebuild commands remain available, but normal buffer startup never
+silently compiles Rust.
+
+The required product gate is `.github/workflows/product-ci.yml` and
+`just verify-product`. It uses exact Rust and rustfmt toolchains and covers the
+active Rust crates, `arkbridge`, the installer/rollback contract, a release
+artifact clean install, static LSP startup, live bridge attach, and a Rust-free
+README container. Broader inherited workspace matrices run separately as
+scheduled upstream-compatibility checks. Release tags are `v<product-version>`;
+the release workflow rejects a tag that does not match the manifest and
+publishes the binary, checksum, reproducibility metadata, and provenance
+attestation together.
+
 ## Current Runtime Shape
 
 ### Plugin layer

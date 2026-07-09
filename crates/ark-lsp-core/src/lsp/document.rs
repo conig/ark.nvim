@@ -238,7 +238,7 @@ impl Document {
                 "Requesting line {line} but only {n} lines exist.\n\nDocument:\n{contents}\n\nBacktrace:\n{trace}",
                 n = self.line_index.len(),
                 line = line + 1,
-                contents = &self.source_contents,
+                contents = self.source_contents,
                 trace = std::backtrace::Backtrace::force_capture(),
             );
             return None;
