@@ -7,6 +7,10 @@ local global_rpc_name = "__ark_view_popup_backend"
 local unpack_args = table.unpack or unpack
 
 local view_methods = {
+  object_children = true,
+  object_detail = true,
+  object_search = true,
+  object_table = true,
   view_cell = true,
   view_close = true,
   view_code = true,

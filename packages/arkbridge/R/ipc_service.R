@@ -296,6 +296,42 @@
     return(.ark_view_close_payload(session, req$session_id %||% ""))
   }
 
+  if (identical(req$command %||% "", "object_children")) {
+    return(.ark_object_children_payload(
+      session,
+      req$session_id %||% "",
+      req$node_id %||% "",
+      req$offset %||% 0L,
+      req$limit %||% 0L
+    ))
+  }
+
+  if (identical(req$command %||% "", "object_detail")) {
+    return(.ark_object_detail_payload(
+      session,
+      req$session_id %||% "",
+      req$node_id %||% ""
+    ))
+  }
+
+  if (identical(req$command %||% "", "object_table")) {
+    return(.ark_object_table_payload(
+      session,
+      req$session_id %||% "",
+      req$node_id %||% ""
+    ))
+  }
+
+  if (identical(req$command %||% "", "object_search")) {
+    return(.ark_object_search_payload(
+      session,
+      req$session_id %||% "",
+      req$query %||% "",
+      req$max_nodes %||% 1000L,
+      req$max_results %||% 100L
+    ))
+  }
+
   if (identical(req$command %||% "", "targets_project_info")) {
     return(.ark_targets_project_info_payload(
       session,

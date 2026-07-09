@@ -66,6 +66,10 @@ local function worker_script_lines(session_id)
     "  if (identical(command, 'view_export')) return(.ark_view_export_payload(.ark_target_view_session, req$session_id %||% '', req$format %||% 'tsv'))",
     "  if (identical(command, 'view_cell')) return(.ark_view_cell_payload(.ark_target_view_session, req$session_id %||% '', req$row_index %||% 0L, req$column_index %||% 0L))",
     "  if (identical(command, 'view_close')) return(.ark_view_close_payload(.ark_target_view_session, req$session_id %||% ''))",
+    "  if (identical(command, 'object_children')) return(.ark_object_children_payload(.ark_target_view_session, req$session_id %||% '', req$node_id %||% '', req$offset %||% 0L, req$limit %||% 0L))",
+    "  if (identical(command, 'object_detail')) return(.ark_object_detail_payload(.ark_target_view_session, req$session_id %||% '', req$node_id %||% ''))",
+    "  if (identical(command, 'object_table')) return(.ark_object_table_payload(.ark_target_view_session, req$session_id %||% '', req$node_id %||% ''))",
+    "  if (identical(command, 'object_search')) return(.ark_object_search_payload(.ark_target_view_session, req$session_id %||% '', req$query %||% '', req$max_nodes %||% 1000L, req$max_results %||% 100L))",
     "  .emit_json(.new_error_payload('E_IPC_REQUEST', paste('unsupported target view command:', command), 'target_view_worker', .ark_target_view_session))",
     "}",
     ".ark_stdin <- file('stdin', open = 'r')",
@@ -258,14 +262,19 @@ function M.create(opts)
   }, Worker)
 
   local proxy = {}
+  local root_session_id = nil
 
   proxy.view_open = function()
-    return worker:request("targets_view_open", {
+    local opened, err = worker:request("targets_view_open", {
       root = project.root or "",
       script = project.script or "",
       store = project.store or "",
       name = name or "",
     })
+    if type(opened) == "table" and type(opened.session_id) == "string" then
+      root_session_id = opened.session_id
+    end
+    return opened, err
   end
 
   proxy.view_state = function(_, _, session_id)
@@ -342,8 +351,42 @@ function M.create(opts)
 
   proxy.view_close = function(_, _, session_id)
     local result, err = worker:request("view_close", { session_id = session_id or "" }, 3000)
-    worker:stop()
+    if root_session_id == nil or session_id == root_session_id then
+      worker:stop()
+    end
     return result, err
+  end
+
+  proxy.object_children = function(_, _, session_id, node_id, offset, limit)
+    return worker:request("object_children", {
+      session_id = session_id or "",
+      node_id = node_id or "",
+      offset = offset or 0,
+      limit = limit or 0,
+    })
+  end
+
+  proxy.object_detail = function(_, _, session_id, node_id)
+    return worker:request("object_detail", {
+      session_id = session_id or "",
+      node_id = node_id or "",
+    })
+  end
+
+  proxy.object_table = function(_, _, session_id, node_id)
+    return worker:request("object_table", {
+      session_id = session_id or "",
+      node_id = node_id or "",
+    })
+  end
+
+  proxy.object_search = function(_, _, session_id, query, max_nodes, max_results)
+    return worker:request("object_search", {
+      session_id = session_id or "",
+      query = query or "",
+      max_nodes = max_nodes or 1000,
+      max_results = max_results or 100,
+    })
   end
 
   return {

@@ -66,6 +66,38 @@
   sprintf("[[%s]]", .ark_view_escape_code_string(name))
 }
 
+.ark_view_default_row_names <- function(row_names) {
+  if (!is.character(row_names)) {
+    return(TRUE)
+  }
+
+  identical(row_names, as.character(seq_along(row_names)))
+}
+
+.ark_view_promote_row_names <- function(data, column_name = "name") {
+  row_names <- row.names(data)
+  if (.ark_view_default_row_names(row_names)) {
+    return(data)
+  }
+
+  name <- column_name
+  existing <- names(data)
+  while (name %in% existing) {
+    name <- paste0(name, "_")
+  }
+
+  out <- cbind(
+    setNames(data.frame(row_names, stringsAsFactors = FALSE, check.names = FALSE), name),
+    data
+  )
+  row.names(out) <- NULL
+  out
+}
+
+.ark_view_plain_list <- function(x) {
+  is.list(x) && !is.data.frame(x) && !inherits(x, "table")
+}
+
 .ark_view_fixed_search <- function(query, values) {
   query <- tolower(as.character(query %||% ""))
   values <- tolower(as.character(values))
@@ -203,9 +235,39 @@
     return(x)
   }
 
+  if (.ark_view_plain_list(x)) {
+    .ark_view_fail(
+      "E_IPC_VIEW_TYPE",
+      sprintf("unsupported table object for ArkView: %s", paste(class(x), collapse = "/")),
+      "ipc_view_open"
+    )
+  }
+
+  adapter <- tryCatch(
+    as.data.frame(x, stringsAsFactors = FALSE, optional = TRUE),
+    error = function(e) NULL
+  )
+  if (is.data.frame(adapter) && ncol(adapter) > 0L) {
+    names(adapter) <- vapply(seq_along(adapter), function(index) {
+      name <- names(adapter)[[index]] %||% ""
+      if (nzchar(name)) {
+        return(name)
+      }
+      if (ncol(adapter) == 1L) {
+        return("value")
+      }
+      paste0("V", index)
+    }, character(1))
+    return(.ark_view_promote_row_names(adapter))
+  }
+
   if (.ark_view_is_rectangular(x)) {
     out <- as.data.frame(x, stringsAsFactors = FALSE, optional = TRUE)
-    names(out) <- colnames(x) %||% paste0("V", seq_len(ncol(out)))
+    column_names <- colnames(x)
+    if (!is.character(column_names) || length(column_names) != ncol(out)) {
+      column_names <- paste0("V", seq_len(ncol(out)))
+    }
+    names(out) <- column_names
     return(out)
   }
 
@@ -437,6 +499,7 @@
     )
   })
   list(
+    kind = "table",
     session_id = view$session_id,
     title = view$title,
     source_label = view$expr,
@@ -451,11 +514,362 @@
   )
 }
 
+.ark_object_should_open_tree <- function(object) {
+  .ark_view_plain_list(object)
+}
+
+.ark_object_node_path <- function(node_id) {
+  node_id <- as.character(node_id %||% "")
+  if (!nzchar(node_id)) {
+    return(integer())
+  }
+
+  parts <- strsplit(node_id, "/", fixed = TRUE)[[1L]]
+  path <- suppressWarnings(as.integer(parts))
+  if (any(is.na(path)) || any(path < 1L)) {
+    .ark_view_fail("E_IPC_REQUEST", "invalid object node id", "ipc_object_node")
+  }
+  path
+}
+
+.ark_object_node_id <- function(path) {
+  path <- suppressWarnings(as.integer(path))
+  path <- path[!is.na(path) & path >= 1L]
+  paste(path, collapse = "/")
+}
+
+.ark_object_expandable <- function(value) {
+  .ark_view_plain_list(value) && length(value) > 0L
+}
+
+.ark_object_table_viewable <- function(value) {
+  if (.ark_view_plain_list(value)) {
+    return(FALSE)
+  }
+
+  is.data.frame(tryCatch(.ark_view_as_table(value), error = function(e) NULL))
+}
+
+.ark_object_resolve_path <- function(object, path) {
+  value <- object
+  for (index in path) {
+    if (!.ark_object_expandable(value) || index > length(value)) {
+      .ark_view_fail("E_IPC_REQUEST", "object node not found", "ipc_object_node")
+    }
+    value <- value[[index]]
+  }
+  value
+}
+
+.ark_object_child_name <- function(parent, index) {
+  item_names <- names(parent)
+  if (is.character(item_names) && index <= length(item_names) && nzchar(item_names[[index]] %||% "")) {
+    return(item_names[[index]])
+  }
+  paste0("[[", index, "]]")
+}
+
+.ark_object_path_expr <- function(root_expr, root_object, path) {
+  expr <- as.character(root_expr %||% "")
+  value <- root_object
+  for (index in path) {
+    name <- .ark_object_child_name(value, index)
+    if (!startsWith(name, "[[") && .is_syntactic_name(name)) {
+      expr <- paste0(expr, "$", name)
+    } else if (!startsWith(name, "[[")) {
+      expr <- paste0(expr, "[[", .ark_view_escape_code_string(name), "]]")
+    } else {
+      expr <- paste0(expr, "[[", index, "]]")
+    }
+    value <- value[[index]]
+  }
+  expr
+}
+
+.ark_object_class_label <- function(value) {
+  class <- paste(class(value), collapse = "/")
+  if (!nzchar(class)) {
+    class <- typeof(value)
+  }
+  class
+}
+
+.ark_object_summary <- function(value) {
+  dims <- dim(value)
+  if (!is.null(dims)) {
+    return(paste0(paste(dims, collapse = " x "), " ", .ark_object_class_label(value)))
+  }
+
+  if (is.null(value)) {
+    return("NULL")
+  }
+
+  if (length(value) == 1L && is.atomic(value)) {
+    return(.ark_view_display_value(value, max_chars = 60L))
+  }
+
+  paste0("length ", length(value))
+}
+
+.ark_object_table_preview_text <- function(value, max_rows = 6L, max_columns = 6L) {
+  data <- .ark_view_as_table(value)
+  schema <- .ark_view_schema(data)
+  rows <- min(nrow(data), max_rows)
+  columns <- min(ncol(data), max_columns)
+  lines <- c(sprintf("# %s: %d x %d", .ark_object_class_label(value), nrow(data), ncol(data)))
+  if (columns < 1L) {
+    return(paste(lines, collapse = "\n"))
+  }
+
+  names_line <- vapply(seq_len(columns), function(index) {
+    names(data)[[index]] %||% paste0("V", index)
+  }, character(1))
+  class_line <- vapply(seq_len(columns), function(index) {
+    paste0("<", schema[[index]]$class %||% schema[[index]]$type %||% "unknown", ">")
+  }, character(1))
+  values <- lapply(seq_len(columns), function(column_index) {
+    if (rows < 1L) {
+      return(character())
+    }
+    vapply(data[[column_index]][seq_len(rows)], .ark_view_display_value, character(1), USE.NAMES = FALSE)
+  })
+
+  widths <- vapply(seq_len(columns), function(index) {
+    max(
+      nchar(names_line[[index]], type = "width"),
+      nchar(class_line[[index]], type = "width"),
+      if (rows > 0L) max(nchar(values[[index]], type = "width")) else 0L,
+      1L
+    )
+  }, integer(1))
+  pad <- function(text, width) {
+    paste0(text, paste(rep(" ", max(0L, width - nchar(text, type = "width"))), collapse = ""))
+  }
+  join <- function(parts) paste(parts, collapse = "  ")
+
+  lines <- c(
+    lines,
+    join(vapply(seq_len(columns), function(index) pad(names_line[[index]], widths[[index]]), character(1))),
+    join(vapply(seq_len(columns), function(index) pad(class_line[[index]], widths[[index]]), character(1)))
+  )
+  if (rows > 0L) {
+    for (row in seq_len(rows)) {
+      lines <- c(lines, join(vapply(seq_len(columns), function(index) {
+        pad(values[[index]][[row]], widths[[index]])
+      }, character(1))))
+    }
+  }
+  if (nrow(data) > rows || ncol(data) > columns) {
+    lines <- c(lines, sprintf("# ... with %d more rows and %d more columns", nrow(data) - rows, ncol(data) - columns))
+  }
+
+  paste(lines, collapse = "\n")
+}
+
+.ark_object_detail_text <- function(value) {
+  if (.ark_object_table_viewable(value)) {
+    return(.ark_object_table_preview_text(value))
+  }
+
+  text <- paste(utils::capture.output(str(value, give.attr = FALSE, max.level = 2L, vec.len = 6L)), collapse = "\n")
+  if (!nzchar(trimws(text))) {
+    text <- .ark_view_display_value(value, max_chars = 400L)
+  }
+  text
+}
+
+.ark_object_node_info <- function(view, path, value = NULL) {
+  if (is.null(value) && length(path) == 0L) {
+    value <- view$object
+  } else if (is.null(value)) {
+    value <- .ark_object_resolve_path(view$object, path)
+  }
+
+  parent_path <- if (length(path) > 0L) path[-length(path)] else integer()
+  parent <- if (length(path) > 0L) .ark_object_resolve_path(view$object, parent_path) else NULL
+  name <- if (length(path) > 0L) .ark_object_child_name(parent, path[[length(path)]]) else view$title
+  list(
+    node_id = .ark_object_node_id(path),
+    parent_id = .ark_object_node_id(parent_path),
+    name = as.character(name %||% ""),
+    path = .ark_object_path_expr(view$expr, view$object, path),
+    depth = as.integer(length(path)),
+    type = typeof(value),
+    class = .ark_object_class_label(value),
+    length = as.integer(length(value)),
+    summary = .ark_object_summary(value),
+    expandable = .ark_object_expandable(value),
+    viewable_table = .ark_object_table_viewable(value),
+    child_count = if (.ark_object_expandable(value)) as.integer(length(value)) else 0L
+  )
+}
+
+.ark_object_state_payload_data <- function(view) {
+  root <- .ark_object_node_info(view, integer(), view$object)
+  list(
+    kind = "tree",
+    session_id = view$session_id,
+    title = view$title,
+    source_label = view$expr,
+    root = root,
+    total_children = as.integer(root$child_count %||% 0L)
+  )
+}
+
+.ark_object_open_object_payload <- function(session, object, expr, title = NULL) {
+  session_id <- .ark_view_generate_id()
+  view <- list(
+    kind = "tree",
+    session_id = session_id,
+    expr = expr,
+    title = title %||% .ark_view_normalize_title(expr),
+    object = object
+  )
+  assign(session_id, view, envir = .ark_ipc_state$views)
+
+  .emit_json(utils::modifyList(
+    list(
+      schema_version = .ark_schema_version(),
+      status = "ok",
+      session = session
+    ),
+    .ark_object_state_payload_data(view)
+  ))
+}
+
+.ark_object_children_payload <- function(session, session_id, node_id = "", offset = 0L, limit = 0L) {
+  .ark_view_safe(session, {
+    view <- .ark_view_require_session_id(session, session_id)
+    path <- .ark_object_node_path(node_id)
+    value <- .ark_object_resolve_path(view$object, path)
+    if (!.ark_object_expandable(value)) {
+      children <- list()
+      total <- 0L
+    } else {
+      total <- length(value)
+      offset <- suppressWarnings(as.integer(offset))
+      limit <- suppressWarnings(as.integer(limit))
+      if (is.na(offset) || offset < 0L) offset <- 0L
+      if (is.na(limit) || limit < 0L) limit <- 0L
+      start <- offset + 1L
+      end <- if (identical(limit, 0L)) total else min(total, offset + limit)
+      if (start > total) {
+        indices <- integer()
+      } else {
+        indices <- seq.int(start, end)
+      }
+      children <- lapply(indices, function(index) {
+        .ark_object_node_info(view, c(path, index), value[[index]])
+      })
+    }
+
+    .emit_json(list(
+      schema_version = .ark_schema_version(),
+      status = "ok",
+      session = session,
+      session_id = session_id,
+      node_id = as.character(node_id %||% ""),
+      offset = as.integer(offset %||% 0L),
+      limit = as.integer(limit %||% 0L),
+      total_children = as.integer(total),
+      children = children
+    ))
+  })
+}
+
+.ark_object_detail_payload <- function(session, session_id, node_id = "") {
+  .ark_view_safe(session, {
+    view <- .ark_view_require_session_id(session, session_id)
+    path <- .ark_object_node_path(node_id)
+    value <- .ark_object_resolve_path(view$object, path)
+    .emit_json(list(
+      schema_version = .ark_schema_version(),
+      status = "ok",
+      session = session,
+      session_id = session_id,
+      node_id = as.character(node_id %||% ""),
+      info = .ark_object_node_info(view, path, value),
+      text = .ark_object_detail_text(value)
+    ))
+  })
+}
+
+.ark_object_table_payload <- function(session, session_id, node_id = "") {
+  .ark_view_safe(session, {
+    view <- .ark_view_require_session_id(session, session_id)
+    path <- .ark_object_node_path(node_id)
+    value <- .ark_object_resolve_path(view$object, path)
+    if (!.ark_object_table_viewable(value)) {
+      .ark_view_fail("E_IPC_VIEW_TYPE", "object node is not table-viewable", "ipc_object_table")
+    }
+
+    info <- .ark_object_node_info(view, path, value)
+    .ark_view_open_object_payload(session, value, info$path, title = info$name)
+  })
+}
+
+.ark_object_search_payload <- function(session, session_id, query = "", max_nodes = 1000L, max_results = 100L) {
+  .ark_view_safe(session, {
+    view <- .ark_view_require_session_id(session, session_id)
+    query <- tolower(trimws(as.character(query %||% "")))
+    max_nodes <- suppressWarnings(as.integer(max_nodes))
+    max_results <- suppressWarnings(as.integer(max_results))
+    if (is.na(max_nodes) || max_nodes < 1L) max_nodes <- 1000L
+    if (is.na(max_results) || max_results < 1L) max_results <- 100L
+
+    visited <- 0L
+    matches <- list()
+    add_match <- function(info) {
+      if (length(matches) >= max_results) {
+        return()
+      }
+      haystack <- tolower(paste(info$name, info$type, info$class, info$summary, sep = " "))
+      if (!nzchar(query) || grepl(query, haystack, fixed = TRUE)) {
+        matches[[length(matches) + 1L]] <<- info
+      }
+    }
+    walk <- function(value, path) {
+      if (visited >= max_nodes || length(matches) >= max_results) {
+        return()
+      }
+      visited <<- visited + 1L
+      if (length(path) > 0L) {
+        add_match(.ark_object_node_info(view, path, value))
+      }
+      if (!.ark_object_expandable(value)) {
+        return()
+      }
+      for (index in seq_along(value)) {
+        walk(value[[index]], c(path, index))
+        if (visited >= max_nodes || length(matches) >= max_results) {
+          return()
+        }
+      }
+    }
+
+    walk(view$object, integer())
+    .emit_json(list(
+      schema_version = .ark_schema_version(),
+      status = "ok",
+      session = session,
+      session_id = session_id,
+      query = query,
+      visited = as.integer(visited),
+      matches = matches
+    ))
+  })
+}
+
 .ark_view_open_object_payload <- function(session, object, expr, title = NULL) {
   .ark_view_safe(session, {
+    if (.ark_object_should_open_tree(object)) {
+      return(.ark_object_open_object_payload(session, object, expr, title = title))
+    }
+
     data <- .ark_view_as_table(object)
     session_id <- .ark_view_generate_id()
     view <- list(
+      kind = "table",
       session_id = session_id,
       expr = expr,
       title = title %||% .ark_view_normalize_title(expr),

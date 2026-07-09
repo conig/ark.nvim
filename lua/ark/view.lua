@@ -2584,6 +2584,9 @@ function M.open(opts)
   if err then
     return nil, err
   end
+  if type(opened) == "table" and opened.kind == "tree" then
+    return require("ark.object_view").open(opts, opened)
+  end
 
   local page_limit = tonumber(opts.page_limit or 0) or 0
   local virtual_rows_allowed_option = opts.virtual_rows ~= false
@@ -2772,6 +2775,10 @@ end
 function M.refresh()
   local state = current_state()
   if not state then
+    local ok, object_view = pcall(require, "ark.object_view")
+    if ok and type(object_view.is_open) == "function" and object_view.is_open() then
+      return object_view.refresh()
+    end
     return nil, "ArkView is not open in the current tab"
   end
   refresh_state(state, true)
@@ -2781,6 +2788,10 @@ end
 function M.close()
   local state = current_state()
   if not state then
+    local ok, object_view = pcall(require, "ark.object_view")
+    if ok and type(object_view.is_open) == "function" and object_view.is_open() then
+      return object_view.close()
+    end
     return nil, "ArkView is not open in the current tab"
   end
   close_tab(state)

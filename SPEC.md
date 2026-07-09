@@ -162,10 +162,15 @@ Responsibilities:
 - present console-originated ArkView tabs through a tmux popup UI in auto mode
   when the Ark console is running inside tmux, so small console panes do not
   constrain data-grid inspection
-- answer bridge requests for live data-explorer sessions and table paging
+- answer bridge requests for live data-explorer sessions, table paging, and
+  list/object-tree inspection
 - serve ArkView table pages by `offset` and `limit`, preserving `limit = 0` as
   the bridge-layer request for all rows while allowing the Neovim UI to request
   bounded row windows for tall objects
+- adapt base-`View()` compatible non-list objects such as atomic vectors,
+  arrays, matrices, and `table()` results through `as.data.frame()` into the
+  regular ArkView table grid, while routing plain lists to the object-tree
+  explorer
 - support ArkView filtering through free-text contains filters, numeric
   comparison filters driven by the `<` and `>` prompts on numeric columns, and
   exact value filters chosen from bridge-provided unique values with counts
@@ -176,6 +181,11 @@ Responsibilities:
   and repeated spaces remain visually distinguishable without changing raw
   export, filter, sort, or cell-copy semantics
 - keep ArkView page rows encoded as row arrays even for one-column tables
+- let ArkView list roots open as an expandable object tree with lazy child
+  loading, collapsible branches, `S` component search, and a preview pane; when
+  a selected node is table-viewable, `<CR>` opens that node in the regular
+  ArkView table grid and returning from that grid restores focus to the list
+  explorer
 
 The active runtime contract is Ark-native. Legacy `rscope` compatibility is not
 part of the default supported path.
@@ -260,6 +270,10 @@ part of the default supported path.
   bounded row windows. `]p`, `[p`, `j`, `k`, `gg`, `G`, and half-page movement
   fetch adjacent windows as needed, while export, cell inspection, filter, and
   sort behavior continues to operate on bridge-side full data.
+- ArkView object-tree navigation keeps list exploration separate from table
+  operations. Expand/collapse and component search operate on object nodes;
+  table sort/filter/export/profile behavior remains owned by the nested regular
+  table grid after a table-viewable node is opened.
 
 ## What Is Essentially Complete
 

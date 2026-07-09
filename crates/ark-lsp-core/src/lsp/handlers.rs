@@ -121,6 +121,10 @@ pub static ARK_VIEW_CODE_REQUEST: &str = "ark/internal/viewCode";
 pub static ARK_VIEW_EXPORT_REQUEST: &str = "ark/internal/viewExport";
 pub static ARK_VIEW_CELL_REQUEST: &str = "ark/internal/viewCell";
 pub static ARK_VIEW_CLOSE_REQUEST: &str = "ark/internal/viewClose";
+pub static ARK_OBJECT_CHILDREN_REQUEST: &str = "ark/internal/objectChildren";
+pub static ARK_OBJECT_DETAIL_REQUEST: &str = "ark/internal/objectDetail";
+pub static ARK_OBJECT_TABLE_REQUEST: &str = "ark/internal/objectTable";
+pub static ARK_OBJECT_SEARCH_REQUEST: &str = "ark/internal/objectSearch";
 pub static ARK_TARGETS_PROJECT_INFO_REQUEST: &str = "ark/internal/targetsProjectInfo";
 pub static ARK_TARGETS_MANIFEST_REQUEST: &str = "ark/internal/targetsManifest";
 pub static ARK_TARGETS_NETWORK_REQUEST: &str = "ark/internal/targetsNetwork";
@@ -284,6 +288,41 @@ pub(crate) struct ViewCellParams {
     pub column_index: u32,
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ObjectNodeParams {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ObjectChildrenParams {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub node_id: String,
+    #[serde(default)]
+    pub offset: u32,
+    #[serde(default)]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ObjectSearchParams {
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    pub max_nodes: u32,
+    #[serde(default)]
+    pub max_results: u32,
+}
+
 #[derive(Debug)]
 pub(crate) enum ViewRpcRequest {
     Open(ViewOpenParams),
@@ -298,6 +337,10 @@ pub(crate) enum ViewRpcRequest {
     Export(ViewExportParams),
     Cell(ViewCellParams),
     Close(ViewSessionParams),
+    ObjectChildren(ObjectChildrenParams),
+    ObjectDetail(ObjectNodeParams),
+    ObjectTable(ObjectNodeParams),
+    ObjectSearch(ObjectSearchParams),
 }
 
 #[derive(Debug, Default, Clone, serde::Deserialize, serde::Serialize)]
@@ -614,6 +657,24 @@ pub(crate) fn handle_view_rpc(params: ViewRpcRequest, state: &WorldState) -> Lsp
             params.column_index,
         ),
         ViewRpcRequest::Close(params) => session_bridge.view_close(params.session_id.as_str()),
+        ViewRpcRequest::ObjectChildren(params) => session_bridge.object_children(
+            params.session_id.as_str(),
+            params.node_id.as_str(),
+            params.offset,
+            params.limit,
+        ),
+        ViewRpcRequest::ObjectDetail(params) => {
+            session_bridge.object_detail(params.session_id.as_str(), params.node_id.as_str())
+        },
+        ViewRpcRequest::ObjectTable(params) => {
+            session_bridge.object_table(params.session_id.as_str(), params.node_id.as_str())
+        },
+        ViewRpcRequest::ObjectSearch(params) => session_bridge.object_search(
+            params.session_id.as_str(),
+            params.query.as_str(),
+            params.max_nodes,
+            params.max_results,
+        ),
     };
 
     response.map_err(LspError::Anyhow)

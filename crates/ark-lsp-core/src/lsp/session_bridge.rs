@@ -903,6 +903,62 @@ impl SessionBridge {
         )
     }
 
+    pub(crate) fn object_children(
+        &self,
+        session_id: &str,
+        node_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> anyhow::Result<Value> {
+        self.view_command(
+            "object_children",
+            serde_json::json!({
+                "session_id": session_id,
+                "node_id": node_id,
+                "offset": offset,
+                "limit": limit,
+            }),
+        )
+    }
+
+    pub(crate) fn object_detail(&self, session_id: &str, node_id: &str) -> anyhow::Result<Value> {
+        self.view_command(
+            "object_detail",
+            serde_json::json!({
+                "session_id": session_id,
+                "node_id": node_id,
+            }),
+        )
+    }
+
+    pub(crate) fn object_table(&self, session_id: &str, node_id: &str) -> anyhow::Result<Value> {
+        self.view_command(
+            "object_table",
+            serde_json::json!({
+                "session_id": session_id,
+                "node_id": node_id,
+            }),
+        )
+    }
+
+    pub(crate) fn object_search(
+        &self,
+        session_id: &str,
+        query: &str,
+        max_nodes: u32,
+        max_results: u32,
+    ) -> anyhow::Result<Value> {
+        self.view_command(
+            "object_search",
+            serde_json::json!({
+                "session_id": session_id,
+                "query": query,
+                "max_nodes": max_nodes,
+                "max_results": max_results,
+            }),
+        )
+    }
+
     pub(crate) fn targets_project_info(
         &self,
         root: String,

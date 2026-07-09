@@ -22,6 +22,10 @@ local VIEW_CODE_METHOD = "ark/internal/viewCode"
 local VIEW_EXPORT_METHOD = "ark/internal/viewExport"
 local VIEW_CELL_METHOD = "ark/internal/viewCell"
 local VIEW_CLOSE_METHOD = "ark/internal/viewClose"
+local OBJECT_CHILDREN_METHOD = "ark/internal/objectChildren"
+local OBJECT_DETAIL_METHOD = "ark/internal/objectDetail"
+local OBJECT_TABLE_METHOD = "ark/internal/objectTable"
+local OBJECT_SEARCH_METHOD = "ark/internal/objectSearch"
 local VIEW_REQUEST_TIMEOUT_MS = 12000
 local TARGETS_PROJECT_INFO_METHOD = "ark/internal/targetsProjectInfo"
 local TARGETS_MANIFEST_METHOD = "ark/internal/targetsManifest"
@@ -1989,6 +1993,38 @@ end
 function M.view_close(opts, bufnr, session_id)
   return view_request(opts, bufnr, VIEW_CLOSE_METHOD, {
     sessionId = session_id,
+  }, VIEW_REQUEST_TIMEOUT_MS)
+end
+
+function M.object_children(opts, bufnr, session_id, node_id, offset, limit)
+  return view_request(opts, bufnr, OBJECT_CHILDREN_METHOD, {
+    sessionId = session_id,
+    nodeId = node_id or "",
+    offset = offset or 0,
+    limit = limit or 0,
+  }, VIEW_REQUEST_TIMEOUT_MS)
+end
+
+function M.object_detail(opts, bufnr, session_id, node_id)
+  return view_request(opts, bufnr, OBJECT_DETAIL_METHOD, {
+    sessionId = session_id,
+    nodeId = node_id or "",
+  }, VIEW_REQUEST_TIMEOUT_MS)
+end
+
+function M.object_table(opts, bufnr, session_id, node_id)
+  return view_request(opts, bufnr, OBJECT_TABLE_METHOD, {
+    sessionId = session_id,
+    nodeId = node_id or "",
+  }, VIEW_REQUEST_TIMEOUT_MS)
+end
+
+function M.object_search(opts, bufnr, session_id, query, max_nodes, max_results)
+  return view_request(opts, bufnr, OBJECT_SEARCH_METHOD, {
+    sessionId = session_id,
+    query = query or "",
+    maxNodes = max_nodes or 1000,
+    maxResults = max_results or 100,
   }, VIEW_REQUEST_TIMEOUT_MS)
 end
 

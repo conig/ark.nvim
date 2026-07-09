@@ -34,6 +34,9 @@ use tower_lsp::Server;
 use super::main_loop::LSP_HAS_CRASHED;
 use crate::console::ConsoleNotification;
 use crate::lsp::handlers::HelpTextParams;
+use crate::lsp::handlers::ObjectChildrenParams;
+use crate::lsp::handlers::ObjectNodeParams;
+use crate::lsp::handlers::ObjectSearchParams;
 use crate::lsp::handlers::PackageInstallParams;
 use crate::lsp::handlers::SessionBootstrapResponse;
 use crate::lsp::handlers::SessionUpdateParams;
@@ -58,6 +61,10 @@ use crate::lsp::handlers::ViewValuesParams;
 use crate::lsp::handlers::VirtualDocumentParams;
 use crate::lsp::handlers::VirtualDocumentResponse;
 use crate::lsp::handlers::ARK_HELP_TEXT_REQUEST;
+use crate::lsp::handlers::ARK_OBJECT_CHILDREN_REQUEST;
+use crate::lsp::handlers::ARK_OBJECT_DETAIL_REQUEST;
+use crate::lsp::handlers::ARK_OBJECT_SEARCH_REQUEST;
+use crate::lsp::handlers::ARK_OBJECT_TABLE_REQUEST;
 use crate::lsp::handlers::ARK_PACKAGE_INSTALL_REQUEST;
 use crate::lsp::handlers::ARK_SESSION_BOOTSTRAP_REQUEST;
 use crate::lsp::handlers::ARK_SESSION_UPDATE_NOTIFICATION;
@@ -789,6 +796,45 @@ impl Backend {
         )
     }
 
+    async fn object_children(
+        &self,
+        params: ObjectChildrenParams,
+    ) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::ObjectChildren(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn object_detail(&self, params: ObjectNodeParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::ObjectDetail(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn object_table(&self, params: ObjectNodeParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::ObjectTable(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
+    async fn object_search(&self, params: ObjectSearchParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ViewRpc(ViewRpcRequest::ObjectSearch(params)))
+                .await,
+            LspResponse::ViewRpc
+        )
+    }
+
     async fn targets_project_info(
         &self,
         params: TargetsProjectParams,
@@ -983,6 +1029,10 @@ pub fn start_lsp(
             .custom_method(ARK_VIEW_EXPORT_REQUEST, Backend::view_export)
             .custom_method(ARK_VIEW_CELL_REQUEST, Backend::view_cell)
             .custom_method(ARK_VIEW_CLOSE_REQUEST, Backend::view_close)
+            .custom_method(ARK_OBJECT_CHILDREN_REQUEST, Backend::object_children)
+            .custom_method(ARK_OBJECT_DETAIL_REQUEST, Backend::object_detail)
+            .custom_method(ARK_OBJECT_TABLE_REQUEST, Backend::object_table)
+            .custom_method(ARK_OBJECT_SEARCH_REQUEST, Backend::object_search)
             .custom_method(
                 ARK_TARGETS_PROJECT_INFO_REQUEST,
                 Backend::targets_project_info,
@@ -1077,6 +1127,10 @@ pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
         .custom_method(ARK_VIEW_EXPORT_REQUEST, Backend::view_export)
         .custom_method(ARK_VIEW_CELL_REQUEST, Backend::view_cell)
         .custom_method(ARK_VIEW_CLOSE_REQUEST, Backend::view_close)
+        .custom_method(ARK_OBJECT_CHILDREN_REQUEST, Backend::object_children)
+        .custom_method(ARK_OBJECT_DETAIL_REQUEST, Backend::object_detail)
+        .custom_method(ARK_OBJECT_TABLE_REQUEST, Backend::object_table)
+        .custom_method(ARK_OBJECT_SEARCH_REQUEST, Backend::object_search)
         .custom_method(
             ARK_TARGETS_PROJECT_INFO_REQUEST,
             Backend::targets_project_info,
