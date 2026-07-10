@@ -27,6 +27,9 @@ the canonical `posit-dev/ark` repository.
 - Made help and view requests retry bounded `ContentModified` responses while
   prompt-driven session updates settle, and report manually started ready
   sessions as `live_ready` even when automatic pane startup is disabled.
+- Treated a live managed `nvim-console` RPC endpoint as the code-send readiness
+  boundary and prevented missing endpoints from falling through to raw tmux
+  paste.
 
 ## 0.1.0-alpha.1 - 2026-07-10
 

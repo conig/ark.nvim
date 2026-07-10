@@ -23,6 +23,9 @@ local status_calls = 0
 local startup_snapshot_calls = 0
 
 package.loaded["ark.bridge"] = {
+  status = function()
+    return {}
+  end,
   ensure_current_runtime = function()
     return true
   end,

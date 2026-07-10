@@ -63,6 +63,9 @@ package.loaded["ark.tmux"] = {
       repl_ready = true,
     }
   end,
+  console_ready = function()
+    return start_calls > 0
+  end,
   send_text = function(_config, text)
     sends[#sends + 1] = text
     return true, nil

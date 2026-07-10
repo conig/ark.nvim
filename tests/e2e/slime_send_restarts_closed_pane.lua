@@ -35,6 +35,9 @@ package.loaded["ark.session_runtime"] = {
   status_root = function()
     return "/tmp"
   end,
+  parent_server = function()
+    return "/tmp/ark-parent.sock"
+  end,
 }
 package.loaded["ark.bridge"] = {
   ensure_current_runtime = function()

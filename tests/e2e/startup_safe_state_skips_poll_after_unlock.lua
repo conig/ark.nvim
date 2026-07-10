@@ -11,6 +11,9 @@ local lsp_status_calls = 0
 local startup_ready_callback = nil
 
 package.loaded["ark.bridge"] = {
+  status = function()
+    return {}
+  end,
   ensure_current_runtime = function()
     return true
   end,

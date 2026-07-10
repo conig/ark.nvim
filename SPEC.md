@@ -428,6 +428,11 @@ Console history and draft editing are buffer-native interactions on the current
 input region, not terminal escape-sequence emulation. It is selected with
 `session.console_frontend = "nvim-console"` or opened in-process with
 `:Ark console`.
+For code sends, a managed external `nvim-console` is ready when its R job and
+RPC endpoint are live; that transport readiness is independent of bridge
+readiness for language features. A missing RPC endpoint must return an explicit
+not-ready error and must never fall through to raw tmux paste into the console
+UI.
 Its completion key policy uses `Enter` or `Tab` to accept a visible Blink
 completion, uses `Enter` to submit when no completion menu is visible, uses
 `Alt-Enter` to insert a newline without accepting completion, and uses

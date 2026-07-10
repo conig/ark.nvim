@@ -145,6 +145,10 @@ function M.send_text(opts, text)
   return call_with_config(opts, "send_text", text)
 end
 
+function M.console_ready(opts)
+  return call_with_config(opts, "console_ready")
+end
+
 function M.help_popup(opts, text, popup_opts)
   return call_with_config(opts, "help_popup", text, popup_opts)
 end

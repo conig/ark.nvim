@@ -470,6 +470,24 @@ repl_ready = function()
 end
 
 local function wait_for_repl_ready_for_send()
+  local runtime_config = session_backend.runtime_config(options) or {}
+  if console_frontend.normalize(runtime_config.console_frontend) == "nvim-console" then
+    local function console_ready()
+      return session_backend.console_ready(options) == true
+    end
+
+    if console_ready() then
+      return true, nil
+    end
+
+    local timeout_ms = runtime_wait_timeout_ms()
+    if vim.wait(timeout_ms, console_ready, 50, false) then
+      return true, nil
+    end
+
+    return nil, "managed nvim-console RPC endpoint is not ready for send"
+  end
+
   if repl_ready() then
     return true, nil
   end

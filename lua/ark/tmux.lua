@@ -1657,6 +1657,18 @@ local function nvim_console_send(config, session, text)
   return true, nil
 end
 
+function M.console_ready(config)
+  local session = active_startup_session()
+  if not session then
+    return false
+  end
+
+  local status = nvim_console_status(config or {}, session)
+  return type(status) == "table"
+    and status.nvim_console_running == true
+    and nvim_console_socket(status) ~= nil
+end
+
 function M.send_text(config_or_text, maybe_text)
   local config = type(config_or_text) == "table" and config_or_text or {}
   local text = maybe_text
@@ -1679,6 +1691,9 @@ function M.send_text(config_or_text, maybe_text)
   end
   if console_err and console_err ~= "" then
     return nil, console_err
+  end
+  if console_frontend.normalize(config.console_frontend) == "nvim-console" then
+    return nil, "managed nvim-console RPC endpoint is not ready"
   end
 
   if text:sub(-1) ~= "\n" then
