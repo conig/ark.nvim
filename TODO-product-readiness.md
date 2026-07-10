@@ -19,7 +19,7 @@ deliberate as the feature set.
 
 - TODO 1: complete — release foundation and product-owned CI (`b3ecb540`)
 - TODO 2: complete — non-blocking and portable runtime boundary (`cffcef11`)
-- TODO 3: pending — maintainable source and state boundaries
+- TODO 3: complete — maintainable source and state boundaries (`68feabac`)
 - TODO 4: pending — fast test pyramid and performance governance
 - TODO 5: pending — product polish, supportability, and documentation
 
