@@ -32,6 +32,7 @@
         "dev_source_boundary.lua",
         "error_taxonomy.lua",
         "help_render_pure.lua",
+        "lsp_content_modified_retry.lua",
         "lsp_inflight_bootstrap_deduplicates_session_update.lua",
         "notifications_once.lua",
         "product_state_model.lua",

@@ -582,22 +582,38 @@ local function console_session_snapshot(opts, snapshot_opts, bufnr)
   }
 end
 
-local function request_result(client, method, params, timeout_ms, bufnr)
-  local response, err = client:request_sync(method, params, timeout_ms, bufnr or 0)
-  if err then
-    return nil, err
+local function is_content_modified_error(err)
+  if type(err) == "table" and err.code == -32801 then
+    return true
   end
-  if not response then
-    return nil, "no response"
-  end
-  if response.error then
-    return nil, vim.inspect(response.error)
-  end
-  if response.err then
-    return nil, vim.inspect(response.err)
-  end
+  return type(err) == "string" and err:find("stale because", 1, true) ~= nil
+end
 
-  return response.result, nil
+local function request_result(client, method, params, timeout_ms, bufnr)
+  local timeout = timeout_ms or 5000
+  local deadline = uv.hrtime() + timeout * 1e6
+
+  while true do
+    local remaining = math.max(1, math.floor((deadline - uv.hrtime()) / 1e6))
+    local response, err = client:request_sync(method, params, remaining, bufnr or 0)
+    if err then
+      return nil, err
+    end
+    if not response then
+      return nil, "no response"
+    end
+
+    local response_error = response.error or response.err
+    if is_content_modified_error(response_error) and uv.hrtime() < deadline then
+      vim.wait(10, function()
+        return false
+      end, 5, false)
+    elseif response_error then
+      return nil, vim.inspect(response_error)
+    else
+      return response.result, nil
+    end
+  end
 end
 
 local function request_error_message(err)
@@ -1157,7 +1173,7 @@ start_pending_bootstrap_async = function(client, opts, bufnr, payload, source, n
     end
 
     if bootstrap_err then
-      if notify_on_error == true then
+      if notify_on_error == true and not is_content_modified_error(bootstrap_err) then
         notifications.emit("ark.nvim session bootstrap failed: " .. bootstrap_err, vim.log.levels.WARN, {
           ark_key = "lsp-session-bootstrap-failed",
         })
@@ -1819,7 +1835,7 @@ function M.help_topic(opts, bufnr, position)
   end
 
   local function request_topic(request_position)
-    local response, err = client:request_sync(HELP_TOPIC_METHOD, {
+    local result, err = request_result(client, HELP_TOPIC_METHOD, {
       textDocument = text_document,
       position = request_position,
     }, 1000, bufnr)
@@ -1827,20 +1843,6 @@ function M.help_topic(opts, bufnr, position)
     if err then
       return nil, err
     end
-
-    if not response then
-      return nil, "no response"
-    end
-
-    if response.err then
-      return nil, vim.inspect(response.err)
-    end
-
-    if response.error then
-      return nil, vim.inspect(response.error)
-    end
-
-    local result = response.result
     if type(result) ~= "table" or type(result.topic) ~= "string" or result.topic == "" then
       return nil, "no help topic found"
     end
@@ -1873,23 +1875,13 @@ function M.help_text(opts, bufnr, topic)
     return nil, "ark_lsp client unavailable"
   end
 
-  local response, err = client:request_sync(HELP_TEXT_METHOD, {
+  local result, err = request_result(client, HELP_TEXT_METHOD, {
     topic = topic,
   }, 3000, bufnr)
 
   if err then
     return nil, err
   end
-
-  if not response then
-    return nil, "no response"
-  end
-
-  if response.error then
-    return nil, vim.inspect(response.error)
-  end
-
-  local result = response.result
   if type(result) ~= "table" or type(result.text) ~= "string" or result.text == "" then
     return nil, "no help text found"
   end

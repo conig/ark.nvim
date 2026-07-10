@@ -5,6 +5,7 @@ local test = require("tests.e2e.ark_test")
 package.loaded["ark.lsp"] = nil
 package.loaded["ark.tmux"] = nil
 package.loaded["ark.dev"] = nil
+package.loaded["ark.session"] = nil
 
 local status_dir = test.run_tmpdir() .. "/deferred-startup-bootstrap-watch"
 local status_path = status_dir .. "/status.json"
@@ -35,6 +36,9 @@ write_status({
 })
 
 package.loaded["ark.tmux"] = {
+  start = function()
+    return "%42"
+  end,
   bridge_env = function()
     return nil
   end,
@@ -50,6 +54,31 @@ package.loaded["ark.tmux"] = {
   end,
   startup_status_authoritative = function()
     return read_status()
+  end,
+  startup_snapshot = function()
+    local status = read_status()
+    return {
+      session = {
+        tmux_socket = "/tmp/ark-test.sock",
+        tmux_session = "ark-test",
+        tmux_pane = "%42",
+      },
+      session_id = "deferred-bootstrap-session",
+      status_path = status_path,
+      startup_status_path = status_path,
+      startup_status = status and vim.deepcopy(status) or nil,
+      authoritative_status = status and vim.deepcopy(status) or nil,
+      bridge_ready = type(status) == "table" and status.status == "ready",
+    }
+  end,
+  status = function()
+    local snapshot = package.loaded["ark.tmux"].startup_snapshot()
+    return {
+      session = snapshot.session,
+      startup_status_path = status_path,
+      startup_status = snapshot.startup_status,
+      bridge_ready = snapshot.bridge_ready,
+    }
   end,
 }
 
@@ -83,16 +112,26 @@ local client = {
   end,
   request_sync = function(self, method, params)
     if method == "ark/internal/bootstrapSession" then
-      bootstrap_calls[#bootstrap_calls + 1] = vim.deepcopy(params)
-      return {
-        result = {
-          hydrated = params.status == "ready" and params.replReady == true,
-        },
-      }, nil
+      test.fail("deferred startup bootstrap must not use request_sync()")
     end
 
     return { result = {} }, nil
   end,
+  request = function(self, method, params, callback)
+    if method ~= "ark/internal/bootstrapSession" then
+      test.fail("unexpected async request: " .. tostring(method))
+    end
+
+    bootstrap_calls[#bootstrap_calls + 1] = vim.deepcopy(params)
+    local request_id = #bootstrap_calls
+    vim.schedule(function()
+      callback(nil, {
+        hydrated = params.status == "ready" and params.replReady == true,
+      })
+    end)
+    return true, request_id
+  end,
+  cancel_request = function() end,
   notify = function(self, method, params)
     session_notifications[#session_notifications + 1] = {
       method = method,
@@ -164,11 +203,8 @@ local ok, err = pcall(function()
     test.fail("expected lsp.start() to return fake client id, got " .. vim.inspect(client_id))
   end
 
-  if #bootstrap_calls ~= 1 then
-    test.fail("expected initial bootstrap attempt during sync startup, got " .. vim.inspect(bootstrap_calls))
-  end
-  if bootstrap_calls[1].status ~= "starting" or bootstrap_calls[1].replReady ~= false then
-    test.fail("expected initial bootstrap payload to be non-ready, got " .. vim.inspect(bootstrap_calls[1]))
+  if #bootstrap_calls ~= 0 then
+    test.fail("startup must not bootstrap a non-ready session: " .. vim.inspect(bootstrap_calls))
   end
 
   write_status({
@@ -178,11 +214,11 @@ local ok, err = pcall(function()
   })
 
   test.wait_for("deferred startup bootstrap", 2000, function()
-    return #bootstrap_calls >= 2 and startup_ready ~= nil
+    return #bootstrap_calls >= 1 and startup_ready ~= nil
   end)
 
-  if bootstrap_calls[2].status ~= "ready" or bootstrap_calls[2].replReady ~= true then
-    test.fail("expected watched bootstrap payload to become ready, got " .. vim.inspect(bootstrap_calls[2]))
+  if bootstrap_calls[1].status ~= "ready" or bootstrap_calls[1].replReady ~= true then
+    test.fail("expected watched bootstrap payload to become ready, got " .. vim.inspect(bootstrap_calls[1]))
   end
 
   if type(startup_ready) ~= "table" or startup_ready.bufnr ~= bufnr then
@@ -202,6 +238,9 @@ vim.lsp.get_client_by_id = original_get_client_by_id
 vim.lsp.get_clients = original_get_clients
 vim.lsp.buf_is_attached = original_buf_is_attached
 package.loaded["ark.lsp"] = nil
+package.loaded["ark.session"] = nil
+package.loaded["ark.tmux"] = nil
+package.loaded["ark.dev"] = nil
 
 if not ok then
   error(err, 0)

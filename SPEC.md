@@ -279,6 +279,10 @@ capture its URI and version, and every bridge-backed request captures the
 detached-session generation. A result is returned only while those values still
 match the latest world state. A newer document or session turns the old result
 into an LSP content-modified response rather than publishing stale runtime data.
+Neovim-side synchronous help, view, and target requests retry that response
+within their original deadline; startup bootstrap treats it as a transient
+supersession and retries without warning. Automatic completion remains on the
+standard LSP client path, which owns its own content-modified retry behavior.
 
 The interactive R process remains single-threaded. Ark admits at most one
 bridge operation into R and allows at most eight additional operations to wait.
@@ -858,6 +862,10 @@ unsupported configuration/environment. Persistent warnings are transition
 notices, not the source of truth; identical warnings are deduplicated and the
 durable state plus recovery action remains available through status, health,
 and the support report.
+
+Observed readiness takes precedence over startup policy: a manually started
+session with both bridge and REPL ready is `live_ready` even when
+`auto_start_pane = false`; that option controls automatic startup only.
 
 Configuration is validated before setup mutates editor state. Unknown keys,
 wrong types, and unsupported enum values fail with `E_CONFIG`, the exact dotted

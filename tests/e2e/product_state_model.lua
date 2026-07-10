@@ -10,6 +10,7 @@ local cases = {
     {},
   },
   { "static_only", {}, { auto_start_pane = false }, {} },
+  { "live_ready", { bridge_ready = true, repl_ready = true }, { auto_start_pane = false }, {} },
   { "live_ready", { bridge_ready = true, repl_ready = true }, { auto_start_pane = true }, {} },
   {
     "static_starting",

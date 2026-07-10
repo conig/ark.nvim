@@ -26,11 +26,11 @@ function M.derive(status, opts, bridge_status)
   if metadata and release.product_version and metadata.product_version ~= release.product_version then
     return "restart_required"
   end
-  if opts.auto_start_pane == false then
-    return "static_only"
-  end
   if status.bridge_ready == true and status.repl_ready == true then
     return "live_ready"
+  end
+  if opts.auto_start_pane == false then
+    return "static_only"
   end
   local startup = status.startup or {}
   if startup.phase == "configured" or startup.session_phase == "requested" or startup.session_phase == "bridge_ready" then
