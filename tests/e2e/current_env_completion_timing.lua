@@ -1,4 +1,5 @@
 local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test.lua"))
+local perf = require("perf")
 
 local function monotonic_ms()
   return vim.uv.hrtime() / 1000000
@@ -306,6 +307,28 @@ local summary = {
   bridge_completion = summarize_timings(bridge_timings),
   lsp_completion = summarize_timings(lsp_timings),
 }
+
+for _, elapsed in ipairs(ping_timings) do
+  perf.record("completion.bridge_ping", elapsed, {
+    test = "current_env_completion_timing.lua",
+    condition = "warm live session",
+    fixture = "240 global symbols",
+  })
+end
+for _, elapsed in ipairs(bridge_timings) do
+  perf.record("completion.bridge", elapsed, {
+    test = "current_env_completion_timing.lua",
+    condition = "warm live session",
+    fixture = "240 global symbols",
+  })
+end
+for _, elapsed in ipairs(lsp_timings) do
+  perf.record("completion.lsp", elapsed, {
+    test = "current_env_completion_timing.lua",
+    condition = "warm live session",
+    fixture = "240 global symbols",
+  })
+end
 
 local out = vim.env.ARK_COMPLETION_TIMING_OUT
 if type(out) == "string" and out ~= "" then

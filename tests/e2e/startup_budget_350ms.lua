@@ -1,4 +1,5 @@
 local ark_test = require("ark_test")
+local perf = require("perf")
 
 local function ensure_bridge_runtime_current()
   local bridge = require("ark.bridge")
@@ -135,6 +136,11 @@ mark("main_buffer_unlocked")
 
 local startup = ark_test.startup_status(bufnr) or {}
 local startup_elapsed_ms = tonumber(startup.main_buffer_unlock_elapsed_ms) or elapsed_ms()
+perf.record("startup.main_buffer_unlock", startup_elapsed_ms, {
+  test = "startup_budget_350ms.lua",
+  condition = "cold managed tmux session",
+  fixture = "one R buffer, live bridge, hydrated LSP",
+})
 if startup_elapsed_ms > budget_ms then
   error(vim.inspect({
     error = string.format("full startup exceeded %d ms budget: %.1f ms", budget_ms, startup_elapsed_ms),

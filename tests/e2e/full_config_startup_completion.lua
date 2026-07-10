@@ -34,14 +34,19 @@ local function current_status()
 end
 
 local function lazy_plugin_loaded(name)
+  local module_name = name == "ark.nvim" and "ark" or name
+  if package.loaded[module_name] ~= nil then
+    return true
+  end
+
   local ok, lazy_config = pcall(require, "lazy.core.config")
   if not ok then
-    return package.loaded[name] ~= nil
+    return package.loaded[module_name] ~= nil
   end
 
   local plugin = lazy_config.plugins and lazy_config.plugins[name] or nil
   if type(plugin) ~= "table" then
-    return package.loaded[name] ~= nil
+    return package.loaded[module_name] ~= nil
   end
 
   return type(plugin._) == "table" and plugin._.loaded ~= nil
@@ -115,8 +120,11 @@ local function request_completion_at_cursor(prefix)
     }
   end
 
-  local response = ark_test.request(client, "textDocument/completion", params, 5000)
-  return ark_test.completion_items(response)
+  local response = client:request_sync("textDocument/completion", params, 5000, 0)
+  if not response or response.error or response.err then
+    return {}
+  end
+  return ark_test.completion_items(response.result)
 end
 
 local function reset_buffer(lines)

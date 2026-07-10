@@ -12,6 +12,7 @@ Options:
   --kill-after <seconds>    Extra grace after timeout before SIGKILL. Default: 10
   --cwd <path>              Working directory to launch Neovim from
   --open-r-buffer <name>    Create and open a scratch .R file under the run tmpdir
+  --no-tmux                 Do not create a tmux server for pure/component tests
   --keep-artifacts          Keep the run tmpdir on success
   --help                    Show this message
 
@@ -31,6 +32,7 @@ timeout_secs=120
 kill_after_secs=10
 open_r_buffer=""
 keep_artifacts=0
+use_tmux=1
 test_data_home="${ARK_TEST_DATA_HOME:-/tmp/arktest-data}"
 run_cwd=""
 
@@ -58,6 +60,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --keep-artifacts)
       keep_artifacts=1
+      shift
+      ;;
+    --no-tmux)
+      use_tmux=0
       shift
       ;;
     --help)
@@ -163,6 +169,10 @@ ensure_test_lazy_plugin() {
     source_plugin_root="${!env_name}"
   fi
 
+  if [[ -L "$test_plugin_root" && ! -e "$test_plugin_root" ]]; then
+    rm -f -- "$test_plugin_root"
+  fi
+
   if [[ ! -e "$test_plugin_root" && -d "$source_plugin_root" ]]; then
     mkdir -p -- "$(dirname -- "$test_plugin_root")"
     ln -s -- "$source_plugin_root" "$test_plugin_root"
@@ -234,21 +244,23 @@ kill_run_tagged_processes() {
 cleanup() {
   local exit_code="${1:-$?}"
 
-  if [[ -f "$manifest" ]]; then
+  if [[ "$use_tmux" -eq 1 && -f "$manifest" ]]; then
     while IFS= read -r session_name; do
       [[ -z "$session_name" ]] && continue
       tmux_cmd kill-session -t "$session_name" >/dev/null 2>&1 || true
     done <"$manifest"
   fi
 
-  if command -v tmux >/dev/null 2>&1; then
+  if [[ "$use_tmux" -eq 1 ]] && command -v tmux >/dev/null 2>&1; then
     while IFS= read -r session_name; do
       [[ -z "$session_name" ]] && continue
       tmux_cmd kill-session -t "$session_name" >/dev/null 2>&1 || true
     done < <(tmux_cmd ls -F '#{session_name}' 2>/dev/null | awk -v prefix="arktest_${run_id}_" 'index($0, prefix) == 1 { print $0 }')
   fi
 
-  tmux_cmd kill-server >/dev/null 2>&1 || true
+  if [[ "$use_tmux" -eq 1 ]]; then
+    tmux_cmd kill-server >/dev/null 2>&1 || true
+  fi
 
   if [[ -n "${runner_pgid:-}" ]]; then
     kill -- "-$runner_pgid" >/dev/null 2>&1 || true
@@ -274,8 +286,14 @@ cleanup() {
 
 trap 'cleanup $?' EXIT INT TERM
 
-setup_tmux_server
-ensure_test_plugins
+if [[ "$use_tmux" -eq 1 ]]; then
+  setup_tmux_server
+fi
+if [[ "$init_arg" == "$repo_root/tests/e2e/init.lua" ]]; then
+  python3 "$repo_root/scripts/prepare-e2e-fixture.py" --data-home "$test_data_home"
+else
+  ensure_test_plugins
+fi
 
 if [[ -n "$run_cwd" ]]; then
   cd -- "$run_cwd"

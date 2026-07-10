@@ -10,10 +10,12 @@ Options:
   --skip-rust             Skip cargo nextest
   --skip-clippy           Skip cargo clippy
   --skip-e2e              Skip Neovim E2E tests
+  --tier <name>           Test tier: required, unit, fast, serial-integration,
+                          full-tui, performance, soak, integration, or full
+                          Default: full
   --filter <substring>    Only run E2E tests whose basename contains the substring
-  --init <path>           Init file for full_config_* E2Es
-                          Default: tests/e2e/init.lua
-  --open-r-buffer <name>  Scratch .R file to open for full_config_* E2Es
+  --init <path>           Override the manifest init for full-TUI E2Es
+  --open-r-buffer <name>  Scratch .R file to open when requested by the manifest
                           Default: smoke.R
   --e2e-timeout <secs>    Per-test timeout passed to run-e2e-test.sh
                           Default: 120
@@ -30,8 +32,10 @@ EOF
 }
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-real_init="$repo_root/tests/e2e/init.lua"
+manifest_resolver="$repo_root/scripts/test-manifest.py"
+init_override=""
 open_r_buffer="smoke.R"
+test_tier="full"
 e2e_timeout=120
 keep_artifacts=0
 skip_rust=0
@@ -54,12 +58,16 @@ while [[ $# -gt 0 ]]; do
       skip_e2e=1
       shift
       ;;
+    --tier)
+      test_tier="${2:?missing value for --tier}"
+      shift 2
+      ;;
     --filter)
       filter="${2:?missing value for --filter}"
       shift 2
       ;;
     --init)
-      real_init="${2:?missing value for --init}"
+      init_override="${2:?missing value for --init}"
       shift 2
       ;;
     --open-r-buffer)
@@ -92,25 +100,36 @@ done
 
 declare -a failures=()
 declare -a e2e_tests=()
+declare -a e2e_tiers=()
+declare -a e2e_inits=()
+declare -a e2e_open_buffers=()
+declare -a e2e_cwds=()
+declare -a e2e_contracts=()
+declare -a e2e_dependencies=()
 
 build_e2e_list() {
-  local test_path=""
+  local tier=""
+  local init=""
+  local open_buffer=""
+  local cwd=""
+  local contract=""
+  local dependencies=""
   local test_name=""
 
-  while IFS= read -r test_path; do
+  while IFS=$'\t' read -r test_path tier init open_buffer cwd contract dependencies; do
     test_name=$(basename -- "$test_path")
-    case "$test_name" in
-      ark_test.lua|init.lua|tui_blink_trace.lua|tui_startup_chatter_trace.lua|tui_startup_keyword_completion_probe.lua|detached_process_leak.lua|startup_timing_probe.lua|full_config_typed_completion_timing.lua)
-        continue
-        ;;
-    esac
-
     if [[ -n "$filter" && "$test_name" != *"$filter"* ]]; then
       continue
     fi
 
     e2e_tests+=("$test_path")
-  done < <(find "$repo_root/tests/e2e" -maxdepth 1 -type f -name '*.lua' | sort)
+    e2e_tiers+=("$tier")
+    e2e_inits+=("$init")
+    e2e_open_buffers+=("$open_buffer")
+    e2e_cwds+=("$cwd")
+    e2e_contracts+=("$contract")
+    e2e_dependencies+=("$dependencies")
+  done < <(python3 "$manifest_resolver" list --tier "$test_tier" --format tsv)
 }
 
 run_step() {
@@ -133,51 +152,49 @@ run_step() {
 }
 
 run_e2e_test() {
-  local test_path="$1"
+  local index="$1"
+  local test_path="${e2e_tests[$index]}"
   local test_name
-  local needs_real_init=0
-  local needs_open_r_buffer=0
-  local requires_blink=0
-  local needs_home_cwd=0
+  local tier="${e2e_tiers[$index]}"
+  local manifest_init="${e2e_inits[$index]}"
+  local needs_open_r_buffer="${e2e_open_buffers[$index]}"
+  local run_cwd="${e2e_cwds[$index]}"
+  local contract="${e2e_contracts[$index]}"
+  local dependencies="${e2e_dependencies[$index]}"
   local -a cmd
 
   test_name=$(basename -- "$test_path")
   cmd=("$repo_root/scripts/run-e2e-test.sh" "--timeout" "$e2e_timeout")
 
-  if grep -q 'blink.cmp is required for this test' "$test_path"; then
-    requires_blink=1
-  fi
-
   if [[ "$keep_artifacts" -eq 1 ]]; then
     cmd+=("--keep-artifacts")
   fi
 
-  if [[ "$test_name" == full_config_* ]]; then
-    needs_real_init=1
-    needs_open_r_buffer=1
-  elif [[ "$requires_blink" -eq 1 ]]; then
-    needs_real_init=1
-    needs_open_r_buffer=1
+  if [[ ",$dependencies," != *,tmux,* ]]; then
+    cmd+=("--no-tmux")
   fi
 
-  if [[ "$test_name" == home_directory_buffer_uses_scratch_workspace.lua ]]; then
-    needs_home_cwd=1
-  fi
-
-  if [[ "$needs_real_init" -eq 1 ]]; then
-    cmd+=("--init" "$real_init")
+  if [[ "$manifest_init" != "NONE" ]]; then
+    if [[ -n "$init_override" ]]; then
+      cmd+=("--init" "$init_override")
+    else
+      cmd+=("--init" "$manifest_init")
+    fi
   fi
 
   if [[ "$needs_open_r_buffer" -eq 1 ]]; then
     cmd+=("--open-r-buffer" "$open_r_buffer")
   fi
 
-  if [[ "$needs_home_cwd" -eq 1 ]]; then
+  if [[ "$run_cwd" == "HOME" ]]; then
     cmd+=("--cwd" "$HOME")
+  elif [[ "$run_cwd" != "-" ]]; then
+    cmd+=("--cwd" "$run_cwd")
   fi
 
   cmd+=("$test_path")
-  run_step "e2e:$test_name" "${cmd[@]}"
+  printf 'Contract: %s\n' "$contract"
+  run_step "e2e:$tier:$test_name" "${cmd[@]}"
 }
 
 build_e2e_list
@@ -186,6 +203,8 @@ if [[ "$list_e2e" -eq 1 ]]; then
   printf '%s\n' "${e2e_tests[@]}"
   exit 0
 fi
+
+run_step "test manifest" python3 "$manifest_resolver" validate
 
 if [[ "$skip_rust" -eq 0 ]]; then
   run_step "cargo nextest" cargo nextest run --no-fail-fast
@@ -207,10 +226,10 @@ if [[ "$skip_e2e" -eq 0 ]]; then
   fi
 
   if [[ "$build_ok" -eq 1 ]]; then
-    for test_path in "${e2e_tests[@]}"; do
-      run_e2e_test "$test_path"
+    for index in "${!e2e_tests[@]}"; do
+      run_e2e_test "$index"
     done
-    if [[ -z "$filter" ]]; then
+    if [[ -z "$filter" && "$test_tier" == "full" ]]; then
       run_step "e2e-runner cleanup" "$repo_root/tests/test-e2e-runner-cleanup.sh"
     fi
   else

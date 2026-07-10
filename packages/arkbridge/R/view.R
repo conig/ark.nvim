@@ -16,15 +16,25 @@
 .ark_view_require_session_id <- function(session, session_id) {
   if (!is.character(session_id) || length(session_id) != 1L || !nzchar(session_id)) {
     stop(structure(
-      list(code = "E_IPC_REQUEST", message = "missing session_id", stage = "ipc_request"),
-      class = "ark_view_error"
+      list(
+        code = "E_IPC_REQUEST",
+        message = "missing session_id",
+        stage = "ipc_request",
+        call = NULL
+      ),
+      class = c("ark_view_error", "error", "condition")
     ))
   }
 
   if (!exists(session_id, envir = .ark_ipc_state$views, inherits = FALSE)) {
     stop(structure(
-      list(code = "E_IPC_VIEW_GONE", message = "view session not found", stage = "ipc_view"),
-      class = "ark_view_error"
+      list(
+        code = "E_IPC_VIEW_GONE",
+        message = "view session not found",
+        stage = "ipc_view",
+        call = NULL
+      ),
+      class = c("ark_view_error", "error", "condition")
     ))
   }
 
@@ -33,8 +43,13 @@
 
 .ark_view_fail <- function(code, message, stage) {
   stop(structure(
-    list(code = as.character(code), message = as.character(message), stage = as.character(stage)),
-    class = "ark_view_error"
+    list(
+      code = as.character(code),
+      message = as.character(message),
+      stage = as.character(stage),
+      call = NULL
+    ),
+    class = c("ark_view_error", "error", "condition")
   ))
 }
 

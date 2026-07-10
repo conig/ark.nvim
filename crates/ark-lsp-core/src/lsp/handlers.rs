@@ -864,7 +864,13 @@ pub(crate) fn handle_completion_resolve(
         if let Some(session_bridge) = state.session_bridge.as_ref() {
             let unresolved = item.clone();
             return match session_bridge.resolve_completion_item(item) {
-                Ok(item) => Ok(item),
+                Ok((item, true)) => Ok(item),
+                Ok((mut item, false)) => {
+                    if let Err(err) = resolve_detached_completion(&mut item) {
+                        log::warn!("Detached completion resolve fallback failed: {err:?}");
+                    }
+                    Ok(item)
+                },
                 Err(err) => {
                     if is_bridge_unavailable(&err) || is_eval_missing_object_error(&err) {
                         Ok(unresolved)

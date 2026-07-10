@@ -1,6 +1,7 @@
 vim.opt.rtp:prepend(vim.fn.getcwd())
 
 local view = require("ark.view")
+local perf = require("perf")
 
 vim.o.columns = 140
 vim.o.lines = 40
@@ -41,6 +42,7 @@ end
 local requested_page_columns = nil
 
 local function page(offset, limit, columns)
+  local started = vim.uv.hrtime()
   local start_index = math.max(0, tonumber(offset or 0) or 0) + 1
   local page_limit = math.max(0, tonumber(limit or 0) or 0)
   local end_index = page_limit == 0 and #rows or math.min(#rows, start_index + page_limit - 1)
@@ -62,7 +64,7 @@ local function page(offset, limit, columns)
     row_numbers[#row_numbers + 1] = index
   end
 
-  return {
+  local result = {
     offset = start_index - 1,
     limit = page_limit,
     columns = projected_columns,
@@ -70,6 +72,12 @@ local function page(offset, limit, columns)
     row_numbers = row_numbers,
     rows = page_rows,
   }
+  perf.record("arkview.page", (vim.uv.hrtime() - started) / 1000000, {
+    test = "ark_view_cursor_movement_responsiveness.lua",
+    condition = "warm mocked bridge boundary",
+    fixture = "148 rows by 338 columns",
+  })
+  return result
 end
 
 local lsp = {
@@ -148,6 +156,7 @@ local ok, err = pcall(function()
   vim.bo[source_buf].filetype = "r"
   vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, { "wide_table" })
 
+  local open_started = vim.uv.hrtime()
   local state, open_err = view.open({
     lsp = lsp,
     options = {},
@@ -155,6 +164,11 @@ local ok, err = pcall(function()
     expr = "wide_table",
     page_limit = 0,
     notify = function() end,
+  })
+  perf.record("arkview.open", (vim.uv.hrtime() - open_started) / 1000000, {
+    test = "ark_view_cursor_movement_responsiveness.lua",
+    condition = "cold view in headless Neovim",
+    fixture = "148 rows by 338 columns",
   })
   if not state then
     error("expected ArkView to open: " .. tostring(open_err), 0)
@@ -234,6 +248,14 @@ local ok, err = pcall(function()
     local started = vim.uv.hrtime()
     move_cursor(grid_win, line, wide_col)
     samples[#samples + 1] = (vim.uv.hrtime() - started) / 1000000
+  end
+
+  for _, value in ipairs(samples) do
+    perf.record("arkview.cursor", value, {
+      test = "ark_view_cursor_movement_responsiveness.lua",
+      condition = "warm same-column cursor movement",
+      fixture = "148 rows by 338 columns",
+    })
   end
 
   vim.api.nvim_buf_set_lines = original_buf_set_lines

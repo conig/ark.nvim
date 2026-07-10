@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "source": "2026-07-10 local TODO 4 baseline artifact; replace only with a reviewed scheduled five-run artifact",
+  "events": {
+    "startup.main_buffer_unlock": { "p50_ms": 953.0, "p95_ms": 990.0 },
+    "completion.bridge_ping": { "p50_ms": 1.391, "p95_ms": 1.659 },
+    "completion.bridge": { "p50_ms": 24.303, "p95_ms": 36.151 },
+    "completion.lsp": { "p50_ms": 33.871, "p95_ms": 40.624 },
+    "rpc.parent_help": { "p50_ms": 0.0, "p95_ms": 0.0 },
+    "rpc.parent_view": { "p50_ms": 0.0, "p95_ms": 0.0 },
+    "rpc.console_help": { "p50_ms": 0.0, "p95_ms": 0.0 },
+    "rpc.console_view": { "p50_ms": 0.0, "p95_ms": 0.0 },
+    "arkview.open": { "p50_ms": 17.144, "p95_ms": 21.128 },
+    "arkview.page": { "p50_ms": 0.422, "p95_ms": 0.768 },
+    "arkview.cursor": { "p50_ms": 0.008, "p95_ms": 0.025 }
+  }
+}

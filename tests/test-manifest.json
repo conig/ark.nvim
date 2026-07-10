@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "tier": "serial-integration",
+    "layer": "product-e2e",
+    "owner": "ark.nvim",
+    "contract": "Neovim plugin, LSP, or managed-session integration behavior",
+    "serial": true,
+    "init": "NONE",
+    "open_r_buffer": false,
+    "dependencies": ["neovim"],
+    "typical_runtime": "under 120 seconds",
+    "flake_policy": "no automatic pass-on-retry; retain artifacts and classify failures",
+    "mutates_shared_session": true
+  },
+  "exclude": {
+    "ark_test.lua": "shared E2E support module",
+    "perf.lua": "shared structured performance sample helper",
+    "init.lua": "prepared Blink-backed Neovim fixture",
+    "tui_blink_trace.lua": "interactive trace probe",
+    "tui_startup_chatter_trace.lua": "interactive trace probe",
+    "tui_startup_keyword_completion_probe.lua": "interactive trace probe",
+    "startup_timing_probe.lua": "interactive benchmark probe invoked by a driver",
+    "full_config_typed_completion_timing.lua": "interactive benchmark probe invoked by a driver"
+  },
+  "rules": [
+    {
+      "names": ["help_render_pure.lua", "startup_state_model.lua"],
+      "tier": "unit",
+      "layer": "pure-unit",
+      "contract": "pure Lua rendering or state-transition behavior",
+      "dependencies": ["neovim"],
+      "typical_runtime": "under 2 seconds",
+      "mutates_shared_session": false
+    },
+    {
+      "names": [
+        "ark_view_cursor_movement_responsiveness.lua",
+        "current_env_completion_timing.lua",
+        "r_entrypoint_rpc_latency.lua",
+        "startup_budget_350ms.lua"
+      ],
+      "tier": "performance",
+      "layer": "performance",
+      "contract": "versioned user-visible latency budget",
+      "dependencies": ["neovim", "r", "tmux"],
+      "serial": true,
+      "typical_runtime": "under 120 seconds per sample batch",
+      "flake_policy": "collect repeated samples; fail malformed data or budget regression",
+      "mutates_shared_session": true
+    },
+    {
+      "names": ["detached_process_leak.lua"],
+      "tier": "soak",
+      "layer": "soak",
+      "contract": "detached process lifetime and leak behavior under repetition",
+      "dependencies": ["neovim", "r", "tmux"],
+      "serial": true,
+      "typical_runtime": "over 120 seconds",
+      "mutates_shared_session": true
+    },
+    {
+      "globs": ["full_config_*.lua", "*_tui.lua"],
+      "tier": "full-tui",
+      "layer": "product-e2e",
+      "contract": "visible editor behavior with Blink and the prepared full-config fixture",
+      "init": "tests/e2e/init.lua",
+      "open_r_buffer": true,
+      "dependencies": ["neovim", "r", "tmux", "blink"],
+      "serial": true
+    },
+    {
+      "content_contains": "blink.cmp is required for this test",
+      "tier": "full-tui",
+      "layer": "product-e2e",
+      "contract": "visible Blink completion or TUI behavior",
+      "init": "tests/e2e/init.lua",
+      "open_r_buffer": true,
+      "dependencies": ["neovim", "r", "tmux", "blink"],
+      "serial": true
+    },
+    {
+      "names": [
+        "ark_dispatch_command.lua",
+        "detached_parity.lua",
+        "lsp_sync_start_bootstrap.lua",
+        "lsp_sync_start_pending_client.lua",
+        "release_manifest_and_discovery.lua",
+        "targets_commands.lua",
+        "targets_project_store.lua"
+      ],
+      "tier": "fast",
+      "layer": "component",
+      "contract": "deterministic pull-request product confidence",
+      "dependencies": ["neovim"],
+      "serial": true,
+      "typical_runtime": "under 30 seconds",
+      "mutates_shared_session": false
+    }
+  ],
+  "overrides": {
+    "ark_view_cursor_movement_responsiveness.lua": {
+      "dependencies": ["neovim"],
+      "mutates_shared_session": false
+    },
+    "r_entrypoint_rpc_latency.lua": {
+      "dependencies": ["neovim"],
+      "mutates_shared_session": false
+    },
+    "detached_parity.lua": {
+      "dependencies": ["neovim", "r", "tmux"],
+      "mutates_shared_session": true
+    },
+    "home_directory_buffer_uses_scratch_workspace.lua": {
+      "cwd": "HOME"
+    }
+  },
+  "critical_journeys": {
+    "release_install_and_discovery": "release_manifest_and_discovery.lua",
+    "detached_static_language_features": "detached_parity.lua",
+    "live_completion": "current_env_completion_timing.lua",
+    "managed_tmux_session": "nvim_console_smoke.lua",
+    "terminal_backend": "terminal_backend_live.lua",
+    "arkhelp": "ark_help_end_to_end.lua",
+    "arkview": "ark_view_live.lua",
+    "targets": "targets_tmux_live.lua",
+    "visible_blink_completion": "full_config_startup_completion.lua"
+  }
+}

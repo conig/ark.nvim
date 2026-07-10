@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "environment": "Linux CI or a local machine with Neovim 0.11, R 4.2+, and tmux; tmux-backed benchmarks run serially",
+  "baseline_policy": "Update tests/performance-baseline.json only from a reviewed five-run scheduled artifact after investigating regressions",
+  "benchmarks": {
+    "startup_budget_350ms.lua": { "runs": 5 },
+    "current_env_completion_timing.lua": { "runs": 1 },
+    "r_entrypoint_rpc_latency.lua": { "runs": 1 },
+    "ark_view_cursor_movement_responsiveness.lua": { "runs": 5 }
+  },
+  "events": {
+    "startup.main_buffer_unlock": {
+      "minimum_samples": 5,
+      "p95_budget_ms": 1200,
+      "max_budget_ms": 1800,
+      "noise_tolerance_percent": 15,
+      "baseline_noise_floor_ms": 50
+    },
+    "completion.bridge_ping": {
+      "minimum_samples": 20,
+      "p95_budget_ms": 50,
+      "max_budget_ms": 100,
+      "noise_tolerance_percent": 20,
+      "baseline_noise_floor_ms": 1
+    },
+    "completion.bridge": {
+      "minimum_samples": 20,
+      "p95_budget_ms": 250,
+      "max_budget_ms": 500,
+      "noise_tolerance_percent": 20,
+      "baseline_noise_floor_ms": 5
+    },
+    "completion.lsp": {
+      "minimum_samples": 20,
+      "p95_budget_ms": 350,
+      "max_budget_ms": 700,
+      "noise_tolerance_percent": 20,
+      "baseline_noise_floor_ms": 5
+    },
+    "rpc.parent_help": {
+      "minimum_samples": 7,
+      "p95_budget_ms": 8,
+      "max_budget_ms": 16,
+      "noise_tolerance_percent": 25,
+      "baseline_noise_floor_ms": 1
+    },
+    "rpc.parent_view": {
+      "minimum_samples": 7,
+      "p95_budget_ms": 8,
+      "max_budget_ms": 16,
+      "noise_tolerance_percent": 25,
+      "baseline_noise_floor_ms": 1
+    },
+    "rpc.console_help": {
+      "minimum_samples": 7,
+      "p95_budget_ms": 8,
+      "max_budget_ms": 16,
+      "noise_tolerance_percent": 25,
+      "baseline_noise_floor_ms": 1
+    },
+    "rpc.console_view": {
+      "minimum_samples": 7,
+      "p95_budget_ms": 8,
+      "max_budget_ms": 16,
+      "noise_tolerance_percent": 25,
+      "baseline_noise_floor_ms": 1
+    },
+    "arkview.open": {
+      "minimum_samples": 5,
+      "p95_budget_ms": 150,
+      "max_budget_ms": 300,
+      "noise_tolerance_percent": 20,
+      "baseline_noise_floor_ms": 5
+    },
+    "arkview.page": {
+      "minimum_samples": 5,
+      "p95_budget_ms": 50,
+      "max_budget_ms": 100,
+      "noise_tolerance_percent": 20,
+      "baseline_noise_floor_ms": 1
+    },
+    "arkview.cursor": {
+      "minimum_samples": 400,
+      "p95_budget_ms": 8,
+      "max_budget_ms": 16,
+      "noise_tolerance_percent": 25,
+      "baseline_noise_floor_ms": 0.05
+    }
+  }
+}

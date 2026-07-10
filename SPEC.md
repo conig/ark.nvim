@@ -892,6 +892,22 @@ layer:
   the harness
 - ambient user-config smoke remains optional via `--init ~/.config/nvim/init.lua`
 
+The product test inventory is `tests/test-manifest.json`. It is the single
+source of truth for Lua test tier, ownership, dependencies, protected contract,
+serial execution, runtime expectation, flake policy, and shared-session use.
+The required pull-request selection combines the pure `unit` and deterministic
+`fast` tiers. `serial-integration`, prepared-fixture `full-tui`, `performance`,
+and `soak` remain deeper gates, and `scripts/run-full-suite.sh --tier full`
+remains the canonical pre-release suite. Tests that declare no tmux dependency
+must run without creating a tmux server.
+
+Full-TUI verification uses the pinned repo-owned fixture described by
+`tests/e2e/fixture-lock.json`; test execution must not clone plugins. Performance
+governance records schema-versioned samples for named user-visible events and
+checks repeated p50, p95, and worst-case results against both reviewed rolling
+baselines and versioned hard budgets. Raw samples, summaries, and failure logs
+are retained by scheduled CI.
+
 High-value smoke coverage for the current product boundary includes:
 
 - startup/session notification tests

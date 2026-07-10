@@ -14,7 +14,7 @@ local function prepend_lazy_plugin(name, required)
   end
 end
 
-prepend_lazy_plugin("snacks.nvim", false)
+prepend_lazy_plugin("snacks.nvim", true)
 prepend_lazy_plugin("blink.lib", false)
 prepend_lazy_plugin("blink.cmp", true)
 vim.opt.termguicolors = true

@@ -1,6 +1,7 @@
 vim.opt.rtp:prepend(vim.fn.getcwd())
 
 local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test.lua"))
+local perf = require("perf")
 local stop_watchdog = ark_test.start_watchdog(30000, "r_entrypoint_rpc_latency")
 
 local function elapsed_ms(start_ns)
@@ -145,6 +146,16 @@ local medians = {
   console_help = assert_budget("console ArkHelp RPC", samples.console_help, max_ms),
   console_view = assert_budget("console ArkView RPC", samples.console_view, max_ms),
 }
+
+for label, values in pairs(samples) do
+  for _, value in ipairs(values) do
+    perf.record("rpc." .. label, value, {
+      test = "r_entrypoint_rpc_latency.lua",
+      condition = "warm in-process callback",
+      fixture = "ArkHelp and ArkView parent/console entrypoints",
+    })
+  end
+end
 
 vim.print({
   r_entrypoint_rpc_latency = "ok",

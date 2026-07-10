@@ -54,16 +54,17 @@ run_step "product clippy" cargo clippy -p ark-lsp --all-targets -- -D warnings
 run_step "ark-lsp-core unit tests" cargo test -p ark-lsp-core --lib
 run_step "ark-lsp metadata tests" cargo test -p ark-lsp
 run_step "release installer" tests/test-release-installer.sh
+run_step "test manifest contracts" tests/test-test-manifest.sh
+run_step "prepared E2E fixture contracts" tests/test-e2e-fixture.sh
+run_step "performance result contracts" tests/test-performance-summary.sh
 
 if [[ "${skip_r}" -eq 0 ]]; then
   run_step "arkbridge R CMD check" scripts/check-arkbridge.sh
 fi
 
 if [[ "${skip_e2e}" -eq 0 ]]; then
-  run_step "release manifest and discovery E2E" \
-    scripts/run-e2e-test.sh --init NONE tests/e2e/release_manifest_and_discovery.lua
-  run_step "detached static parity E2E" \
-    scripts/run-e2e-test.sh --init NONE tests/e2e/detached_parity.lua
+  run_step "required Lua and product tier" \
+    scripts/run-full-suite.sh --skip-rust --skip-clippy --tier required
 fi
 
 printf '\n==> Product verification summary\n'

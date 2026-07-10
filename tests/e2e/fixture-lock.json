@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "name": "blink.cmp",
+      "repository": "https://github.com/Saghen/blink.cmp.git",
+      "revision": "78336bc89ee5365633bcf754d93df01678b5c08f",
+      "source_env": "ARK_TEST_BLINK_ROOT"
+    },
+    {
+      "name": "snacks.nvim",
+      "repository": "https://github.com/folke/snacks.nvim.git",
+      "revision": "882c996cf28183f4d63640de0b4c02ec886d01f2",
+      "source_env": "ARK_TEST_SNACKS_ROOT"
+    }
+  ]
+}

@@ -945,7 +945,7 @@ impl SessionBridge {
     pub(crate) fn resolve_completion_item(
         &self,
         item: CompletionItem,
-    ) -> anyhow::Result<CompletionItem> {
+    ) -> anyhow::Result<(CompletionItem, bool)> {
         self.with_request_class(BridgeRequestClass::Interactive)
             .resolve_completion_item_inner(item)
     }
@@ -953,13 +953,13 @@ impl SessionBridge {
     fn resolve_completion_item_inner(
         &self,
         mut item: CompletionItem,
-    ) -> anyhow::Result<CompletionItem> {
+    ) -> anyhow::Result<(CompletionItem, bool)> {
         let Some(data) = item.data.clone() else {
-            return Ok(item);
+            return Ok((item, false));
         };
 
         let Ok(data) = serde_json::from_value::<BridgeCompletionData>(data) else {
-            return Ok(item);
+            return Ok((item, false));
         };
 
         if data.kind == "session_bridge_package" {
@@ -967,11 +967,11 @@ impl SessionBridge {
                 apply_package_completion_docs(&mut item, &package_info);
             }
 
-            return Ok(item);
+            return Ok((item, true));
         }
 
         if data.kind != "session_bridge_inspect" {
-            return Ok(item);
+            return Ok((item, false));
         }
 
         if let Some(member_name) = data.member_name.as_deref() {
@@ -991,7 +991,7 @@ impl SessionBridge {
                 apply_member_completion_docs(&mut item, &member);
             }
 
-            return Ok(item);
+            return Ok((item, true));
         }
 
         let payload = self.inspect(
@@ -1007,7 +1007,7 @@ impl SessionBridge {
             apply_object_completion_docs(&mut item, object_meta, data.expr.as_str());
         }
 
-        Ok(item)
+        Ok((item, true))
     }
 
     fn completion_plan(
@@ -2382,6 +2382,30 @@ mod tests {
             "repl_ready": true,
         })
         .to_string()
+    }
+
+    #[test]
+    fn test_completion_resolve_declines_static_item_ownership() {
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port: 1,
+            timeout_ms: 50,
+            ..Default::default()
+        })
+        .unwrap();
+        let item = CompletionItem {
+            label: String::from("head"),
+            data: Some(serde_json::json!({
+                "Function": { "name": "head", "package": "utils" }
+            })),
+            ..Default::default()
+        };
+
+        let (resolved, owned) = bridge.resolve_completion_item(item).unwrap();
+
+        assert!(!owned);
+        assert_eq!(resolved.label, "head");
+        assert!(resolved.documentation.is_none());
     }
 
     #[test]
