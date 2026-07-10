@@ -40,6 +40,7 @@ local session_watches = {}
 local buffer_watch_cleanup = {}
 local buffer_watch_keys = {}
 local client_session_payloads = {}
+local client_pending_session_payloads = {}
 local client_status_payloads = {}
 local client_status_attempt_ms = {}
 local managed_client_ids = {}
@@ -138,6 +139,7 @@ local function forget_client_id(client_id)
 
   managed_client_ids[client_id] = nil
   client_session_payloads[client_id] = nil
+  client_pending_session_payloads[client_id] = nil
   client_status_payloads[client_id] = nil
   client_status_attempt_ms[client_id] = nil
 end
@@ -660,6 +662,24 @@ local function cache_client_session(client, payload)
   client_session_payloads[client.id] = vim.deepcopy(payload or {})
 end
 
+local function cache_client_pending_session(client, payload)
+  if not client or type(client.id) ~= "number" then
+    return
+  end
+
+  client_pending_session_payloads[client.id] = vim.deepcopy(payload or {})
+end
+
+local function clear_client_pending_session(client, payload)
+  if not client or type(client.id) ~= "number" then
+    return
+  end
+
+  if vim.deep_equal(client_pending_session_payloads[client.id], payload or {}) then
+    client_pending_session_payloads[client.id] = nil
+  end
+end
+
 local function cache_client_status(client, payload)
   if not client or type(client.id) ~= "number" then
     return
@@ -887,6 +907,9 @@ local function notify_client_session(client, payload)
 
   local normalized = payload or {}
   local previous = client_session_payloads[client.id] or {}
+  if vim.deep_equal(client_pending_session_payloads[client.id], normalized) then
+    return
+  end
   if suppress_transient_status_downgrade(previous, normalized) then
     return
   end
@@ -1121,8 +1144,10 @@ start_pending_bootstrap_async = function(client, opts, bufnr, payload, source, n
   end
 
   startup_bootstrap_requests[bufnr] = true
+  cache_client_pending_session(client, payload)
   local started = bootstrap_client_session_async(client, opts, bufnr, payload, function(hydrated, bootstrap_err)
     startup_bootstrap_requests[bufnr] = nil
+    clear_client_pending_session(client, payload)
 
     if not vim.api.nvim_buf_is_valid(bufnr) or not live_client(client) then
       if type(callback) == "function" then
@@ -1158,6 +1183,7 @@ start_pending_bootstrap_async = function(client, opts, bufnr, payload, source, n
 
   if not started then
     startup_bootstrap_requests[bufnr] = nil
+    clear_client_pending_session(client, payload)
     return false
   end
 

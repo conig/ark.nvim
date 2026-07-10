@@ -760,106 +760,69 @@ Continuing to reduce inherited kernel/Jupyter source remains legitimate
 maintenance work, but it is not required for the Neovim product boundary; those
 crates are excluded from default product builds and release artifacts.
 
-## Completion Architecture Hardening
+## Completion Architecture
 
-Completion behavior is now broad enough that it needs one canonical model.
+Completion intent for Ark filetypes is owned by Rust. Literate-R normalization,
+semantic region classification, source precedence, intentional suppression, and
+static/live merge policy are server responsibilities.
 
-Today the Rust side already has a coherent completion engine:
+The canonical state model is
+`crates/ark-lsp-core/src/lsp/completions/plan.rs::CompletionPlan`. It represents
+exactly three outcomes:
 
-- literate-R normalization is server-owned
-- static completions are organized as `unique` and `composite` sources
-- detached runtime completions already use an explicit `CompletionPlan`
+- `HandledEmpty`: Ark owns the context and intentionally returns no items
+- `Unique`: one exclusive source or bridge request owns the context
+- `Composite`: multiple compatible sources or bridge requests may contribute
 
-The main technical debt is that Ark also re-derives semantic completion context
-in the Blink adapter. That duplication currently lives in
-[lua/ark/blink.lua](/home/marine/repos/ark.nvim/lua/ark/blink.lua) and includes:
+Static source planning and live bridge request planning use that same generic
+model with different payloads. Static payloads name the existing `unique` and
+`composite` source families; bridge payloads describe execution requests. Bridge
+transport remains an execution detail and does not define a second completion
+state machine.
 
-- regex-based detection of string, subset, frontmatter, and inline-`r` contexts
-- trigger-specific suppression of non-LSP providers
-- timing and recovery patches that exist because the client and server do not
-  share one completion-intent model
+`handle_completion()` owns the detached product sequence: static target and
+pre-bridge contexts, path preemption, live bridge planning, post-bridge string
+fallback, then mergeable static sources. A handled empty bridge plan remains
+handled, so attached-runtime fallbacks cannot run afterward.
 
-The canonical direction is:
+For literate documents, fenced R, inline `` `r ...` ``, frontmatter, and prose
+are classified by the server document/context layer. Comparison strings,
+package strings, argument strings, string subsets, namespace access, extractors,
+calls, pipes, and generic symbols are likewise decided in Rust.
 
-- Rust owns completion intent for Ark filetypes.
-- Blink owns menu presentation, window coordination, and editor-specific glue.
-- Ark should not maintain parallel semantic context detectors in Lua and Rust.
-- The existing `unique` / `composite` source taxonomy should be preserved unless
-  planner work proves it is fundamentally insufficient.
+The Blink adapter is editor integration only:
 
-### Canonical Model
+- register Blink's normal LSP provider as the sole automatic Ark source
+- normalize cursor positions and forward advertised trigger characters after
+  delimiter-pair insertion
+- discard Blink's stale trigger-character cache before a new keyword request,
+  without inspecting buffer text
+- coordinate menu, documentation, hover, and signature-help windows
+- render Ark target completion items with their product-specific kind label
 
-Near-term completion work should converge on one planner in Rust that answers:
+Startup recovery asks Blink/LSP for a keyword completion and lets Blink's
+minimum-length policy plus the Rust planner decide applicability. The adapter
+contains no regex or source-text parser for completion semantics.
 
-- is this completion context handled, suppressed, or not applicable?
-- is the result exclusive or compositional?
-- which source families are allowed in this context?
-- when detached runtime data is available, should it replace or merge with
-  static items?
-- when the context is intentionally empty, should that still count as handled?
+The retained attached kernel compatibility path uses the shared static source
+planner when its Cargo feature is enabled. It is not compiled into the detached
+Neovim product.
 
-This should generalize the detached bridge `CompletionPlan` model instead of
-inventing a second planner for static completions.
+### Completion Invariants
 
-For Ark filetypes, the semantic region model also belongs in Rust:
+- Ark filetypes use Blink's standard `lsp` implementation, not a custom
+  completion engine.
+- `.Rmd`, `.qmd`, and `quarto` semantics are decided server-side.
+- Blink does not decide whether a trigger belongs to subset, string,
+  frontmatter, inline-R, package-call, or prose completion.
+- Runtime completion may return an intentionally handled empty set without
+  falling through to unrelated sources.
+- Static and live execution plans share the same handled/unique/composite state
+  model and preserve the documented precedence tests.
 
-- R files: normal code everywhere
-- literate-R files: fenced R, inline `` `r ...` ``, frontmatter, and prose must
-  be classified by the server-side document/context layer
+### Verification Expectations
 
-The Blink adapter may still decide how to display or hide a menu, but it should
-not decide whether `"` means comparison-value completion, package-string
-completion, frontmatter completion, or plain prose.
-
-### Non-Goals
-
-This refactor is not a rewrite of the completion engine.
-
-Out of scope:
-
-- replacing Blink
-- introducing a custom Ark completion source instead of Blink's normal `lsp`
-  source
-- rewriting all completion sources away from the current `unique` /
-  `composite` organization
-- expanding ambient prose completion as a feature in its own right
-
-### Migration Sequence
-
-1. Extract a shared completion-planning layer in `ark-lsp-core` that can be
-   used by both static completion entrypoints and detached bridge completion.
-2. Move context classification that is currently mirrored in Lua into Rust so
-   subset, string, namespace, frontmatter, inline-R, package-call, and similar
-   precedence rules are decided in one place.
-3. Keep detached bridge request construction as an execution detail behind that
-   planner rather than as the owner of the planner itself.
-4. Thread planner results through `handle_completion()` so attached and
-   detached modes follow the same classification order even when the eventual
-   execution path differs.
-5. Shrink `lua/ark/blink.lua` to Ark-specific Blink integration only:
-   source registration, cursor normalization, optional autopair recovery, and
-   completion/docs/signature-float coordination.
-6. Remove Lua regex policy branches once equivalent planner-backed behavior is
-   proven by tests.
-
-### Acceptance Criteria
-
-The refactor is successful when these conditions hold:
-
-- attached and detached completion use the same context-classification order
-- `.Rmd` / `.qmd` / `quarto` completion semantics are decided server-side
-- Blink no longer needs semantic regexes to determine whether a trigger belongs
-  to subset, string, frontmatter, or inline-R completion
-- Ark filetypes keep Blink's standard `lsp` source as the primary automatic
-  completion path
-- runtime-aware completion can still return an intentionally handled empty set
-  without falling through to unrelated sources
-- stray menu persistence bugs are no longer caused by disagreement between the
-  LSP's semantic context and Blink's local heuristics
-
-### Verification Expectations For This Tranche
-
-This refactor is not done until it is proven at both levels:
+Completion changes must be proven at both levels:
 
 - planner and precedence logic: Rust unit tests
 - request semantics: direct `textDocument/completion` tests

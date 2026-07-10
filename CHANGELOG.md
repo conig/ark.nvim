@@ -18,6 +18,12 @@ the canonical `posit-dev/ark` repository.
 - Made the detached `ark-lsp` build exclude attached kernel `Console`, R-thread,
   TCP-host, and UI callback infrastructure through a Cargo-enforced feature
   boundary; the retained upstream `ark` host opts in explicitly.
+- Consolidated static and live completion planning on one Rust
+  handled/unique/composite model and removed source-text semantic heuristics
+  from the Blink adapter.
+- Prevented status watches from redelivering a ready-session payload while its
+  startup bootstrap is still in flight, avoiding needless session-generation
+  churn during completion requests.
 
 ## 0.1.0-alpha.1 - 2026-07-10
 

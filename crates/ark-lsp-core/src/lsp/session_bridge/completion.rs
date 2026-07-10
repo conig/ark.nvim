@@ -7,6 +7,7 @@ use tree_sitter::Point;
 
 use super::protocol::BridgeMember;
 use super::protocol::ObjectMeta;
+use super::SessionBridge;
 use super::TargetCompletionProject;
 use super::TargetNameCompletionContext;
 use crate::lsp::call_context::analyze_call_context;
@@ -17,6 +18,7 @@ use crate::lsp::call_context::PackageCompletionMode;
 use crate::lsp::completions::call_node_position_type;
 use crate::lsp::completions::find_pipe_root_name;
 use crate::lsp::completions::CallNodePositionType;
+use crate::lsp::completions::CompletionPlan as CanonicalCompletionPlan;
 use crate::lsp::document::DocumentKind;
 use crate::lsp::document_context::DocumentContext;
 use crate::lsp::traits::node::NodeExt;
@@ -73,11 +75,112 @@ pub(super) struct CompletionRequest {
     pub(super) subset_kind: Option<SubsetCompletionKind>,
 }
 
-#[derive(Clone, Debug)]
-pub(super) enum CompletionPlan {
-    Unique(CompletionRequest),
-    Composite(Vec<CompletionRequest>),
-    HandledEmpty,
+pub(super) type CompletionPlan = CanonicalCompletionPlan<CompletionRequest, Vec<CompletionRequest>>;
+
+pub(super) fn plan(
+    bridge: &SessionBridge,
+    context: &DocumentContext,
+    target_project: Option<&TargetCompletionProject>,
+) -> anyhow::Result<Option<CompletionPlan>> {
+    if context.is_empty_assignment_rhs() {
+        return Ok(None);
+    }
+
+    if let Some(request) = completion_request_from_extractor(context)? {
+        return Ok(Some(CompletionPlan::Unique(request)));
+    }
+    if let Some(request) = completion_request_from_namespace(context)? {
+        return Ok(Some(CompletionPlan::Unique(request)));
+    }
+    if let Some(request) = completion_request_from_comparison_string(context)? {
+        return Ok(Some(CompletionPlan::Unique(request)));
+    }
+    if let Some(request) = completion_request_from_package_string(context)? {
+        return Ok(Some(CompletionPlan::Unique(request)));
+    }
+    if let Some(request) = completion_request_from_custom_call(context, target_project)? {
+        return Ok(Some(CompletionPlan::Unique(request)));
+    }
+    if let Some(request) = completion_request_from_argument_string(context)? {
+        return Ok(Some(CompletionPlan::Unique(request)));
+    }
+    if let Some(request) = completion_request_from_string_subset(context)? {
+        return Ok(Some(CompletionPlan::Unique(request)));
+    }
+    if plain_string_quote_trigger_is_handled_empty(context) {
+        return Ok(Some(CompletionPlan::HandledEmpty));
+    }
+    if let Some(request) = completion_request_from_subset(context)? {
+        let call_request = completion_request_from_call(context)?;
+
+        if call_request.is_some() {
+            let mut requests = vec![request];
+            requests.extend(call_request);
+
+            if let Some(search_path) = completion_request_from_search_path(context)? {
+                requests.push(search_path);
+            }
+
+            return Ok(Some(CompletionPlan::Composite(requests)));
+        }
+
+        if request.prefix.is_some() {
+            let mut requests = vec![request];
+
+            if let Some(search_path) = completion_request_from_search_path(context)? {
+                requests.push(search_path);
+            }
+
+            return Ok(Some(CompletionPlan::Composite(requests)));
+        }
+
+        return Ok(Some(CompletionPlan::Unique(request)));
+    }
+    if empty_package_call_autotrigger_is_suppressed(context)? {
+        return Ok(Some(CompletionPlan::HandledEmpty));
+    }
+    if let Some(request) = completion_request_from_package_call(context)? {
+        return Ok(Some(CompletionPlan::Unique(request)));
+    }
+    if let Some(request) = completion_request_from_explicit_pipe_root(context)? {
+        if let Some(search_path) = completion_request_from_search_path(context)? {
+            return Ok(Some(CompletionPlan::Composite(vec![request, search_path])));
+        }
+
+        return Ok(Some(CompletionPlan::Unique(request)));
+    }
+    if let Some(request) = completion_request_from_call_text_after_named_argument(context)? {
+        if let Some(search_path) = completion_request_from_search_path(context)? {
+            return Ok(Some(CompletionPlan::Composite(vec![request, search_path])));
+        }
+
+        return Ok(Some(CompletionPlan::Unique(request)));
+    }
+    if let Some(request) = bridge.completion_request_from_data_context(context)? {
+        if let Some(search_path) = completion_request_from_search_path(context)? {
+            return Ok(Some(CompletionPlan::Composite(vec![request, search_path])));
+        }
+
+        return Ok(Some(CompletionPlan::Unique(request)));
+    }
+
+    let mut requests = Vec::new();
+
+    if let Some(request) = completion_request_from_call(context)? {
+        requests.push(request);
+    }
+    if let Some(request) = completion_request_from_pipe(context)? {
+        requests.push(request);
+    }
+    if let Some(request) = completion_request_from_search_path(context)? {
+        requests.push(request);
+    }
+
+    if requests.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(CompletionPlan::Composite(requests)))
+    }
 }
 
 pub(super) fn completion_request_from_extractor(

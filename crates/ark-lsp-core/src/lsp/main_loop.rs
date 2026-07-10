@@ -197,21 +197,29 @@ impl RequestFreshness {
         }
     }
 
+    #[cfg(test)]
     fn is_current(&self) -> bool {
+        self.stale_reason().is_none()
+    }
+
+    fn stale_reason(&self) -> Option<&'static str> {
         let Some(world) = latest_world_state() else {
-            return false;
+            return Some("world state became unavailable");
         };
         if world.detached_session_update_generation != self.session_generation {
-            return false;
+            return Some("session changed");
         }
 
-        let Some((uri, version)) = self.document.as_ref() else {
-            return true;
-        };
-        world
+        let (uri, version) = self.document.as_ref()?;
+        if world
             .documents
             .get(uri)
             .is_some_and(|document| &document.version == version)
+        {
+            None
+        } else {
+            Some("document changed")
+        }
     }
 }
 
@@ -784,14 +792,14 @@ fn respond_inner<T>(
         },
     };
 
-    if matches!(&response, RequestResponse::Result(_)) &&
-        freshness.is_some_and(|freshness| !freshness.is_current())
-    {
-        response = RequestResponse::Result(Err(LspError::JsonRpc(tower_lsp::jsonrpc::Error {
-            code: tower_lsp::jsonrpc::ErrorCode::ServerError(-32801),
-            message: "request result is stale because the document or session changed".into(),
-            data: None,
-        })));
+    if matches!(&response, RequestResponse::Result(_)) {
+        if let Some(reason) = freshness.and_then(|freshness| freshness.stale_reason()) {
+            response = RequestResponse::Result(Err(LspError::JsonRpc(tower_lsp::jsonrpc::Error {
+                code: tower_lsp::jsonrpc::ErrorCode::ServerError(-32801),
+                message: format!("request result is stale because the {reason}").into(),
+                data: None,
+            })));
+        }
     }
 
     let out = match response {
@@ -1491,11 +1499,13 @@ mod tests {
             .insert(uri.clone(), Document::new("new <- 2", Some(8)));
         store_latest_world_state(&newer_document);
         assert!(!freshness.is_current());
+        assert_eq!(freshness.stale_reason(), Some("document changed"));
 
         let session_freshness = RequestFreshness::for_session(&newer_document);
         assert!(session_freshness.is_current());
         newer_document.detached_session_update_generation = 5;
         store_latest_world_state(&newer_document);
         assert!(!session_freshness.is_current());
+        assert_eq!(session_freshness.stale_reason(), Some("session changed"));
     }
 }

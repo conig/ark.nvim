@@ -26,10 +26,13 @@
   "rules": [
     {
       "names": [
+        "blink_extractor_provider_policy.lua",
+        "blink_hidden_trigger_context_resets_on_keyword.lua",
         "config_validation.lua",
         "dev_source_boundary.lua",
         "error_taxonomy.lua",
         "help_render_pure.lua",
+        "lsp_inflight_bootstrap_deduplicates_session_update.lua",
         "notifications_once.lua",
         "product_state_model.lua",
         "report_redaction.lua",

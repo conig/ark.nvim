@@ -71,15 +71,17 @@ impl CompositeSourcePlan {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum CompletionPlan {
+pub(crate) enum CompletionPlan<Unique, Composite> {
     HandledEmpty,
-    Unique(UniqueSourcePlan),
-    Composite(CompositeSourcePlan),
+    Unique(Unique),
+    Composite(Composite),
 }
+
+pub(crate) type SourceCompletionPlan = CompletionPlan<UniqueSourcePlan, CompositeSourcePlan>;
 
 pub(crate) fn plan_completions(
     completion_context: &CompletionContext,
-) -> anyhow::Result<CompletionPlan> {
+) -> anyhow::Result<SourceCompletionPlan> {
     if completion_context
         .document_context
         .is_empty_assignment_rhs()
@@ -102,7 +104,7 @@ pub(crate) fn plan_completions(
 
 pub(crate) fn plan_detached_static_completions(
     completion_context: &CompletionContext,
-) -> anyhow::Result<CompletionPlan> {
+) -> anyhow::Result<SourceCompletionPlan> {
     if completion_context
         .document_context
         .is_empty_assignment_rhs()

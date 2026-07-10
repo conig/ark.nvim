@@ -123,20 +123,35 @@ function M.tmux(args)
 end
 
 function M.request(client, method, params, timeout_ms)
-  local response, err = client:request_sync(method, params, timeout_ms or 10000, 0)
-  if err then
-    M.fail(method .. " error: " .. err)
+  local timeout = timeout_ms or 10000
+  local deadline = vim.uv.hrtime() + timeout * 1e6
+
+  while true do
+    local remaining = math.max(1, math.floor((deadline - vim.uv.hrtime()) / 1e6))
+    local response, err = client:request_sync(method, params, remaining, 0)
+    if err then
+      M.fail(method .. " error: " .. err)
+    end
+    if not response then
+      M.fail("no response for " .. method)
+    end
+
+    -- Neovim can queue didChange after a same-turn request_sync() from a test.
+    -- Ark correctly rejects the now-stale snapshot with ContentModified; real
+    -- completion clients retry against the current document, so the E2E helper
+    -- must do the same instead of turning the protocol guard into a flaky test.
+    local response_error = response.error or response.err
+    if response_error and response_error.code == -32801 and vim.uv.hrtime() < deadline then
+      vim.wait(10, function()
+        return false
+      end, 5, false)
+    else
+      if response_error then
+        M.fail(method .. " error: " .. vim.inspect(response_error))
+      end
+      return response.result
+    end
   end
-  if not response then
-    M.fail("no response for " .. method)
-  end
-  if response.error then
-    M.fail(method .. " error: " .. vim.inspect(response.error))
-  end
-  if response.err then
-    M.fail(method .. " error: " .. vim.inspect(response.err))
-  end
-  return response.result
 end
 
 function M.completion_items(result)

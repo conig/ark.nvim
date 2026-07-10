@@ -41,41 +41,6 @@ local function console_completion_allowed(bufnr)
   return type(mode) == "string" and mode:sub(1, 1) == "i"
 end
 
-local function current_insert_col()
-  local col = vim.fn.col(".") - 1
-  if type(col) ~= "number" or col < 0 then
-    return nil
-  end
-  return col
-end
-
-local function keyword_prefix_before_cursor()
-  local col = current_insert_col()
-  if type(col) ~= "number" or col <= 0 then
-    return nil
-  end
-
-  local line = vim.api.nvim_get_current_line()
-  local before_cursor = line:sub(1, col)
-  local prefix = before_cursor:match("([%w_.]+)$")
-  if type(prefix) ~= "string" or prefix == "" then
-    return nil
-  end
-
-  return prefix
-end
-
-local function keyword_after_assignment_before_cursor()
-  local col = current_insert_col()
-  if type(col) ~= "number" or col <= 0 then
-    return false
-  end
-
-  local line = vim.api.nvim_get_current_line()
-  local before_cursor = line:sub(1, col)
-  return before_cursor:find("=%s*[%w_.]*$") ~= nil
-end
-
 local function hide_visible_blink_menu()
   local ok_blink, blink = pcall(require, "blink.cmp")
   if not ok_blink or not blink.is_visible() then
@@ -517,21 +482,16 @@ function M.patch_blink_trigger()
     local trigger_character = type(opts) == "table" and opts.trigger_character or nil
 
     if in_ark_filetype(bufnr) and trigger_kind == "keyword" then
-      local ok_blink, blink = pcall(require, "blink.cmp")
       local live_context = trigger.context
       local live_trigger = type(live_context) == "table" and type(live_context.trigger) == "table"
           and live_context.trigger
         or nil
 
       -- Blink reuses the same context id after a trigger-character request.
-      -- If that request stayed hidden and cached an empty result, the first
-      -- keyword character can inherit the empty cache instead of issuing a new
-      -- LSP request. Reset the hidden trigger-character context so Ark gets a
-      -- fresh keyword query on the first real identifier character.
-      if ((not ok_blink or not blink.is_visible()) or keyword_after_assignment_before_cursor())
-        and type(live_trigger) == "table"
-        and live_trigger.initial_kind == "trigger_character"
-      then
+      -- Always start a fresh keyword request when crossing that boundary and
+      -- let the server's completion planner decide whether the new text is a
+      -- handled, suppressed, or ordinary completion context.
+      if type(live_trigger) == "table" and live_trigger.initial_kind == "trigger_character" then
         trigger.context = nil
       end
     end
@@ -833,10 +793,6 @@ function M.maybe_show_after_startup(bufnr)
   if not active_ark_client(bufnr) then
     return
   end
-  if not keyword_prefix_before_cursor() then
-    return
-  end
-
   local ok_blink, blink = pcall(require, "blink.cmp")
   if not ok_blink or blink.is_visible() then
     return
