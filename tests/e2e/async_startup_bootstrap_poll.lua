@@ -91,16 +91,26 @@ local client = {
   end,
   request_sync = function(_, method, params)
     if method == "ark/internal/bootstrapSession" then
-      bootstrap_calls[#bootstrap_calls + 1] = vim.deepcopy(params)
-      return {
-        result = {
-          hydrated = params.status == "ready" and params.replReady == true,
-        },
-      }, nil
+      test.fail("asynchronous startup polling must not use request_sync()")
     end
 
     return { result = {} }, nil
   end,
+  request = function(_, method, params, callback)
+    if method ~= "ark/internal/bootstrapSession" then
+      test.fail("unexpected async request: " .. tostring(method))
+    end
+
+    bootstrap_calls[#bootstrap_calls + 1] = vim.deepcopy(params)
+    local request_id = #bootstrap_calls
+    vim.schedule(function()
+      callback(nil, {
+        hydrated = params.status == "ready" and params.replReady == true,
+      })
+    end)
+    return true, request_id
+  end,
+  cancel_request = function() end,
   notify = function() end,
 }
 
