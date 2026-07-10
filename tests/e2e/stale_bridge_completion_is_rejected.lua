@@ -1,15 +1,15 @@
 vim.opt.rtp:prepend(vim.fn.getcwd())
 
 local ark_test = dofile(vim.fs.normalize(vim.fn.getcwd() .. "/tests/e2e/ark_test.lua"))
-local stop_watchdog = ark_test.start_watchdog(20000, "hung_bridge_does_not_block_static_requests")
+local stop_watchdog = ark_test.start_watchdog(20000, "stale_bridge_completion_is_rejected")
 local run_tmpdir = vim.fn.tempname()
 vim.fn.mkdir(run_tmpdir, "p")
 
 local port_file = run_tmpdir .. "/port"
 local request_log = run_tmpdir .. "/requests.log"
-local server_script = run_tmpdir .. "/hung_bridge.py"
+local server_script = run_tmpdir .. "/delayed_bridge.py"
 local status_file = run_tmpdir .. "/status.json"
-local test_file = run_tmpdir .. "/hung_bridge.R"
+local test_file = run_tmpdir .. "/stale_completion.R"
 
 vim.fn.writefile({
   "import json",
@@ -34,14 +34,14 @@ vim.fn.writefile({
   "            if not chunk:",
   "                break",
   "            payload += chunk",
-  "        with open(request_log, 'a', encoding='utf-8') as stream:",
-  "            stream.write(payload.decode('utf-8', errors='replace'))",
   "        request = json.loads(payload.decode('utf-8'))",
+  "        with open(request_log, 'a', encoding='utf-8') as stream:",
+  "            stream.write(json.dumps(request) + '\\n')",
   "        if request.get('command') == 'bootstrap':",
-  "            response = {'status': 'ok', 'search_path_symbols': ['library'], 'library_paths': ['/tmp']}",
-  "        elif 'slow_bridge_object' in request.get('expr', ''):",
-  "            time.sleep(5)",
-  "            return",
+  "            response = {'status': 'ok', 'search_path_symbols': ['library'], 'library_paths': ['/tmp']} ",
+  "        elif 'slow_stale_object' in request.get('expr', ''):",
+  "            time.sleep(0.6)",
+  "            response = {'members': [{'name_raw': 'STALE_MEMBER', 'type': 'numeric'}]} ",
   "        else:",
   "            response = {'members': []}",
   "        client.sendall(json.dumps(response).encode('utf-8'))",
@@ -53,18 +53,18 @@ vim.fn.writefile({
 
 local server_job = vim.fn.jobstart({ "python3", server_script, port_file, request_log })
 if server_job <= 0 then
-  ark_test.fail("failed to start disposable hung bridge")
+  ark_test.fail("failed to start disposable delayed bridge")
 end
 
 local client_id = nil
 local completion_request_id = nil
 local ok, err = pcall(function()
-  ark_test.wait_for("hung bridge port", 5000, function()
+  ark_test.wait_for("delayed bridge port", 5000, function()
     return vim.fn.filereadable(port_file) == 1
   end)
   local port = tonumber(vim.fn.readfile(port_file)[1])
   if not port then
-    ark_test.fail("hung bridge did not publish a port")
+    ark_test.fail("delayed bridge did not publish a port")
   end
 
   local manifest = assert(require("ark.release").manifest())
@@ -73,12 +73,12 @@ local ok, err = pcall(function()
       status = "ready",
       repl_ready = true,
       port = port,
-      auth_token = "hung-bridge-token",
+      auth_token = "stale-bridge-token",
       product_version = manifest.product_version,
       bridge_schema = manifest.compatibility.bridge_schema,
     }),
   }, status_file)
-  vim.fn.writefile({ "x <- 1", "slow_bridge_object$" }, test_file)
+  vim.fn.writefile({ "slow_stale_object$" }, test_file)
   vim.cmd("edit " .. vim.fn.fnameescape(test_file))
   vim.cmd("setfiletype r")
 
@@ -92,9 +92,9 @@ local ok, err = pcall(function()
       ARK_SESSION_KIND = "ark",
       ARK_SESSION_STATUS_FILE = status_file,
       ARK_SESSION_BACKEND = "tmux",
-      ARK_SESSION_ID = "hung-bridge-session",
-      ARK_SESSION_TMUX_SOCKET = "/tmp/hung-bridge.sock",
-      ARK_SESSION_TMUX_SESSION = "hung-bridge",
+      ARK_SESSION_ID = "stale-bridge-session",
+      ARK_SESSION_TMUX_SOCKET = "/tmp/stale-bridge.sock",
+      ARK_SESSION_TMUX_SESSION = "stale-bridge",
       ARK_SESSION_TMUX_PANE = "%1",
       ARK_SESSION_TIMEOUT_MS = "1000",
     },
@@ -106,48 +106,44 @@ local ok, err = pcall(function()
   end)
 
   local client = assert(vim.lsp.get_client_by_id(client_id))
-  local completion_params = {
-    textDocument = vim.lsp.util.make_text_document_params(0),
-    position = { line = 1, character = 19 },
-  }
+  local completion_done = false
+  local completion_err = nil
+  local completion_result = nil
   local sent
-  sent, completion_request_id = client:request(
-    "textDocument/completion",
-    completion_params,
-    function() end,
-    0
-  )
+  sent, completion_request_id = client:request("textDocument/completion", {
+    textDocument = vim.lsp.util.make_text_document_params(0),
+    position = { line = 0, character = 18 },
+  }, function(request_err, result)
+    completion_err = request_err
+    completion_result = result
+    completion_done = true
+  end, 0)
   if not sent then
-    ark_test.fail("failed to send hung bridge completion request")
+    ark_test.fail("failed to send delayed completion request")
   end
 
-  ark_test.wait_for("hung completion to enter bridge transport", 5000, function()
+  ark_test.wait_for("delayed completion to enter bridge", 5000, function()
     if vim.fn.filereadable(request_log) ~= 1 then
       return false
     end
-    return table.concat(vim.fn.readfile(request_log), "\n"):find("slow_bridge_object", 1, true) ~= nil
+    return table.concat(vim.fn.readfile(request_log), "\n"):find("slow_stale_object", 1, true) ~= nil
   end)
 
-  local started = vim.uv.hrtime()
-  local response, request_err = client:request_sync("textDocument/documentSymbol", {
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "newer_document <- 1" })
+  local symbols, symbols_err = client:request_sync("textDocument/documentSymbol", {
     textDocument = vim.lsp.util.make_text_document_params(0),
-  }, 400, 0)
-  local elapsed_ms = (vim.uv.hrtime() - started) / 1e6
+  }, 1000, 0)
+  if symbols_err or not symbols then
+    ark_test.fail("failed to synchronize the newer document: " .. vim.inspect(symbols_err))
+  end
 
-  if request_err or not response or response.err or response.error then
-    ark_test.fail(
-      string.format(
-        "hung bridge delayed unrelated static symbols for %.1f ms: %s",
-        elapsed_ms,
-        vim.inspect(request_err or (response and (response.err or response.error)))
-      )
-    )
-  end
-  if elapsed_ms > 300 then
-    ark_test.fail(string.format("static symbols took %.1f ms while bridge was hung", elapsed_ms))
-  end
-  if type(response.result) ~= "table" or #response.result == 0 then
-    ark_test.fail("static document symbols returned no result while bridge was hung")
+  ark_test.wait_for("delayed completion response", 3000, function()
+    return completion_done
+  end)
+
+  local items = ark_test.completion_items(completion_result)
+  if not completion_err and ark_test.find_item(items, "STALE_MEMBER") then
+    ark_test.fail("completion from the old document version was delivered after didChange")
   end
 end)
 

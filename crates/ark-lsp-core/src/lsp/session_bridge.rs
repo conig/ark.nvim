@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::io::Read;
-use std::io::Write;
-use std::net::Shutdown;
-use std::net::TcpStream;
+use std::hash::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::RwLock;
 use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 
 use anyhow::anyhow;
@@ -46,6 +46,11 @@ use crate::lsp::completions::find_pipe_root_name;
 use crate::lsp::completions::CallNodePositionType;
 use crate::lsp::document::DocumentKind;
 use crate::lsp::document_context::DocumentContext;
+use crate::lsp::session_bridge_runtime::BridgeRequestClass;
+use crate::lsp::session_bridge_runtime::BridgeRequestControl;
+use crate::lsp::session_bridge_runtime::BridgeRuntime;
+use crate::lsp::session_bridge_runtime::BridgeRuntimeDebugInfo;
+use crate::lsp::session_bridge_runtime::BridgeRuntimeUnavailable;
 use crate::lsp::traits::node::NodeExt;
 use crate::lsp::traits::point::PointExt;
 use crate::treesitter::node_find_containing_call;
@@ -61,9 +66,11 @@ pub(crate) struct SessionBridge {
     source: SessionBridgeSource,
     session: BridgeSession,
     timeout: Duration,
+    runtime: Arc<BridgeRuntime>,
+    request_deadline: Option<Instant>,
+    request_control: BridgeRequestControl,
 }
 
-const VIEW_COMMAND_TIMEOUT_MS: u64 = 10_000;
 const BROWSER_CONTEXT_SENTINEL: &str = ".ark_browser_context";
 const DEBUG_COMMAND_COMPLETIONS: &[(&str, &str)] = &[
     ("c", "continue execution"),
@@ -90,6 +97,7 @@ pub(crate) struct SessionBridgeDebugInfo {
     tmux_session: String,
     tmux_pane: String,
     timeout_ms: u64,
+    runtime: BridgeRuntimeDebugInfo,
 }
 
 #[derive(Clone, Debug)]
@@ -98,7 +106,7 @@ enum SessionBridgeSource {
     StatusFile(StatusFileSessionBridgeSource),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct SessionBridgeConnection {
     host: String,
     port: u16,
@@ -284,6 +292,10 @@ struct BridgeMember {
 struct SessionStatusPayload {
     #[serde(default)]
     status: String,
+    #[serde(default)]
+    product_version: String,
+    #[serde(default)]
+    bridge_schema: String,
     #[serde(default)]
     port: Option<u16>,
     #[serde(default)]
@@ -484,6 +496,7 @@ impl SessionBridge {
             tmux_session: self.session.tmux_session.clone(),
             tmux_pane: self.session.tmux_pane.clone(),
             timeout_ms: self.timeout.as_millis().min(u128::from(u64::MAX)) as u64,
+            runtime: self.runtime.debug_info(),
         }
     }
 
@@ -523,10 +536,62 @@ impl SessionBridge {
             source,
             session,
             timeout: Duration::from_millis(config.timeout_ms.max(50)),
+            runtime: Arc::new(BridgeRuntime::default()),
+            request_deadline: None,
+            request_control: BridgeRequestControl::default(),
         })
     }
 
+    fn with_request_class(&self, class: BridgeRequestClass) -> Self {
+        let mut bridge = self.clone();
+        if bridge.request_deadline.is_none() {
+            bridge.request_deadline = Some(Instant::now() + class.deadline(self.timeout));
+        }
+        bridge
+    }
+
+    pub(crate) fn with_request_control(&self, control: BridgeRequestControl) -> Self {
+        let mut bridge = self.clone();
+        bridge.request_control = control;
+        bridge
+    }
+
+    fn deadline(&self) -> Instant {
+        self.request_deadline
+            .unwrap_or_else(|| Instant::now() + self.timeout)
+    }
+
+    fn send_request<T, R>(
+        &self,
+        connection: &SessionBridgeConnection,
+        request: &T,
+    ) -> anyhow::Result<R>
+    where
+        T: Serialize,
+        R: DeserializeOwned,
+    {
+        let mut hasher = DefaultHasher::new();
+        connection.hash(&mut hasher);
+        self.runtime.request(
+            hasher.finish(),
+            connection.host.as_str(),
+            connection.port,
+            request,
+            self.deadline(),
+            &self.request_control,
+        )
+    }
+
     pub(crate) fn completion_items(
+        &self,
+        context: &DocumentContext,
+        target_project: Option<TargetCompletionProject>,
+    ) -> anyhow::Result<Option<SessionBridgeCompletion>> {
+        self.with_request_class(BridgeRequestClass::Interactive)
+            .completion_items_inner(context, target_project)
+    }
+
+    fn completion_items_inner(
         &self,
         context: &DocumentContext,
         target_project: Option<TargetCompletionProject>,
@@ -566,6 +631,11 @@ impl SessionBridge {
     }
 
     pub(crate) fn bootstrap(&self) -> anyhow::Result<SessionBootstrap> {
+        self.with_request_class(BridgeRequestClass::Lifecycle)
+            .bootstrap_inner()
+    }
+
+    fn bootstrap_inner(&self) -> anyhow::Result<SessionBootstrap> {
         match self.bootstrap_via_command() {
             Ok(bootstrap) => Ok(bootstrap),
             Err(err)
@@ -580,6 +650,11 @@ impl SessionBridge {
     }
 
     pub(crate) fn hover(&self, context: &DocumentContext) -> anyhow::Result<Option<Hover>> {
+        self.with_request_class(BridgeRequestClass::Interactive)
+            .hover_inner(context)
+    }
+
+    fn hover_inner(&self, context: &DocumentContext) -> anyhow::Result<Option<Hover>> {
         let Some(node) = locate_bridge_hover_node(context) else {
             return Ok(None);
         };
@@ -628,6 +703,14 @@ impl SessionBridge {
     }
 
     pub(crate) fn signature_help(
+        &self,
+        context: &DocumentContext,
+    ) -> anyhow::Result<Option<SignatureHelp>> {
+        self.with_request_class(BridgeRequestClass::Interactive)
+            .signature_help_inner(context)
+    }
+
+    fn signature_help_inner(
         &self,
         context: &DocumentContext,
     ) -> anyhow::Result<Option<SignatureHelp>> {
@@ -724,6 +807,11 @@ impl SessionBridge {
     }
 
     pub(crate) fn help_text(&self, topic: &str) -> anyhow::Result<Option<HelpPage>> {
+        self.with_request_class(BridgeRequestClass::ReadOnly)
+            .help_text_inner(topic)
+    }
+
+    fn help_text_inner(&self, topic: &str) -> anyhow::Result<Option<HelpPage>> {
         let payload = match &self.source {
             SessionBridgeSource::Fixed(connection) => {
                 self.help_text_with_connection(connection, topic)
@@ -1069,16 +1157,17 @@ impl SessionBridge {
         store: String,
         names: Vec<String>,
     ) -> anyhow::Result<Value> {
-        self.bridge_command(
-            "targets_action",
-            serde_json::json!({
-                "action": action,
-                "root": root,
-                "script": script,
-                "store": store,
-                "names": names,
-            }),
-        )
+        self.with_request_class(BridgeRequestClass::Mutating)
+            .bridge_command(
+                "targets_action",
+                serde_json::json!({
+                    "action": action,
+                    "root": root,
+                    "script": script,
+                    "store": store,
+                    "names": names,
+                }),
+            )
     }
 
     pub(crate) fn package_install(
@@ -1087,17 +1176,26 @@ impl SessionBridge {
         description: String,
         dry_run: bool,
     ) -> anyhow::Result<Value> {
-        self.bridge_command(
-            "package_install",
-            serde_json::json!({
-                "packages": packages,
-                "description": description,
-                "dry_run": dry_run,
-            }),
-        )
+        self.with_request_class(BridgeRequestClass::Mutating)
+            .bridge_command(
+                "package_install",
+                serde_json::json!({
+                    "packages": packages,
+                    "description": description,
+                    "dry_run": dry_run,
+                }),
+            )
     }
 
     pub(crate) fn resolve_completion_item(
+        &self,
+        item: CompletionItem,
+    ) -> anyhow::Result<CompletionItem> {
+        self.with_request_class(BridgeRequestClass::Interactive)
+            .resolve_completion_item_inner(item)
+    }
+
+    fn resolve_completion_item_inner(
         &self,
         mut item: CompletionItem,
     ) -> anyhow::Result<CompletionItem> {
@@ -1431,6 +1529,7 @@ impl SessionBridge {
     ) -> anyhow::Result<SessionBootstrap> {
         let status_path = source.status_file.as_path();
         let (_, status) = read_session_status(status_path)?;
+        validate_status_compatibility(status_path, &status)?;
         if let Some(bootstrap) = bootstrap_from_status(status_path, &status) {
             return Ok(bootstrap);
         }
@@ -1457,10 +1556,6 @@ impl SessionBridge {
         expr: &str,
         options: Option<InspectOptions>,
     ) -> anyhow::Result<InspectResponse> {
-        let mut stream = TcpStream::connect((connection.host.as_str(), connection.port))?;
-        stream.set_read_timeout(Some(self.timeout))?;
-        stream.set_write_timeout(Some(self.timeout))?;
-
         let request = InspectRequest {
             request_id: format!("ark-{}", Uuid::new_v4()),
             auth_token: connection.auth_token.clone(),
@@ -1469,15 +1564,7 @@ impl SessionBridge {
             options,
         };
 
-        let payload = serde_json::to_vec(&request)?;
-        stream.write_all(payload.as_slice())?;
-        stream.write_all(b"\n")?;
-        stream.shutdown(Shutdown::Write)?;
-
-        let mut response = String::new();
-        stream.read_to_string(&mut response)?;
-
-        let payload: InspectResponse = serde_json::from_str(response.as_str())?;
+        let payload: InspectResponse = self.send_request(connection, &request)?;
         if let Some(error) = payload.error.as_ref() {
             return Err(SessionBridgeResponseError {
                 code: error.code.clone(),
@@ -1490,6 +1577,11 @@ impl SessionBridge {
     }
 
     fn bridge_command(&self, command: &str, payload: Value) -> anyhow::Result<Value> {
+        self.with_request_class(BridgeRequestClass::ReadOnly)
+            .bridge_command_inner(command, payload)
+    }
+
+    fn bridge_command_inner(&self, command: &str, payload: Value) -> anyhow::Result<Value> {
         match &self.source {
             SessionBridgeSource::Fixed(connection) => {
                 self.bridge_command_with_connection(connection, command, payload)
@@ -1503,16 +1595,8 @@ impl SessionBridge {
     }
 
     fn view_command(&self, command: &str, payload: Value) -> anyhow::Result<Value> {
-        self.with_min_timeout(Duration::from_millis(VIEW_COMMAND_TIMEOUT_MS))
+        self.with_request_class(BridgeRequestClass::ReadOnly)
             .bridge_command(command, payload)
-    }
-
-    fn with_min_timeout(&self, timeout: Duration) -> Self {
-        let mut bridge = self.clone();
-        if bridge.timeout < timeout {
-            bridge.timeout = timeout;
-        }
-        bridge
     }
 
     fn bridge_command_with_connection<T>(
@@ -1540,10 +1624,6 @@ impl SessionBridge {
         connection: &SessionBridgeConnection,
     ) -> anyhow::Result<SessionBootstrap> {
         let total_start = std::time::Instant::now();
-        let mut stream = TcpStream::connect((connection.host.as_str(), connection.port))?;
-        stream.set_read_timeout(Some(self.timeout))?;
-        stream.set_write_timeout(Some(self.timeout))?;
-
         let request = BootstrapRequest {
             request_id: format!("ark-{}", Uuid::new_v4()),
             auth_token: connection.auth_token.clone(),
@@ -1551,15 +1631,7 @@ impl SessionBridge {
             session: self.session.clone(),
         };
 
-        let payload = serde_json::to_vec(&request)?;
-        stream.write_all(payload.as_slice())?;
-        stream.write_all(b"\n")?;
-        stream.shutdown(Shutdown::Write)?;
-
-        let mut response = String::new();
-        stream.read_to_string(&mut response)?;
-
-        let payload: BootstrapResponse = serde_json::from_str(response.as_str())?;
+        let payload: BootstrapResponse = self.send_request(connection, &request)?;
         if let Some(error) = payload.error.as_ref() {
             return Err(SessionBridgeResponseError {
                 code: error.code.clone(),
@@ -1590,10 +1662,6 @@ impl SessionBridge {
         connection: &SessionBridgeConnection,
         topic: &str,
     ) -> anyhow::Result<HelpTextResponse> {
-        let mut stream = TcpStream::connect((connection.host.as_str(), connection.port))?;
-        stream.set_read_timeout(Some(self.timeout))?;
-        stream.set_write_timeout(Some(self.timeout))?;
-
         let request = HelpTextRequest {
             request_id: format!("ark-{}", Uuid::new_v4()),
             auth_token: connection.auth_token.clone(),
@@ -1602,15 +1670,7 @@ impl SessionBridge {
             session: self.session.clone(),
         };
 
-        let payload = serde_json::to_vec(&request)?;
-        stream.write_all(payload.as_slice())?;
-        stream.write_all(b"\n")?;
-        stream.shutdown(Shutdown::Write)?;
-
-        let mut response = String::new();
-        stream.read_to_string(&mut response)?;
-
-        let payload: HelpTextResponse = serde_json::from_str(response.as_str())?;
+        let payload: HelpTextResponse = self.send_request(connection, &request)?;
         if let Some(error) = payload.error.as_ref() {
             return Err(SessionBridgeResponseError {
                 code: error.code.clone(),
@@ -1632,10 +1692,6 @@ impl SessionBridge {
         T: Serialize,
         R: DeserializeOwned,
     {
-        let mut stream = TcpStream::connect((connection.host.as_str(), connection.port))?;
-        stream.set_read_timeout(Some(self.timeout))?;
-        stream.set_write_timeout(Some(self.timeout))?;
-
         let request = BridgeCommandRequest {
             request_id: format!("ark-{}", Uuid::new_v4()),
             auth_token: connection.auth_token.clone(),
@@ -1644,15 +1700,7 @@ impl SessionBridge {
             payload,
         };
 
-        let payload = serde_json::to_vec(&request)?;
-        stream.write_all(payload.as_slice())?;
-        stream.write_all(b"\n")?;
-        stream.shutdown(Shutdown::Write)?;
-
-        let mut response = String::new();
-        stream.read_to_string(&mut response)?;
-
-        serde_json::from_str(response.as_str()).map_err(|err| err.into())
+        self.send_request(connection, &request)
     }
 
     fn run_dynamic_request<T, Request>(
@@ -1664,41 +1712,28 @@ impl SessionBridge {
     where
         Request: FnMut(&SessionBridgeConnection) -> anyhow::Result<T>,
     {
-        let mut connection = source.current_connection()?;
-        let max_attempts = 30;
+        let connection = source.current_connection()?;
+        match request(&connection) {
+            Ok(payload) => Ok(payload),
+            Err(err) if should_refresh_dynamic_request(&err) => {
+                let refreshed = source.refresh_connection()?;
+                if refreshed == connection {
+                    return Err(err);
+                }
 
-        for attempt in 0..max_attempts {
-            match request(&connection) {
-                Ok(payload) => return Ok(payload),
-                Err(err) if should_retry_dynamic_request(&err) => {
-                    let retry_io = err.downcast_ref::<std::io::Error>().is_some();
-                    let refreshed = source.refresh_connection()?;
-
-                    if refreshed != connection {
-                        connection = refreshed;
-                        continue;
-                    }
-
-                    if retry_io && attempt + 1 < max_attempts {
-                        let delay_ms = 15 * u64::try_from(attempt + 1).unwrap_or(1);
-                        std::thread::sleep(Duration::from_millis(delay_ms.min(100)));
-                        continue;
-                    }
-
-                    return if retry_io {
-                        Err(unavailable_from_io_error(err))
+                request(&refreshed).map_err(|retry_err| {
+                    if is_bridge_unavailable(&retry_err) {
+                        SessionBridgeUnavailableError {
+                            message: format!("{exhausted_message}: {retry_err}"),
+                        }
+                        .into()
                     } else {
-                        Err(err)
-                    };
-                },
-                Err(err) => return Err(err),
-            }
+                        retry_err
+                    }
+                })
+            },
+            Err(err) => Err(err),
         }
-
-        Err(SessionBridgeUnavailableError {
-            message: String::from(exhausted_message),
-        }
-        .into())
     }
 
     fn completion_payload(&self, request: &CompletionRequest) -> anyhow::Result<InspectResponse> {
@@ -1942,6 +1977,8 @@ fn connection_from_status(
         .into());
     }
 
+    validate_status_compatibility(status_file, &status)?;
+
     let Some(port) = status.port else {
         return Err(SessionBridgeUnavailableError {
             message: format!(
@@ -1957,6 +1994,39 @@ fn connection_from_status(
         port,
         auth_token: status.auth_token,
     })
+}
+
+fn validate_status_compatibility(
+    status_file: &Path,
+    status: &SessionStatusPayload,
+) -> anyhow::Result<()> {
+    if cfg!(test) && status.product_version.is_empty() && status.bridge_schema.is_empty() {
+        return Ok(());
+    }
+
+    if status.product_version != env!("ARK_PRODUCT_VERSION") {
+        return Err(SessionBridgeUnavailableError {
+            message: format!(
+                "startup status file '{}' has incompatible product version '{}' (expected '{}')",
+                status_file.display(),
+                status.product_version,
+                env!("ARK_PRODUCT_VERSION")
+            ),
+        }
+        .into());
+    }
+    if status.bridge_schema != env!("ARK_BRIDGE_SCHEMA") {
+        return Err(SessionBridgeUnavailableError {
+            message: format!(
+                "startup status file '{}' has incompatible bridge schema '{}' (expected '{}')",
+                status_file.display(),
+                status.bridge_schema,
+                env!("ARK_BRIDGE_SCHEMA")
+            ),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 fn resolve_related_artifact_path(status_file: &Path, artifact_path: &str) -> Option<PathBuf> {
@@ -2064,27 +2134,16 @@ pub(crate) fn is_eval_missing_object_error(err: &anyhow::Error) -> bool {
 
 pub(crate) fn is_bridge_unavailable(err: &anyhow::Error) -> bool {
     err.downcast_ref::<SessionBridgeUnavailableError>()
-        .is_some()
+        .is_some() ||
+        err.downcast_ref::<BridgeRuntimeUnavailable>().is_some()
 }
 
-fn should_retry_dynamic_request(err: &anyhow::Error) -> bool {
-    is_ipc_auth_error(err) || err.downcast_ref::<std::io::Error>().is_some()
+fn should_refresh_dynamic_request(err: &anyhow::Error) -> bool {
+    is_ipc_auth_error(err) || is_bridge_unavailable(err)
 }
 
 fn duration_ms(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
-}
-
-fn unavailable_from_io_error(err: anyhow::Error) -> anyhow::Error {
-    let message = err
-        .downcast_ref::<std::io::Error>()
-        .map(|err| err.to_string())
-        .unwrap_or_else(|| err.to_string());
-
-    SessionBridgeUnavailableError {
-        message: format!("bridge connection failed: {message}"),
-    }
-    .into()
 }
 
 fn read_session_status(
@@ -4902,12 +4961,25 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
+    use std::sync::Barrier;
     use std::thread;
 
     use super::*;
     use crate::fixtures::point_from_cursor;
     use crate::lsp::document::Document;
     use crate::lsp::document::DocumentKind;
+
+    fn ready_status(port: u16, auth_token: &str) -> String {
+        serde_json::json!({
+            "status": "ready",
+            "port": port,
+            "auth_token": auth_token,
+            "product_version": env!("ARK_PRODUCT_VERSION"),
+            "bridge_schema": env!("ARK_BRIDGE_SCHEMA"),
+            "repl_ready": true,
+        })
+        .to_string()
+    }
 
     #[test]
     fn test_symbol_prefix_prefers_typed_subset_identifier() {
@@ -6325,11 +6397,8 @@ mod tests {
     #[test]
     fn test_status_file_current_connection_refreshes_when_file_changes() {
         let status = tempfile::NamedTempFile::new().expect("expected temp status file");
-        std::fs::write(
-            status.path(),
-            r#"{"status":"ready","port":41001,"auth_token":"token-one","repl_ready":true}"#,
-        )
-        .expect("expected status file");
+        std::fs::write(status.path(), ready_status(41001, "token-one"))
+            .expect("expected status file");
 
         let source = StatusFileSessionBridgeSource {
             status_file: status.path().to_path_buf(),
@@ -6342,17 +6411,41 @@ mod tests {
         assert_eq!(first.auth_token, "token-one");
         assert!(source.cached_connection.read().unwrap().is_some());
 
-        std::fs::write(
-            status.path(),
-            r#"{"status":"ready","port":41002,"auth_token":"token-two-longer","repl_ready":true}"#,
-        )
-        .expect("expected updated status file");
+        std::fs::write(status.path(), ready_status(41002, "token-two-longer"))
+            .expect("expected updated status file");
 
         let second = source
             .current_connection()
             .expect("expected refreshed connection");
         assert_eq!(second.port, 41002);
         assert_eq!(second.auth_token, "token-two-longer");
+    }
+
+    #[test]
+    fn test_status_file_rejects_incompatible_product_and_schema_versions() {
+        let status = tempfile::NamedTempFile::new().expect("expected temp status file");
+        std::fs::write(
+            status.path(),
+            r#"{"status":"ready","port":41001,"auth_token":"token","product_version":"incompatible","bridge_schema":"v999","repl_ready":true}"#,
+        )
+        .expect("expected status file");
+
+        let source = StatusFileSessionBridgeSource {
+            status_file: status.path().to_path_buf(),
+            cached_connection: Arc::new(RwLock::new(None)),
+        };
+        let err = source
+            .current_connection()
+            .expect_err("incompatible bridge metadata must be rejected");
+
+        assert!(
+            is_bridge_unavailable(&err),
+            "version skew should be an actionable unavailable state: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("incompatible"),
+            "version skew error should name the incompatibility: {err:?}"
+        );
     }
 
     #[test]
@@ -6363,14 +6456,8 @@ mod tests {
             .expect("expected listener address")
             .port();
         let status = tempfile::NamedTempFile::new().expect("expected temp status file");
-        std::fs::write(
-            status.path(),
-            format!(
-                r#"{{"status":"ready","port":{},"auth_token":"token-one","repl_ready":true}}"#,
-                port
-            ),
-        )
-        .expect("expected initial status file");
+        std::fs::write(status.path(), ready_status(port, "token-one"))
+            .expect("expected initial status file");
         let status_path = status.path().to_path_buf();
 
         let handle = thread::spawn(move || {
@@ -6389,14 +6476,8 @@ mod tests {
                 "token-one"
             );
 
-            std::fs::write(
-                &status_path,
-                format!(
-                    r#"{{"status":"ready","port":{},"auth_token":"token-two","repl_ready":true}}"#,
-                    port
-                ),
-            )
-            .expect("expected rotated status file");
+            std::fs::write(&status_path, ready_status(port, "token-two"))
+                .expect("expected rotated status file");
 
             first
                 .write_all(br#"{"error":{"code":"E_IPC_AUTH","message":"stale token"}}"#)
@@ -6759,6 +6840,113 @@ mod tests {
                 .get("targets_available")
                 .and_then(serde_json::Value::as_bool),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn test_dynamic_connection_refusal_obeys_interactive_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+        drop(listener);
+
+        let status = tempfile::NamedTempFile::new().expect("expected temp status file");
+        std::fs::write(status.path(), ready_status(port, "deadline-token"))
+            .expect("expected status file");
+
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            status_file: Some(status.path().to_path_buf()),
+            session_id: String::from("deadline-session"),
+            timeout_ms: 1000,
+            ..Default::default()
+        })
+        .expect("expected bridge");
+        let document = Document::new("slow_object", None);
+        let context = DocumentContext::new(&document, Point::new(0, 5), None);
+
+        let started = std::time::Instant::now();
+        let err = bridge.hover(&context).expect_err("expected refused bridge");
+        let elapsed = started.elapsed();
+
+        assert!(
+            is_bridge_unavailable(&err) || err.downcast_ref::<std::io::Error>().is_some(),
+            "expected unavailable bridge error, got {err:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(1200),
+            "interactive bridge refusal exceeded its end-to-end deadline: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_bridge_requests_are_serialized_before_entering_r() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
+        let port = listener
+            .local_addr()
+            .expect("expected listener address")
+            .port();
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+
+        let active_server = active.clone();
+        let max_active_server = max_active.clone();
+        let server = thread::spawn(move || {
+            let mut handlers = Vec::new();
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().expect("expected bridge request");
+                let active = active_server.clone();
+                let max_active = max_active_server.clone();
+                handlers.push(thread::spawn(move || {
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_active.fetch_max(current, Ordering::SeqCst);
+                    let mut request = String::new();
+                    stream
+                        .read_to_string(&mut request)
+                        .expect("expected request body");
+                    thread::sleep(Duration::from_millis(100));
+                    stream
+                        .write_all(br#"{"found":true,"text":"help"}"#)
+                        .expect("expected response write");
+                    active.fetch_sub(1, Ordering::SeqCst);
+                }));
+            }
+            for handler in handlers {
+                handler.join().expect("expected bridge handler");
+            }
+        });
+
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port,
+            auth_token: String::from("queue-token"),
+            timeout_ms: 1000,
+            ..Default::default()
+        })
+        .expect("expected bridge");
+        let start = Arc::new(Barrier::new(5));
+        let mut clients = Vec::new();
+        for index in 0..4 {
+            let bridge = bridge.clone();
+            let start = start.clone();
+            clients.push(thread::spawn(move || {
+                start.wait();
+                bridge
+                    .help_text(format!("topic-{index}").as_str())
+                    .expect("expected bridge help response")
+            }));
+        }
+        start.wait();
+        for client in clients {
+            client.join().expect("expected bridge client");
+        }
+        server.join().expect("expected bridge server");
+
+        assert_eq!(
+            max_active.load(Ordering::SeqCst),
+            1,
+            "only one request may enter the interactive R bridge at a time"
         );
     }
 }

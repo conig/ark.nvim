@@ -60,7 +60,6 @@ use crate::lsp::config::GLOBAL_SETTINGS;
 use crate::lsp::detached_metadata;
 use crate::lsp::document::Document;
 use crate::lsp::document::DocumentKind;
-use crate::lsp::handlers::SessionBootstrapResponse;
 use crate::lsp::handlers::SessionUpdateParams;
 use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::main_loop::DidCloseVirtualDocumentParams;
@@ -112,6 +111,12 @@ pub(crate) struct DetachedBaselineHydrationOutput {
 pub(crate) struct DetachedHydrationRequests {
     pub baseline: Option<DetachedBaselineHydrationRequest>,
     pub session: Option<DetachedSessionHydrationRequest>,
+}
+
+#[derive(Debug)]
+pub(crate) struct SessionBootstrapDispatch {
+    pub hydration: DetachedHydrationRequests,
+    pub hydrated: bool,
 }
 
 pub(crate) fn begin_detached_baseline_hydration(
@@ -855,18 +860,10 @@ pub(crate) fn did_update_session(
 pub(crate) fn bootstrap_session(
     params: SessionUpdateParams,
     state: &mut WorldState,
-) -> LspResult<SessionBootstrapResponse> {
+) -> LspResult<SessionBootstrapDispatch> {
     let hydration = did_update_session(params, state)?;
-    if let Some(request) = hydration.session {
-        let output = run_detached_session_hydration(request);
-        finish_detached_session_hydration(output, state);
-    }
-    if let Some(request) = hydration.baseline {
-        let output = run_detached_baseline_hydration(request);
-        finish_detached_baseline_hydration(output, state);
-    }
-
-    Ok(SessionBootstrapResponse {
+    Ok(SessionBootstrapDispatch {
+        hydration,
         hydrated: state.detached_session_hydrated(),
     })
 }
@@ -1022,7 +1019,7 @@ mod tests {
     use std::thread;
 
     use super::*;
-    fn spawn_bootstrap_bridge(auth_token: &str) -> u16 {
+    fn spawn_bootstrap_bridge(auth_token: &str, response_delay: std::time::Duration) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
         let port = listener
             .local_addr()
@@ -1074,6 +1071,7 @@ mod tests {
                     _ => unreachable!(),
                 };
 
+                thread::sleep(response_delay);
                 stream
                     .write_all(response.as_bytes())
                     .expect("expected bridge response");
@@ -1107,7 +1105,7 @@ mod tests {
     #[test]
     fn test_detached_session_update_defers_bootstrap_until_repl_ready() {
         let auth_token = "ark-test-token";
-        let port = spawn_bootstrap_bridge(auth_token);
+        let port = spawn_bootstrap_bridge(auth_token, std::time::Duration::ZERO);
         let status = tempfile::NamedTempFile::new().expect("expected temp status file");
         std::fs::write(
             status.path(),
@@ -1249,9 +1247,9 @@ mod tests {
     }
 
     #[test]
-    fn test_bootstrap_session_hydrates_detached_inputs_inline() {
+    fn test_bootstrap_session_schedules_detached_hydration_without_blocking() {
         let auth_token = "ark-test-token";
-        let port = spawn_bootstrap_bridge(auth_token);
+        let port = spawn_bootstrap_bridge(auth_token, std::time::Duration::from_millis(250));
         let status = tempfile::NamedTempFile::new().expect("expected temp status file");
         std::fs::write(
             status.path(),
@@ -1264,6 +1262,7 @@ mod tests {
 
         let mut state = WorldState::detached();
 
+        let started = std::time::Instant::now();
         let response = bootstrap_session(
             SessionUpdateParams {
                 kind: Some(String::from("ark")),
@@ -1283,19 +1282,18 @@ mod tests {
         .expect("expected bootstrap session request to succeed");
 
         assert!(
-            response.hydrated,
-            "bootstrap session request should synchronously hydrate detached inputs"
+            started.elapsed() < std::time::Duration::from_millis(100),
+            "bootstrap session dispatch must not wait for bridge I/O"
         );
-        assert_eq!(state.console_scopes, vec![vec![
-            String::from("library"),
-            String::from("mtcars")
-        ]]);
-        assert_eq!(state.library.library_paths.len(), 1);
-        assert_eq!(
-            state.library.library_paths[0],
-            std::path::PathBuf::from("/tmp/ark-test-library")
+        assert!(
+            !response.hydrated,
+            "hydration should complete asynchronously before the LSP response is sent"
         );
-        assert!(state.detached_session_hydrated());
+        assert!(response.hydration.session.is_some());
+        assert!(response.hydration.baseline.is_none());
+        assert!(state.console_scopes.is_empty());
+        assert!(state.library.library_paths.is_empty());
+        assert!(!state.detached_session_hydrated());
     }
 
     #[test]

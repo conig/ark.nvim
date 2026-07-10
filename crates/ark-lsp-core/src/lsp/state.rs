@@ -15,6 +15,7 @@ use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::session_bridge::SessionBridge;
 use crate::lsp::session_bridge::SessionBridgeConfig;
 use crate::lsp::session_bridge::SessionBridgeDebugInfo;
+use crate::lsp::session_bridge_runtime::BridgeRequestControl;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum RuntimeMode {
@@ -248,6 +249,13 @@ impl WorldState {
             static_object_count: self.static_object_members.len(),
             static_object_member_count: self.static_object_members.values().map(Vec::len).sum(),
         }
+    }
+
+    pub(crate) fn with_bridge_request_control(mut self, control: BridgeRequestControl) -> Self {
+        self.session_bridge = self
+            .session_bridge
+            .map(|bridge| bridge.with_request_control(control));
+        self
     }
 }
 

@@ -33,6 +33,7 @@ use url::Url;
 use super::backend::RequestResponse;
 use crate::console::ConsoleNotification;
 use crate::lsp;
+use crate::lsp::backend::LspError;
 use crate::lsp::backend::LspMessage;
 use crate::lsp::backend::LspNotification;
 use crate::lsp::backend::LspRequest;
@@ -47,6 +48,7 @@ use crate::lsp::indexer;
 pub use crate::lsp::notifications::DidCloseVirtualDocumentParams;
 pub use crate::lsp::notifications::DidOpenVirtualDocumentParams;
 pub use crate::lsp::notifications::KernelNotification;
+use crate::lsp::session_bridge_runtime::BridgeRequestControl;
 use crate::lsp::state::RuntimeMode;
 use crate::lsp::state::WorldState;
 use crate::lsp::state_handlers;
@@ -107,13 +109,24 @@ impl LspEventSender {
 pub(crate) enum Event {
     Lsp(Box<LspMessage>),
     Kernel(KernelNotification),
-    Internal(InternalEvent),
+    Internal(Box<InternalEvent>),
 }
 
 #[derive(Debug)]
 pub(crate) enum InternalEvent {
-    DetachedBaselineHydrationCompleted(state_handlers::DetachedBaselineHydrationOutput),
-    DetachedSessionHydrationCompleted(state_handlers::DetachedSessionHydrationOutput),
+    ApplyDetachedBaseline(state_handlers::DetachedBaselineHydrationOutput),
+    ApplyDetachedSession(state_handlers::DetachedSessionHydrationOutput),
+    FinishSessionBootstrap {
+        output: SessionBootstrapHydrationOutput,
+        response_tx: TokioUnboundedSender<RequestResponse>,
+        freshness: RequestFreshness,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) enum SessionBootstrapHydrationOutput {
+    Baseline(state_handlers::DetachedBaselineHydrationOutput),
+    Session(state_handlers::DetachedSessionHydrationOutput),
 }
 
 #[derive(Debug)]
@@ -154,6 +167,48 @@ pub(crate) struct GlobalState {
 
     /// Tracks notification progress so requests can wait for earlier updates.
     notification_barrier: Arc<NotificationBarrier>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RequestFreshness {
+    document: Option<(Url, Option<i32>)>,
+    session_generation: u64,
+}
+
+impl RequestFreshness {
+    fn for_session(world: &WorldState) -> Self {
+        Self {
+            document: None,
+            session_generation: world.detached_session_update_generation,
+        }
+    }
+
+    fn for_document(world: &WorldState, uri: &Url) -> Self {
+        Self {
+            document: world
+                .documents
+                .get(uri)
+                .map(|document| (uri.clone(), document.version)),
+            session_generation: world.detached_session_update_generation,
+        }
+    }
+
+    fn is_current(&self) -> bool {
+        let Some(world) = latest_world_state() else {
+            return false;
+        };
+        if world.detached_session_update_generation != self.session_generation {
+            return false;
+        }
+
+        let Some((uri, version)) = self.document.as_ref() else {
+            return true;
+        };
+        world
+            .documents
+            .get(uri)
+            .is_some_and(|document| &document.version == version)
+    }
 }
 
 /// Unlike `WorldState`, `ParserState` cannot be cloned and is only accessed by
@@ -373,20 +428,33 @@ impl GlobalState {
                             respond(tx, || response, LspResponse::ExecuteCommand)?;
                         },
                         LspRequest::Completion(params) => {
-                            let world = self.world.clone();
-                            Self::spawn_handler(tx, move || handlers::handle_completion(params, &world), LspResponse::Completion);
+                            let freshness = RequestFreshness::for_document(
+                                &self.world,
+                                &params.text_document_position.text_document.uri,
+                            );
+                            let world = self.bridge_request_world(&tx);
+                            Self::spawn_handler(tx, move || handlers::handle_completion(params, &world), LspResponse::Completion, freshness);
                         },
                         LspRequest::CompletionResolve(params) => {
-                            let world = self.world.clone();
-                            Self::spawn_handler(tx, move || handlers::handle_completion_resolve(params, &world), LspResponse::CompletionResolve);
+                            let freshness = RequestFreshness::for_session(&self.world);
+                            let world = self.bridge_request_world(&tx);
+                            Self::spawn_handler(tx, move || handlers::handle_completion_resolve(params, &world), LspResponse::CompletionResolve, freshness);
                         },
                         LspRequest::Hover(params) => {
-                            let world = self.world.clone();
-                            Self::spawn_handler(tx, move || handlers::handle_hover(params, &world), LspResponse::Hover);
+                            let freshness = RequestFreshness::for_document(
+                                &self.world,
+                                &params.text_document_position_params.text_document.uri,
+                            );
+                            let world = self.bridge_request_world(&tx);
+                            Self::spawn_handler(tx, move || handlers::handle_hover(params, &world), LspResponse::Hover, freshness);
                         },
                         LspRequest::SignatureHelp(params) => {
-                            let world = self.world.clone();
-                            Self::spawn_handler(tx, move || handlers::handle_signature_help(params, &world), LspResponse::SignatureHelp);
+                            let freshness = RequestFreshness::for_document(
+                                &self.world,
+                                &params.text_document_position_params.text_document.uri,
+                            );
+                            let world = self.bridge_request_world(&tx);
+                            Self::spawn_handler(tx, move || handlers::handle_signature_help(params, &world), LspResponse::SignatureHelp, freshness);
                         },
                         LspRequest::GotoDefinition(params) => {
                             respond(tx, || handlers::handle_goto_definition(params, &self.world), LspResponse::GotoDefinition)?;
@@ -421,26 +489,44 @@ impl GlobalState {
                             respond(tx, || handlers::handle_status(params, &self.world), LspResponse::Status)?;
                         },
                         LspRequest::HelpText(params) => {
-                            let world = self.world.clone();
-                            Self::spawn_handler(tx, move || handlers::handle_help_text(params, &world), LspResponse::HelpText);
+                            let freshness = RequestFreshness::for_session(&self.world);
+                            let world = self.bridge_request_world(&tx);
+                            Self::spawn_handler(tx, move || handlers::handle_help_text(params, &world), LspResponse::HelpText, freshness);
                         },
                         LspRequest::PackageInstall(params) => {
-                            let world = self.world.clone();
-                            Self::spawn_handler(tx, move || handlers::handle_package_install(params, &world), LspResponse::PackageInstall);
+                            let freshness = RequestFreshness::for_session(&self.world);
+                            let world = self.bridge_request_world(&tx);
+                            Self::spawn_handler(tx, move || handlers::handle_package_install(params, &world), LspResponse::PackageInstall, freshness);
                         },
                         LspRequest::InputBoundaries(params) => {
                             respond(tx, || handlers::handle_input_boundaries(params), LspResponse::InputBoundaries)?;
                         },
                         LspRequest::SessionBootstrap(params) => {
-                            respond(tx, || state_handlers::bootstrap_session(params, &mut self.world), LspResponse::SessionBootstrap)?;
+                            match state_handlers::bootstrap_session(params, &mut self.world) {
+                                Ok(dispatch) => {
+                                    let freshness = RequestFreshness::for_session(&self.world);
+                                    if dispatch.hydration.baseline.is_some() || dispatch.hydration.session.is_some() {
+                                        self.spawn_session_bootstrap_hydration(dispatch.hydration, tx, freshness);
+                                    } else {
+                                        respond(tx, || Ok(handlers::SessionBootstrapResponse {
+                                            hydrated: dispatch.hydrated,
+                                        }), LspResponse::SessionBootstrap)?;
+                                    }
+                                },
+                                Err(err) => {
+                                    respond(tx, || Err(err), LspResponse::SessionBootstrap)?;
+                                },
+                            }
                         },
                         LspRequest::ViewRpc(params) => {
-                            let world = self.world.clone();
-                            Self::spawn_handler(tx, move || handlers::handle_view_rpc(params, &world), LspResponse::ViewRpc);
+                            let freshness = RequestFreshness::for_session(&self.world);
+                            let world = self.bridge_request_world(&tx);
+                            Self::spawn_handler(tx, move || handlers::handle_view_rpc(params, &world), LspResponse::ViewRpc, freshness);
                         },
                         LspRequest::TargetsRpc(params) => {
-                            let world = self.world.clone();
-                            Self::spawn_handler(tx, move || handlers::handle_targets_rpc(params, &world), LspResponse::TargetsRpc);
+                            let freshness = RequestFreshness::for_session(&self.world);
+                            let world = self.bridge_request_world(&tx);
+                            Self::spawn_handler(tx, move || handlers::handle_targets_rpc(params, &world), LspResponse::TargetsRpc, freshness);
                         },
                     };
                 },
@@ -461,15 +547,39 @@ impl GlobalState {
                     }
                 }
             },
-            Event::Internal(event) => match event {
-                InternalEvent::DetachedBaselineHydrationCompleted(output) => {
+            Event::Internal(event) => match *event {
+                InternalEvent::ApplyDetachedBaseline(output) => {
                     state_handlers::finish_detached_baseline_hydration(output, &mut self.world);
                 },
-                InternalEvent::DetachedSessionHydrationCompleted(output) => {
+                InternalEvent::ApplyDetachedSession(output) => {
                     state_handlers::finish_detached_session_hydration(output, &mut self.world);
+                },
+                InternalEvent::FinishSessionBootstrap {
+                    output,
+                    response_tx,
+                    freshness,
+                } => {
+                    match output {
+                        SessionBootstrapHydrationOutput::Baseline(output) => {
+                            state_handlers::finish_detached_baseline_hydration(output, &mut self.world);
+                        },
+                        SessionBootstrapHydrationOutput::Session(output) => {
+                            state_handlers::finish_detached_session_hydration(output, &mut self.world);
+                        },
+                    }
+                    respond_if_fresh(
+                        response_tx,
+                        || Ok(handlers::SessionBootstrapResponse {
+                            hydrated: self.world.detached_session_hydrated(),
+                        }),
+                        LspResponse::SessionBootstrap,
+                        freshness,
+                    )?;
                 },
             },
         }
+
+        store_latest_world_state(&self.world);
 
         // TODO Make this threshold configurable by the client
         if loop_tick.elapsed() > std::time::Duration::from_millis(50) {
@@ -492,11 +602,23 @@ impl GlobalState {
         response_tx: TokioUnboundedSender<RequestResponse>,
         handler: Handler,
         into_lsp_response: impl FnOnce(T) -> LspResponse + Send + 'static,
+        freshness: RequestFreshness,
     ) where
         Handler: FnOnce() -> LspResult<T>,
         Handler: Send + 'static,
     {
-        lsp::spawn_blocking(move || respond(response_tx, handler, into_lsp_response).and(Ok(None)))
+        lsp::spawn_blocking(move || {
+            respond_if_fresh(response_tx, handler, into_lsp_response, freshness).and(Ok(None))
+        })
+    }
+
+    fn bridge_request_world(
+        &self,
+        response_tx: &TokioUnboundedSender<RequestResponse>,
+    ) -> WorldState {
+        let cancellation_tx = response_tx.clone();
+        let control = BridgeRequestControl::new(move || cancellation_tx.is_closed());
+        self.world.clone().with_bridge_request_control(control)
     }
 
     fn spawn_detached_hydrations(&self, requests: state_handlers::DetachedHydrationRequests) {
@@ -505,9 +627,9 @@ impl GlobalState {
             spawn_blocking(move || {
                 let output = state_handlers::run_detached_baseline_hydration(request);
                 events_tx
-                    .send(Event::Internal(
-                        InternalEvent::DetachedBaselineHydrationCompleted(output),
-                    ))
+                    .send(Event::Internal(Box::new(
+                        InternalEvent::ApplyDetachedBaseline(output),
+                    )))
                     .map_err(|err| {
                         anyhow!("Failed to queue detached baseline hydration result: {err}")
                     })?;
@@ -520,15 +642,57 @@ impl GlobalState {
             spawn_blocking(move || {
                 let output = state_handlers::run_detached_session_hydration(request);
                 events_tx
-                    .send(Event::Internal(
-                        InternalEvent::DetachedSessionHydrationCompleted(output),
-                    ))
+                    .send(Event::Internal(Box::new(
+                        InternalEvent::ApplyDetachedSession(output),
+                    )))
                     .map_err(|err| {
                         anyhow!("Failed to queue detached session hydration result: {err}")
                     })?;
                 Ok(None)
             });
         }
+    }
+
+    fn spawn_session_bootstrap_hydration(
+        &self,
+        requests: state_handlers::DetachedHydrationRequests,
+        response_tx: TokioUnboundedSender<RequestResponse>,
+        freshness: RequestFreshness,
+    ) {
+        let events_tx = self.events_tx.clone();
+        spawn_blocking(move || {
+            let output = if let Some(mut request) = requests.session {
+                let cancellation_tx = response_tx.clone();
+                request.session_bridge =
+                    request
+                        .session_bridge
+                        .with_request_control(BridgeRequestControl::new(move || {
+                            cancellation_tx.is_closed()
+                        }));
+                SessionBootstrapHydrationOutput::Session(
+                    state_handlers::run_detached_session_hydration(request),
+                )
+            } else if let Some(request) = requests.baseline {
+                SessionBootstrapHydrationOutput::Baseline(
+                    state_handlers::run_detached_baseline_hydration(request),
+                )
+            } else {
+                return Err(anyhow!(
+                    "Session bootstrap hydration was queued without a hydration request"
+                ));
+            };
+
+            events_tx
+                .send(Event::Internal(Box::new(
+                    InternalEvent::FinishSessionBootstrap {
+                        output,
+                        response_tx,
+                        freshness,
+                    },
+                )))
+                .map_err(|err| anyhow!("Failed to queue session bootstrap result: {err}"))?;
+            Ok(None)
+        });
     }
 }
 
@@ -555,7 +719,25 @@ fn respond<T>(
     response: impl FnOnce() -> LspResult<T>,
     into_lsp_response: impl FnOnce(T) -> LspResponse,
 ) -> anyhow::Result<()> {
-    let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(response)) {
+    respond_inner(response_tx, response, into_lsp_response, None)
+}
+
+fn respond_if_fresh<T>(
+    response_tx: TokioUnboundedSender<RequestResponse>,
+    response: impl FnOnce() -> LspResult<T>,
+    into_lsp_response: impl FnOnce(T) -> LspResponse,
+    freshness: RequestFreshness,
+) -> anyhow::Result<()> {
+    respond_inner(response_tx, response, into_lsp_response, Some(freshness))
+}
+
+fn respond_inner<T>(
+    response_tx: TokioUnboundedSender<RequestResponse>,
+    response: impl FnOnce() -> LspResult<T>,
+    into_lsp_response: impl FnOnce(T) -> LspResponse,
+    freshness: Option<RequestFreshness>,
+) -> anyhow::Result<()> {
+    let mut response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(response)) {
         Ok(response) => {
             let response = response.map(into_lsp_response);
             RequestResponse::Result(response)
@@ -578,6 +760,16 @@ fn respond<T>(
             RequestResponse::Crashed(anyhow!("Panic occurred while handling request: {msg}"))
         },
     };
+
+    if matches!(&response, RequestResponse::Result(_)) &&
+        freshness.is_some_and(|freshness| !freshness.is_current())
+    {
+        response = RequestResponse::Result(Err(LspError::JsonRpc(tower_lsp::jsonrpc::Error {
+            code: tower_lsp::jsonrpc::ErrorCode::ServerError(-32801),
+            message: "request result is stale because the document or session changed".into(),
+            data: None,
+        })));
+    }
 
     let out = match response {
         RequestResponse::Result(Ok(_)) => Ok(()),
@@ -1252,5 +1444,35 @@ mod tests {
             0,
             "diagnostics refresh must not bootstrap detached bridge state from a cloned snapshot"
         );
+    }
+
+    #[test]
+    fn request_freshness_rejects_newer_document_and_session_generations() {
+        let uri = Url::parse("file:///tmp/ark_stale_request.R").expect("expected uri");
+        let mut initial = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            detached_session_update_generation: 4,
+            ..Default::default()
+        };
+        initial
+            .documents
+            .insert(uri.clone(), Document::new("old <- 1", Some(7)));
+        store_latest_world_state(&initial);
+
+        let freshness = RequestFreshness::for_document(&initial, &uri);
+        assert!(freshness.is_current());
+
+        let mut newer_document = initial.clone();
+        newer_document
+            .documents
+            .insert(uri.clone(), Document::new("new <- 2", Some(8)));
+        store_latest_world_state(&newer_document);
+        assert!(!freshness.is_current());
+
+        let session_freshness = RequestFreshness::for_session(&newer_document);
+        assert!(session_freshness.is_current());
+        newer_document.detached_session_update_generation = 5;
+        store_latest_world_state(&newer_document);
+        assert!(!session_freshness.is_current());
     }
 }
