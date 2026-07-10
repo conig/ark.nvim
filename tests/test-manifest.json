@@ -117,6 +117,9 @@
     }
   ],
   "overrides": {
+    "ark_view_sticky_header_tui.lua": {
+      "open_r_buffer": false
+    },
     "ark_view_cursor_movement_responsiveness.lua": {
       "dependencies": ["neovim"],
       "mutates_shared_session": false
@@ -128,6 +131,45 @@
     "detached_parity.lua": {
       "dependencies": ["neovim", "r", "tmux"],
       "mutates_shared_session": true
+    },
+    "bridge_runtime_rebuild_recovers_startup_tui.lua": {
+      "open_r_buffer": false
+    },
+    "full_config_argument_value_replaces_stale_arg_menu_tui.lua": {
+      "open_r_buffer": false
+    },
+    "full_config_extractor_rapid_select_tui.lua": {
+      "open_r_buffer": false
+    },
+    "full_config_rmd_inline_completion_tui.lua": {
+      "open_r_buffer": false
+    },
+    "full_config_rmd_output_enter_after_leader_y_tui.lua": {
+      "open_r_buffer": false
+    },
+    "full_config_runtime_extractor_tui.lua": {
+      "open_r_buffer": false
+    },
+    "full_config_startup_keyword_completion_recovery_tui.lua": {
+      "open_r_buffer": false
+    },
+    "full_config_subset_bracket_completion_tui.lua": {
+      "open_r_buffer": false
+    },
+    "nvim_console_blink_tui.lua": {
+      "open_r_buffer": false
+    },
+    "nvim_console_real_blink_value_completion_tui.lua": {
+      "open_r_buffer": false
+    },
+    "nvim_console_signature_blink_tui.lua": {
+      "open_r_buffer": false
+    },
+    "rmd_prose_space_escape_hides_menu_tui.lua": {
+      "open_r_buffer": false
+    },
+    "startup_handoff_stays_stable_tui.lua": {
+      "open_r_buffer": false
     },
     "home_directory_buffer_uses_scratch_workspace.lua": {
       "cwd": "HOME"

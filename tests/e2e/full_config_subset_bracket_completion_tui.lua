@@ -141,7 +141,7 @@ local ok, err = xpcall(function()
     return event ~= nil
   end)
 
-  tmux({ "send-keys", "-t", nvim_pane, "[" })
+  tmux({ "send-keys", "-t", nvim_pane, "-l", "[" })
 
   ark_test.wait_for("typed subset bracket", 5000, function()
     local event = latest_matching(function(candidate)

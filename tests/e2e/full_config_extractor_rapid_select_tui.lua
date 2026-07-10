@@ -132,14 +132,19 @@ local ok, err = xpcall(function()
     "-t",
     nvim_pane,
     "Escape",
-    ":call setline(1, [''])",
+    ":call setline(1, 'mtcars') | call cursor(1, 6)",
     "Enter",
-    "gg0i",
-    "mtcars",
-    "Escape",
     "A",
-    "$",
   })
+
+  ark_test.wait_for("insert mode at mtcars", 5000, function()
+    local event = latest_matching(function(candidate)
+      return candidate.label == "InsertEnter" and candidate.line == "mtcars"
+    end)
+    return event ~= nil
+  end)
+
+  tmux({ "send-keys", "-t", nvim_pane, "-l", "$" })
 
   ark_test.wait_for("mtcars extractor menu", 10000, function()
     local event = latest_matching(function(candidate)
