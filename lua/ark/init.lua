@@ -5,28 +5,27 @@ local console = require("ark.console")
 local console_frontend = require("ark.console_frontend")
 local dev = require("ark.dev")
 local expression = require("ark.expression")
+local help_render = require("ark.help_render")
 local keymaps = require("ark.keymaps")
 local lsp = require("ark.lsp")
 local release = require("ark.release")
 local session_backend = require("ark.session")
 local snippets = require("ark.snippets")
+local startup_state = require("ark.startup_state")
+local target_actions_module = require("ark.target_actions")
 local target_view = require("ark.target_view")
 local target_tools = require("ark.targets")
 local view = require("ark.view")
 local view_popup_backend = require("ark.view_popup_backend")
-local uv = vim.uv or vim.loop
 
 local M = {}
 
 local did_setup = false
 local options = nil
-local startup_tokens = {}
-local startup_traces = {}
 local readiness_waiters = {}
 local readiness_waiter_seq = 0
 local pending_session_sync = 0
-local help_float_ns = vim.api.nvim_create_namespace("ArkHelpFloat")
-local help_filetype = "markdown"
+local target_actions = nil
 local help_rpc_fn = "__ark_nvim_help_rpc"
 local view_rpc_fn = "__ark_nvim_view_rpc"
 local is_ark_buffer
@@ -37,1307 +36,20 @@ local ensure_bridge_runtime
 local start_or_recover_pane_after_runtime_ready
 local tar_read_target_name
 
-local function monotonic_ms()
-  local clock = (uv and uv.hrtime) and uv.hrtime or vim.loop.hrtime
-  return math.floor(clock() / 1e6)
-end
-
-local function wallclock_ms()
-  if uv and type(uv.gettimeofday) == "function" then
-    local sec, usec = uv.gettimeofday()
-    if type(sec) == "number" and type(usec) == "number" then
-      return (sec * 1000) + math.floor(usec / 1000)
-    end
-  end
-
-  return math.floor(os.time() * 1000)
-end
-
-local function iso_timestamp(ms)
-  if type(ms) ~= "number" then
-    return nil
-  end
-
-  local sec = math.floor(ms / 1000)
-  local millis = ms - (sec * 1000)
-  return os.date("%Y-%m-%dT%H:%M:%S", sec) .. string.format(".%03d", millis)
-end
-
-local function format_ms(value)
-  if type(value) ~= "number" then
-    return nil
-  end
-
-  return string.format("+%dms", math.max(0, math.floor(value)))
-end
-
-local function tracked_startup_file(bufnr)
-  local path = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) or ""
-  return path ~= "" and path or nil
-end
-
-local function startup_log_path()
-  local runtime_config = session_backend.runtime_config(options)
-  if type(runtime_config) ~= "table" then
-    return nil
-  end
-
-  local status = session_backend.startup_status_authoritative(options)
-  if type(status) ~= "table" then
-    return nil
-  end
-
-  return type(status.log_path) == "string" and status.log_path or nil
-end
-
-local function append_startup_log(event, fields)
-  local path = startup_log_path()
-  if type(path) ~= "string" or path == "" then
-    return nil
-  end
-
-  local elapsed_ms = nil
-  for _, field in ipairs(fields or {}) do
-    if type(field) == "table" and field.key == "startup_elapsed_ms" and type(field.value) == "number" then
-      elapsed_ms = field.value
-      break
-    end
-  end
-
-  local ts = iso_timestamp(wallclock_ms())
-  local elapsed = format_ms(elapsed_ms)
-  local line = elapsed and string.format("[%s %s] [nvim-startup] %s", ts, elapsed, event)
-    or string.format("[%s] [nvim-startup] %s", ts, event)
-  for _, field in ipairs(fields or {}) do
-    if type(field) == "table" and type(field.key) == "string" and field.key ~= "" and field.value ~= nil then
-      local rendered = field.value
-      if type(rendered) == "number" and field.key:sub(-3) == "_ms" then
-        rendered = format_ms(rendered)
-      end
-      line = line .. string.format(" %s=%s", field.key, tostring(rendered))
-    end
-  end
-
-  local dir = vim.fs.dirname(path)
-  if type(dir) == "string" and dir ~= "" then
-    vim.fn.mkdir(dir, "p")
-  end
-  vim.fn.writefile({ line }, path, "a")
-  return path
-end
-
-local function cleanup_startup_trace(bufnr)
-  startup_traces[bufnr] = nil
-end
-
-local function ensure_startup_trace_cleanup(bufnr)
-  if startup_traces[bufnr] and startup_traces[bufnr].cleanup_registered == true then
-    return
-  end
-  if not vim.api.nvim_buf_is_valid(bufnr) then
-    cleanup_startup_trace(bufnr)
-    return
-  end
-
-  if not startup_traces[bufnr] then
-    return
-  end
-
-  startup_traces[bufnr].cleanup_registered = true
-  vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
-    buffer = bufnr,
-    once = true,
-    callback = function()
-      cleanup_startup_trace(bufnr)
-    end,
-  })
-end
-
-local function startup_unlocked(bufnr)
-  local trace = startup_traces[bufnr]
-  if type(trace) ~= "table" then
-    return true
-  end
-  if startup_tokens[bufnr] ~= trace.token then
-    cleanup_startup_trace(bufnr)
-    return true
-  end
-
-  return trace.main_buffer_unlocked == true
-end
-
-local function record_startup_unlock(bufnr, source, unlock_opts)
-  local trace = startup_traces[bufnr]
-  if type(trace) ~= "table" or trace.main_buffer_unlocked == true then
-    return
-  end
-  if startup_tokens[bufnr] ~= trace.token then
-    cleanup_startup_trace(bufnr)
-    return
-  end
-
-  unlock_opts = unlock_opts or {}
-
-  local unlocked_at_ms = wallclock_ms()
-  trace.file = trace.file or tracked_startup_file(bufnr)
-  trace.filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or trace.filetype
-  trace.log_path = startup_log_path() or trace.log_path
-  trace.main_buffer_unlocked = true
-  trace.main_buffer_unlock_at_iso = iso_timestamp(unlocked_at_ms)
-  trace.main_buffer_unlock_at_ms = unlocked_at_ms
-  trace.main_buffer_unlock_elapsed_ms = math.max(0, monotonic_ms() - trace.started_mono_ms)
-  trace.main_buffer_unlock_source = source or "SafeState"
-  if type(unlock_opts.post_lsp_bootstrap_unlock_ms) == "number" then
-    trace.post_lsp_bootstrap_unlock_ms = math.max(0, unlock_opts.post_lsp_bootstrap_unlock_ms)
-  end
-
-  trace.log_path = append_startup_log("main_buffer_unlocked", {
-    { key = "bufnr", value = bufnr },
-    { key = "filetype", value = trace.filetype },
-    { key = "file", value = trace.file },
-    { key = "startup_elapsed_ms", value = trace.main_buffer_unlock_elapsed_ms },
-    { key = "post_lsp_bootstrap_unlock_ms", value = trace.post_lsp_bootstrap_unlock_ms },
-    { key = "source", value = trace.main_buffer_unlock_source },
-  }) or trace.log_path
-end
-
-local function begin_startup_trace(bufnr, token)
-  local started_at_ms = wallclock_ms()
-  startup_traces[bufnr] = {
-    bufnr = bufnr,
-    cleanup_registered = false,
-    file = tracked_startup_file(bufnr),
-    filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or nil,
-    log_path = startup_log_path(),
-    started_at_iso = iso_timestamp(started_at_ms),
-    started_at_ms = started_at_ms,
-    started_mono_ms = monotonic_ms(),
-    token = token,
-  }
-  ensure_startup_trace_cleanup(bufnr)
-  return startup_traces[bufnr]
-end
-
-local function lsp_status_ready_for_safe_state(bufnr)
-  local status = lsp.status(options, bufnr, {
-    cache_ttl_ms = 50,
-    throttle_ms = 25,
-    timeout_ms = 50,
-  })
-  if type(status) ~= "table" or status.available ~= true then
-    return false, status
-  end
-
-  if options.auto_start_pane ~= true then
-    return true, status
-  end
-
-  local detached_status = type(status.detachedSessionStatus) == "table" and status.detachedSessionStatus or nil
-  if type(detached_status) ~= "table" then
-    return false, status
-  end
-
-  return detached_status.lastSessionUpdateStatus == "ready"
-    and type(detached_status.lastBootstrapSuccessMs) == "number",
-    status
-end
-
-local function startup_ready_for_safe_state(bufnr)
-  if not options or type(bufnr) ~= "number" or not vim.api.nvim_buf_is_valid(bufnr) then
-    return false, nil, nil
-  end
-  if not vim.tbl_contains(options.filetypes or {}, vim.bo[bufnr].filetype) then
-    return false, nil, nil
-  end
-
-  local backend_snapshot = nil
-  if options.auto_start_pane == true then
-    backend_snapshot = session_backend.startup_snapshot(options, {
-      include_prompt_ready = false,
-      validate_bridge = false,
-    })
-    local startup_status = type(backend_snapshot) == "table" and backend_snapshot.startup_status or nil
-    if type(backend_snapshot) ~= "table"
-      or backend_snapshot.bridge_ready ~= true
-      or type(startup_status) ~= "table"
-      or startup_status.repl_ready ~= true
-    then
-      return false, backend_snapshot, nil
-    end
-  end
-
-  if options.auto_start_lsp ~= true then
-    return true, backend_snapshot, nil
-  end
-
-  local lsp_ready, lsp_status = lsp_status_ready_for_safe_state(bufnr)
-  return lsp_ready, backend_snapshot, lsp_status
-end
-
-local function mark_startup_safe_state(bufnr, source)
-  if startup_unlocked(bufnr) then
-    return
-  end
-
-  local ready, _, lsp_status = startup_ready_for_safe_state(bufnr)
-  if not ready then
-    return
-  end
-
-  local post_lsp_bootstrap_unlock_ms = nil
-  local detached_status = type(lsp_status) == "table" and lsp_status.detachedSessionStatus or nil
-  if type(detached_status) == "table" and type(detached_status.lastBootstrapSuccessMs) == "number" then
-    post_lsp_bootstrap_unlock_ms = math.max(0, wallclock_ms() - detached_status.lastBootstrapSuccessMs)
-  end
-  record_startup_unlock(bufnr, source, {
-    post_lsp_bootstrap_unlock_ms = post_lsp_bootstrap_unlock_ms,
-  })
-end
-
-local function startup_status(bufnr)
-  if type(bufnr) ~= "number" then
-    bufnr = vim.api.nvim_get_current_buf()
-  end
-
-  if #vim.api.nvim_list_uis() == 0 then
-    mark_startup_safe_state(bufnr, "HeadlessStatusPoll")
-  end
-
-  local trace = startup_traces[bufnr]
-  if type(trace) ~= "table" then
-    return {
-      tracked = false,
-      bufnr = bufnr,
-      file = tracked_startup_file(bufnr),
-      filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or nil,
-      log_path = startup_log_path(),
-      main_buffer_unlocked = false,
-    }
-  end
-
-  return {
-    tracked = true,
-    bufnr = trace.bufnr,
-    file = trace.file,
-    filetype = trace.filetype,
-    log_path = trace.log_path or startup_log_path(),
-    main_buffer_unlocked = trace.main_buffer_unlocked == true,
-    main_buffer_unlock_at_iso = trace.main_buffer_unlock_at_iso,
-    main_buffer_unlock_at_ms = trace.main_buffer_unlock_at_ms,
-    main_buffer_unlock_elapsed_ms = trace.main_buffer_unlock_elapsed_ms,
-    main_buffer_unlock_source = trace.main_buffer_unlock_source,
-    post_lsp_bootstrap_unlock_ms = trace.post_lsp_bootstrap_unlock_ms,
-    started_at_iso = trace.started_at_iso,
-    started_at_ms = trace.started_at_ms,
-  }
-end
-
-local function r_string_literal(value)
-  return '"' .. tostring(value or ""):gsub("\\", "\\\\"):gsub('"', '\\"') .. '"'
-end
-
-local function help_expression(topic)
-  local package_name, help_name = topic:match("^([A-Za-z.][A-Za-z0-9._]*):::([A-Za-z.][A-Za-z0-9._]*)$")
-  if not package_name or not help_name then
-    package_name, help_name = topic:match("^([A-Za-z.][A-Za-z0-9._]*)::([A-Za-z.][A-Za-z0-9._]*)$")
-  end
-  if package_name and help_name then
-    return string.format(
-      'utils::help(%s, package = %s, help_type = "text")',
-      r_string_literal(help_name),
-      r_string_literal(package_name)
-    )
-  end
-
-  return string.format('utils::help(%s, help_type = "text")', r_string_literal(topic))
-end
-
-local function split_lines(text)
-  local normalized = tostring(text or ""):gsub("\r\n", "\n")
-  return vim.split(normalized, "\n", { plain = true })
-end
-
-local function trim_empty_edges(lines, start_line, end_line)
-  while start_line <= end_line and vim.trim(lines[start_line] or "") == "" do
-    start_line = start_line + 1
-  end
-
-  while end_line >= start_line and vim.trim(lines[end_line] or "") == "" do
-    end_line = end_line - 1
-  end
-
-  return start_line, end_line
-end
-
-local function color_value(value)
-  if type(value) == "number" then
-    return string.format("#%06x", value)
-  end
-
-  if type(value) == "string" and value ~= "" then
-    return value
-  end
-
-  return nil
-end
-
-local function hex_to_rgb(value)
-  value = color_value(value)
-  if type(value) ~= "string" then
-    return nil
-  end
-
-  local hex = value:gsub("^#", "")
-  if #hex ~= 6 then
-    return nil
-  end
-
-  local red = tonumber(hex:sub(1, 2), 16)
-  local green = tonumber(hex:sub(3, 4), 16)
-  local blue = tonumber(hex:sub(5, 6), 16)
-  if not red or not green or not blue then
-    return nil
-  end
-
-  return { red, green, blue }
-end
-
-local function rgb_to_hex(rgb)
-  if type(rgb) ~= "table" or #rgb < 3 then
-    return nil
-  end
-
-  return string.format("#%02x%02x%02x", rgb[1], rgb[2], rgb[3])
-end
-
-local function blend_colors(base, target, alpha)
-  local base_rgb = hex_to_rgb(base)
-  local target_rgb = hex_to_rgb(target)
-  if not base_rgb or not target_rgb then
-    return color_value(base) or color_value(target)
-  end
-
-  alpha = math.max(0, math.min(alpha or 0.5, 1))
-  local blended = {}
-  for index = 1, 3 do
-    blended[index] = math.floor((base_rgb[index] * (1 - alpha)) + (target_rgb[index] * alpha) + 0.5)
-  end
-
-  return rgb_to_hex(blended)
-end
-
-local function color_distance(left, right)
-  local left_rgb = hex_to_rgb(left)
-  local right_rgb = hex_to_rgb(right)
-  if not left_rgb or not right_rgb then
-    return math.huge
-  end
-
-  local distance = 0
-  for index = 1, 3 do
-    distance = distance + math.abs(left_rgb[index] - right_rgb[index])
-  end
-  return distance
-end
-
-local function relative_luminance(value)
-  local rgb = hex_to_rgb(value)
-  if not rgb then
-    return 0
-  end
-
-  return (0.2126 * rgb[1]) + (0.7152 * rgb[2]) + (0.0722 * rgb[3])
-end
-
-local function ensure_distinct_bg(candidate, base, accent)
-  candidate = color_value(candidate)
-  base = color_value(base)
-  accent = color_value(accent)
-  if not candidate then
-    candidate = base
-  end
-  if not candidate then
-    return accent
-  end
-  if not base then
-    return candidate
-  end
-
-  if color_distance(candidate, base) >= 12 then
-    return candidate
-  end
-
-  if accent and color_distance(accent, base) >= 24 then
-    return blend_colors(base, accent, 0.18)
-  end
-
-  if relative_luminance(base) >= 128 then
-    return blend_colors(base, "#000000", 0.12)
-  end
-
-  return blend_colors(base, "#ffffff", 0.12)
-end
-
-local function ensure_code_surface(candidate, base)
-  candidate = color_value(candidate)
-  base = color_value(base)
-  if not candidate then
-    candidate = base
-  end
-  if not candidate then
-    return nil
-  end
-  if not base then
-    return candidate
-  end
-
-  if color_distance(candidate, base) >= 24 then
-    return candidate
-  end
-
-  if relative_luminance(base) >= 128 then
-    return blend_colors(base, "#000000", 0.18)
-  end
-
-  return blend_colors(base, "#000000", 0.12)
-end
-
-local function get_hl_color(name, key)
-  local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
-  if not ok or type(hl) ~= "table" then
-    return nil
-  end
-
-  return color_value(hl[key])
-end
-
-local function first_color(...)
-  for index = 1, select("#", ...) do
-    local value = color_value(select(index, ...))
-    if value then
-      return value
-    end
-  end
-  return nil
-end
-
-local function help_palette()
-  local colors = {}
-  local ok, base46 = pcall(require, "base46")
-  if ok and type(base46) == "table" and type(base46.get_theme_tb) == "function" then
-    colors = base46.get_theme_tb("base_30") or {}
-  end
-
-  local normal_bg = first_color(get_hl_color("NormalFloat", "bg"), get_hl_color("Normal", "bg"), "#1f1f1f")
-  local normal_fg = first_color(get_hl_color("NormalFloat", "fg"), get_hl_color("Normal", "fg"), "#e6e6e6")
-  local section_bg = first_color(
-    colors.one_bg3,
-    colors.one_bg2,
-    colors.line,
-    get_hl_color("CursorLine", "bg"),
-    get_hl_color("Visual", "bg"),
-    normal_bg
-  )
-  local arguments_bg = first_color(
-    colors.one_bg2,
-    colors.one_bg3,
-    colors.black2,
-    colors.line,
-    get_hl_color("ColorColumn", "bg"),
-    normal_bg
-  )
-  local accent_bg = first_color(
-    colors.sun,
-    colors.yellow,
-    colors.orange,
-    colors.baby_pink,
-    get_hl_color("Title", "fg"),
-    get_hl_color("Special", "fg"),
-    normal_bg
-  )
-  local code_bg = first_color(
-    get_hl_color("ColorColumn", "bg"),
-    get_hl_color("RenderMarkdownCode", "bg"),
-    colors.black2,
-    colors.darker_black,
-    colors.one_bg,
-    colors.one_bg2,
-    colors.line,
-    section_bg,
-    normal_bg
-  )
-  code_bg = color_value(code_bg)
-  if not code_bg then
-    code_bg = blend_colors(normal_bg, "#000000", relative_luminance(normal_bg) >= 128 and 0.18 or 0.12)
-  elseif color_distance(code_bg, normal_bg) < 12 then
-    code_bg = blend_colors(normal_bg, "#000000", relative_luminance(normal_bg) >= 128 and 0.18 or 0.12)
-  end
-
-  local label_fg = first_color(
-    colors.sun,
-    colors.yellow,
-    colors.orange,
-    colors.baby_pink,
-    get_hl_color("Title", "fg"),
-    normal_fg
-  )
-  local link_fg = first_color(
-    colors.blue,
-    colors.cyan,
-    colors.teal,
-    colors.nord_blue,
-    get_hl_color("Underlined", "fg"),
-    get_hl_color("DiagnosticInfo", "fg"),
-    get_hl_color("Identifier", "fg"),
-    "#61afef"
-  )
-
-  return {
-    normal_bg = normal_bg,
-    normal_fg = normal_fg,
-    muted_fg = first_color(
-      colors.grey_fg,
-      colors.light_grey,
-      get_hl_color("Comment", "fg"),
-      normal_fg
-    ),
-    section_bg = section_bg,
-    arguments_bg = arguments_bg,
-    code_bg = code_bg,
-    accent_bg = accent_bg,
-    accent_fg = first_color(
-      colors.black,
-      colors.darker_black,
-      get_hl_color("Normal", "bg"),
-      "#111111",
-      normal_fg
-    ),
-    label_fg = label_fg,
-    link_fg = link_fg,
-  }
-end
-
-local function ensure_help_highlights()
-  local palette = help_palette()
-
-  vim.api.nvim_set_hl(0, "ArkHelpTitle", {
-    bg = palette.accent_bg,
-    fg = palette.accent_fg,
-    bold = true,
-  })
-  vim.api.nvim_set_hl(0, "ArkHelpSectionHeader", {
-    bg = palette.section_bg,
-    fg = palette.normal_fg,
-    bold = true,
-  })
-  vim.api.nvim_set_hl(0, "ArkHelpUsageHeader", {
-    bg = palette.section_bg,
-    fg = palette.normal_fg,
-    bold = true,
-  })
-  vim.api.nvim_set_hl(0, "ArkHelpUsageBody", {
-    bg = palette.code_bg,
-  })
-  vim.api.nvim_set_hl(0, "ArkHelpCodeFence", {
-    bg = ensure_code_surface(blend_colors(palette.code_bg, palette.section_bg, 0.45), palette.code_bg),
-    fg = palette.muted_fg,
-    italic = true,
-  })
-  vim.api.nvim_set_hl(0, "ArkHelpArgumentsHeader", {
-    bg = palette.accent_bg,
-    fg = palette.accent_fg,
-    bold = true,
-  })
-  vim.api.nvim_set_hl(0, "ArkHelpArgumentsBody", {
-    bg = palette.arguments_bg,
-  })
-  vim.api.nvim_set_hl(0, "ArkHelpArgumentName", {
-    fg = palette.label_fg,
-    bold = true,
-  })
-  vim.api.nvim_set_hl(0, "ArkHelpReference", {
-    fg = palette.link_fg,
-    bold = true,
-    underline = true,
-  })
-end
-
-local function help_section_name(line)
-  return line:match("^([A-Z][A-Za-z ]+):$")
-end
-
-local function add_line_highlight(buf, line_index, group, priority)
-  vim.api.nvim_buf_set_extmark(buf, help_float_ns, line_index, 0, {
-    line_hl_group = group,
-    hl_eol = true,
-    priority = priority or 100,
-  })
-end
-
-local function add_range_highlight(buf, start_line, end_line, lines, group, priority)
-  if not start_line or not end_line or start_line > end_line then
-    return
-  end
-
-  local end_text = lines[end_line] or ""
-  vim.api.nvim_buf_set_extmark(buf, help_float_ns, start_line - 1, 0, {
-    end_row = end_line - 1,
-    end_col = #end_text,
-    hl_group = group,
-    hl_eol = true,
-    priority = priority or 100,
-  })
-end
-
-local function add_line_highlight_range(buf, start_line, end_line, group, priority)
-  if not start_line or not end_line or start_line > end_line then
-    return
-  end
-
-  for line_index = start_line, end_line do
-    add_line_highlight(buf, line_index - 1, group, priority)
-  end
-end
-
-local function help_reference_target(reference)
-  if type(reference) ~= "table" or type(reference.topic) ~= "string" or reference.topic == "" then
-    return nil
-  end
-
-  if type(reference.package) == "string" and reference.package ~= "" then
-    return string.format("%s::%s", reference.package, reference.topic)
-  end
-
-  return reference.topic
-end
-
-local function is_navigable_reference_label(label)
-  if type(label) ~= "string" then
-    return false
-  end
-
-  label = vim.trim(label)
-  if label == "" then
-    return false
-  end
-
-  if label:find("%(") or label:find("::", 1, true) or label:find("%?") or label:find("_", 1, true) then
-    return true
-  end
-
-  return #label >= 3 and label:match("[%a][%a][%a]") ~= nil
-end
-
-local function build_help_reference_matches(lines, references, code_lines)
-  local grouped = {}
-
-  for _, reference in ipairs(references or {}) do
-    local label = type(reference.label) == "string" and vim.trim(reference.label) or ""
-    local target = help_reference_target(reference)
-    if label ~= "" and target and is_navigable_reference_label(label) then
-      local existing = grouped[label]
-      if not existing then
-        grouped[label] = {
-          label = label,
-          target = target,
-          ambiguous = false,
-        }
-      elseif existing.target ~= target then
-        existing.ambiguous = true
-      end
-    end
-  end
-
-  local labels = {}
-  for label, entry in pairs(grouped) do
-    if not entry.ambiguous then
-      labels[#labels + 1] = label
-    end
-  end
-
-  table.sort(labels, function(left, right)
-    if #left == #right then
-      return left < right
-    end
-    return #left > #right
-  end)
-
-  local matches = {}
-  for line_index, line in ipairs(lines) do
-    if code_lines and code_lines[line_index] then
-      goto next_line
-    end
-
-    local occupied = {}
-
-    for _, label in ipairs(labels) do
-      local start_col = 1
-      while true do
-        local match_start, match_end = line:find(label, start_col, true)
-        if not match_start then
-          break
-        end
-
-        local overlaps = false
-        for index = match_start, match_end do
-          if occupied[index] then
-            overlaps = true
-            break
-          end
-        end
-
-        if not overlaps then
-          for index = match_start, match_end do
-            occupied[index] = true
-          end
-
-          matches[#matches + 1] = {
-            line = line_index,
-            start_col = match_start - 1,
-            end_col = match_end,
-            label = label,
-            target = grouped[label].target,
-          }
-        end
-
-        start_col = match_start + 1
-      end
-    end
-
-    ::next_line::
-  end
-
-  return matches
-end
-
-local function help_code_lines(rendered)
-  local code_lines = {}
-  for _, block in ipairs((rendered or {}).code_blocks or {}) do
-    for line_index = block.fence_start, block.fence_end do
-      code_lines[line_index] = true
-    end
-  end
-  return code_lines
-end
-
-local function help_reference_matches(rendered, references)
-  rendered = rendered or {}
-  local matches = build_help_reference_matches(rendered.lines or {}, references or {}, help_code_lines(rendered))
-  for _, entry in ipairs(rendered.toc_entries or {}) do
-    matches[#matches + 1] = entry
-  end
-  return matches
-end
-
-local function reference_under_cursor(buf)
-  local cursor = vim.api.nvim_win_get_cursor(0)
-  local line = cursor[1]
-  local col = cursor[2]
-
-  for _, match in ipairs(vim.b[buf].ark_help_references or {}) do
-    if match.line == line and col >= match.start_col and col < match.end_col then
-      return match
-    end
-  end
-end
-
-local function render_help_display(raw_lines)
-  local rendered = {
-    lines = {},
-    code_blocks = {},
-    toc_entries = {},
-  }
-
-  local sections = {}
-  for index, line in ipairs(raw_lines) do
-    local header = help_section_name(line)
-    if header then
-      sections[#sections + 1] = { name = header, line = index }
-    end
-  end
-
-  local cursor = 1
-  for index, section in ipairs(sections) do
-    local next_line = sections[index + 1] and sections[index + 1].line or (#raw_lines + 1)
-    local is_code_section = section.name == "Usage" or section.name == "Examples"
-    if not is_code_section then
-      goto continue
-    end
-
-    for raw_index = cursor, section.line do
-      rendered.lines[#rendered.lines + 1] = raw_lines[raw_index]
-    end
-
-    local body_start, body_end = trim_empty_edges(raw_lines, section.line + 1, next_line - 1)
-    local block = {
-      name = section.name,
-      header_line = #rendered.lines,
-      fence_start = #rendered.lines + 1,
-    }
-
-    rendered.lines[#rendered.lines + 1] = "```r"
-    block.body_start = #rendered.lines + 1
-
-    if body_start <= body_end then
-      for raw_index = body_start, body_end do
-        rendered.lines[#rendered.lines + 1] = raw_lines[raw_index]
-      end
-    end
-
-    block.body_end = #rendered.lines
-    block.fence_end = #rendered.lines + 1
-    rendered.lines[#rendered.lines + 1] = "```"
-    rendered.code_blocks[#rendered.code_blocks + 1] = block
-
-    if next_line <= #raw_lines then
-      rendered.lines[#rendered.lines + 1] = ""
-    end
-
-    cursor = next_line
-
-    ::continue::
-  end
-
-  for raw_index = cursor, #raw_lines do
-    rendered.lines[#rendered.lines + 1] = raw_lines[raw_index]
-  end
-
-  if #rendered.lines == 0 then
-    rendered.lines = { "" }
-    return rendered
-  end
-
-  local rendered_sections = {}
-  local title_line = nil
-  for index, line in ipairs(rendered.lines) do
-    if title_line == nil and line ~= "" then
-      title_line = index
-    end
-
-    local header = help_section_name(line)
-    if header then
-      rendered_sections[#rendered_sections + 1] = {
-        name = header,
-        line = index,
-      }
-    end
-  end
-
-  if #rendered_sections >= 2 then
-    local insert_after = title_line or 0
-    if insert_after > 0 and rendered.lines[insert_after + 1] == "" then
-      insert_after = insert_after + 1
-    end
-
-    local toc_lines = { "Contents:", "" }
-    for _, section in ipairs(rendered_sections) do
-      toc_lines[#toc_lines + 1] = "  - " .. section.name
-    end
-    toc_lines[#toc_lines + 1] = ""
-
-    local next_lines = {}
-    for index = 1, insert_after do
-      next_lines[#next_lines + 1] = rendered.lines[index]
-    end
-    for _, line in ipairs(toc_lines) do
-      next_lines[#next_lines + 1] = line
-    end
-    for index = insert_after + 1, #rendered.lines do
-      next_lines[#next_lines + 1] = rendered.lines[index]
-    end
-    rendered.lines = next_lines
-
-    local shift = #toc_lines
-    local function shift_line(line)
-      if line > insert_after then
-        return line + shift
-      end
-      return line
-    end
-
-    for _, block in ipairs(rendered.code_blocks) do
-      block.header_line = shift_line(block.header_line)
-      block.fence_start = shift_line(block.fence_start)
-      block.body_start = shift_line(block.body_start)
-      block.body_end = shift_line(block.body_end)
-      block.fence_end = shift_line(block.fence_end)
-    end
-
-    for index, section in ipairs(rendered_sections) do
-      local entry_line = insert_after + 2 + index
-      rendered.toc_entries[#rendered.toc_entries + 1] = {
-        line = entry_line,
-        start_col = 4,
-        end_col = 4 + #section.name,
-        label = section.name,
-        section_line = shift_line(section.line),
-      }
-    end
-  end
-
-  return rendered
-end
-
-local function help_popup_payload(text, references, topic)
-  local rendered = render_help_display(split_lines(text))
-  return {
-    topic = topic,
-    title = topic and ("ArkHelp: " .. topic) or "ArkHelp",
-    lines = rendered.lines,
-    references = help_reference_matches(rendered, references),
-  }
-end
-
-local function start_help_markdown_parser(buf)
-  return pcall(vim.treesitter.start, buf, "markdown")
-end
-
-local function ensure_markdown_fenced_r_syntax()
-  local languages = vim.g.markdown_fenced_languages
-  if type(languages) ~= "table" then
-    languages = {}
-  else
-    languages = vim.deepcopy(languages)
-  end
-
-  for _, language in ipairs(languages) do
-    if language == "r" or language == "r=R" then
-      vim.g.markdown_fenced_languages = languages
-      return
-    end
-  end
-
-  languages[#languages + 1] = "r"
-  vim.g.markdown_fenced_languages = languages
-end
-
-local function start_help_markdown_syntax(buf)
-  ensure_markdown_fenced_r_syntax()
-  vim.api.nvim_buf_call(buf, function()
-    vim.bo[buf].syntax = "markdown"
-    pcall(vim.cmd, "runtime! syntax/markdown.vim")
-    pcall(vim.cmd, "syntax sync fromstart")
-  end)
-end
-
-local function apply_help_highlights(buf, rendered, references)
-  local lines = rendered.lines
-  ensure_help_highlights()
-  vim.api.nvim_buf_clear_namespace(buf, help_float_ns, 0, -1)
-
-  local title_line = nil
-  local sections = {}
-  local code_blocks_by_header = {}
-
-  for _, block in ipairs(rendered.code_blocks or {}) do
-    code_blocks_by_header[block.header_line] = block
-  end
-
-  for index, line in ipairs(lines) do
-    if title_line == nil and line ~= "" then
-      title_line = index
-    end
-
-    local header = help_section_name(line)
-    if header then
-      sections[#sections + 1] = { name = header, line = index }
-    end
-  end
-
-  if title_line and (not sections[1] or title_line < sections[1].line) then
-    add_line_highlight(buf, title_line - 1, "ArkHelpTitle", 250)
-  end
-
-  for index, section in ipairs(sections) do
-    local next_line = sections[index + 1] and sections[index + 1].line or (#lines + 1)
-    local body_start = section.line + 1
-    local body_end = next_line - 1
-
-    if section.name == "Arguments" then
-      add_line_highlight(buf, section.line - 1, "ArkHelpArgumentsHeader", 220)
-      for line_index = body_start, body_end do
-        add_line_highlight(buf, line_index - 1, "ArkHelpArgumentsBody", 110)
-
-        local line = lines[line_index] or ""
-        local start_col, end_col = line:find("^%s*[%w._]+:")
-        if not start_col then
-          start_col, end_col = line:find("^%s*%.%.%.:")
-        end
-        if start_col and end_col then
-          vim.api.nvim_buf_add_highlight(buf, help_float_ns, "ArkHelpArgumentName", line_index - 1, start_col - 1, end_col)
-        end
-      end
-    elseif section.name == "Usage" or section.name == "Examples" then
-      add_line_highlight(buf, section.line - 1, "ArkHelpUsageHeader", 210)
-      local block = code_blocks_by_header[section.line]
-      if block then
-        add_line_highlight(buf, block.fence_start - 1, "ArkHelpCodeFence", 120)
-        if block.body_start <= block.body_end then
-          add_line_highlight_range(buf, block.body_start, block.body_end, "ArkHelpUsageBody", 105)
-        end
-        add_line_highlight(buf, block.fence_end - 1, "ArkHelpCodeFence", 120)
-      else
-        add_line_highlight_range(buf, body_start, body_end, "ArkHelpUsageBody", 105)
-      end
-    else
-      add_line_highlight(buf, section.line - 1, "ArkHelpSectionHeader", 200)
-    end
-  end
-
-  local matches = help_reference_matches(rendered, references)
-  for _, match in ipairs(matches) do
-    vim.api.nvim_buf_set_extmark(buf, help_float_ns, match.line - 1, match.start_col, {
-      end_col = match.end_col,
-      hl_group = "ArkHelpReference",
-      priority = 320,
-    })
-  end
-
-  vim.b[buf].ark_help_references = matches
-end
-
-local function open_readonly_float(text, opts)
-  opts = opts or {}
-  local rendered = render_help_display(split_lines(text))
-  local lines = rendered.lines
-
-  local max_width = 0
-  for _, line in ipairs(lines) do
-    max_width = math.max(max_width, vim.fn.strdisplaywidth(line))
-  end
-
-  local editor_width = vim.o.columns
-  local editor_height = vim.o.lines - vim.o.cmdheight
-  local width = math.max(72, math.min(math.max(max_width + 4, 72), math.floor(editor_width * 0.9)))
-  local height = math.max(10, math.min(#lines, math.floor(editor_height * 0.85)))
-
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].swapfile = false
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].filetype = help_filetype
-  local treesitter_started = start_help_markdown_parser(buf)
-  vim.b[buf].ark_help_treesitter = treesitter_started
-  vim.bo[buf].modifiable = false
-  vim.bo[buf].readonly = true
-
-  local win = vim.api.nvim_open_win(buf, true, {
-    relative = "editor",
-    row = math.max(1, math.floor((editor_height - height) / 2) - 1),
-    col = math.max(0, math.floor((editor_width - width) / 2)),
-    width = width,
-    height = height,
-    border = "rounded",
-    style = "minimal",
-  })
-
-  vim.wo[win].wrap = true
-  vim.wo[win].linebreak = true
-  vim.wo[win].number = false
-  vim.wo[win].relativenumber = false
-  vim.wo[win].cursorline = false
-  vim.wo[win].conceallevel = 0
-  vim.wo[win].concealcursor = ""
-
-  apply_help_highlights(buf, rendered, opts.references or {})
-  vim.defer_fn(function()
-    if vim.api.nvim_buf_is_valid(buf) then
-      start_help_markdown_syntax(buf)
-    end
-  end, 20)
-
-  local close = function()
-    if vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_close(win, true)
-    end
-  end
-
-  local current_topic = type(opts.topic) == "string" and opts.topic or nil
-  local back_stack = {}
-  local forward_stack = {}
-
-  local function notify_help(message)
-    vim.notify(tostring(message), vim.log.levels.WARN, { title = "ark.nvim" })
-  end
-
-  local function request_page(target)
-    if type(opts.on_request_page) ~= "function" then
-      return nil, "ArkHelp history navigation is unavailable"
-    end
-
-    return opts.on_request_page(target)
-  end
-
-  local function set_page(page, target)
-    if type(page) ~= "table" or type(page.text) ~= "string" then
-      return nil, "invalid ArkHelp page response"
-    end
-
-    local next_rendered = render_help_display(split_lines(page.text))
-    local next_lines = next_rendered.lines
-    if #next_lines == 0 then
-      next_lines = { "" }
-      next_rendered.lines = next_lines
-    end
-
-    vim.bo[buf].readonly = false
-    vim.bo[buf].modifiable = true
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, next_lines)
-    vim.bo[buf].filetype = help_filetype
-    local treesitter_started = start_help_markdown_parser(buf)
-    vim.b[buf].ark_help_treesitter = treesitter_started
-    vim.bo[buf].modifiable = false
-    vim.bo[buf].readonly = true
-    apply_help_highlights(buf, next_rendered, page.references or {})
-    vim.defer_fn(function()
-      if vim.api.nvim_buf_is_valid(buf) then
-        start_help_markdown_syntax(buf)
-      end
-    end, 20)
-
-    current_topic = type(page.topic) == "string" and page.topic ~= "" and page.topic or target
-    vim.b[buf].ark_help_topic = current_topic
-    pcall(vim.api.nvim_win_set_cursor, win, { 1, 0 })
-    return true, nil
-  end
-
-  local function follow_target(target)
-    if type(target) ~= "string" or target == "" then
-      return
-    end
-
-    local page, err = request_page(target)
-    if not page then
-      notify_help(err or "failed to follow ArkHelp link")
-      return
-    end
-
-    local previous = current_topic
-    local ok, set_err = set_page(page, target)
-    if not ok then
-      notify_help(set_err or "failed to render ArkHelp link")
-      return
-    end
-
-    if type(previous) == "string" and previous ~= "" and previous ~= current_topic then
-      back_stack[#back_stack + 1] = previous
-      forward_stack = {}
-    end
-  end
-
-  local function history_back()
-    local target = back_stack[#back_stack]
-    if type(target) ~= "string" or target == "" then
-      return
-    end
-
-    local page, err = request_page(target)
-    if not page then
-      notify_help(err or "failed to open previous ArkHelp page")
-      return
-    end
-
-    local previous = current_topic
-    local ok, set_err = set_page(page, target)
-    if not ok then
-      notify_help(set_err or "failed to render previous ArkHelp page")
-      return
-    end
-
-    back_stack[#back_stack] = nil
-    if type(previous) == "string" and previous ~= "" and previous ~= current_topic then
-      forward_stack[#forward_stack + 1] = previous
-    end
-  end
-
-  local function history_forward()
-    local target = forward_stack[#forward_stack]
-    if type(target) ~= "string" or target == "" then
-      return
-    end
-
-    local page, err = request_page(target)
-    if not page then
-      notify_help(err or "failed to open next ArkHelp page")
-      return
-    end
-
-    local previous = current_topic
-    local ok, set_err = set_page(page, target)
-    if not ok then
-      notify_help(set_err or "failed to render next ArkHelp page")
-      return
-    end
-
-    forward_stack[#forward_stack] = nil
-    if type(previous) == "string" and previous ~= "" and previous ~= current_topic then
-      back_stack[#back_stack + 1] = previous
-    end
-  end
-
-  vim.b[buf].ark_help_source_bufnr = opts.source_bufnr
-  vim.b[buf].ark_help_buffer = true
-  vim.b[buf].ark_help_topic = current_topic
-
-  vim.keymap.set("n", "q", close, { buffer = buf, nowait = true, silent = true })
-  vim.keymap.set("n", "<CR>", function()
-    local match = reference_under_cursor(buf)
-    if not match then
-      return
-    end
-
-    if type(match.section_line) == "number" and match.section_line > 0 then
-      pcall(vim.api.nvim_win_set_cursor, win, { match.section_line, 0 })
-      return
-    end
-
-    follow_target(match.target)
-  end, { buffer = buf, nowait = true, silent = true })
-  vim.keymap.set("n", "H", history_back, { buffer = buf, nowait = true, silent = true })
-  vim.keymap.set("n", "L", history_forward, { buffer = buf, nowait = true, silent = true })
-
-  return buf, win
-end
-
-local function normalize_help_display(value)
-  if type(value) ~= "string" or value == "" then
-    return "auto"
-  end
-
-  value = value:lower():gsub("-", "_")
-  if value == "float" or value == "nvim" or value == "nvim_float" then
-    return "float"
-  end
-  if value == "popup" or value == "tmux" or value == "tmux_popup" then
-    return "tmux_popup"
-  end
-  if value == "auto" then
-    return "auto"
-  end
-
-  return "auto"
-end
-
-local function normalize_view_display(value)
-  if type(value) ~= "string" or value == "" then
-    return "auto"
-  end
-
-  value = value:lower():gsub("-", "_")
-  if value == "tab" or value == "nvim" or value == "nvim_tab" then
-    return "tab"
-  end
-  if value == "popup" or value == "tmux" or value == "tmux_popup" then
-    return "tmux_popup"
-  end
-  if value == "auto" then
-    return "auto"
-  end
-
-  return "auto"
-end
+local startup = startup_state.new({
+  lsp = lsp,
+  options = function()
+    return options
+  end,
+  session_backend = session_backend,
+})
+
+local help_expression = help_render.expression
+local help_popup_payload = help_render.help_popup_payload
+local normalize_help_display = help_render.normalize_help_display
+local normalize_view_display = help_render.normalize_view_display
+local open_readonly_float = help_render.open_readonly_float
+local r_string_literal = help_render.r_string_literal
 
 local function should_use_tmux_help_popup()
   local help_opts = type(options) == "table" and type(options.help) == "table" and options.help or {}
@@ -2124,6 +836,12 @@ end
 
 ensure_bridge_runtime = function(bridge_opts)
   bridge_opts = bridge_opts or {}
+  local state_bufnr = type(bridge_opts.bufnr) == "number" and bridge_opts.bufnr or vim.api.nvim_get_current_buf()
+  local function transition(event, details)
+    if type(state_bufnr) == "number" then
+      startup:transition(state_bufnr, event, details)
+    end
+  end
   local runtime_config = session_backend.runtime_config(options)
   if type(runtime_config) ~= "table" then
     return true
@@ -2144,6 +862,9 @@ ensure_bridge_runtime = function(bridge_opts)
   end
 
   local message = type(err) == "table" and err.message or err
+  if type(err) == "table" and err.kind == "build_pending" then
+    transition("bridge_installing")
+  end
   if bridge_opts.wait_on_pending == true and type(err) == "table" and err.kind == "build_pending" then
     local timeout_ms = tonumber(bridge_opts.timeout_ms or 20000) or 20000
     local waited = vim.wait(timeout_ms, function()
@@ -2151,6 +872,7 @@ ensure_bridge_runtime = function(bridge_opts)
     end, 50, false)
     local failure_message = (type(completed) == "table" and completed.error) or message
     if not waited or completed.ok ~= true then
+      transition("degraded", { error = failure_message })
       if bridge_opts.notify ~= false and type(failure_message) == "string" and failure_message ~= "" then
         notify(failure_message, vim.log.levels.ERROR)
       end
@@ -2170,6 +892,10 @@ ensure_bridge_runtime = function(bridge_opts)
 
   if bridge_opts.notify ~= false and type(message) == "string" and message ~= "" then
     notify(message, bridge_opts.pending_level or vim.log.levels.INFO)
+  end
+
+  if type(err) ~= "table" or err.kind ~= "build_pending" then
+    transition("degraded", { error = message })
   end
 
   return nil, message, type(err) == "table" and err.kind or nil
@@ -2338,12 +1064,10 @@ local function start_managed_buffer(bufnr)
     return
   end
 
-  local token = (startup_tokens[bufnr] or 0) + 1
-  startup_tokens[bufnr] = token
-  begin_startup_trace(bufnr, token)
+  local token = startup:begin(bufnr)
 
   local function can_start_buffer()
-    return startup_tokens[bufnr] == token
+    return startup:is_current(bufnr, token)
       and vim.api.nvim_buf_is_valid(bufnr)
       and vim.tbl_contains(options.filetypes, vim.bo[bufnr].filetype)
   end
@@ -2398,6 +1122,7 @@ local function start_managed_buffer(bufnr)
 
     if options.auto_start_pane then
       local bridge_ok = ensure_bridge_runtime({
+        bufnr = bufnr,
         on_build_complete = function(result)
           if type(result) ~= "table" or result.ok ~= true then
             return
@@ -2431,13 +1156,39 @@ end
 
 function M.setup(opts)
   options = merged_opts(options, opts)
+  target_actions = target_actions_module.new({
+    add_candidate_bufnr = add_candidate_bufnr,
+    current_nvim_server = current_nvim_server,
+    ensure_runtime_ready = ensure_runtime_ready,
+    ensure_setup = ensure_setup,
+    expression = expression,
+    is_ark_runtime_buffer = is_ark_runtime_buffer,
+    lsp = lsp,
+    normalize_view_display = normalize_view_display,
+    notify = notify,
+    options = options,
+    refresh = function(...)
+      return M.refresh(...)
+    end,
+    resolve_bufnr = resolve_bufnr,
+    resolve_view_source_bufnr = resolve_view_source_bufnr,
+    r_string_literal = r_string_literal,
+    send = function(...)
+      return M.send(...)
+    end,
+    session_backend = session_backend,
+    should_use_tmux_view_popup = should_use_tmux_view_popup,
+    target_tools = target_tools,
+    target_view = target_view,
+    view = view,
+    view_popup_backend = view_popup_backend,
+    with_runtime_ready = with_runtime_ready,
+  })
   register_help_rpc()
   register_view_rpc()
   if type(lsp.set_startup_ready_callback) == "function" then
     lsp.set_startup_ready_callback(function(bufnr, payload)
-      record_startup_unlock(bufnr, type(payload) == "table" and payload.source or "LspBootstrap", {
-        post_lsp_bootstrap_unlock_ms = 0,
-      })
+      startup:mark_live_hydrated(bufnr, type(payload) == "table" and payload.source or "LspBootstrap")
       drain_all_ready_waiters(bufnr)
       if type(blink.maybe_show_after_startup) == "function" then
         vim.defer_fn(function()
@@ -2488,7 +1239,7 @@ function M.setup(opts)
       if not is_ark_completion_buffer(args.buf) then
         return
       end
-      if not startup_unlocked(args.buf) then
+      if not startup:unlocked(args.buf) then
         return
       end
       blink.handle_insert_char_pre(args.buf)
@@ -2499,7 +1250,7 @@ function M.setup(opts)
   vim.api.nvim_create_autocmd("SafeState", {
     group = group,
     callback = function()
-      mark_startup_safe_state(vim.api.nvim_get_current_buf())
+      startup:mark_safe(vim.api.nvim_get_current_buf(), "SafeState")
     end,
     desc = "Record the first post-startup SafeState for the current Ark buffer",
   })
@@ -2596,8 +1347,10 @@ end
 
 function M.start_pane()
   ensure_setup()
+  local bufnr = vim.api.nvim_get_current_buf()
   prewarm_current_buffer_lsp()
   local bridge_ok, bridge_err = ensure_bridge_runtime({
+    bufnr = bufnr,
     user_initiated = true,
     wait_on_pending = true,
   })
@@ -2700,7 +1453,10 @@ end
 
 function M.restart_pane()
   ensure_setup()
+  local bufnr = vim.api.nvim_get_current_buf()
+  startup:transition(bufnr, "restarting")
   local bridge_ok, bridge_err = ensure_bridge_runtime({
+    bufnr = bufnr,
     user_initiated = true,
     wait_on_pending = true,
   })
@@ -2719,7 +1475,10 @@ end
 
 function M.stop_pane()
   ensure_setup()
+  local bufnr = vim.api.nvim_get_current_buf()
+  startup:transition(bufnr, "stopping")
   session_backend.stop(options)
+  startup:transition(bufnr, "stopped")
   sync_sessions_soon()
 end
 
@@ -3182,1244 +1941,103 @@ function M.view_column_wrap(mode, column)
   return result, err
 end
 
-local function targets_trim(value)
-  return (value:gsub("^%s+", ""):gsub("%s+$", ""))
-end
-
-local function targets_config_path(root)
-  local config = vim.env.TAR_CONFIG
-  if type(config) ~= "string" or config == "" then
-    config = "_targets.yaml"
-  end
-  if config:sub(1, 1) == "/" then
-    return vim.fs.normalize(config)
-  end
-  return vim.fs.normalize(root .. "/" .. config)
-end
-
-local function targets_yaml_scalar(value)
-  value = targets_trim(value or "")
-  if value == "" or value == "null" or value == "~" then
-    return nil
-  end
-
-  local quote = value:sub(1, 1)
-  if (quote == '"' or quote == "'") and value:sub(-1) == quote then
-    return value:sub(2, -2)
-  end
-  return value
-end
-
-local function targets_config_value(root, name)
-  local config = targets_config_path(root)
-  if vim.fn.filereadable(config) ~= 1 then
-    return nil
-  end
-
-  local ok, lines = pcall(vim.fn.readfile, config, "", 2000)
-  if not ok or type(lines) ~= "table" then
-    return nil
-  end
-
-  local project = vim.env.TAR_PROJECT
-  if type(project) ~= "string" or project == "" then
-    project = "main"
-  end
-
-  local in_project = false
-  for _, line in ipairs(lines) do
-    local top = line:match("^([%w_.-]+):%s*$")
-    if top then
-      in_project = top == project
-    elseif in_project then
-      local value = line:match("^%s+" .. name .. ":%s*(.-)%s*$")
-      if value then
-        return targets_yaml_scalar(value)
-      end
-    end
-  end
-
-  for _, line in ipairs(lines) do
-    local value = line:match("^" .. name .. ":%s*(.-)%s*$")
-    if value then
-      return targets_yaml_scalar(value)
-    end
-  end
-
-  return nil
-end
-
-local function targets_resolve_project_path(root, path)
-  if type(path) ~= "string" or path == "" then
-    return nil
-  end
-  if path:sub(1, 1) == "/" then
-    return vim.fs.normalize(path)
-  end
-  return vim.fs.normalize(root .. "/" .. path)
-end
-
-local function targets_project_script(root)
-  return targets_resolve_project_path(root, targets_config_value(root, "script"))
-    or vim.fs.normalize(root .. "/_targets.R")
-end
-
-local function targets_project_store_path(root)
-  return targets_resolve_project_path(root, targets_config_value(root, "store"))
-    or vim.fs.normalize(root .. "/_targets")
-end
-
-local function targets_project(bufnr)
-  bufnr = resolve_bufnr(bufnr)
-  local path = vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_get_name(bufnr) or ""
-  local anchor = path ~= "" and path or vim.loop.cwd()
-  local root = vim.fs.root(anchor, { "_targets.R", "_targets.yaml", ".git" }) or vim.loop.cwd()
-  root = vim.fs.normalize(root)
-  local script = targets_project_script(root)
-  local store = targets_project_store_path(root)
-
-  return {
-    root = root,
-    script = script,
-    store = store,
-  }
-end
-
-function M.targets_project(bufnr)
-  return targets_project(bufnr)
-end
-
-function M.targets_script(bufnr)
-  return targets_project(bufnr).script
-end
-
-local target_runtime_by_root = {}
-
-local function same_targets_project(project, bufnr)
-  if type(project) ~= "table" or type(project.root) ~= "string" or project.root == "" then
-    return false
-  end
-  if type(bufnr) ~= "number" or not vim.api.nvim_buf_is_valid(bufnr) then
-    return false
-  end
-  return targets_project(bufnr).root == project.root
-end
-
-local function target_runtime_candidate(project, bufnr)
-  if is_ark_runtime_buffer(bufnr) and same_targets_project(project, bufnr) then
-    return bufnr
-  end
-  return nil
-end
-
-local function target_runtime_filetype()
-  local filetypes = options and options.filetypes or nil
-  if vim.tbl_contains(filetypes or {}, "r") then
-    return "r"
-  end
-  return (type(filetypes) == "table" and filetypes[1]) or "r"
-end
-
-local function ensure_target_script_buffer(project)
-  local script = type(project) == "table" and project.script or nil
-  if type(script) ~= "string" or script == "" or vim.fn.filereadable(script) ~= 1 then
-    return nil
-  end
-
-  local bufnr = vim.fn.bufnr(script)
-  local existed = bufnr > 0
-  if not existed then
-    bufnr = vim.fn.bufadd(script)
-  end
-  if type(bufnr) ~= "number" or bufnr < 1 or not vim.api.nvim_buf_is_valid(bufnr) then
-    return nil
-  end
-
-  if not vim.api.nvim_buf_is_loaded(bufnr) then
-    vim.fn.bufload(bufnr)
-  end
-  if not existed then
-    vim.bo[bufnr].buflisted = false
-  end
-  if not vim.tbl_contains(options.filetypes or {}, vim.bo[bufnr].filetype) then
-    vim.bo[bufnr].filetype = target_runtime_filetype()
-  end
-
-  if target_runtime_candidate(project, bufnr) then
-    target_runtime_by_root[project.root] = bufnr
-    return bufnr
-  end
-  return nil
-end
-
-local function targets_runtime_bufnr(project, anchor_bufnr)
-  local candidates = {}
-  local seen = {}
-
-  add_candidate_bufnr(candidates, seen, anchor_bufnr)
-  add_candidate_bufnr(candidates, seen, target_runtime_by_root[project.root])
-  add_candidate_bufnr(candidates, seen, vim.fn.bufnr("#"))
-
-  for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-    if vim.api.nvim_win_is_valid(winid) then
-      add_candidate_bufnr(candidates, seen, vim.api.nvim_win_get_buf(winid))
-    end
-  end
-
-  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-    add_candidate_bufnr(candidates, seen, bufnr)
-  end
-
-  for _, candidate in ipairs(candidates) do
-    local runtime_bufnr = target_runtime_candidate(project, candidate)
-    if runtime_bufnr then
-      target_runtime_by_root[project.root] = runtime_bufnr
-      return runtime_bufnr
-    end
-  end
-
-  return ensure_target_script_buffer(project)
-end
-
-local function target_name_text(value)
-  if type(value) == "string" then
-    return value
-  elseif type(value) == "number" then
-    return tostring(value)
-  end
-  return ""
-end
-
-local function normalize_target_names(value)
-  if type(value) == "table" then
-    local names = {}
-    for _, item in ipairs(value) do
-      local name = target_name_text(item)
-      if name ~= "" then
-        names[#names + 1] = name
-      end
-    end
-    return names
-  end
-
-  if type(value) ~= "string" or value == "" then
-    return {}
-  end
-
-  local names = {}
-  for name in value:gmatch("[^,%s]+") do
-    names[#names + 1] = name
-  end
-  return names
-end
-
-local function r_symbol_or_string(value)
-  local name = target_name_text(value)
-  if name:match("^%.?[A-Za-z][A-Za-z0-9._]*$") and not name:match("^%.[0-9]") then
-    return name
-  end
-  return r_string_literal(name)
-end
-
-local function target_load_expression(names)
-  if type(names) ~= "table" or #names == 0 then
-    return "targets::tar_load()"
-  end
-
-  if #names == 1 then
-    return string.format("targets::tar_load(%s)", r_symbol_or_string(names[1]))
-  end
-
-  local rendered = {}
-  for _, name in ipairs(names) do
-    rendered[#rendered + 1] = r_symbol_or_string(name)
-  end
-  return string.format("targets::tar_load(c(%s))", table.concat(rendered, ", "))
+local function target_actions_controller()
+  ensure_setup()
+  return target_actions
 end
 
 tar_read_target_name = function(expr)
-  if type(expr) ~= "string" or expr == "" then
-    return nil
-  end
-
-  local callees = {
-    "tar_read",
-    "targets::tar_read",
-    "targets:::tar_read",
-  }
-  local arg_patterns = {
-    "name%s*=%s*\"([^\"]+)\"",
-    "name%s*=%s*'([^']+)'",
-    "\"([^\"]+)\"",
-    "'([^']+)'",
-    "name%s*=%s*([%.%a_][%w_.]*)",
-    "([%.%a_][%w_.]*)",
-  }
-
-  for _, callee in ipairs(callees) do
-    local escaped = vim.pesc(callee)
-    for _, arg_pattern in ipairs(arg_patterns) do
-      local name = expr:match("^%s*" .. escaped .. "%s*%(%s*" .. arg_pattern .. "%s*%)%s*$")
-      if type(name) == "string" and name ~= "" then
-        return name
-      end
-    end
-  end
-
-  return nil
+  return target_actions_controller().tar_read_target_name(expr)
 end
 
-local function description_file_for_buffer(bufnr)
-  local path = ""
-  if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-    path = vim.api.nvim_buf_get_name(bufnr)
-  end
-
-  local start = ""
-  if type(path) == "string" and path ~= "" then
-    start = vim.fn.fnamemodify(path, ":p:h")
-  elseif uv and type(uv.cwd) == "function" then
-    start = uv.cwd()
-  else
-    start = vim.fn.getcwd()
-  end
-
-  if type(start) ~= "string" or start == "" then
-    return ""
-  end
-
-  local found = vim.fs.find("DESCRIPTION", {
-    path = start,
-    upward = true,
-    type = "file",
-  })[1]
-
-  return found and vim.fs.normalize(found) or ""
+function M.targets_project(bufnr)
+  return target_actions_controller().targets_project(bufnr)
 end
 
-local function missing_packages_from_diagnostics(bufnr)
-  bufnr = resolve_bufnr(bufnr)
-
-  local seen = {}
-  local packages = {}
-  for _, diagnostic in ipairs(vim.diagnostic.get(bufnr)) do
-    local package = tostring(diagnostic.message or ""):match("^Package '([^']+)' is not installed%.$")
-    if package and not seen[package] then
-      seen[package] = true
-      packages[#packages + 1] = package
-    end
-  end
-
-  table.sort(packages)
-  return packages
-end
-
-local function package_install_message(result)
-  if type(result) ~= "table" then
-    return "R package install completed"
-  end
-
-  local packages = result.packages
-  if type(packages) ~= "table" or #packages == 0 then
-    packages = result.specs
-  end
-  if type(packages) ~= "table" or #packages == 0 then
-    return "R package install completed"
-  end
-
-  local verb = #packages == 1 and "package" or "packages"
-  local method = type(result.method) == "string" and result.method ~= "" and result.method or "R"
-  return string.format("Installed R %s with %s: %s", verb, method, table.concat(packages, ", "))
-end
-
-local function package_install_request_async(bufnr, packages, description, dry_run, callback)
-  ensure_setup()
-  bufnr = resolve_bufnr(bufnr)
-
-  local function request_install(runtime_err)
-    if runtime_err then
-      notify(runtime_err, vim.log.levels.WARN)
-      if type(callback) == "function" then
-        callback(nil, runtime_err)
-      end
-      return nil, runtime_err
-    end
-
-    return lsp.package_install_async(options, bufnr, packages, description, dry_run, function(result, err)
-      if err then
-        notify(err or "package install failed", vim.log.levels.WARN)
-        if type(callback) == "function" then
-          callback(nil, err)
-        end
-        return
-      end
-
-      if type(callback) == "function" then
-        callback(result, nil)
-      end
-    end)
-  end
-
-  local ok, runtime_err, err_source = with_runtime_ready(bufnr, "ark.nvim package install", request_install)
-  if not ok and runtime_err and err_source ~= "callback" then
-    notify(runtime_err, vim.log.levels.WARN)
-    if type(callback) == "function" then
-      callback(nil, runtime_err)
-    end
-    return nil, runtime_err
-  end
-  if not ok and runtime_err then
-    return nil, runtime_err
-  end
-
-  return ok
-end
-
-local function targets_request(bufnr, label, request)
-  ensure_setup()
-  local anchor_bufnr = resolve_bufnr(bufnr)
-  local project = targets_project(anchor_bufnr)
-  local target_bufnr = targets_runtime_bufnr(project, anchor_bufnr)
-  if not target_bufnr then
-    local err = (label or "ark.nvim target lens") .. " requires an R-family buffer or readable targets script"
-    notify(err, vim.log.levels.WARN)
-    return nil, err
-  end
-
-  local ok, runtime_err = ensure_runtime_ready(target_bufnr, label or "ark.nvim target lens")
-  if not ok then
-    notify(runtime_err, vim.log.levels.WARN)
-    return nil, runtime_err
-  end
-
-  local result, err = nil, nil
-  for attempt = 1, 5 do
-    result, err = request(project, target_bufnr)
-    if result then
-      return result
-    end
-
-    local err_text = tostring(err or "")
-    local transient = err_text:find("Resource temporarily unavailable", 1, true) ~= nil
-      or err_text:find("bridge connection failed", 1, true) ~= nil
-    if not transient or attempt == 5 then
-      break
-    end
-    vim.wait(150 * attempt, function()
-      return false
-    end, 150 * attempt, false)
-  end
-
-  notify(err or "target request failed", vim.log.levels.WARN)
-  return nil, err
-end
-
-local function targets_request_async(bufnr, label, request, callback)
-  ensure_setup()
-  local anchor_bufnr = resolve_bufnr(bufnr)
-  label = label or "ark.nvim target lens"
-  local project = targets_project(anchor_bufnr)
-  local target_bufnr = targets_runtime_bufnr(project, anchor_bufnr)
-  if not target_bufnr then
-    local err = label .. " requires an R-family buffer or readable targets script"
-    notify(err, vim.log.levels.WARN)
-    if type(callback) == "function" then
-      callback(nil, err)
-    end
-    return nil, err
-  end
-
-  local function request_targets(runtime_err)
-    if runtime_err then
-      notify(runtime_err, vim.log.levels.WARN)
-      if type(callback) == "function" then
-        callback(nil, runtime_err)
-      end
-      return nil, runtime_err
-    end
-
-    local attempt = 0
-    local request_once
-
-    local function handle_result(result, err)
-      if result then
-        if type(callback) == "function" then
-          callback(result, nil)
-        end
-        return
-      end
-
-      local err_text = tostring(err or "")
-      local transient = err_text:find("Resource temporarily unavailable", 1, true) ~= nil
-        or err_text:find("bridge connection failed", 1, true) ~= nil
-      if transient and attempt < 5 then
-        vim.defer_fn(function()
-          request_once()
-        end, 150 * attempt)
-        return
-      end
-
-      notify(err or "target request failed", vim.log.levels.WARN)
-      if type(callback) == "function" then
-        callback(nil, err)
-      end
-    end
-
-    request_once = function()
-      attempt = attempt + 1
-      local sent, send_err = request(project, target_bufnr, handle_result)
-      if not sent then
-        handle_result(nil, send_err)
-      end
-    end
-
-    request_once()
-    return true
-  end
-
-  local ok, runtime_err, err_source = with_runtime_ready(target_bufnr, label, request_targets)
-  if not ok and runtime_err and err_source ~= "callback" then
-    notify(runtime_err, vim.log.levels.WARN)
-    if type(callback) == "function" then
-      callback(nil, runtime_err)
-    end
-    return nil, runtime_err
-  end
-  if not ok and runtime_err then
-    return nil, runtime_err
-  end
-
-  return ok
+function M.targets_script(bufnr)
+  return target_actions_controller().targets_script(bufnr)
 end
 
 function M.missing_packages(bufnr)
-  ensure_setup()
-  return missing_packages_from_diagnostics(bufnr)
+  return target_actions_controller().missing_packages(bufnr)
 end
 
 function M.install_missing_packages(bufnr, install_opts)
-  ensure_setup()
-  bufnr = resolve_bufnr(bufnr)
-  install_opts = install_opts or {}
-
-  local raw_packages = install_opts.packages or missing_packages_from_diagnostics(bufnr)
-  if type(raw_packages) ~= "table" then
-    raw_packages = {}
-  end
-
-  local seen = {}
-  local packages = {}
-  for _, package in ipairs(raw_packages) do
-    package = tostring(package or "")
-    if package ~= "" and not seen[package] then
-      seen[package] = true
-      packages[#packages + 1] = package
-    end
-  end
-
-  if #packages == 0 then
-    local result = {
-      status = "noop",
-      packages = {},
-    }
-    notify("No missing R package diagnostics in current buffer", vim.log.levels.INFO)
-    if type(install_opts.callback) == "function" then
-      install_opts.callback(result, nil)
-    end
-    return result
-  end
-
-  local description = install_opts.description
-  if description == nil then
-    description = description_file_for_buffer(bufnr)
-  end
-
-  local dry_run = install_opts.dry_run == true
-  if not dry_run then
-    notify("Installing R packages: " .. table.concat(packages, ", "), vim.log.levels.INFO)
-  end
-
-  return package_install_request_async(bufnr, packages, description, dry_run, function(result, err)
-    if result and not dry_run then
-      notify(package_install_message(result), vim.log.levels.INFO)
-      M.refresh(bufnr)
-    end
-
-    if type(install_opts.callback) == "function" then
-      install_opts.callback(result, err)
-    end
-  end)
-end
-
-local target_scalar
-
-local function target_records(payload, key)
-  if type(payload) ~= "table" then
-    return {}
-  end
-  local value = payload[key]
-  if type(value) ~= "table" then
-    return {}
-  end
-  return value
-end
-
-local function target_name(record)
-  if type(record) ~= "table" then
-    return ""
-  end
-  return target_scalar(record.name)
-end
-
-target_scalar = function(value)
-  if value == nil or value == vim.NIL then
-    return ""
-  end
-  if type(value) == "table" then
-    return vim.inspect(value)
-  end
-  return tostring(value)
-end
-
-local function target_location(record)
-  local path = type(record) == "table" and target_scalar(record.path) or ""
-  local line = type(record) == "table" and tonumber(record.line) or nil
-  if path == "" then
-    return ""
-  end
-  if line and line > 0 then
-    return path .. ":" .. line
-  end
-  return path
-end
-
-local function target_preview_text(record)
-  local name = target_name(record)
-  if name == "" then
-    name = "(unnamed target)"
-  end
-
-  local location = target_location(record)
-  local call = type(record) == "table" and target_scalar(record.call) or ""
-  local command = type(record) == "table" and target_scalar(record.command) or ""
-  local generator_name = type(record) == "table" and target_scalar(record.generator_name) or ""
-  local progress = type(record) == "table" and target_scalar(record.progress) or ""
-  local lines = {
-    "# " .. name,
-    "",
-  }
-
-  if generator_name ~= "" and generator_name ~= name then
-    lines[#lines + 1] = "Derived from: " .. generator_name
-    lines[#lines + 1] = ""
-  end
-
-  if progress ~= "" then
-    lines[#lines + 1] = "Progress: " .. progress
-    lines[#lines + 1] = ""
-  end
-
-  if location ~= "" then
-    lines[#lines + 1] = "Created in: " .. location
-    lines[#lines + 1] = ""
-  end
-
-  if call ~= "" then
-    lines[#lines + 1] = "```r"
-    vim.list_extend(lines, vim.split(call, "\n", { plain = true }))
-    lines[#lines + 1] = "```"
-    lines[#lines + 1] = ""
-  end
-
-  if command ~= "" then
-    lines[#lines + 1] = "Command:"
-    lines[#lines + 1] = command
-  end
-
-  return table.concat(lines, "\n")
-end
-
-local function target_picker_layout()
-  return {
-    preset = "vertical",
-    layout = {
-      width = 0.72,
-      min_width = 64,
-      height = 0.68,
-      min_height = 18,
-      box = "vertical",
-      border = true,
-      title = "{title}",
-      title_pos = "center",
-      { win = "input", height = 1, border = "bottom" },
-      { win = "list", title = "Targets", height = 0.38, border = "none" },
-      { win = "preview", title = "Created By", height = 0.62, border = "top" },
-    },
-  }
-end
-
-local function format_target_picker_item(item)
-  local command = target_scalar(item.command)
-  if command ~= "" then
-    return {
-      { target_name(item), "Identifier" },
-      { "  " },
-      { command:gsub("%s+", " "), "Comment" },
-    }
-  end
-  return {
-    { target_name(item), "Identifier" },
-  }
-end
-
-local function target_picker_items(records)
-  local items = {}
-  for _, record in ipairs(records) do
-    local name = target_name(record)
-    local command = target_scalar(record.command)
-    local location = target_location(record)
-    items[#items + 1] = vim.tbl_extend("force", vim.deepcopy(record), {
-      text = table.concat({ name, command, location }, " "),
-      preview = {
-        text = target_preview_text(record),
-        ft = "markdown",
-        loc = false,
-      },
-    })
-  end
-  return items
-end
-
-local function open_target_picker(records, on_choice)
-  local ok, snacks = pcall(require, "snacks")
-  if ok and type(snacks) == "table" and type(snacks.picker) == "table" and type(snacks.picker.pick) == "function" then
-    snacks.picker.pick({
-      title = "Ark Targets",
-      items = target_picker_items(records),
-      format = format_target_picker_item,
-      preview = "preview",
-      layout = target_picker_layout(),
-      confirm = function(picker, item)
-        picker:close()
-        on_choice(item)
-      end,
-    })
-    return true
-  end
-
-  vim.ui.select(records, {
-    prompt = "Ark target",
-    format_item = function(record)
-      local name = target_name(record)
-      local command = target_scalar(record.command)
-      if command ~= "" then
-        return name .. "  " .. command:gsub("%s+", " ")
-      end
-      return name
-    end,
-  }, on_choice)
-
-  return true
-end
-
-local function target_action_names(result, fallback)
-  local value = type(result) == "table" and result.names or nil
-  if type(value) ~= "table" or vim.tbl_isempty(value) then
-    value = normalize_target_names(fallback)
-  end
-
-  local names = {}
-  if type(value) == "table" then
-    for _, name in ipairs(value) do
-      local text = target_scalar(name)
-      if text ~= "" then
-        names[#names + 1] = text
-      end
-    end
-  end
-  return names
-end
-
-local function target_action_field_names(result, field)
-  local names = {}
-  local value = type(result) == "table" and result[field] or nil
-  if type(value) ~= "table" then
-    return names
-  end
-
-  for _, name in ipairs(value) do
-    local text = target_scalar(name)
-    if text ~= "" then
-      names[#names + 1] = text
-    end
-  end
-  return names
-end
-
-local function target_names_label(names)
-  return #names == 1 and "target" or "targets"
-end
-
-local function target_action_message(action, result, requested_names)
-  local names = target_action_names(result, requested_names)
-  local rendered_names = table.concat(names, ", ")
-  local noun = target_names_label(names)
-
-  if action == "invalidate" then
-    local invalidated = target_action_field_names(result, "invalidated_names")
-    local already_invalidated = target_action_field_names(result, "already_invalidated_names")
-    if #invalidated > 0 and #already_invalidated > 0 then
-      return "Invalidated "
-        .. target_names_label(invalidated)
-        .. ": "
-        .. table.concat(invalidated, ", ")
-        .. "; already invalidated: "
-        .. table.concat(already_invalidated, ", ")
-    elseif #invalidated > 0 then
-      return "Invalidated " .. target_names_label(invalidated) .. ": " .. table.concat(invalidated, ", ")
-    elseif #already_invalidated > 0 then
-      return "Already invalidated " .. target_names_label(already_invalidated) .. ": " .. table.concat(already_invalidated, ", ")
-    end
-    return #names > 0 and ("Invalidated " .. noun .. ": " .. rendered_names) or "Invalidated targets"
-  elseif action == "load" then
-    return #names > 0 and ("Sent tar_load() for " .. noun .. ": " .. rendered_names) or "Sent tar_load()"
-  elseif action == "make_downstream" then
-    return #names > 0 and ("Built " .. noun .. " and downstream: " .. rendered_names)
-      or "Built target and downstream"
-  elseif action == "make" then
-    return #names > 0 and ("Built " .. noun .. ": " .. rendered_names) or "Built targets"
-  end
-
-  return "Target action finished"
-end
-
-local target_active_by_root = {}
-
-local function target_active_path(project)
-  local root = type(project) == "table" and project.root or vim.loop.cwd()
-  local key = vim.fn.sha256(vim.fs.normalize(root or ""))
-  return vim.fs.normalize(vim.fn.stdpath("data") .. "/ark/targets/" .. key .. "/active_target.txt")
-end
-
-local function write_active_target(project, name)
-  local path = target_active_path(project)
-  vim.fn.mkdir(vim.fs.dirname(path), "p")
-  return pcall(vim.fn.writefile, { name }, path)
-end
-
-local function read_active_target(project)
-  local path = target_active_path(project)
-  if vim.fn.filereadable(path) ~= 1 then
-    return nil
-  end
-  local ok, lines = pcall(vim.fn.readfile, path, "", 1)
-  if not ok or type(lines) ~= "table" then
-    return nil
-  end
-  local name = lines[1]
-  if type(name) ~= "string" or name == "" then
-    return nil
-  end
-  return name
-end
-
-local function clear_active_target(project)
-  local root = type(project) == "table" and project.root or nil
-  if type(root) == "string" and root ~= "" then
-    target_active_by_root[root] = nil
-  end
-
-  local path = target_active_path(project)
-  if vim.fn.filereadable(path) == 1 then
-    pcall(vim.fn.delete, path)
-  end
-end
-
-local function target_manifest_has_name(project, name)
-  local payload = target_tools.static_manifest(project)
-  for _, record in ipairs(target_records(payload, "targets")) do
-    if target_name(record) == name then
-      return true
-    end
-  end
-  return false
-end
-
-local function target_project_label(payload)
-  local project = type(payload) == "table" and payload.project or nil
-  if type(project) == "table" and type(project.root) == "string" and project.root ~= "" then
-    return project.root
-  end
-  return vim.loop.cwd()
-end
-
-local function open_targets_text(title, lines)
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].swapfile = false
-  vim.bo[buf].filetype = "markdown"
-  vim.api.nvim_buf_set_name(buf, string.format("%s #%d", title, buf))
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
-  vim.bo[buf].readonly = true
-
-  vim.cmd("botright split")
-  vim.api.nvim_win_set_buf(0, buf)
-  vim.keymap.set("n", "q", "<cmd>close<cr>", { buffer = buf, nowait = true, silent = true })
-
-  return { bufnr = buf, lines = lines }
-end
-
-local function render_targets_graph(payload)
-  local lines = {
-    "# Ark Target Graph",
-    "",
-    "Project: " .. target_project_label(payload),
-    "Source: " .. target_scalar(payload and payload.source),
-    "",
-  }
-
-  local edges = target_records(payload, "edges")
-  if #edges == 0 then
-    lines[#lines + 1] = "(no graph edges)"
-    return lines
-  end
-
-  lines[#lines + 1] = "From -> To"
-  lines[#lines + 1] = "---------"
-  for _, edge in ipairs(edges) do
-    local from = target_scalar(edge.from)
-    local to = target_scalar(edge.to)
-    if from ~= "" or to ~= "" then
-      lines[#lines + 1] = from .. " -> " .. to
-    end
-  end
-  return lines
-end
-
-local function render_targets_status(payload, title)
-  local lines = {
-    "# " .. title,
-    "",
-    "Project: " .. target_project_label(payload),
-    "",
-  }
-
-  local meta = target_records(payload, "meta")
-  if #meta == 0 then
-    lines[#lines + 1] = "(no target metadata)"
-    return lines
-  end
-
-  for _, row in ipairs(meta) do
-    local name = target_scalar(row.name)
-    if name == "" then
-      name = "(unnamed target)"
-    end
-    lines[#lines + 1] = "## " .. name
-    for _, key in ipairs({ "progress", "time", "seconds", "bytes", "format", "error", "warning", "path" }) do
-      local value = target_scalar(row[key])
-      if value ~= "" then
-        lines[#lines + 1] = "- " .. key .. ": " .. value
-      end
-    end
-    lines[#lines + 1] = ""
-  end
-
-  return lines
+  return target_actions_controller().install_missing_packages(bufnr, install_opts)
 end
 
 function M.targets_project_info(bufnr)
-  return targets_request(bufnr, "ark.nvim target project info", function(project, target_bufnr)
-    return lsp.targets_project_info(options, target_bufnr, project)
-  end)
+  return target_actions_controller().targets_project_info(bufnr)
 end
 
 function M.targets_manifest(bufnr)
-  return targets_request(bufnr, "ark.nvim target manifest", function(project, target_bufnr)
-    return lsp.targets_manifest(options, target_bufnr, project)
-  end)
+  return target_actions_controller().targets_manifest(bufnr)
 end
 
 function M.targets_set_active(name, bufnr)
-  ensure_setup()
-  bufnr = resolve_bufnr(bufnr)
-
-  if type(name) ~= "string" or name == "" then
-    local err = "missing target name"
-    notify(err, vim.log.levels.WARN)
-    return nil, err
-  end
-
-  local project = targets_project(bufnr)
-  target_active_by_root[project.root] = name
-  local ok, write_err = write_active_target(project, name)
-  if not ok then
-    notify(write_err or "failed to persist active target", vim.log.levels.WARN)
-  end
-  return name
+  return target_actions_controller().targets_set_active(name, bufnr)
 end
 
 function M.targets_active(bufnr)
-  ensure_setup()
-  bufnr = resolve_bufnr(bufnr)
-
-  local project = targets_project(bufnr)
-  local name = target_active_by_root[project.root] or read_active_target(project)
-  if type(name) ~= "string" or name == "" then
-    return nil, "no active target set"
-  end
-  if not target_manifest_has_name(project, name) then
-    clear_active_target(project)
-    return nil, "active target no longer exists: " .. name
-  end
-  target_active_by_root[project.root] = name
-  return name
+  return target_actions_controller().targets_active(bufnr)
 end
 
 function M.targets_pick(bufnr, callback)
-  bufnr = resolve_bufnr(bufnr)
-  local project = targets_project(bufnr)
-  local payload = target_tools.static_manifest(project)
-
-  local records = vim.tbl_filter(function(record)
-    return target_name(record) ~= ""
-  end, target_records(payload, "targets"))
-  table.sort(records, function(left, right)
-    return target_name(left) < target_name(right)
-  end)
-
-  if #records == 0 then
-    local pick_err = "No static targets found in _targets.R or _target_pipelines."
-    notify(pick_err, vim.log.levels.WARN)
-    return nil, pick_err
-  end
-
-  open_target_picker(records, function(record)
-    if not record then
-      return
-    end
-    local name = target_name(record)
-    if name == "" then
-      return
-    end
-    M.targets_set_active(name, bufnr)
-    if type(callback) == "function" then
-      callback(name, record)
-    else
-      notify("Active target: " .. name, vim.log.levels.INFO)
-    end
-  end)
-
-  return true
+  return target_actions_controller().targets_pick(bufnr, callback)
 end
 
 function M.targets_view(name, bufnr)
-  ensure_setup()
-  bufnr = resolve_bufnr(bufnr)
-
-  if type(name) ~= "string" or name == "" then
-    local err = "missing target name"
-    notify(err, vim.log.levels.WARN)
-    return nil, err
-  end
-
-  local source_bufnr = resolve_view_source_bufnr(bufnr)
-  if type(source_bufnr) ~= "number" then
-    local err = "ark.nvim target ArkView requires an R-family buffer"
-    notify(err, vim.log.levels.WARN)
-    return nil, err
-  end
-
-  local project = targets_project(source_bufnr)
-
-  if should_use_tmux_view_popup() then
-    local backend = target_view.create({
-      name = name,
-      project = project,
-      source_bufnr = source_bufnr,
-      options = options,
-      notify = notify,
-    })
-    local server = current_nvim_server()
-    if type(server) == "string" and server ~= "" then
-      local backend_id, backend_err = view_popup_backend.register({
-        lsp = backend.lsp,
-        on_dispose = backend.stop,
-        options = options,
-        source_bufnr = source_bufnr,
-      })
-      local view_opts = type(options) == "table" and type(options.view) == "table" and options.view or {}
-      if backend_id then
-        local popup_opts = vim.tbl_deep_extend("force", view_opts.popup or {}, {
-          title = "ArkView: " .. backend.expr,
-        })
-        local opened, popup_err = session_backend.view_popup(options, server, backend_id, backend.expr, popup_opts)
-        if opened then
-          return opened
-        end
-
-        view_popup_backend.unregister(backend_id)
-        if normalize_view_display(view_opts.display) == "tmux_popup" then
-          local err = popup_err or "failed to open tmux ArkView popup"
-          notify(err, vim.log.levels.WARN)
-          return nil, err
-        end
-      else
-        backend.stop()
-        if normalize_view_display(view_opts.display) == "tmux_popup" then
-          local err = backend_err or "failed to register target ArkView popup backend"
-          notify(err, vim.log.levels.WARN)
-          return nil, err
-        end
-      end
-    else
-      backend.stop()
-      local view_opts = type(options) == "table" and type(options.view) == "table" and options.view or {}
-      if normalize_view_display(view_opts.display) == "tmux_popup" then
-        local err = "tmux ArkView popup requires this Neovim instance to have an RPC server"
-        notify(err, vim.log.levels.WARN)
-        return nil, err
-      end
-    end
-  end
-
-  return target_view.open({
-    name = name,
-    project = project,
-    source_bufnr = source_bufnr,
-    options = options,
-    notify = notify,
-  })
+  return target_actions_controller().targets_view(name, bufnr)
 end
 
 function M.targets_view_pick(bufnr)
-  ensure_setup()
-  bufnr = resolve_bufnr(bufnr)
-
-  local source_bufnr = resolve_view_source_bufnr(bufnr)
-  if type(source_bufnr) ~= "number" then
-    local err = "ark.nvim target ArkView requires an R-family buffer"
-    notify(err, vim.log.levels.WARN)
-    return nil, err
-  end
-
-  return M.targets_pick(source_bufnr, function(name)
-    if type(name) ~= "string" or name == "" then
-      return
-    end
-
-    M.targets_view(name, bufnr)
-  end)
+  return target_actions_controller().targets_view_pick(bufnr)
 end
 
 function M.targets_network(bufnr)
-  return targets_request(bufnr, "ark.nvim target network", function(project, target_bufnr)
-    return lsp.targets_network(options, target_bufnr, project)
-  end)
+  return target_actions_controller().targets_network(bufnr)
 end
 
 function M.targets_graph(bufnr)
-  local payload, err = M.targets_network(bufnr)
-  if not payload then
-    return nil, err
-  end
-  return open_targets_text("Ark Target Graph", render_targets_graph(payload))
+  return target_actions_controller().targets_graph(bufnr)
 end
 
 function M.targets_meta(names, bufnr)
-  names = normalize_target_names(names)
-  return targets_request(bufnr, "ark.nvim target metadata", function(project, target_bufnr)
-    return lsp.targets_meta(options, target_bufnr, project, names)
-  end)
+  return target_actions_controller().targets_meta(names, bufnr)
 end
 
 function M.targets_status(names, bufnr)
-  local payload, err = M.targets_meta(names, bufnr)
-  if not payload then
-    return nil, err
-  end
-  return open_targets_text("Ark Target Status", render_targets_status(payload, "Ark Target Status"))
+  return target_actions_controller().targets_status(names, bufnr)
 end
 
 function M.targets_log(names, bufnr)
-  local payload, err = M.targets_meta(names, bufnr)
-  if not payload then
-    return nil, err
-  end
-  return open_targets_text("Ark Target Log", render_targets_status(payload, "Ark Target Log"))
+  return target_actions_controller().targets_log(names, bufnr)
 end
 
 function M.targets_object_meta(name, bufnr)
-  return targets_request(bufnr, "ark.nvim target object metadata", function(project, target_bufnr)
-    return lsp.targets_object_meta(options, target_bufnr, project, name)
-  end)
+  return target_actions_controller().targets_object_meta(name, bufnr)
 end
 
 function M.targets_load(names, bufnr)
-  ensure_setup()
-  bufnr = resolve_bufnr(bufnr)
-  names = normalize_target_names(names)
-
-  local expr = target_load_expression(names)
-  local ok, err = M.send(expr)
-  if not ok then
-    return nil, err
-  end
-
-  return {
-    status = "sent",
-    action = "load",
-    names = names,
-    expression = expr,
-  }
+  return target_actions_controller().targets_load(names, bufnr)
 end
 
 function M.targets_action(action, names, bufnr)
-  names = normalize_target_names(names)
-  if action == "load" then
-    return M.targets_load(names, bufnr)
-  end
-
-  return targets_request(bufnr, "ark.nvim target action", function(project, target_bufnr)
-    return lsp.targets_action(options, target_bufnr, project, action, names)
-  end)
+  return target_actions_controller().targets_action(action, names, bufnr)
 end
 
 function M.targets_action_user(action, names, bufnr)
-  names = normalize_target_names(names)
-  if action == "load" then
-    local result, err = M.targets_load(names, bufnr)
-    if result then
-      notify(target_action_message(action, result, names), vim.log.levels.INFO)
-    end
-    return result, err
-  end
-
-  return targets_request_async(bufnr, "ark.nvim target action", function(project, target_bufnr, callback)
-    return lsp.targets_action_async(options, target_bufnr, project, action, names, callback)
-  end, function(result)
-    if result then
-      notify(target_action_message(action, result, names), vim.log.levels.INFO)
-    end
-  end)
+  return target_actions_controller().targets_action_user(action, names, bufnr)
 end
 
 function M.targets_action_pick(action, bufnr)
-  return M.targets_pick(bufnr, function(name)
-    M.targets_action_user(action, name, bufnr)
-  end)
+  return target_actions_controller().targets_action_pick(action, bufnr)
 end
 
 function M.targets_action_active(action, bufnr)
-  local name, err = M.targets_active(bufnr)
-  if not name then
-    notify(err or "no active target set", vim.log.levels.WARN)
-    return nil, err
-  end
-  return M.targets_action(action, name, bufnr)
+  return target_actions_controller().targets_action_active(action, bufnr)
 end
+
 
 function M.refresh(bufnr)
   ensure_setup()
@@ -4463,7 +2081,7 @@ function M.status(opts)
   ensure_setup()
   opts = opts or {}
   local status = session_backend.status(options)
-  status.startup = startup_status(vim.api.nvim_get_current_buf())
+  status.startup = startup:status(vim.api.nvim_get_current_buf())
   status.lsp_cmd = options.lsp.cmd
   status.release = release.status()
   local runtime_config = session_backend.runtime_config(options) or {}

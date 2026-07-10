@@ -105,6 +105,9 @@ attestation together.
 Primary surfaces:
 
 - [lua/ark/init.lua](/home/marine/repos/ark.nvim/lua/ark/init.lua)
+- [lua/ark/startup_state.lua](/home/marine/repos/ark.nvim/lua/ark/startup_state.lua)
+- [lua/ark/help_render.lua](/home/marine/repos/ark.nvim/lua/ark/help_render.lua)
+- [lua/ark/target_actions.lua](/home/marine/repos/ark.nvim/lua/ark/target_actions.lua)
 - [lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua)
 - [lua/ark/session.lua](/home/marine/repos/ark.nvim/lua/ark/session.lua)
 - [lua/ark/session_runtime.lua](/home/marine/repos/ark.nvim/lua/ark/session_runtime.lua)
@@ -115,6 +118,12 @@ Primary surfaces:
 
 Responsibilities:
 
+- keep `lua/ark/init.lua` as the composition root and stable public facade;
+  feature rendering and target/package actions are delegated to their owning
+  modules through narrow injected interfaces
+- reconcile startup through one per-buffer, generation-aware state model with
+  independent LSP and managed-session tracks; invalid and stale transitions are
+  retained in status rather than silently mutating readiness
 - select the configured session backend while keeping tmux as the canonical path
 - manage one visible Ark tmux pane plus parked Ark tabs on the tmux backend
 - manage one visible Ark terminal split on the terminal backend
@@ -175,6 +184,21 @@ Responsibilities:
 - hydrate detached runtime state from trusted session metadata and bridge
   bootstrap data
 - route runtime-aware requests across the local bridge boundary
+- isolate bridge admission/TCP transport, wire protocol, and completion planning
+  in `session_bridge_runtime.rs`, `session_bridge/protocol.rs`, and
+  `session_bridge/completion.rs`; `session_bridge.rs` remains the feature-client
+  facade and trusted connection owner
+
+The canonical startup tracks are:
+
+- LSP: `starting` -> `initialized` -> `static_ready` -> `live_hydrated`
+- managed session: `requested` -> `bridge_installing` -> `bridge_ready` ->
+  `repl_ready`, with explicit `degraded`, `stopping`, and `restarting` states
+
+`bridge_ready` is accepted only from the backend snapshot, `repl_ready` requires
+that bridge state, and live hydration is accepted only from the current LSP and
+session generation. `:Ark status` exposes the combined phase and both component
+tracks.
 
 Ark-owned custom method names on the Neovim path are now Ark-native:
 
@@ -726,12 +750,11 @@ Required coverage:
 These are still legitimate follow-ups, but they are not required to treat the
 current tree as a usable v1 product:
 
-1. simplify startup/readiness orchestration into a clearer canonical state model
-2. turn `crates/ark-lsp-core` from a shared source tree into a true standalone
+1. turn `crates/ark-lsp-core` from a shared source tree into a true standalone
    library crate by extracting the remaining host hooks (`console`, `r_task`,
    `analysis`, `fixtures`, and `url`) and then shrinking the local adapters in
    `crates/ark` and `crates/ark-lsp`
-3. continue reducing inherited upstream surface area in retained kernel/Jupyter code
+2. continue reducing inherited upstream surface area in retained kernel/Jupyter code
 
 ## Completion Architecture Hardening
 
