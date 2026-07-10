@@ -95,6 +95,7 @@ local ark_command_completions = {
   "pane stop",
   "packages install-missing",
   "refresh",
+  "report",
   "rollback",
   "send",
   "snippets",
@@ -241,6 +242,8 @@ local function dispatch_ark_command(args)
     end
   elseif top == "refresh" then
     ark.refresh(0)
+  elseif top == "report" then
+    require("ark.report").open()
   elseif top == "snippets" then
     ark.snippets(0)
   elseif top == "send" then
@@ -599,6 +602,10 @@ end, { desc = "Restart ark.nvim LSP for the current buffer with current pane sta
 vim.api.nvim_create_user_command("ArkStatus", function()
   vim.print(require("ark").status({ include_lsp = true }))
 end, { desc = "Print ark.nvim status" })
+
+vim.api.nvim_create_user_command("ArkReport", function()
+  require("ark.report").open()
+end, { desc = "Preview a redacted Ark support report" })
 
 vim.api.nvim_create_user_command("ArkPaneCommand", function()
   vim.print(require("ark").pane_command())

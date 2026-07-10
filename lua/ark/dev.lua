@@ -19,6 +19,20 @@ local source_scan_cache = {
   newest_mtime = nil,
   newest_path = nil,
 }
+local PRODUCT_RUST_CRATES = {
+  "aether_path",
+  "ark-lsp",
+  "ark-lsp-core",
+  "ark-lsp-support",
+  "harp",
+  "harp_macros",
+  "libr",
+  "oak_core",
+  "oak_index_vec",
+  "oak_package_metadata",
+  "oak_semantic",
+  "stdext",
+}
 local build_state = {
   listeners = {},
   notify_id = nil,
@@ -78,22 +92,32 @@ local function rust_source_paths()
   local paths = {}
 
   if vim.fn.executable("rg") == 1 then
-    paths = vim.fn.systemlist({
-      "rg",
-      "--files",
-      ROOT .. "/crates/ark-lsp/src",
-      ROOT .. "/crates/ark/src",
-    })
+    local command = { "rg", "--files" }
+    for _, crate in ipairs(PRODUCT_RUST_CRATES) do
+      command[#command + 1] = ROOT .. "/crates/" .. crate .. "/src"
+    end
+    paths = vim.fn.systemlist(command)
     if vim.v.shell_error ~= 0 then
       paths = {}
     end
   end
 
-  paths[#paths + 1] = ROOT .. "/crates/ark-lsp/Cargo.toml"
-  paths[#paths + 1] = ROOT .. "/crates/ark/Cargo.toml"
+  for _, crate in ipairs(PRODUCT_RUST_CRATES) do
+    paths[#paths + 1] = ROOT .. "/crates/" .. crate .. "/Cargo.toml"
+    local build_script = ROOT .. "/crates/" .. crate .. "/build.rs"
+    if stat_mtime(build_script) then
+      paths[#paths + 1] = build_script
+    end
+  end
+  paths[#paths + 1] = ROOT .. "/Cargo.toml"
   paths[#paths + 1] = ROOT .. "/Cargo.lock"
+  paths[#paths + 1] = ROOT .. "/rust-toolchain.toml"
 
   return paths
+end
+
+function M.rust_source_paths()
+  return vim.deepcopy(rust_source_paths())
 end
 
 local function newest_source_mtime()

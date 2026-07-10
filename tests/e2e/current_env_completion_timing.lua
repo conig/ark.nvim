@@ -117,7 +117,7 @@ local function request_completion_sync()
   return elapsed, items
 end
 
-local status = require("ark").status({ include_lsp = true })
+local status = require("ark").status({ include_lsp = true, include_secrets = true })
 local startup_status = status and status.startup_status or nil
 if type(startup_status) ~= "table" or type(startup_status.port) ~= "number" then
   ark_test.fail("current environment timing test missing bridge status: " .. vim.inspect(status))

@@ -1,5 +1,35 @@
 local M = {}
 
+local OPTIONAL_KEYS = {
+  ["help.popup.nvim.init"] = true,
+  ["tmux.nvim_console.init"] = true,
+  ["terminal.nvim_console.init"] = true,
+}
+
+local ENUMS = {
+  ["session.backend"] = { tmux = true, terminal = true },
+  ["session.console_frontend"] = { raw = true, launcher = true, ["nvim-console"] = true },
+  ["help.display"] = {
+    auto = true, float = true, nvim = true, nvim_float = true,
+    popup = true, tmux = true, tmux_popup = true,
+  },
+  ["view.display"] = {
+    auto = true, tab = true, nvim = true, nvim_tab = true,
+    popup = true, tmux = true, tmux_popup = true,
+  },
+  ["tmux.pane_layout"] = {
+    auto = true, side_by_side = true, horizontal = true, landscape = true,
+    stacked = true, vertical = true, portrait = true,
+  },
+  ["terminal.split_direction"] = {
+    horizontal = true, split = true, below = true,
+    vertical = true, vsplit = true, right = true,
+  },
+  ["terminal.split_position"] = {
+    botright = true, belowright = true, topleft = true, aboveleft = true,
+  },
+}
+
 local release = require("ark.release")
 
 local function compact(...)
@@ -183,6 +213,112 @@ function M.defaults()
       session_timeout_ms = 1000,
     },
   }
+end
+
+local function is_list(value)
+  return type(value) == "table" and vim.islist(value)
+end
+
+local function path_join(prefix, key)
+  if prefix == "" then
+    return tostring(key)
+  end
+  return prefix .. "." .. tostring(key)
+end
+
+local function validate_shape(value, default, path, errors)
+  if path == "keymaps" and type(value) == "boolean" then
+    return
+  end
+
+  if type(value) ~= type(default) then
+    errors[#errors + 1] = string.format(
+      "config.%s must be %s, got %s",
+      path,
+      type(default),
+      type(value)
+    )
+    return
+  end
+
+  if type(value) ~= "table" then
+    return
+  end
+
+  if is_list(default) then
+    if not is_list(value) then
+      errors[#errors + 1] = "config." .. path .. " must be a list"
+      return
+    end
+    for index, item in ipairs(value) do
+      if #default > 0 and type(item) ~= type(default[1]) then
+        errors[#errors + 1] = string.format(
+          "config.%s[%d] must be %s, got %s",
+          path,
+          index,
+          type(default[1]),
+          type(item)
+        )
+      end
+    end
+    return
+  end
+
+  for key, nested in pairs(value) do
+    local nested_path = path_join(path, key)
+    local nested_default = default[key]
+    if nested_default == nil and not OPTIONAL_KEYS[nested_path] then
+      errors[#errors + 1] = "unknown config key: config." .. nested_path
+    elseif nested_default ~= nil then
+      validate_shape(nested, nested_default, nested_path, errors)
+    end
+  end
+end
+
+function M.validate(opts)
+  if opts == nil then
+    return true, {}
+  end
+  if type(opts) ~= "table" then
+    return false, { "config must be a table, got " .. type(opts) }
+  end
+
+  local errors = {}
+  validate_shape(opts, M.defaults(), "", errors)
+  for path, choices in pairs(ENUMS) do
+    local value = opts
+    for part in path:gmatch("[^.]+") do
+      value = type(value) == "table" and value[part] or nil
+    end
+    if value ~= nil then
+      local normalized = type(value) == "string" and value:lower():gsub("-", "_") or value
+      if not choices[value] and not choices[normalized] then
+        local accepted = vim.tbl_keys(choices)
+        table.sort(accepted)
+        errors[#errors + 1] = string.format(
+          "config.%s has unsupported value %q; expected one of: %s",
+          path,
+          tostring(value),
+          table.concat(accepted, ", ")
+        )
+      end
+    end
+  end
+
+  local split_size = opts.terminal and opts.terminal.split_size or nil
+  if split_size ~= nil and (type(split_size) ~= "number" or split_size < 1) then
+    errors[#errors + 1] = "config.terminal.split_size must be a positive number"
+  end
+
+  return #errors == 0, errors
+end
+
+function M.assert_valid(opts)
+  local ok, errors = M.validate(opts)
+  if not ok then
+    error(require("ark.errors").format("E_CONFIG", table.concat(errors, "; ")), 0)
+  end
+  return opts
 end
 
 return M

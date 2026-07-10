@@ -1,4 +1,5 @@
 local M = {}
+local notifications = require("ark.notifications")
 local dev = require("ark.dev")
 local session_backend = require("ark.session")
 local session_runtime = require("ark.session_runtime")
@@ -773,8 +774,8 @@ local function notify_startup_ready(bufnr, payload)
   local ok, err = pcall(startup_ready_callback, bufnr, payload or {})
   if not ok then
     vim.schedule(function()
-      vim.notify("ark.nvim startup ready callback failed: " .. tostring(err), vim.log.levels.WARN, {
-        title = "ark.nvim",
+      notifications.emit("ark.nvim startup ready callback failed: " .. tostring(err), vim.log.levels.WARN, {
+        ark_key = "lsp-startup-ready-callback",
       })
     end)
   end
@@ -1132,8 +1133,8 @@ start_pending_bootstrap_async = function(client, opts, bufnr, payload, source, n
 
     if bootstrap_err then
       if notify_on_error == true then
-        vim.notify("ark.nvim session bootstrap failed: " .. bootstrap_err, vim.log.levels.WARN, {
-          title = "ark.nvim",
+        notifications.emit("ark.nvim session bootstrap failed: " .. bootstrap_err, vim.log.levels.WARN, {
+          ark_key = "lsp-session-bootstrap-failed",
         })
       end
       if type(callback) == "function" then
@@ -1469,7 +1470,7 @@ local function start_client_inner(opts, bufnr, start_opts)
     if type(config_err) == "table" and config_err.kind == "build_pending" then
       return nil
     end
-    vim.notify(config_err, vim.log.levels.ERROR, { title = "ark.nvim" })
+    notifications.emit(config_err, vim.log.levels.ERROR, { ark_key = "lsp-config-invalid" })
     return nil
   end
   for _, client in ipairs(live_clients(opts, bufnr)) do

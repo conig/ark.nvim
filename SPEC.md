@@ -874,6 +874,42 @@ High-value regression coverage for this tranche includes:
 - prose `.Rmd` cases where non-semantic completion must not leave stale Blink
   UI behind
 
+## Supportability And Product-State Contract
+
+Ark exposes one user-facing state classification through `:Ark status`:
+
+- `live_ready`
+- `static_starting`
+- `static_only`
+- `live_degraded`
+- `update_in_progress`
+- `restart_required`
+- `unsupported`
+
+Static language features remain the supported floor in every state except an
+unsupported configuration/environment. Persistent warnings are transition
+notices, not the source of truth; identical warnings are deduplicated and the
+durable state plus recovery action remains available through status, health,
+and the support report.
+
+Configuration is validated before setup mutates editor state. Unknown keys,
+wrong types, and unsupported enum values fail with `E_CONFIG`, the exact dotted
+path, and accepted values. Component and bridge errors preserve their existing
+machine-readable `E_*` codes and map to stable user actions documented by the
+plugin error catalog.
+
+`:checkhealth ark` is read-only and must not start a managed R session. It
+validates released component compatibility, supported Neovim/R/platform facts,
+backend requirements, `jsonlite`, executable discovery, writable install/state
+locations, and incompatible ready status files. `:Ark report` works before
+setup and in degraded mode. It opens a local preview and selects only normalized
+component/state/health facts; it does not include auth tokens, cookies, arbitrary
+environment values, source contents, R values, or unrelated logs.
+
+Native `:help ark` is the complete command/configuration reference. Inherited
+Positron and Jupyter documentation is isolated under `doc/upstream/` and is not
+part of the supported Neovim product documentation.
+
 ## Verification Standard
 
 No change to the active Neovim path is done until it is proven at the right

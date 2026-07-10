@@ -27,7 +27,7 @@ local ok, err = pcall(function()
   vim.cmd("ArkHelp")
 
   local help_buf = vim.api.nvim_get_current_buf()
-  local lines = vim.api.nvim_buf_get_lines(help_buf, 0, math.min(15, vim.api.nvim_buf_line_count(help_buf)), false)
+  local lines = vim.api.nvim_buf_get_lines(help_buf, 0, -1, false)
 
   if vim.bo[help_buf].filetype ~= "markdown" then
     error("expected ArkHelp to open a markdown buffer, got " .. tostring(vim.bo[help_buf].filetype), 0)
@@ -41,11 +41,31 @@ local ok, err = pcall(function()
     error("unexpected ArkHelp title: " .. vim.inspect(lines), 0)
   end
 
-  if lines[8] ~= "```r" or lines[9] ~= "     mean(x, ...)" then
+  local function line_index(value)
+    for index, line in ipairs(lines) do
+      if line == value then
+        return index
+      end
+    end
+  end
+
+  local contents_index = line_index("Contents:")
+  local usage_index = line_index("Usage:")
+  local arguments_index = line_index("Arguments:")
+  local usage_fence_index = usage_index and line_index("```r") or nil
+  local usage_text_index = line_index("     mean(x, ...)")
+
+  if not contents_index
+    or not usage_index
+    or not usage_fence_index
+    or usage_fence_index <= usage_index
+    or not usage_text_index
+    or usage_text_index <= usage_fence_index
+  then
     error("unexpected ArkHelp usage block: " .. vim.inspect(lines), 0)
   end
 
-  if lines[15] ~= "Arguments:" then
+  if not arguments_index or arguments_index <= usage_index then
     error("unexpected ArkHelp arguments header: " .. vim.inspect(lines), 0)
   end
 

@@ -19,6 +19,7 @@ package.loaded["ark.bridge"] = {
 }
 
 package.loaded["ark.config"] = {
+  assert_valid = function() end,
   defaults = function()
     return {
       async_startup = false,

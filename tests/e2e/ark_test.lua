@@ -188,28 +188,14 @@ function M.assert_fresh_detached_lsp_binary(binary_path)
     M.fail("failed to stat detached ark-lsp binary: " .. normalized_binary)
   end
 
-  local source_paths = vim.fn.systemlist({
-    "rg",
-    "--files",
-    "crates/ark-lsp/src",
-    "crates/ark-lsp-core/src",
-    "crates/ark/src",
-  })
-  if vim.v.shell_error ~= 0 then
-    M.fail("failed to enumerate Rust sources for binary freshness check")
-  end
-
-  source_paths[#source_paths + 1] = "crates/ark-lsp/Cargo.toml"
-  source_paths[#source_paths + 1] = "crates/ark/Cargo.toml"
-  source_paths[#source_paths + 1] = "Cargo.lock"
+  local source_paths = require("ark.dev").rust_source_paths()
 
   local newer = {}
-  for _, relpath in ipairs(source_paths) do
-    local fullpath = vim.fs.normalize(repo_root .. "/" .. relpath)
+  for _, fullpath in ipairs(source_paths) do
     if vim.fn.filereadable(fullpath) == 1 then
       local source_mtime = vim.fn.getftime(fullpath)
       if type(source_mtime) == "number" and source_mtime > binary_mtime then
-        newer[#newer + 1] = relpath
+        newer[#newer + 1] = vim.fs.relpath(repo_root, fullpath) or fullpath
       end
     end
   end

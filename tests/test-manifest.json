@@ -8,7 +8,7 @@
     "serial": true,
     "init": "NONE",
     "open_r_buffer": false,
-    "dependencies": ["neovim"],
+    "dependencies": ["neovim", "r", "tmux"],
     "typical_runtime": "under 120 seconds",
     "flake_policy": "no automatic pass-on-retry; retain artifacts and classify failures",
     "mutates_shared_session": true
@@ -25,7 +25,17 @@
   },
   "rules": [
     {
-      "names": ["help_render_pure.lua", "startup_state_model.lua"],
+      "names": [
+        "config_validation.lua",
+        "dev_source_boundary.lua",
+        "error_taxonomy.lua",
+        "help_render_pure.lua",
+        "notifications_once.lua",
+        "product_state_model.lua",
+        "report_redaction.lua",
+        "status_redacts_auth.lua",
+        "startup_state_model.lua"
+      ],
       "tier": "unit",
       "layer": "pure-unit",
       "contract": "pure Lua rendering or state-transition behavior",
@@ -83,9 +93,13 @@
       "names": [
         "ark_dispatch_command.lua",
         "detached_parity.lua",
+        "health.lua",
+        "health_degraded_scenarios.lua",
         "lsp_sync_start_bootstrap.lua",
         "lsp_sync_start_pending_client.lua",
+        "native_help.lua",
         "release_manifest_and_discovery.lua",
+        "report_command.lua",
         "targets_commands.lua",
         "targets_project_store.lua"
       ],

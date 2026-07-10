@@ -2271,6 +2271,7 @@ mtcars$mp";
     #[test]
     fn test_targets_option_packages_attach_exports_to_workspace_scripts() {
         r_task(|| {
+            let _lock = indexer::indexer_test_lock();
             let _guard = indexer::ResetIndexerGuard;
 
             let data_table = Package::from_parts(

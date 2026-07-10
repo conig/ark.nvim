@@ -471,6 +471,16 @@ function M.runtime_lib_path(config)
   return runtime_lib_path(config)
 end
 
+function M.status()
+  return {
+    running = install_state.running == true,
+    background = install_state.background == true,
+    user_initiated = install_state.user_initiated == true,
+    elapsed_ms = install_state.started_at and (monotonic_ms() - install_state.started_at) or nil,
+    required_runtime_revision = REQUIRED_RUNTIME_REVISION,
+  }
+end
+
 function M.ensure_current_runtime(config, opts)
   opts = opts or {}
 

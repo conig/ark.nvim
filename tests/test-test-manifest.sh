@@ -17,6 +17,9 @@ test "$required" -gt 2
 python3 "${resolver}" describe --tier required --format json |
   python3 -c 'import json,sys; records=json.load(sys.stdin); assert {r["tier"] for r in records} == {"unit", "fast"}'
 
+python3 "${resolver}" describe --tier serial-integration --format json |
+  python3 -c 'import json,sys; records=json.load(sys.stdin); assert records; assert all({"neovim", "r", "tmux"} <= set(r["dependencies"]) for r in records)'
+
 if python3 "${resolver}" list --tier impossible >/dev/null 2>&1; then
   echo "manifest resolver accepted an unknown tier" >&2
   exit 1

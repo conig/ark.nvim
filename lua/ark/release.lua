@@ -248,6 +248,8 @@ function M.status()
   return {
     product_version = manifest and manifest.product_version or nil,
     release_tag = manifest and manifest.release_tag or nil,
+    compatibility = manifest and manifest.compatibility or nil,
+    supported_environment = manifest and manifest.supported_environment or nil,
     manifest_error = manifest_err,
     install_root = M.install_root(),
     installed_binary = installed,

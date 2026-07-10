@@ -42,6 +42,17 @@ In practice that means Ark can help with:
 If the R session is not ready, Ark keeps working in static-only mode rather
 than blocking the editor.
 
+For first-run verification, open an R file and run:
+
+```vim
+:checkhealth ark
+:Ark status
+```
+
+The normal live destination is `product_state = "live_ready"`. If it is still
+starting, static features remain available. See
+[troubleshooting](docs/troubleshooting.md) for every state and recovery path.
+
 ## Main Workflows
 
 ### Edit and Send Code
@@ -440,6 +451,7 @@ object facts when those facts require `{targets}` itself.
 The commands you will usually reach for are:
 
 - `:Ark status` prints the current pane, launcher, and bridge state
+- `:Ark report` previews a redacted support report without embedding source or R values
 - `:Ark refresh` restarts the current buffer's LSP client using current session metadata
 - `:Ark help` opens a read-only floating help page for the symbol under cursor
 - `:Ark view` opens the live data explorer for an expression or the symbol under cursor
@@ -593,6 +605,10 @@ allows `target/debug/ark-lsp` to take precedence over the installed release.
 Use `:Ark rollback` or `:ArkRollback` to atomically return to the previous
 installed release.
 
+After an upgrade or rollback, run `:Ark pane restart` and `:Ark refresh` so the
+plugin, LSP, and bridge all use the same product version. The current support
+table is in [docs/compatibility.md](docs/compatibility.md).
+
 The managed R pane uses the repo-local launcher:
 
 ```sh
@@ -710,10 +726,11 @@ Pane width respects the first tmux setting it finds from:
 
 ## Build Notes
 
-The workspace targets Rust `1.94`. If your installed `stable` toolchain is older, update it first:
+The workspace pins Rust `1.97.0`. If that toolchain is not installed, let
+rustup install it from `rust-toolchain.toml`:
 
 ```sh
-rustup update stable
+rustup toolchain install 1.97.0
 ```
 
 For quick local sanity, a headless load looks like:
@@ -747,6 +764,10 @@ path for users installing this plugin.
 - [BUILDING.md](BUILDING.md)
 - [SPEC.md](SPEC.md)
 - [AGENTS.md](AGENTS.md)
+- [Native `:help ark` reference](doc/ark.txt)
+- [Troubleshooting and support reports](docs/troubleshooting.md)
+- [Compatibility and upgrades](docs/compatibility.md)
+- [Product architecture](docs/architecture.md)
 
 ## License
 

@@ -1,0 +1,10 @@
+vim.cmd("helptags " .. vim.fn.fnameescape(vim.fs.normalize(vim.fn.getcwd() .. "/doc")))
+vim.cmd("help ark")
+
+local bufnr = vim.api.nvim_get_current_buf()
+local name = vim.api.nvim_buf_get_name(bufnr)
+assert(name:find("ark.txt", 1, true), name)
+local text = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+assert(text:find("RUNTIME STATES", 1, true), text)
+assert(text:find(":Ark report", 1, true), text)
+assert(text:find("CONFIGURATION", 1, true), text)

@@ -6,7 +6,15 @@ the canonical `posit-dev/ark` repository.
 
 ## Unreleased
 
-- Established the product-readiness roadmap and release contract.
+- Added strict, path-aware configuration validation and a stable user-visible
+  runtime state model.
+- Added `:Ark report`, a preview-first redacted diagnostic report, and expanded
+  read-only health checks for component compatibility and writable state.
+- Added native `:help ark`, troubleshooting, architecture, compatibility,
+  upgrade, and rollback documentation.
+- Isolated inherited Positron/Jupyter documentation under `doc/upstream/`.
+- Added manifest-driven test tiers, a real `arkbridge` testthat suite, pinned
+  full-TUI fixtures, and repeated performance baselines/artifacts.
 
 ## 0.1.0-alpha.1 - 2026-07-10
 

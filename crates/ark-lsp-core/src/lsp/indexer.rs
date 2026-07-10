@@ -1475,6 +1475,7 @@ class <- R6::R6Class(
 
     #[test]
     fn test_update_skips_ark_virtual_doc() {
+        let _lock = indexer_test_lock();
         let _guard = ResetIndexerGuard;
 
         let ark_uri = Url::parse("ark://namespace/test.R").unwrap();
@@ -1486,6 +1487,7 @@ class <- R6::R6Class(
 
     #[test]
     fn test_update_indexes_git_uri() {
+        let _lock = indexer_test_lock();
         let _guard = ResetIndexerGuard;
 
         let git_uri = Url::parse("git:///home/user/test.R?ref=HEAD").unwrap();
@@ -1497,6 +1499,7 @@ class <- R6::R6Class(
 
     #[test]
     fn test_create_skips_non_file_uri() {
+        let _lock = indexer_test_lock();
         let _guard = ResetIndexerGuard;
 
         let ark_uri = Url::parse("ark://namespace/test.R").unwrap();

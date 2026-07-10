@@ -815,6 +815,7 @@ mod tests {
     use crate::lsp::config::LspConfig;
     use crate::lsp::config::WorkspaceSymbolsConfig;
     use crate::lsp::document::Document;
+    use crate::lsp::indexer::indexer_test_lock;
     use crate::lsp::indexer::ResetIndexerGuard;
     use crate::lsp::util::test_path;
 
@@ -1223,6 +1224,7 @@ outer <- 4
     #[test]
     fn test_workspace_symbols_include_comment_sections() {
         fn run(include_comment_sections: bool) -> Vec<String> {
+            let _lock = indexer_test_lock();
             let _guard = ResetIndexerGuard;
 
             let code = "# Section ----\nfoo <- 1";

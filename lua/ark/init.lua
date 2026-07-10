@@ -8,6 +8,8 @@ local expression = require("ark.expression")
 local help_render = require("ark.help_render")
 local keymaps = require("ark.keymaps")
 local lsp = require("ark.lsp")
+local notifications = require("ark.notifications")
+local product_state = require("ark.product_state")
 local release = require("ark.release")
 local session_backend = require("ark.session")
 local snippets = require("ark.snippets")
@@ -812,7 +814,7 @@ local function is_ark_completion_buffer(bufnr)
 end
 
 local function notify(message, level)
-  vim.notify(message, level or vim.log.levels.INFO, { title = "ark.nvim" })
+  notifications.emit(message, level or vim.log.levels.INFO)
 end
 
 local function merged_opts(base, opts)
@@ -1155,6 +1157,7 @@ local function start_managed_buffer(bufnr)
 end
 
 function M.setup(opts)
+  config.assert_valid(opts)
   options = merged_opts(options, opts)
   target_actions = target_actions_module.new({
     add_candidate_bufnr = add_candidate_bufnr,
@@ -1322,6 +1325,10 @@ end
 function M.options()
   ensure_setup()
   return options
+end
+
+function M.configured_options()
+  return did_setup and options or nil
 end
 
 function M.pane_command()
@@ -2081,9 +2088,13 @@ function M.status(opts)
   ensure_setup()
   opts = opts or {}
   local status = session_backend.status(options)
+  if opts.include_secrets ~= true and type(status.startup_status) == "table" then
+    status.startup_status.auth_token = status.startup_status.auth_token and "<redacted>" or nil
+  end
   status.startup = startup:status(vim.api.nvim_get_current_buf())
   status.lsp_cmd = options.lsp.cmd
   status.release = release.status()
+  status.config_valid = true
   local runtime_config = session_backend.runtime_config(options) or {}
   status.backend = session_backend.backend_name(options)
   status.console_frontend = runtime_config.console_frontend
@@ -2103,7 +2114,21 @@ function M.status(opts)
       )
     end
   end
+  status.product_state = product_state.derive(status, options, bridge.status())
+  status.product_state_detail = product_state.describe(status.product_state)
   return status
+end
+
+function M.support_status()
+  if not did_setup then
+    return {
+      configured = false,
+      product_state = "static_only",
+      product_state_detail = product_state.describe("static_only"),
+      release = release.status(),
+    }
+  end
+  return M.status({ include_lsp = true })
 end
 
 return M

@@ -4,7 +4,7 @@
 // Copyright (C) 2022-2026 by Posit Software, PBC
 //
 
-// See `doc/graphics-devices.md` for documentation
+// See `doc/upstream/graphics-devices.md` for retained upstream documentation
 
 use std::cell::Cell;
 use std::cell::RefCell;

@@ -651,7 +651,7 @@ impl Shell {
                     // to be invalid and return an error.
                     log::warn!(
                         "Failed to open comm; target name '{}' is unrecognized: {}",
-                        &msg.target_name,
+                        msg.target_name,
                         err
                     );
                     return (Err(Error::UnknownCommName(msg.target_name.clone())), None);
