@@ -1279,6 +1279,7 @@ function M.setup(opts)
 
   vim.api.nvim_create_user_command("ArkBuildLsp", function()
     local ok, err = dev.build_detached_lsp({
+      binary_path = options.lsp and options.lsp.cmd and options.lsp.cmd[1] or nil,
       show_output = true,
     })
     if not ok then
@@ -2071,7 +2072,9 @@ end
 
 function M.build_lsp()
   ensure_setup()
-  return dev.build_detached_lsp()
+  return dev.build_detached_lsp({
+    binary_path = options.lsp and options.lsp.cmd and options.lsp.cmd[1] or nil,
+  })
 end
 
 function M.build_bridge()

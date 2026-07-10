@@ -8,7 +8,8 @@ local function repo_root()
 end
 
 local ROOT = repo_root()
-local BUILD_CMD = { "cargo", "build", "-p", "ark-lsp" }
+local DEBUG_BUILD_CMD = { "cargo", "build", "-p", "ark-lsp" }
+local RELEASE_BUILD_CMD = { "cargo", "build", "-p", "ark-lsp", "--release" }
 local SPINNER_FRAMES = { "[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]" }
 local FRESHNESS_PROBE_DEFER_MS = 250
 local SOURCE_SCAN_CACHE_TTL_MS = 1000
@@ -34,6 +35,8 @@ local PRODUCT_RUST_CRATES = {
   "stdext",
 }
 local build_state = {
+  binary_path = nil,
+  command = nil,
   listeners = {},
   notify_id = nil,
   output = {},
@@ -86,6 +89,22 @@ local function repo_target_binary(path)
   end
 
   return normalized
+end
+
+local function build_spec(binary)
+  local normalized = normalize_path(binary)
+  local release_dir = ROOT .. "/target/release/"
+  if normalized and vim.startswith(normalized, release_dir) then
+    return {
+      binary_path = ROOT .. "/target/release/ark-lsp",
+      command = vim.deepcopy(RELEASE_BUILD_CMD),
+    }
+  end
+
+  return {
+    binary_path = ROOT .. "/target/debug/ark-lsp",
+    command = vim.deepcopy(DEBUG_BUILD_CMD),
+  }
 end
 
 local function rust_source_paths()
@@ -141,10 +160,6 @@ local function newest_source_mtime()
   source_scan_cache.newest_mtime = newest_mtime
   source_scan_cache.newest_path = newest_path
   return newest_mtime, newest_path
-end
-
-local function binary_path()
-  return ROOT .. "/target/debug/ark-lsp"
 end
 
 local function elapsed_ms()
@@ -316,12 +331,12 @@ local function ensure_output_window(opts)
   return build_state.output_win
 end
 
-local function reset_output()
+local function reset_output(command)
   build_state.output = {
     "ark.nvim is rebuilding detached ark-lsp.",
     "Press q to close this window. The build continues and Ark will attach when it is ready.",
     "",
-    "$ " .. table.concat(BUILD_CMD, " "),
+    "$ " .. table.concat(command, " "),
     "",
   }
   build_state.output_closed = false
@@ -422,6 +437,8 @@ local function finish_build(result)
   build_state.notify_id = nil
   build_state.started_at = nil
   build_state.background = false
+  build_state.binary_path = nil
+  build_state.command = nil
   build_state.spinner_index = 1
   build_state.user_initiated = false
 
@@ -431,6 +448,9 @@ local function finish_build(result)
 end
 
 local function start_build(opts)
+  opts = opts or {}
+  local spec = build_spec(opts.binary_path)
+
   if vim.fn.executable("cargo") ~= 1 then
     return false, "`cargo` is not available to rebuild `ark-lsp`"
   end
@@ -440,6 +460,13 @@ local function start_build(opts)
   end
 
   if build_state.running then
+    if build_state.binary_path ~= spec.binary_path then
+      return false, string.format(
+        "ark-lsp rebuild already targets %s; cannot also build %s",
+        tostring(build_state.binary_path),
+        spec.binary_path
+      )
+    end
     if opts and opts.on_complete then
       build_state.listeners[#build_state.listeners + 1] = opts.on_complete
     end
@@ -464,6 +491,8 @@ local function start_build(opts)
   end
 
   build_state.running = true
+  build_state.binary_path = spec.binary_path
+  build_state.command = spec.command
   build_state.background = opts and opts.background == true or false
   build_state.show_output = not (opts and opts.show_output == false)
   build_state.listeners = {}
@@ -473,7 +502,7 @@ local function start_build(opts)
   build_state.started_at = ((uv and uv.hrtime) and uv.hrtime()) or vim.loop.hrtime()
   build_state.spinner_index = 1
   build_state.user_initiated = opts and opts.user_initiated == true or false
-  reset_output()
+  reset_output(spec.command)
   if build_state.show_output then
     ensure_output_window({
       enter = not (opts and opts.focus_output == false),
@@ -484,7 +513,7 @@ local function start_build(opts)
   end
 
   local buffer_output = build_state.background and build_state.show_output ~= true
-  local job_id = vim.fn.jobstart(BUILD_CMD, {
+  local job_id = vim.fn.jobstart(spec.command, {
     cwd = ROOT,
     -- Hidden background builds must not stream Cargo's repeated lock-wait
     -- chatter through Neovim's event loop. Buffering keeps the editor idle
@@ -503,7 +532,7 @@ local function start_build(opts)
     end,
     on_exit = function(_, code)
       vim.schedule(function()
-        local path = binary_path()
+        local path = spec.binary_path
         if code == 0 and stat_mtime(path) then
           finish_build({
             ok = true,
@@ -528,6 +557,8 @@ local function start_build(opts)
     build_state.running = false
     stop_spinner()
     build_state.background = false
+    build_state.binary_path = nil
+    build_state.command = nil
     build_state.notify_id = nil
     build_state.started_at = nil
     build_state.user_initiated = false
@@ -559,6 +590,7 @@ local function maybe_schedule_freshness_probe(binary, opts)
   if build_state.running then
     local listeners = take_freshness_listeners(state)
     local ok = start_build({
+      binary_path = binary,
       on_complete = function(result)
         run_freshness_listeners(listeners, result)
       end,
@@ -616,6 +648,7 @@ local function maybe_schedule_freshness_probe(binary, opts)
     end
 
     local ok, build_err = start_build({
+      binary_path = binary,
       on_complete = function(result)
         run_freshness_listeners(listeners, result)
       end,
@@ -671,6 +704,7 @@ function M.ensure_current_detached_lsp_cmd(cmd, opts)
     end
 
     local ok, build_err = start_build({
+      binary_path = binary,
       on_complete = opts.on_build_complete,
       background = true,
       show_output = false,
@@ -711,6 +745,7 @@ function M.build_detached_lsp(opts)
   end
 
   return start_build({
+    binary_path = opts.binary_path,
     on_complete = opts.on_complete,
     show_output = opts.show_output ~= false,
     user_initiated = true,
