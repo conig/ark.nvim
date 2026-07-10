@@ -6,23 +6,28 @@ local uv = vim.uv or vim.loop
 local root = vim.fn.getcwd()
 local target_dir = root .. "/target/debug"
 local built_binary = target_dir .. "/ark-lsp"
+local release_probe = root .. "/target/release/ark-lsp-profile-probe"
 local source_probe = vim.fn.tempname()
 
 vim.fn.mkdir(target_dir, "p")
+vim.fn.mkdir(vim.fs.dirname(release_probe), "p")
 local built_binary_existed = vim.fn.filereadable(built_binary) == 1
 if not built_binary_existed then
   vim.fn.writefile({ "# fake ark-lsp binary for startup no-auto-build test" }, built_binary)
 end
+vim.fn.writefile({ "# stale release ark-lsp profile probe" }, release_probe)
 vim.fn.writefile({ "// newer source probe" }, source_probe)
 
 local now = os.time()
 pcall(uv.fs_utime, built_binary, now - 200, now - 200)
+pcall(uv.fs_utime, release_probe, now - 200, now - 200)
 pcall(uv.fs_utime, source_probe, now, now)
 
 local original_executable = vim.fn.executable
 local original_systemlist = vim.fn.systemlist
 local original_jobstart = vim.fn.jobstart
 
+local job_cmd = nil
 local job_opts = nil
 local completed = nil
 
@@ -41,9 +46,7 @@ vim.fn.systemlist = function(cmd)
 end
 
 vim.fn.jobstart = function(cmd, opts)
-  if not vim.deep_equal(cmd, { "cargo", "build", "-p", "ark-lsp" }) then
-    error("unexpected build command: " .. vim.inspect(cmd), 0)
-  end
+  job_cmd = vim.deepcopy(cmd)
   job_opts = opts
   return 4242
 end
@@ -84,9 +87,27 @@ local ok, err = pcall(function()
   if not started then
     error("expected stale startup freshness probe to start one parent-side background rebuild", 0)
   end
+  if not vim.deep_equal(job_cmd, { "cargo", "build", "-p", "ark-lsp" }) then
+    error("expected debug binary freshness to use a debug build, got " .. vim.inspect(job_cmd), 0)
+  end
 
   if build_float() ~= nil then
     error("implicit startup rebuild should not open the detached ark-lsp build float", 0)
+  end
+
+  -- Regression: Cargo repeats its package-cache lock warning while another
+  -- build owns the lock. Streaming those hidden background lines wakes the TUI
+  -- for every chunk and makes the visible cursor flutter even though no build
+  -- output is being shown. A quiet implicit rebuild must buffer both streams.
+  if job_opts.stdout_buffered ~= true or job_opts.stderr_buffered ~= true then
+    error(
+      "expected hidden background rebuild output to be buffered, got "
+        .. vim.inspect({
+          stdout_buffered = job_opts.stdout_buffered,
+          stderr_buffered = job_opts.stderr_buffered,
+        }),
+      0
+    )
   end
 
   job_opts.on_stdout(4242, { "    Finished dev [unoptimized] target(s)", "" })
@@ -97,12 +118,40 @@ local ok, err = pcall(function()
   if not finished or completed.ok ~= true then
     error("expected successful background rebuild completion, got " .. vim.inspect(completed), 0)
   end
+
+  -- Regression: a freshness rebuild must update the binary Ark is actually
+  -- running. Rebuilding debug while the configured release binary remains
+  -- stale causes the completion callback to launch the same rebuild forever.
+  job_cmd = nil
+  job_opts = nil
+  local release_resolved, release_err = dev.ensure_current_detached_lsp_cmd({
+    release_probe,
+    "--runtime-mode",
+    "detached",
+  })
+  if release_err ~= nil or release_resolved[1] ~= release_probe then
+    error("unexpected release binary resolution: " .. vim.inspect({ release_resolved, release_err }), 0)
+  end
+
+  local release_started = vim.wait(1000, function()
+    return job_opts ~= nil
+  end, 20, false)
+  if not release_started then
+    error("expected stale release binary to start a background freshness rebuild", 0)
+  end
+  if not vim.deep_equal(job_cmd, { "cargo", "build", "-p", "ark-lsp", "--release" }) then
+    error("expected release binary freshness to use a release build, got " .. vim.inspect(job_cmd), 0)
+  end
+  if job_opts.stdout_buffered ~= true or job_opts.stderr_buffered ~= true then
+    error("expected hidden release rebuild output to remain buffered", 0)
+  end
 end)
 
 vim.fn.executable = original_executable
 vim.fn.systemlist = original_systemlist
 vim.fn.jobstart = original_jobstart
 vim.fn.delete(source_probe)
+vim.fn.delete(release_probe)
 if not built_binary_existed then
   vim.fn.delete(built_binary)
 end

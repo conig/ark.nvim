@@ -483,10 +483,14 @@ local function start_build(opts)
     start_spinner()
   end
 
+  local buffer_output = build_state.background and build_state.show_output ~= true
   local job_id = vim.fn.jobstart(BUILD_CMD, {
     cwd = ROOT,
-    stdout_buffered = false,
-    stderr_buffered = false,
+    -- Hidden background builds must not stream Cargo's repeated lock-wait
+    -- chatter through Neovim's event loop. Buffering keeps the editor idle
+    -- while retaining the complete output for failure reporting at exit.
+    stdout_buffered = buffer_output,
+    stderr_buffered = buffer_output,
     on_stdout = function(_, data)
       vim.schedule(function()
         append_output(data)
