@@ -21,7 +21,7 @@ deliberate as the feature set.
 - TODO 2: complete — non-blocking and portable runtime boundary (`cffcef11`)
 - TODO 3: complete — maintainable source and state boundaries (`68feabac`)
 - TODO 4: complete — test pyramid and performance governance (`bfee7382`)
-- TODO 5: pending — product polish, supportability, and documentation
+- TODO 5: complete — product polish, supportability, and documentation (`8d70e7ee`)
 
 Update this section as each TODO is completed. If a TODO is deliberately
 resolved through a different design, record the decision and link the commit or
