@@ -17,14 +17,32 @@ use crate::lsp::session_bridge::SessionBridgeConfig;
 use crate::lsp::session_bridge::SessionBridgeDebugInfo;
 use crate::lsp::session_bridge_runtime::BridgeRequestControl;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeMode {
-    #[default]
+    #[cfg(feature = "attached-runtime")]
     Attached,
     Detached,
 }
 
-#[derive(Clone, Debug)]
+#[allow(
+    clippy::derivable_impls,
+    reason = "the default is attached only when that optional host feature is compiled"
+)]
+impl Default for RuntimeMode {
+    fn default() -> Self {
+        #[cfg(feature = "attached-runtime")]
+        {
+            Self::Attached
+        }
+
+        #[cfg(not(feature = "attached-runtime"))]
+        {
+            Self::Detached
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 /// The world state, i.e. all the inputs necessary for analysing or refactoring
 /// code. This is a pure value. There is no interior mutability in this data
 /// structure. It can be cloned and safely sent to other threads.
@@ -174,7 +192,15 @@ impl WorldState {
     }
 
     pub(crate) fn has_attached_runtime(&self) -> bool {
-        self.runtime_mode == RuntimeMode::Attached
+        #[cfg(feature = "attached-runtime")]
+        {
+            self.runtime_mode == RuntimeMode::Attached
+        }
+
+        #[cfg(not(feature = "attached-runtime"))]
+        {
+            false
+        }
     }
 
     pub(crate) fn detached_session_hydrated(&self) -> bool {
@@ -230,6 +256,7 @@ impl WorldState {
     pub(crate) fn detached_status_snapshot(&self) -> DetachedStatusSnapshot {
         DetachedStatusSnapshot {
             runtime_mode: match self.runtime_mode {
+                #[cfg(feature = "attached-runtime")]
                 RuntimeMode::Attached => String::from("attached"),
                 RuntimeMode::Detached => String::from("detached"),
             },
@@ -256,32 +283,6 @@ impl WorldState {
             .session_bridge
             .map(|bridge| bridge.with_request_control(control));
         self
-    }
-}
-
-impl Default for WorldState {
-    fn default() -> Self {
-        Self {
-            documents: HashMap::new(),
-            workspace: Workspace::default(),
-            virtual_documents: HashMap::new(),
-            console_scopes: Vec::new(),
-            installed_packages: Vec::new(),
-            root: None,
-            library: Library::default(),
-            static_object_members: HashMap::new(),
-            config: LspConfig::default(),
-            runtime_mode: RuntimeMode::Attached,
-            session_bridge: None,
-            detached_session_bootstrap_attempted: false,
-            detached_session_update_generation: 0,
-            detached_session_pending_generation: None,
-            detached_session_completed_generation: None,
-            detached_session_status: DetachedSessionStatus::default(),
-            detached_baseline_bootstrap_attempted: false,
-            detached_baseline_bootstrap_pending: false,
-            detached_baseline_status: DetachedBaselineStatus::default(),
-        }
     }
 }
 

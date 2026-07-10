@@ -19,20 +19,20 @@ use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedSender as AsyncUnboundedSender;
 
 use super::backend;
-use crate::console::ConsoleNotification;
+use crate::console::HostNotification;
 use crate::console::KernelInfo;
 
 pub(crate) struct Lsp {
     runtime: Arc<Runtime>,
     kernel_init_rx: BusReader<KernelInfo>,
     kernel_initialized: bool,
-    console_notification_tx: AsyncUnboundedSender<ConsoleNotification>,
+    host_notification_tx: AsyncUnboundedSender<HostNotification>,
 }
 
 impl Lsp {
     pub(crate) fn new(
         kernel_init_rx: BusReader<KernelInfo>,
-        console_notification_tx: AsyncUnboundedSender<ConsoleNotification>,
+        host_notification_tx: AsyncUnboundedSender<HostNotification>,
     ) -> Self {
         let rt = Builder::new_multi_thread()
             .enable_all()
@@ -47,7 +47,7 @@ impl Lsp {
             runtime: Arc::new(rt),
             kernel_init_rx,
             kernel_initialized: false,
-            console_notification_tx,
+            host_notification_tx,
         }
     }
 }
@@ -81,14 +81,9 @@ impl ServerHandler for Lsp {
                 .send(ServerStartedMessage::new(started.port()))
                 .map_err(|err| anyhow::anyhow!("{err}"))
         };
-        let console_notification_tx = self.console_notification_tx.clone();
+        let host_notification_tx = self.host_notification_tx.clone();
         spawn!("ark-lsp", move || {
-            backend::start_lsp(
-                runtime,
-                start_config,
-                server_started,
-                console_notification_tx,
-            )
+            backend::start_lsp(runtime, start_config, server_started, host_notification_tx)
         });
         Ok(())
     }

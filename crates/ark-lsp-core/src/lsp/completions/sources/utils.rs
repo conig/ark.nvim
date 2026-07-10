@@ -16,7 +16,7 @@ use tower_lsp::lsp_types::CompletionItem;
 use tree_sitter::Node;
 use tree_sitter::Point;
 
-use crate::console;
+use crate::attached;
 use crate::lsp::completions::completion_item::completion_item_from_data_variable;
 use crate::lsp::document_context::DocumentContext;
 use crate::lsp::traits::node::NodeExt;
@@ -196,7 +196,7 @@ pub(super) fn completions_from_evaluated_object_names(
 
     let options = RParseEvalOptions {
         forbid_function_calls: true,
-        env: console::selected_env(),
+        env: attached::selected_env(),
     };
 
     // Try to evaluate the object

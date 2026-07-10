@@ -49,7 +49,7 @@ pub(super) fn completions_from_string_subset(
     // Detached ark-lsp routes runtime-backed subset completions through the
     // session bridge. If that bridge is unavailable, we still need to claim this
     // context as handled, but we must not fall back to local R evaluation.
-    if !crate::console::Console::is_initialized() && !stdext::IS_TESTING {
+    if !crate::attached::is_ready() && !stdext::IS_TESTING {
         return Ok(Some(completions));
     }
 

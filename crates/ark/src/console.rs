@@ -118,7 +118,7 @@ mod console_integration;
 mod console_repl;
 
 use aether_path::FilePath;
-pub(crate) use ark_lsp_core::console::ConsoleNotification;
+pub(crate) use ark_lsp_core::host::HostNotification;
 use console_annotate::annotate_input;
 use console_annotate::annotate_notebook;
 pub(crate) use console_debug::DebugCallText;

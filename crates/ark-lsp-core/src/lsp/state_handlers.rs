@@ -7,10 +7,12 @@
 
 #![allow(clippy::items_after_test_module)]
 
+#[cfg(feature = "attached-runtime")]
 use aether_path::FilePath;
 use anyhow::anyhow;
 use oak_semantic::library::Library;
 use oak_semantic::package::Package;
+#[cfg(feature = "attached-runtime")]
 use stdext::result::ResultExt;
 use tower_lsp::lsp_types;
 use tower_lsp::lsp_types::CompletionOptions;
@@ -50,7 +52,8 @@ use tracing::Instrument;
 use tree_sitter::Parser;
 use url::Url;
 
-use crate::console::ConsoleNotification;
+#[cfg(feature = "attached-runtime")]
+use crate::host::HostNotification;
 use crate::lsp;
 use crate::lsp::backend::LspResult;
 use crate::lsp::capabilities::Capabilities;
@@ -628,7 +631,7 @@ pub(crate) fn did_open(
             .flatten(),
     };
 
-    if state.runtime_mode == RuntimeMode::Attached {
+    if state.has_attached_runtime() {
         lsp::main_loop::index_update(vec![uri], state.clone());
     }
     lsp::main_loop::diagnostics_refresh_all_from_state(state);
@@ -663,12 +666,13 @@ pub(crate) fn did_change(
     lsp::main_loop::diagnostics_refresh_all_from_state(state);
 
     // Notify console about document change to invalidate breakpoints.
-    lsp_state
-        .console_notification_tx
-        .send(ConsoleNotification::DidChangeDocument(FilePath::from_url(
-            uri,
-        )))
-        .log_err();
+    #[cfg(feature = "attached-runtime")]
+    if state.has_attached_runtime() {
+        if let Some(tx) = lsp_state.host_notification_tx.as_ref() {
+            tx.send(HostNotification::DidChangeDocument(FilePath::from_url(uri)))
+                .log_err();
+        }
+    }
 
     Ok(hydration)
 }

@@ -32,7 +32,7 @@ aether_syntax = { git = "https://github.com/posit-dev/air", package = "air_r_syn
 amalthea = { path = "crates/amalthea" }
 anyhow = "1.0.102"
 ark = { path = "crates/ark" }
-ark-lsp-core = { path = "crates/ark-lsp-core" }
+ark-lsp-core = { path = "crates/ark-lsp-core", default-features = false }
 ark-lsp-support = { path = "crates/ark-lsp-support" }
 ark_macros = { path = "crates/ark_macros" }
 assert_matches = "1.5.0"

@@ -11,6 +11,10 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["attached-runtime"]
+attached-runtime = []
+
 [dependencies]
 aether_lsp_utils.workspace = true
 aether_parser.workspace = true

@@ -55,6 +55,7 @@ use tower_lsp::Client;
 use tracing::Instrument;
 
 use crate::analysis::input_boundaries::input_boundaries;
+use crate::attached;
 use crate::lsp;
 use crate::lsp::backend::LspError;
 use crate::lsp::backend::LspResult;
@@ -100,7 +101,6 @@ use crate::lsp::symbols;
 use crate::lsp::target_context::target_reference_context;
 use crate::lsp::targets_project;
 use crate::lsp::traits::node::NodeExt;
-use crate::r_task;
 use crate::treesitter::NodeTypeExt;
 
 pub static ARK_VDOC_REQUEST: &str = "ark/internal/virtualDocument";
@@ -846,7 +846,7 @@ pub(crate) fn handle_completion(
         return Ok(completion_response_from_items(static_items));
     }
 
-    let completions = r_task(|| provide_completions(&context, state))?;
+    let completions = attached::run(|| provide_completions(&context, state))?;
 
     if !completions.is_empty() {
         Ok(Some(CompletionResponse::Array(completions)))
@@ -889,11 +889,11 @@ pub(crate) fn handle_completion_resolve(
         return Ok(item);
     }
 
-    if !crate::console::Console::is_initialized() {
+    if !attached::is_ready() {
         return Ok(item);
     }
 
-    r_task(|| resolve_completion(&mut item))?;
+    attached::run(|| resolve_completion(&mut item))?;
     Ok(item)
 }
 
@@ -1011,7 +1011,7 @@ pub(crate) fn handle_hover(params: HoverParams, state: &WorldState) -> LspResult
     }
 
     // request hover information
-    let result = r_task(|| r_hover(&context));
+    let result = attached::run(|| r_hover(&context));
 
     // unwrap errors
     let result = unwrap!(result, Err(err) => {
@@ -1529,7 +1529,7 @@ pub(crate) fn handle_signature_help(
     }
 
     // request signature help
-    let result = r_task(|| r_signature_help(&context));
+    let result = attached::run(|| r_signature_help(&context));
 
     // unwrap errors
     let result = unwrap!(result, Err(err) => {
@@ -2233,12 +2233,12 @@ pub(crate) fn handle_virtual_document(
 pub(crate) fn handle_input_boundaries(
     params: InputBoundariesParams,
 ) -> LspResult<InputBoundariesResponse> {
-    if !crate::console::Console::is_initialized() {
+    if !attached::is_ready() {
         return Err(LspError::Anyhow(anyhow!(
             "input boundaries require an attached R runtime"
         )));
     }
 
-    let boundaries = r_task(|| input_boundaries(&params.text))?;
+    let boundaries = attached::run(|| input_boundaries(&params.text))?;
     Ok(InputBoundariesResponse { boundaries })
 }

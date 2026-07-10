@@ -19,6 +19,7 @@ use std::sync::RwLock;
 use anyhow::anyhow;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+#[cfg(feature = "attached-runtime")]
 use oak_semantic::library::Library;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::unbounded_channel as tokio_unbounded_channel;
@@ -31,7 +32,8 @@ use tower_lsp::Client;
 use url::Url;
 
 use super::backend::RequestResponse;
-use crate::console::ConsoleNotification;
+#[cfg(feature = "attached-runtime")]
+use crate::host::HostNotification;
 use crate::lsp;
 use crate::lsp::backend::LspError;
 use crate::lsp::backend::LspMessage;
@@ -49,6 +51,7 @@ pub use crate::lsp::notifications::DidCloseVirtualDocumentParams;
 pub use crate::lsp::notifications::DidOpenVirtualDocumentParams;
 pub use crate::lsp::notifications::KernelNotification;
 use crate::lsp::session_bridge_runtime::BridgeRequestControl;
+#[cfg(test)]
 use crate::lsp::state::RuntimeMode;
 use crate::lsp::state::WorldState;
 use crate::lsp::state_handlers;
@@ -95,6 +98,7 @@ pub struct LspEventSender {
 }
 
 impl LspEventSender {
+    #[cfg(feature = "attached-runtime")]
     pub(crate) fn new(tx: TokioUnboundedSender<Event>) -> Self {
         Self { tx }
     }
@@ -220,8 +224,9 @@ pub(crate) struct LspState {
     /// Capabilities negotiated with the client
     pub(crate) capabilities: Capabilities,
 
-    /// Channel for sending notifications to Console (e.g., document changes for DAP)
-    pub(crate) console_notification_tx: TokioUnboundedSender<ConsoleNotification>,
+    /// Optional host notification channel (e.g., document changes for an attached DAP).
+    #[cfg(feature = "attached-runtime")]
+    pub(crate) host_notification_tx: Option<TokioUnboundedSender<HostNotification>>,
 }
 
 /// State for the auxiliary loop
@@ -246,36 +251,54 @@ impl GlobalState {
     ///
     /// * `client`: The tower-lsp client shared with the tower-lsp backend
     ///   and auxiliary loop.
-    pub(crate) fn new_with_runtime_mode(
+    pub(crate) fn new_detached(
         client: Client,
-        console_notification_tx: TokioUnboundedSender<ConsoleNotification>,
-        runtime_mode: RuntimeMode,
         notification_barrier: Arc<NotificationBarrier>,
     ) -> Self {
-        // Transmission channel for the main loop events. Shared with the
-        // tower-lsp backend and the Jupyter kernel.
-        let (events_tx, events_rx) = tokio_unbounded_channel::<Event>();
-
         let lsp_state = LspState {
             parsers: HashMap::new(),
             capabilities: Capabilities::default(),
-            console_notification_tx,
+            #[cfg(feature = "attached-runtime")]
+            host_notification_tx: None,
         };
+        Self::from_parts(
+            client,
+            lsp_state,
+            WorldState::detached(),
+            notification_barrier,
+        )
+    }
 
-        let world = match runtime_mode {
-            RuntimeMode::Attached => {
-                let library_paths = crate::runtime::attached_library_paths();
-                log::info!("Using library paths: {library_paths:#?}");
-
-                WorldState::new(Library::new(library_paths))
-            },
-            RuntimeMode::Detached => {
-                // Detached session hydration is driven by `ark/updateSession`
-                // notifications and document events. Avoid blocking startup on
-                // an opportunistic bridge bootstrap here.
-                WorldState::detached()
-            },
+    #[cfg(feature = "attached-runtime")]
+    pub(crate) fn new_attached(
+        client: Client,
+        host_notification_tx: TokioUnboundedSender<HostNotification>,
+        notification_barrier: Arc<NotificationBarrier>,
+    ) -> Self {
+        let lsp_state = LspState {
+            parsers: HashMap::new(),
+            capabilities: Capabilities::default(),
+            host_notification_tx: Some(host_notification_tx),
         };
+        let library_paths = crate::runtime::attached_library_paths();
+        log::info!("Using library paths: {library_paths:#?}");
+        Self::from_parts(
+            client,
+            lsp_state,
+            WorldState::new(Library::new(library_paths)),
+            notification_barrier,
+        )
+    }
+
+    fn from_parts(
+        client: Client,
+        lsp_state: LspState,
+        world: WorldState,
+        notification_barrier: Arc<NotificationBarrier>,
+    ) -> Self {
+        // Transmission channel for the main loop events. Shared with the LSP
+        // backend and the optional attached host.
+        let (events_tx, events_rx) = tokio_unbounded_channel::<Event>();
 
         let state = Self {
             world,

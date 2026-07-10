@@ -385,7 +385,7 @@ impl Console {
         dap: Arc<Mutex<Dap>>,
         session_mode: SessionMode,
         default_repos: DefaultRepos,
-        console_notification_rx: AsyncUnboundedReceiver<ConsoleNotification>,
+        host_notification_rx: AsyncUnboundedReceiver<HostNotification>,
     ) {
         // Set the main thread ID.
         // Must happen before doing anything that checks `Console::on_main_thread()`,
@@ -531,9 +531,7 @@ impl Console {
         // https://github.com/posit-dev/ark/blob/bd827e73/crates/ark/src/r_task.rs#L261.
         r_task::spawn(RTask::interrupt({
             let dap_clone = console.debug_dap.clone();
-            async move || {
-                Console::process_console_notifications(console_notification_rx, dap_clone).await
-            }
+            async move || Console::process_host_notifications(host_notification_rx, dap_clone).await
         }));
 
         // R-side graphics device initialization. The `DeviceContext`
@@ -881,14 +879,14 @@ impl Console {
     }
 
     // Async messages for the Console. Processed at interrupt time.
-    async fn process_console_notifications(
-        mut console_notification_rx: AsyncUnboundedReceiver<ConsoleNotification>,
+    async fn process_host_notifications(
+        mut host_notification_rx: AsyncUnboundedReceiver<HostNotification>,
         dap: Arc<Mutex<Dap>>,
     ) {
         loop {
-            while let Some(notification) = console_notification_rx.recv().await {
+            while let Some(notification) = host_notification_rx.recv().await {
                 match notification {
-                    ConsoleNotification::DidChangeDocument(uri) => {
+                    HostNotification::DidChangeDocument(uri) => {
                         let mut dap = dap.lock().unwrap();
                         dap.did_change_document(&uri);
                     },

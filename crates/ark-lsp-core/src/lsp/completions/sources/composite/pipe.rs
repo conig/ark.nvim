@@ -11,7 +11,7 @@ use harp::object::RObject;
 use tower_lsp::lsp_types::CompletionItem;
 use tree_sitter::Node;
 
-use crate::console;
+use crate::attached;
 use crate::lsp::completions::completion_context::CompletionContext;
 use crate::lsp::completions::sources::utils::completions_from_object_names;
 use crate::lsp::completions::sources::CompletionSource;
@@ -88,7 +88,7 @@ pub fn find_pipe_root(
 fn eval_pipe_root(name: &str) -> Option<RObject> {
     let options = RParseEvalOptions {
         forbid_function_calls: true,
-        env: console::selected_env(),
+        env: attached::selected_env(),
     };
 
     let value = harp::parse_eval(name, options);

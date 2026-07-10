@@ -179,6 +179,10 @@ Responsibilities:
 - own the detached `ark-lsp` workspace package and executable entrypoint
 - keep the shared LSP implementation in one source-of-truth tree, with only the
   attached/detached adapter files remaining local to `ark` and `ark-lsp`
+- compile the product `ark-lsp` without `ark-lsp-core/attached-runtime`; the
+  retained upstream `ark` host opts into that feature explicitly, so `Console`,
+  serialized attached-R tasks, TCP host startup, and attached UI callbacks are
+  absent from the Neovim-serving build
 - provide diagnostics, hover, completion, signature help, symbols, and related
   static analysis features
 - hydrate detached runtime state from trusted session metadata and bridge
@@ -747,14 +751,14 @@ Required coverage:
 
 ## Open Work After This Tranche
 
-These are still legitimate follow-ups, but they are not required to treat the
-current tree as a usable v1 product:
+The detached product boundary is now Cargo-enforced: `ark-lsp` cannot construct
+an attached runtime mode and does not compile the optional `Console` / attached
+R-thread host hooks. The retained upstream `ark` host explicitly enables those
+compatibility adapters.
 
-1. turn `crates/ark-lsp-core` from a shared source tree into a true standalone
-   library crate by extracting the remaining host hooks (`console`, `r_task`,
-   `analysis`, `fixtures`, and `url`) and then shrinking the local adapters in
-   `crates/ark` and `crates/ark-lsp`
-2. continue reducing inherited upstream surface area in retained kernel/Jupyter code
+Continuing to reduce inherited kernel/Jupyter source remains legitimate
+maintenance work, but it is not required for the Neovim product boundary; those
+crates are excluded from default product builds and release artifacts.
 
 ## Completion Architecture Hardening
 

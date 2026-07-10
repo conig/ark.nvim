@@ -15,6 +15,9 @@ the canonical `posit-dev/ark` repository.
 - Isolated inherited Positron/Jupyter documentation under `doc/upstream/`.
 - Added manifest-driven test tiers, a real `arkbridge` testthat suite, pinned
   full-TUI fixtures, and repeated performance baselines/artifacts.
+- Made the detached `ark-lsp` build exclude attached kernel `Console`, R-thread,
+  TCP-host, and UI callback infrastructure through a Cargo-enforced feature
+  boundary; the retained upstream `ark` host opts in explicitly.
 
 ## 0.1.0-alpha.1 - 2026-07-10
 

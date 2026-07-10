@@ -9,7 +9,9 @@ Status after implementation:
   shared LSP implementation instead of using `#[path]` imports.
 - TODO 2 implemented: `backend.rs`, `main_loop.rs`, and `state_handlers.rs`
   are shared in `ark-lsp-core`; the attached-only Amalthea wrapper and runtime
-  hooks remain in `crates/ark/src/lsp/`.
+  hook installation remain in `crates/ark/src/lsp/`. The shared core's optional
+  host implementation is gated by `attached-runtime`; `ark-lsp` disables that
+  feature and cannot construct an attached runtime.
 - TODO 3 resolved by documented decision: keep the current `Document` and
   fork-owned indexer model for now, with future port guidance in
   `crates/ark-lsp-core/UPSTREAM_STATE_MODEL.md`.

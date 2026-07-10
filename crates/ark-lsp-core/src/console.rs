@@ -1,4 +1,3 @@
-use aether_path::FilePath;
 use anyhow::Result;
 use ark_lsp_support::notifications::ConsoleInputs;
 use harp::environment::Environment;
@@ -6,11 +5,6 @@ use harp::exec::RFunction;
 use harp::exec::RFunctionExt;
 use harp::object::RObject;
 use harp::R_ENVS;
-
-#[derive(Debug)]
-pub enum ConsoleNotification {
-    DidChangeDocument(FilePath),
-}
 
 pub struct Console;
 

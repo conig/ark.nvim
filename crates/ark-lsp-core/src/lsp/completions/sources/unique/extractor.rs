@@ -16,7 +16,7 @@ use libr::STRSXP;
 use tower_lsp::lsp_types::CompletionItem;
 use tree_sitter::Node;
 
-use crate::console;
+use crate::attached;
 use crate::lsp::completions::completion_context::CompletionContext;
 use crate::lsp::completions::completion_item::completion_item_from_data_variable;
 use crate::lsp::completions::sources::utils::set_sort_text_by_first_appearance;
@@ -191,7 +191,7 @@ fn completions_from_extractor_object(text: &str, fun: &str) -> anyhow::Result<Ve
 
         let options = RParseEvalOptions {
             forbid_function_calls: true,
-            env: console::selected_env(),
+            env: attached::selected_env(),
         };
 
         let object = match harp::parse_eval(text, options) {

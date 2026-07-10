@@ -1,18 +1,16 @@
 use ark_lsp::lsp::backend;
-use ark_lsp::lsp::state::RuntimeMode;
 use ark_lsp::product;
 
 fn print_usage() {
     println!(
-        "Usage: ark-lsp [--runtime-mode detached|attached]\n\
+        "Usage: ark-lsp [--runtime-mode detached]\n\
          ark-lsp --version [--json]\n\n\
-         The default runtime mode is `detached`, which disables live R session features."
+         The detached stdio server receives live R session features through arkbridge."
     );
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut runtime_mode = RuntimeMode::Detached;
     let mut print_version = false;
     let mut json = false;
     let mut args = std::env::args().skip(1);
@@ -22,19 +20,15 @@ async fn main() -> anyhow::Result<()> {
             "--runtime-mode" => {
                 let Some(value) = args.next() else {
                     return Err(anyhow::anyhow!(
-                        "A value must follow `--runtime-mode` (`detached` or `attached`)."
+                        "A value must follow `--runtime-mode` (`detached`)."
                     ));
                 };
 
-                runtime_mode = match value.as_str() {
-                    "detached" => RuntimeMode::Detached,
-                    "attached" => RuntimeMode::Attached,
-                    _ => {
-                        return Err(anyhow::anyhow!(
-                            "Invalid runtime mode `{value}`. Expected `detached` or `attached`."
-                        ));
-                    },
-                };
+                if value != "detached" {
+                    return Err(anyhow::anyhow!(
+                        "Invalid runtime mode `{value}`. Expected `detached`."
+                    ));
+                }
             },
             "--help" | "-h" => {
                 print_usage();
@@ -64,5 +58,5 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    backend::start_stdio_lsp(runtime_mode).await
+    backend::start_stdio_lsp().await
 }

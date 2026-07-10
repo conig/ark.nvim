@@ -10,8 +10,9 @@ tree-sitter helpers. Host crates should not reintroduce `#[path]` imports into
 this tree.
 
 The attached `ark` host still owns the Amalthea `ServerHandler` wrapper and the
-real R-thread scheduler. Those host-specific capabilities are installed into
-this crate through the narrow hooks in `runtime.rs`:
+real R-thread scheduler. It explicitly opts into the `attached-runtime` Cargo
+feature and installs those host-specific capabilities through the narrow hooks
+in `runtime.rs`:
 
 - run a closure on the attached R thread
 - read attached console state such as the selected environment and console
@@ -19,6 +20,8 @@ this crate through the narrow hooks in `runtime.rs`:
 - attach or remove the LSP event channel from the console
 - surface crash messages through the attached UI comm when available
 
-Detached `ark-lsp` uses the crate defaults, which deliberately avoid assuming an
-embedded R runtime. Runtime-aware detached features should continue to flow
+The workspace dependency disables default features, and only `crates/ark`
+enables `attached-runtime`. The product `ark-lsp` therefore compiles without the
+console module, attached R-task hooks, TCP host server, attached callbacks, or
+the `RuntimeMode::Attached` variant. Runtime-aware detached features must flow
 through `lsp/session_bridge.rs`.

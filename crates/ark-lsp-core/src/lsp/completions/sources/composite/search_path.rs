@@ -19,7 +19,7 @@ use libr::R_EmptyEnv;
 use libr::R_lsInternal;
 use tower_lsp::lsp_types::CompletionItem;
 
-use crate::console;
+use crate::attached;
 use crate::lsp::call_context::document_context_matches_package_argument;
 use crate::lsp::call_context::PackageCompletionMode;
 use crate::lsp::completions::completion_context::CompletionContext;
@@ -61,7 +61,7 @@ fn completions_from_search_path(
 
     unsafe {
         // Iterate through environments starting from the current frame environment.
-        let env_obj = console::selected_env();
+        let env_obj = attached::selected_env();
         let mut env = env_obj.sexp;
 
         while env != R_EmptyEnv {

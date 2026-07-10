@@ -11,12 +11,17 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+#[cfg(feature = "attached-runtime")]
 use anyhow::Context;
 use serde_json::Value;
+#[cfg(feature = "attached-runtime")]
 use stdext::result::ResultExt;
+#[cfg(feature = "attached-runtime")]
 use tokio::net::TcpListener;
+#[cfg(feature = "attached-runtime")]
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::unbounded_channel as tokio_unbounded_channel;
+#[cfg(feature = "attached-runtime")]
 use tokio::sync::mpsc::UnboundedSender as AsyncUnboundedSender;
 use tokio::sync::Notify;
 use tower_lsp::jsonrpc;
@@ -32,7 +37,8 @@ use tower_lsp::LspService;
 use tower_lsp::Server;
 
 use super::main_loop::LSP_HAS_CRASHED;
-use crate::console::ConsoleNotification;
+#[cfg(feature = "attached-runtime")]
+use crate::host::HostNotification;
 use crate::lsp::handlers::HelpTextParams;
 use crate::lsp::handlers::ObjectChildrenParams;
 use crate::lsp::handlers::ObjectNodeParams;
@@ -97,10 +103,10 @@ use crate::lsp::input_boundaries::InputBoundariesParams;
 use crate::lsp::input_boundaries::InputBoundariesResponse;
 use crate::lsp::main_loop::Event;
 use crate::lsp::main_loop::GlobalState;
+#[cfg(feature = "attached-runtime")]
 use crate::lsp::main_loop::LspEventSender;
 use crate::lsp::main_loop::TokioUnboundedSender;
 use crate::lsp::session_bridge::HelpPage;
-use crate::lsp::state::RuntimeMode;
 use crate::lsp::statement_range;
 use crate::lsp::statement_range::StatementRangeParams;
 use crate::lsp::statement_range::StatementRangeResponse;
@@ -159,7 +165,10 @@ fn report_crash() {
         "with full logs from the current Neovim session."
     );
 
+    #[cfg(feature = "attached-runtime")]
     crate::runtime::show_crash_message(user_message);
+    #[cfg(not(feature = "attached-runtime"))]
+    log::error!("{user_message}");
 }
 
 #[derive(Debug)]
@@ -323,11 +332,13 @@ impl NotificationBarrier {
     }
 }
 
+#[cfg(feature = "attached-runtime")]
 #[derive(Clone, Debug)]
 pub struct LspStartConfig {
     ip_address: String,
 }
 
+#[cfg(feature = "attached-runtime")]
 impl LspStartConfig {
     pub fn new(ip_address: impl Into<String>) -> Self {
         Self {
@@ -340,11 +351,13 @@ impl LspStartConfig {
     }
 }
 
+#[cfg(feature = "attached-runtime")]
 #[derive(Clone, Copy, Debug)]
 pub struct LspStarted {
     port: u16,
 }
 
+#[cfg(feature = "attached-runtime")]
 impl LspStarted {
     pub fn new(port: u16) -> Self {
         Self { port }
@@ -945,11 +958,12 @@ impl Backend {
     }
 }
 
+#[cfg(feature = "attached-runtime")]
 pub fn start_lsp(
     runtime: Arc<Runtime>,
     start_config: LspStartConfig,
     server_started: impl FnOnce(LspStarted) -> anyhow::Result<()> + Send + 'static,
-    console_notification_tx: AsyncUnboundedSender<ConsoleNotification>,
+    host_notification_tx: AsyncUnboundedSender<HostNotification>,
 ) {
     runtime.block_on(async {
         let ip_address = start_config.ip_address();
@@ -984,10 +998,9 @@ pub fn start_lsp(
 
         let init = |client: Client| {
             let notification_barrier = Arc::new(NotificationBarrier::default());
-            let state = GlobalState::new_with_runtime_mode(
+            let state = GlobalState::new_attached(
                 client,
-                console_notification_tx,
-                RuntimeMode::Attached,
+                host_notification_tx,
                 notification_barrier.clone(),
             );
             let events_tx = state.events_tx();
@@ -1077,21 +1090,14 @@ pub fn start_lsp(
     })
 }
 
-pub async fn start_stdio_lsp(runtime_mode: RuntimeMode) -> anyhow::Result<()> {
+pub async fn start_stdio_lsp() -> anyhow::Result<()> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
-    let (console_notification_tx, _console_notification_rx) =
-        tokio_unbounded_channel::<ConsoleNotification>();
 
     let init = move |client: Client| {
         let notification_barrier = Arc::new(NotificationBarrier::default());
-        let state = GlobalState::new_with_runtime_mode(
-            client,
-            console_notification_tx.clone(),
-            runtime_mode,
-            notification_barrier.clone(),
-        );
+        let state = GlobalState::new_detached(client, notification_barrier.clone());
         let events_tx = state.events_tx();
         let main_loop = state.start();
 

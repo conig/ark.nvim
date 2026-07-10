@@ -127,7 +127,7 @@ fn push_unique_path(path: PathBuf, paths: &mut Vec<PathBuf>) {
 }
 
 fn normalize_string_path(token: &str) -> anyhow::Result<Option<PathBuf>> {
-    if crate::console::Console::is_initialized() {
+    if crate::attached::is_ready() {
         return normalize_string_path_with_r(token);
     }
 

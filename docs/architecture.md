@@ -13,6 +13,13 @@ The R session never lives inside the LSP. Tmux is the canonical backend; the
 built-in terminal backend implements the same session contract without tmux tab
 semantics. `vim-slime` and `nvim-slimetree` remain the execution/send layer.
 
+The shared Rust LSP crate has an `attached-runtime` compatibility feature for
+the retained upstream `ark` kernel host. Workspace dependencies disable it by
+default, `crates/ark` opts in explicitly, and the product `ark-lsp` does not.
+Consequently the released stdio server cannot construct attached mode and does
+not compile the kernel console, serialized attached-R task hooks, TCP host
+server, or attached UI callbacks.
+
 Current module ownership is described in `lua/ark/README.md`; Rust bridge
 boundaries are described in
 `crates/ark-lsp-core/src/lsp/session_bridge/README.md`. `SPEC.md` is the complete
