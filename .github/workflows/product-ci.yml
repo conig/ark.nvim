@@ -87,8 +87,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build and verify release asset
         run: scripts/package-release.sh dist/release
-      - name: Verify installer failure and rollback contracts
-        run: tests/test-release-installer.sh
+      - name: Verify release helper contracts
+        run: |
+          tests/test-release-installer.sh
+          tests/test-docker-readme-wrapper.sh
       - uses: actions/upload-artifact@v4
         with:
           name: ark-lsp-release

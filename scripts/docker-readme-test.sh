@@ -25,6 +25,8 @@ EOF
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 dockerfile="${repo_root}/docker/readme-minimal/Dockerfile"
 image_tag="${ARK_DOCKER_README_TEST_IMAGE:-ark-readme-test:local}"
+dist_dir="${ARK_DOCKER_README_DIST_DIR:-${repo_root}/dist/readme}"
+package_release_script="${ARK_DOCKER_README_PACKAGE_SCRIPT:-${repo_root}/scripts/package-release.sh}"
 context_label="dev.ark.nvim.readme-test.context-sha"
 command="${1:-auto}"
 if (($# > 0)); then
@@ -32,7 +34,6 @@ if (($# > 0)); then
 fi
 
 prepare_release_artifact() {
-  local dist_dir="${repo_root}/dist/readme"
   local asset
   asset=$(python3 - "${repo_root}/release-manifest.json" <<'PY'
 import json
@@ -41,16 +42,20 @@ print(json.load(open(sys.argv[1]))["release_targets"][0]["asset"])
 PY
 )
 
-  if [[ -x "${dist_dir}/${asset}" && -f "${dist_dir}/${asset}.sha256" ]]; then
-    return 0
+  "${package_release_script}" "${dist_dir}"
+  if [[ ! -x "${dist_dir}/${asset}" || ! -f "${dist_dir}/${asset}.sha256" ]]; then
+    echo "README release packaging did not produce ${asset} and its checksum" >&2
+    exit 1
   fi
-  "${repo_root}/scripts/package-release.sh" "${dist_dir}"
 }
 
 context_fingerprint() {
   (
     cd "${repo_root}"
-    git ls-files -co --exclude-standard -z \
+    {
+      git ls-files -co --exclude-standard -z
+      find "${dist_dir}" -maxdepth 1 -type f -print0
+    } \
       | sort -z \
       | xargs -0 sha256sum \
       | sha256sum \

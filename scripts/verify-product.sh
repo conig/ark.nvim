@@ -55,6 +55,7 @@ run_step "ark-lsp-core unit tests" cargo test -p ark-lsp-core --lib
 run_step "ark-lsp metadata tests" cargo test -p ark-lsp
 run_step "detached ark-lsp boundary" tests/test-detached-lsp-boundary.sh
 run_step "release installer" tests/test-release-installer.sh
+run_step "Docker README wrapper" tests/test-docker-readme-wrapper.sh
 run_step "test manifest contracts" tests/test-test-manifest.sh
 run_step "prepared E2E fixture contracts" tests/test-e2e-fixture.sh
 run_step "performance result contracts" tests/test-performance-summary.sh

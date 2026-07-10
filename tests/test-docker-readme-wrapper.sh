@@ -6,6 +6,9 @@ tmp_root=$(mktemp -d /tmp/ark-docker-readme-wrapper.XXXXXX)
 bin_dir="$tmp_root/bin"
 log_file="$tmp_root/docker.log"
 image_fingerprint_file="$tmp_root/image-fingerprint"
+dist_dir="$tmp_root/dist"
+release_source="$tmp_root/ark-lsp-source"
+package_script="$tmp_root/package-release.sh"
 script="$repo_root/scripts/docker-readme-test.sh"
 
 cleanup() {
@@ -14,6 +17,23 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$bin_dir"
+
+cat >"$release_source" <<'EOF'
+artifact-v1
+EOF
+chmod 755 "$release_source"
+
+cat >"$package_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+dist_dir=$1
+asset="ark-lsp-v0.1.0-alpha.1-x86_64-unknown-linux-gnu"
+mkdir -p "$dist_dir"
+install -m 755 "$ARK_FAKE_RELEASE_SOURCE" "$dist_dir/$asset"
+sha256sum "$dist_dir/$asset" >"$dist_dir/$asset.sha256"
+EOF
+chmod 755 "$package_script"
 
 cat >"$bin_dir/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -61,6 +81,9 @@ run_wrapper() {
   PATH="$bin_dir:$PATH" \
     ARK_FAKE_DOCKER_LOG="$log_file" \
     ARK_FAKE_DOCKER_IMAGE_FINGERPRINT="$image_fingerprint_file" \
+    ARK_FAKE_RELEASE_SOURCE="$release_source" \
+    ARK_DOCKER_README_DIST_DIR="$dist_dir" \
+    ARK_DOCKER_README_PACKAGE_SCRIPT="$package_script" \
     "$script" "$@" >/dev/null 2>&1
 }
 
@@ -81,12 +104,14 @@ if [[ "${#calls[@]}" -ne 1 || "${calls[0]}" != "run run --rm -it ark-readme-test
   exit 1
 fi
 
-printf 'stale-image\n' >"$image_fingerprint_file"
+cat >"$release_source" <<'EOF'
+artifact-v2
+EOF
 : >"$log_file"
 run_wrapper update
 mapfile -t calls <"$log_file"
 if [[ "${#calls[@]}" -ne 1 || "${calls[0]}" != build\ * ]]; then
-  printf 'expected update to rebuild stale image, got:\n' >&2
+  printf 'expected update to rebuild after the release artifact changed, got:\n' >&2
   cat "$log_file" >&2
   exit 1
 fi
