@@ -72,6 +72,10 @@ fn recurse_children(
 }
 
 fn syntax_diagnostic(node: Node, context: &DiagnosticContext) -> anyhow::Result<Diagnostic> {
+    if let Some(range) = unmatched_quote_range(node) {
+        return new_unterminated_string_diagnostic(range, context);
+    }
+
     // We used to try and analyze the `ERROR` structure of the tree to provide "precise"
     // error messages, but this is extremely prone to false positives due to the fact that
     // tree-sitter reports a "generic" error range, and it's up to us to try and infer the
@@ -81,6 +85,20 @@ fn syntax_diagnostic(node: Node, context: &DiagnosticContext) -> anyhow::Result<
     // parse error occurred.
 
     syntax_diagnostic_default(node, context)
+}
+
+fn unmatched_quote_range(node: Node) -> Option<Range> {
+    match node.kind() {
+        // Valid ordinary and raw strings own their quote tokens. Do not inspect
+        // inside them even when a surrounding syntax error contains the string.
+        "string" => return None,
+        "\"" | "'" => return Some(node.range()),
+        _ => {},
+    }
+
+    let mut cursor = node.walk();
+    let range = node.children(&mut cursor).find_map(unmatched_quote_range);
+    range
 }
 
 fn syntax_diagnostic_default(
@@ -146,8 +164,29 @@ fn diagnose_missing(
         NodeType::FunctionDefinition => {
             diagnose_missing_function_definition(node, context, diagnostics)
         },
+        NodeType::String => diagnose_missing_string(node, context, diagnostics),
         _ => Ok(()),
     }
+}
+
+fn diagnose_missing_string(
+    node: Node,
+    context: &DiagnosticContext,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> anyhow::Result<()> {
+    let Some(close) = node.child_by_field_name("close") else {
+        return Ok(());
+    };
+    if !close.is_missing() {
+        return Ok(());
+    }
+
+    let Some(open) = node.child_by_field_name("open") else {
+        return Ok(());
+    };
+    diagnostics.push(new_unterminated_string_diagnostic(open.range(), context)?);
+
+    Ok(())
 }
 
 fn diagnose_missing_parameters(
@@ -416,6 +455,13 @@ fn new_missing_close_diagnostic(
     new_syntax_diagnostic(message, range, context)
 }
 
+fn new_unterminated_string_diagnostic(
+    range: Range,
+    context: &DiagnosticContext,
+) -> anyhow::Result<Diagnostic> {
+    new_syntax_diagnostic(String::from("Unterminated string literal"), range, context)
+}
+
 fn new_syntax_diagnostic(
     message: String,
     range: Range,
@@ -447,12 +493,12 @@ mod tests {
     fn test_syntax_error_truncation() {
         // Coded to truncate at 20 rows
         let newlines = "\n".repeat(20);
-        let text = String::from("('") + newlines.as_str() + ")";
+        let text = String::from("(`") + newlines.as_str() + ")";
         let diagnostics = text_diagnostics(text.as_str());
         let diagnostic = diagnostics.first().unwrap();
         insta::assert_snapshot!(diagnostic.message);
-        assert_eq!(diagnostic.range.start, Position::new(0, 0));
-        assert_eq!(diagnostic.range.end, Position::new(0, 0));
+        assert_eq!(diagnostic.range.start, Position::new(0, 1));
+        assert_eq!(diagnostic.range.end, Position::new(0, 1));
     }
 
     #[test]
@@ -557,6 +603,94 @@ identity(1)
         insta::assert_snapshot!(diagnostic.message);
         assert_eq!(diagnostic.range.start, Position::new(0, 12));
         assert_eq!(diagnostic.range.end, Position::new(0, 13));
+    }
+
+    #[test]
+    fn test_unterminated_string_in_function() {
+        // Ordinary R strings may span lines, but this quote has no matching close.
+        // Point at the unmatched opening quote rather than the enclosing function.
+        let text = "function(x) {\n  \"\n}";
+        let diagnostics = text_diagnostics(text);
+
+        assert_eq!(diagnostics.len(), 1);
+        let diagnostic = diagnostics.first().unwrap();
+        assert_eq!(diagnostic.message, "Unterminated string literal");
+        assert_eq!(diagnostic.range.start, Position::new(1, 2));
+        assert_eq!(diagnostic.range.end, Position::new(1, 3));
+
+        let text = "function(x) {\n  'value\n}";
+        let diagnostics = text_diagnostics(text);
+
+        assert_eq!(diagnostics.len(), 1);
+        let diagnostic = diagnostics.first().unwrap();
+        assert_eq!(diagnostic.message, "Unterminated string literal");
+        assert_eq!(diagnostic.range.start, Position::new(1, 2));
+        assert_eq!(diagnostic.range.end, Position::new(1, 3));
+    }
+
+    fn assert_single_generic_syntax_error(text: &str) {
+        let diagnostics = text_diagnostics(text);
+
+        assert_eq!(diagnostics.len(), 1, "{text}");
+        assert_eq!(
+            diagnostics.first().unwrap().message,
+            "Syntax error",
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn test_valid_multiline_string_is_not_unterminated() {
+        // The missing comma creates an `ERROR` containing a valid multiline
+        // string. The string itself must not replace that generic diagnostic.
+        assert_single_generic_syntax_error("list(\"foo\nbar\" x)");
+    }
+
+    #[test]
+    fn test_valid_escaped_newline_string_is_not_unterminated() {
+        // Backslash-newline is valid inside an ordinary R string. As above,
+        // only the deliberately missing comma should be diagnosed.
+        assert_single_generic_syntax_error("list(\"foo\\\nbar\" x)");
+    }
+
+    #[test]
+    fn test_valid_single_quoted_raw_string_is_not_unterminated() {
+        // R raw strings may use either quote style. Keep the unrelated missing
+        // comma diagnostic without blaming the raw string's opening quote.
+        assert_single_generic_syntax_error("list(r'(foo\nbar)' x)");
+    }
+
+    #[test]
+    fn test_unterminated_string_after_assignment_is_diagnosed() {
+        // In this shape tree-sitter retains a `string` with a missing closing
+        // token rather than wrapping the source in an `ERROR` node.
+        let diagnostics = text_diagnostics("x <- \"");
+
+        assert_eq!(diagnostics.len(), 1);
+        let diagnostic = diagnostics.first().unwrap();
+        assert_eq!(diagnostic.message, "Unterminated string literal");
+        assert_eq!(diagnostic.range.start, Position::new(0, 5));
+        assert_eq!(diagnostic.range.end, Position::new(0, 6));
+    }
+
+    #[test]
+    fn test_quote_tokens_in_other_constructs_are_not_unterminated() {
+        let texts = [
+            "# A comment containing \"\n1 + }",
+            "`a symbol containing \"`\n1 + }",
+            "\"an escaped \\\" quote\"\n1 + }",
+            "r\"(a raw string containing \" and a newline\n)\"\n1 + }",
+        ];
+
+        for text in texts {
+            let diagnostics = text_diagnostics(text);
+            assert_eq!(diagnostics.len(), 1, "{text}");
+            assert_eq!(
+                diagnostics.first().unwrap().message,
+                "Syntax error",
+                "{text}"
+            );
+        }
     }
 
     #[test]
