@@ -52,10 +52,21 @@ rather than part of the default build or release path.
 
 `release-manifest.json` is the single product-version and compatibility source
 for the plugin, detached LSP build, bridge launcher metadata, release asset
-names, and release notes. The first product release line uses exact product
+names, release channel, and release notes. The current channel is `alpha`; its
+GitHub releases are published as prereleases and explicitly not marked latest.
+The first product release line uses exact product
 version compatibility across plugin and `ark-lsp`, plus bridge schema `v1`.
 Version skew must be reported as an actionable incompatibility rather than
 silently treated as a healthy live session.
+
+Normal users pin the plugin to the exact manifest release tag. A floating
+`main` checkout is a contributor/development lane because pairing it with a
+tagged binary can create product skew. Upgrades change that pin, sync the plugin
+and matching artifact, then restart the managed pane and refresh the LSP.
+Rollback follows the same whole-product rule: pin and load the previous plugin
+release before activating its binary. The rollback command refuses a previous
+binary whose product version, target, optimized profile, or bridge schema does
+not match the active plugin contract.
 
 The first release tier is deliberately narrow:
 
@@ -72,10 +83,13 @@ boundary.
 Normal installation uses a raw optimized `ark-lsp` GitHub release asset and a
 separate SHA-256 file. Ark installs immutable versions under
 `stdpath("data") .. "/ark/releases"`, smoke tests the embedded version, target,
-and release profile, then atomically changes the `current` symlink. The prior
+release profile, and bridge schema, then atomically changes the `current`
+symlink. The prior
 working target remains under `previous`; failed downloads, checksum failures,
 wrong component versions, and failed smoke checks leave `current` untouched.
-No elevated privileges or global `PATH` mutation are required.
+The installer serializes updates with an ownership-checked lock, preserves live
+installers, and reclaims orphaned locks after a crash. No elevated privileges
+or global `PATH` mutation are required.
 
 Binary discovery is explicit:
 
@@ -93,10 +107,13 @@ The required product gate is `.github/workflows/product-ci.yml` and
 active Rust crates, `arkbridge`, the installer/rollback contract, a release
 artifact clean install, static LSP startup, live bridge attach, and a Rust-free
 README container. Broader inherited workspace matrices run separately as
-scheduled upstream-compatibility checks. Release tags are `v<product-version>`;
-the release workflow rejects a tag that does not match the manifest and
-publishes the binary, checksum, reproducibility metadata, and provenance
-attestation together.
+scheduled upstream-compatibility checks. Required compatibility jobs cover the
+minimum supported Neovim/R pair and current stable releases; Neovim nightly is
+an explicit non-blocking early-warning lane. Release tags are
+`v<product-version>`; the release workflow rejects a tag that does not match the
+manifest, clean-installs the packaged artifact, runs the required product tier
+against it, and publishes the binary, checksum, reproducibility metadata, and
+provenance attestation together.
 
 ## Current Runtime Shape
 
@@ -109,6 +126,7 @@ Primary surfaces:
 - [lua/ark/help_render.lua](/home/marine/repos/ark.nvim/lua/ark/help_render.lua)
 - [lua/ark/target_actions.lua](/home/marine/repos/ark.nvim/lua/ark/target_actions.lua)
 - [lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua)
+- [lua/ark/lsp_recovery.lua](/home/marine/repos/ark.nvim/lua/ark/lsp_recovery.lua)
 - [lua/ark/session.lua](/home/marine/repos/ark.nvim/lua/ark/session.lua)
 - [lua/ark/session_runtime.lua](/home/marine/repos/ark.nvim/lua/ark/session_runtime.lua)
 - [lua/ark/tmux.lua](/home/marine/repos/ark.nvim/lua/ark/tmux.lua)
@@ -132,6 +150,11 @@ Responsibilities:
   pane, send, help, ArkView, snippets, and tab workflows
 - send text to the active managed R session through the configured backend
 - start detached `ark-lsp`
+- recover an unexpectedly exited `ark-lsp` with bounded exponential backoff;
+  recovery is scoped per workspace, stops after three attempts in a 30-second
+  window, remains visibly actionable when exhausted, and never consumes retry
+  budget for Ark-owned refresh/replacement stops; this lifecycle containment
+  does not turn request failures into silent success or hide their root cause
 - show visible detached `ark-lsp` rebuild progress in a floating log window,
   including cargo output, with `q` closing only the window while the build and
   follow-up LSP attach/restart continue

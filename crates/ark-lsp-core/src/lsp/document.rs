@@ -58,9 +58,6 @@ pub struct Document {
     /// The document's AST.
     pub ast: Tree,
 
-    /// The Rowan R syntax tree.
-    pub parse: aether_parser::Parse,
-
     /// Index of new lines and non-UTF-8 characters in `contents`. Used for converting
     /// between line/col [tower_lsp::Position]s with a specified [PositionEncoding] to
     /// [biome_text_size::TextSize] offsets.
@@ -82,11 +79,14 @@ pub struct Document {
 
 impl std::fmt::Debug for Document {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let root = self.ast.root_node();
         f.debug_struct("Document")
-            .field("source_contents", &self.source_contents)
-            .field("contents", &self.contents)
-            .field("ast", &self.ast)
-            .field("parse", &self.parse)
+            .field("source_bytes", &self.source_contents.len())
+            .field("analysis_bytes", &self.contents.len())
+            .field("version", &self.version)
+            .field("kind", &self.kind)
+            .field("ast_root_kind", &root.kind())
+            .field("ast_has_error", &root.has_error())
             .finish()
     }
 }
@@ -123,8 +123,6 @@ impl Document {
         // Legacy Tree-Sitter AST
         let ast = parser.parse(contents.as_str(), None).unwrap();
 
-        // Preferred Rowan AST and accompanying line index
-        let parse = aether_parser::parse(&contents, Default::default());
         let line_index = biome_line_index::LineIndex::new(&source_contents);
 
         Self {
@@ -132,7 +130,6 @@ impl Document {
             contents,
             version,
             ast,
-            parse,
             line_index,
             // Currently hard-coded to UTF-16, but we might want to allow UTF-8 frontends
             // once/if Ark becomes an independent LSP
@@ -226,19 +223,19 @@ impl Document {
         // Rebuild everything once at the end
         self.contents = normalize_contents(&self.source_contents, self.kind);
         self.line_index = biome_line_index::LineIndex::new(&self.source_contents);
-        self.parse = aether_parser::parse(&self.contents, Default::default());
         self.ast = parser.parse(self.contents.as_str(), None).unwrap();
         self.version = Some(new_version);
     }
 
     pub fn get_line(&self, line: usize) -> Option<&str> {
         let Some(line_start) = self.line_index.newlines.get(line) else {
-            // Forcing a full capture so we can learn the situations in which this occurs
+            // Capture structural metadata and a backtrace without copying the
+            // editor's source into logs.
             log::error!(
-                "Requesting line {line} but only {n} lines exist.\n\nDocument:\n{contents}\n\nBacktrace:\n{trace}",
+                "Requesting line {line} but only {n} lines exist (document bytes: {bytes}).\n\nBacktrace:\n{trace}",
                 n = self.line_index.len(),
                 line = line + 1,
-                contents = self.source_contents,
+                bytes = self.source_contents.len(),
                 trace = std::backtrace::Backtrace::force_capture(),
             );
             return None;
@@ -262,16 +259,21 @@ impl Document {
     /// More convenient than the generic `biome_rowan::SyntaxNode<L>` type.
     /// Returns an error if the document has parse errors.
     pub fn syntax(&self) -> anyhow::Result<aether_syntax::RSyntaxNode> {
-        if self.parse.has_error() {
+        // The active LSP path uses Tree-Sitter. Parse Rowan syntax lazily for
+        // the callers that explicitly request it instead of paying for both
+        // parsers on every document open and edit.
+        let parse = aether_parser::parse(&self.contents, Default::default());
+        if parse.has_error() {
             return Err(anyhow!("Document has parse errors"));
         }
-        Ok(self.parse.syntax())
+        Ok(parse.syntax())
     }
 
     /// TODO(salsa) Recomputed every time for now, but we'll track this with
     /// Salsa soon.
     pub fn semantic_index(&self) -> SemanticIndex {
-        oak_semantic::build_index(&self.parse.tree(), oak_semantic::NoopImportsResolver)
+        let parse = aether_parser::parse(&self.contents, Default::default());
+        oak_semantic::build_index(&parse.tree(), oak_semantic::NoopImportsResolver)
     }
 
     fn clamp_lsp_position(&self, position: lsp_types::Position) -> lsp_types::Position {
@@ -530,6 +532,10 @@ fn is_closing_fence(line: &str, fence: Fence) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::hint::black_box;
+    use std::time::Duration;
+    use std::time::Instant;
+
     use tree_sitter::Point;
 
     use super::*;
@@ -542,20 +548,77 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual large-document hot-path benchmark"]
+    fn benchmark_large_document_parse_and_full_edit() {
+        fn median(mut samples: Vec<Duration>) -> Duration {
+            samples.sort_unstable();
+            samples[samples.len() / 2]
+        }
+
+        let source = (0..5_000)
+            .map(|i| format!("value_{i} <- {i} + 1\n"))
+            .collect::<String>();
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_r::LANGUAGE.into())
+            .unwrap();
+
+        let mut create_samples = Vec::new();
+        for _ in 0..9 {
+            let start = Instant::now();
+            let document = Document::new_with_parser(&source, &mut parser, Some(1));
+            create_samples.push(start.elapsed());
+            black_box(document.ast.root_node().end_byte());
+        }
+
+        let mut document = Document::new_with_parser(&source, &mut parser, Some(1));
+        let mut edit_samples = Vec::new();
+        for version in 2..=10 {
+            let params = lsp_types::DidChangeTextDocumentParams {
+                text_document: lsp_types::VersionedTextDocumentIdentifier {
+                    uri: lsp_types::Url::parse("file:///large-document-benchmark.R").unwrap(),
+                    version,
+                },
+                content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: source.clone(),
+                }],
+            };
+
+            let start = Instant::now();
+            document.on_did_change(&mut parser, &params);
+            edit_samples.push(start.elapsed());
+            black_box(document.ast.root_node().end_byte());
+        }
+
+        eprintln!(
+            "large_document_hot_path bytes={} create_median_us={} full_edit_median_us={}",
+            source.len(),
+            median(create_samples).as_micros(),
+            median(edit_samples).as_micros()
+        );
+    }
+
+    #[test]
     fn test_aether_syntax_integration() {
         let document = Document::new("foo <- 1 + 2", None);
 
-        let syntax = document.parse.syntax();
+        let syntax = document.syntax().unwrap();
         let len: u32 = syntax.text_range_with_trivia().len().into();
         assert!(len > 0);
+        assert_eq!(syntax.text_with_trivia(), "foo <- 1 + 2");
+    }
 
-        let syntax2 = document.syntax().unwrap();
-        assert_eq!(
-            syntax.text_range_with_trivia(),
-            syntax2.text_range_with_trivia()
-        );
+    #[test]
+    fn debug_redacts_document_source() {
+        let marker = "ARK_PRIVATE_DOCUMENT_DEBUG_7e18d5";
+        let document = Document::new(&format!("{marker} <- 1"), Some(3));
+        let rendered = format!("{document:?}");
 
-        assert!(!document.parse.has_error());
+        assert!(!rendered.contains(marker), "{rendered}");
+        assert!(rendered.contains("source_bytes"), "{rendered}");
+        assert!(rendered.contains("version: Some(3)"), "{rendered}");
     }
 
     #[test]

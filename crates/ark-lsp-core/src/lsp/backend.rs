@@ -194,6 +194,25 @@ pub(crate) enum LspNotification {
     DidRenameFiles(RenameFilesParams),
 }
 
+impl LspNotification {
+    pub(crate) fn method(&self) -> &'static str {
+        match self {
+            Self::Initialized(_) => "initialized",
+            Self::SessionUpdate(_) => ARK_SESSION_UPDATE_NOTIFICATION,
+            Self::DidChangeWorkspaceFolders(_) => "workspace/didChangeWorkspaceFolders",
+            Self::DidChangeConfiguration(_) => "workspace/didChangeConfiguration",
+            Self::DidChangeWatchedFiles(_) => "workspace/didChangeWatchedFiles",
+            Self::DidOpenTextDocument(_) => "textDocument/didOpen",
+            Self::DidChangeTextDocument(_) => "textDocument/didChange",
+            Self::DidSaveTextDocument(_) => "textDocument/didSave",
+            Self::DidCloseTextDocument(_) => "textDocument/didClose",
+            Self::DidCreateFiles(_) => "workspace/didCreateFiles",
+            Self::DidDeleteFiles(_) => "workspace/didDeleteFiles",
+            Self::DidRenameFiles(_) => "workspace/didRenameFiles",
+        }
+    }
+}
+
 #[derive(Debug)]
 #[expect(clippy::large_enum_variant)]
 pub(crate) enum LspRequest {
@@ -222,6 +241,63 @@ pub(crate) enum LspRequest {
     SessionBootstrap(SessionUpdateParams),
     ViewRpc(ViewRpcRequest),
     TargetsRpc(TargetsRpcRequest),
+}
+
+impl LspRequest {
+    pub(crate) fn method(&self) -> &'static str {
+        match self {
+            Self::Initialize(_) => "initialize",
+            Self::WorkspaceSymbol(_) => "workspace/symbol",
+            Self::DocumentSymbol(_) => "textDocument/documentSymbol",
+            Self::FoldingRange(_) => "textDocument/foldingRange",
+            Self::ExecuteCommand(_) => "workspace/executeCommand",
+            Self::Completion(_) => "textDocument/completion",
+            Self::CompletionResolve(_) => "completionItem/resolve",
+            Self::Hover(_) => "textDocument/hover",
+            Self::SignatureHelp(_) => "textDocument/signatureHelp",
+            Self::GotoDefinition(_) => "textDocument/definition",
+            Self::GotoImplementation(_) => "textDocument/implementation",
+            Self::SelectionRange(_) => "textDocument/selectionRange",
+            Self::References(_) => "textDocument/references",
+            Self::StatementRange(_) => statement_range::ARK_STATEMENT_RANGE_REQUEST,
+            Self::HelpTopic(_) => help_topic::ARK_HELP_TOPIC_REQUEST,
+            Self::OnTypeFormatting(_) => "textDocument/onTypeFormatting",
+            Self::CodeAction(_) => "textDocument/codeAction",
+            Self::VirtualDocument(_) => ARK_VDOC_REQUEST,
+            Self::Status(_) => ARK_STATUS_REQUEST,
+            Self::HelpText(_) => ARK_HELP_TEXT_REQUEST,
+            Self::PackageInstall(_) => ARK_PACKAGE_INSTALL_REQUEST,
+            Self::InputBoundaries(_) => input_boundaries::ARK_INPUT_BOUNDARIES_REQUEST,
+            Self::SessionBootstrap(_) => ARK_SESSION_BOOTSTRAP_REQUEST,
+            Self::ViewRpc(request) => match request {
+                ViewRpcRequest::Open(_) => ARK_VIEW_OPEN_REQUEST,
+                ViewRpcRequest::State(_) => ARK_VIEW_STATE_REQUEST,
+                ViewRpcRequest::Page(_) => ARK_VIEW_PAGE_REQUEST,
+                ViewRpcRequest::Sort(_) => ARK_VIEW_SORT_REQUEST,
+                ViewRpcRequest::Filter(_) => ARK_VIEW_FILTER_REQUEST,
+                ViewRpcRequest::Values(_) => ARK_VIEW_VALUES_REQUEST,
+                ViewRpcRequest::SchemaSearch(_) => ARK_VIEW_SCHEMA_SEARCH_REQUEST,
+                ViewRpcRequest::Profile(_) => ARK_VIEW_PROFILE_REQUEST,
+                ViewRpcRequest::Code(_) => ARK_VIEW_CODE_REQUEST,
+                ViewRpcRequest::Export(_) => ARK_VIEW_EXPORT_REQUEST,
+                ViewRpcRequest::Cell(_) => ARK_VIEW_CELL_REQUEST,
+                ViewRpcRequest::Close(_) => ARK_VIEW_CLOSE_REQUEST,
+                ViewRpcRequest::ObjectChildren(_) => ARK_OBJECT_CHILDREN_REQUEST,
+                ViewRpcRequest::ObjectDetail(_) => ARK_OBJECT_DETAIL_REQUEST,
+                ViewRpcRequest::ObjectTable(_) => ARK_OBJECT_TABLE_REQUEST,
+                ViewRpcRequest::ObjectSearch(_) => ARK_OBJECT_SEARCH_REQUEST,
+            },
+            Self::TargetsRpc(request) => match request {
+                TargetsRpcRequest::ProjectInfo(_) => ARK_TARGETS_PROJECT_INFO_REQUEST,
+                TargetsRpcRequest::Manifest(_) => ARK_TARGETS_MANIFEST_REQUEST,
+                TargetsRpcRequest::Network(_) => ARK_TARGETS_NETWORK_REQUEST,
+                TargetsRpcRequest::Meta(_) => ARK_TARGETS_META_REQUEST,
+                TargetsRpcRequest::ObjectMeta(_) => ARK_TARGETS_OBJECT_META_REQUEST,
+                TargetsRpcRequest::ViewOpen(_) => ARK_TARGETS_VIEW_OPEN_REQUEST,
+                TargetsRpcRequest::Action(_) => ARK_TARGETS_ACTION_REQUEST,
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -944,8 +1020,8 @@ impl Backend {
         )
     }
 
-    async fn notification(&self, params: Option<Value>) {
-        log::info!("Received legacy ark/notification payload: {:?}", params);
+    async fn notification(&self, _params: Option<Value>) {
+        log::trace!("Received legacy ark/notification");
     }
 
     async fn update_session(&self, params: Value) {

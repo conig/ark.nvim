@@ -38,7 +38,10 @@ Supported environment:
   backend
 
 Normal installation downloads a checksummed release binary and does not need
-Rust. A plugin manager build hook may call: >lua
+Rust. Once available, pin the plugin to the exact published release tag (the
+first is planned as `v0.1.0-alpha.1`, but is not yet published); tracking
+`main` is the contributor/source-build lane. A
+plugin manager build hook may call: >lua
 
   local ok, err = require("ark.release").install_sync()
   if not ok then error(err) end
@@ -138,6 +141,13 @@ lsp.root_markers ~
 lsp.restart_wait_ms ~
     Wait used while replacing the detached client. Default: 2000.
 
+lsp.crash_recovery ~
+    Controls automatic recovery when `ark-lsp` exits unexpectedly. Recovery is
+    enabled by default and retries three times within 30 seconds with bounded
+    exponential delays (250, 500, then 1000 milliseconds). Keys are `enabled`,
+    `max_restarts`, `window_ms`, `base_delay_ms`, and `max_delay_ms`. Intentional
+    `:Ark refresh` restarts do not consume this retry budget.
+
 tmux.launcher, terminal.launcher ~
     Managed R launcher path.
 
@@ -211,7 +221,7 @@ Core commands: >vim
   :Ark report                 Preview a redacted support report.
   :Ark refresh                Restart/sync the current buffer's LSP client.
   :Ark install                Install the checksummed release.
-  :Ark rollback               Activate the previous installed release.
+  :Ark rollback               Activate a matching previous installed release.
   :Ark lsp start              Start the current buffer's LSP client.
   :Ark snippets               Open Ark's explicit snippets picker.
   :Ark send {text}            Send text to the managed R session.
@@ -373,6 +383,12 @@ Static works but live completion does not ~
 
 Bridge incompatible or stale authentication ~
     Run `:Ark install`, `:Ark pane restart`, and `:Ark refresh` in that order.
+
+Rollback to an earlier product release ~
+    Pin and load the earlier plugin tag first. Its build hook normally installs
+    the matching LSP. Otherwise run `:Ark rollback`; it refuses to activate a
+    previous binary with a different version, target, profile, or bridge
+    schema. Then run `:Ark pane restart` and `:Ark refresh`.
 
 Tmux backend will not attach ~
     Start Neovim inside tmux, or configure `session.backend = "terminal"`.

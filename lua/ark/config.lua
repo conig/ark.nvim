@@ -170,6 +170,13 @@ function M.defaults()
       file_watch = true,
       root_markers = { ".git", ".Rproj", "DESCRIPTION", "renv.lock" },
       restart_wait_ms = 2000,
+      crash_recovery = {
+        enabled = true,
+        max_restarts = 3,
+        window_ms = 30000,
+        base_delay_ms = 250,
+        max_delay_ms = 2000,
+      },
     },
     session = {
       backend = session_backend,
@@ -308,6 +315,14 @@ function M.validate(opts)
   local split_size = opts.terminal and opts.terminal.split_size or nil
   if split_size ~= nil and (type(split_size) ~= "number" or split_size < 1) then
     errors[#errors + 1] = "config.terminal.split_size must be a positive number"
+  end
+
+  local crash_recovery = opts.lsp and opts.lsp.crash_recovery or nil
+  for _, key in ipairs({ "max_restarts", "window_ms", "base_delay_ms", "max_delay_ms" }) do
+    local value = crash_recovery and crash_recovery[key] or nil
+    if type(value) == "number" and (value < 1 or value % 1 ~= 0) then
+      errors[#errors + 1] = "config.lsp.crash_recovery." .. key .. " must be a positive integer"
+    end
   end
 
   return #errors == 0, errors

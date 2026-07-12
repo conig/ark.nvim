@@ -44,9 +44,10 @@ impl<'a> DocumentContext<'a> {
         let ast = &document.ast;
 
         let Some(node) = ast.root_node().find_smallest_spanning_node(point) else {
-            let contents = document.contents.to_string();
             panic!(
-                "Failed to find spanning node containing point: {point} with contents '{contents}'"
+                "Failed to find spanning node containing point: {point}; document bytes: {bytes}; AST range: {range:?}",
+                bytes = document.contents.len(),
+                range = ast.root_node().range(),
             );
         };
 
@@ -54,8 +55,11 @@ impl<'a> DocumentContext<'a> {
         let Some(closest_node) = ast.root_node().find_closest_node_to_point(point) else {
             // TODO: We really want to track this down and figure out what's happening
             // and fix it in `find_closest_node_to_point()`.
-            let contents = document.contents.to_string();
-            panic!("Failed to find closest node to point: {point} with contents '{contents}'");
+            panic!(
+                "Failed to find closest node to point: {point}; document bytes: {bytes}; AST range: {range:?}",
+                bytes = document.contents.len(),
+                range = ast.root_node().range(),
+            );
         };
 
         // Fix up node selection in an edge case that arises from how cursor
@@ -219,5 +223,23 @@ mod tests {
         let context = DocumentContext::new(&document, point, None);
 
         assert!(context.is_empty_assignment_rhs());
+    }
+
+    #[test]
+    fn document_context_panic_redacts_source() {
+        let marker = "ARK_PRIVATE_CONTEXT_PANIC_4da0c8";
+        let document = Document::new(&format!("{marker} <- 1"), None);
+        let panic = std::panic::catch_unwind(|| {
+            DocumentContext::new(&document, Point::new(99, 99), None);
+        })
+        .expect_err("an out-of-range point should panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("<non-string panic>");
+
+        assert!(!message.contains(marker), "{message}");
+        assert!(message.contains("document bytes"), "{message}");
     }
 }

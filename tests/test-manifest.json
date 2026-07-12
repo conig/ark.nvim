@@ -30,10 +30,12 @@
         "blink_hidden_trigger_context_resets_on_keyword.lua",
         "config_validation.lua",
         "dev_source_boundary.lua",
+        "dev_source_scan_without_rg.lua",
         "error_taxonomy.lua",
         "help_render_pure.lua",
         "lsp_content_modified_retry.lua",
         "lsp_inflight_bootstrap_deduplicates_session_update.lua",
+        "lsp_recovers_from_unexpected_exit.lua",
         "notifications_once.lua",
         "product_state_model.lua",
         "report_redaction.lua",
@@ -45,6 +47,17 @@
       "contract": "pure Lua rendering or state-transition behavior",
       "dependencies": ["neovim"],
       "typical_runtime": "under 2 seconds",
+      "mutates_shared_session": false
+    },
+    {
+      "names": ["large_file_edit_diagnostics_timing.lua"],
+      "tier": "performance",
+      "layer": "performance",
+      "contract": "large-document edit-to-diagnostics latency budget",
+      "dependencies": ["neovim"],
+      "serial": true,
+      "typical_runtime": "under 30 seconds",
+      "flake_policy": "fail only beyond the configurable 2000 ms guardrail",
       "mutates_shared_session": false
     },
     {
@@ -99,13 +112,15 @@
         "detached_parity.lua",
         "health.lua",
         "health_degraded_scenarios.lua",
+        "lsp_info_log_redaction.lua",
         "lsp_sync_start_bootstrap.lua",
         "lsp_sync_start_pending_client.lua",
         "native_help.lua",
         "release_manifest_and_discovery.lua",
         "report_command.lua",
         "targets_commands.lua",
-        "targets_project_store.lua"
+        "targets_project_store.lua",
+        "unterminated_string_diagnostic.lua"
       ],
       "tier": "fast",
       "layer": "component",

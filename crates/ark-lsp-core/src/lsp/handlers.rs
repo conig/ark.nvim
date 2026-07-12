@@ -771,7 +771,15 @@ pub(crate) fn handle_completion(
     // Build the document context.
     let context =
         DocumentContext::new_with_completion(document, point, trigger, explicit_completion_request);
-    lsp::log_info!("Completion context: {:#?}", context);
+    tracing::trace!(
+        row = context.point.row,
+        column = context.point.column,
+        node_kind = context.node.kind(),
+        closest_node_kind = context.closest_node.kind(),
+        trigger = ?context.trigger,
+        explicit = context.explicit_completion_request,
+        "Prepared completion context"
+    );
 
     if !state.has_attached_runtime() {
         if let Some(completions) = provide_static_target_name_completions(&context, &uri, state)

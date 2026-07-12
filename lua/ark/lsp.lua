@@ -1,6 +1,7 @@
 local M = {}
 local notifications = require("ark.notifications")
 local dev = require("ark.dev")
+local lsp_recovery = require("ark.lsp_recovery")
 local session_backend = require("ark.session")
 local session_runtime = require("ark.session_runtime")
 local uv = vim.uv or vim.loop
@@ -106,6 +107,8 @@ local function stop_lsp_client(client, force)
   if not client then
     return
   end
+
+  lsp_recovery.mark_intentional(client)
 
   if type(client.stop) == "function" then
     client:stop(force)
@@ -356,6 +359,60 @@ local function same_server(lhs, rhs)
     and vim.deep_equal(lhs.cmd, rhs.cmd)
     and lhs.root_dir == rhs.root_dir
     and lhs._ark_lsp_build_fingerprint == rhs._ark_lsp_build_fingerprint
+end
+
+local function buffer_matches_server(opts, bufnr, server_root)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  if not filetype_enabled(opts.filetypes, vim.bo[bufnr].filetype) then
+    return false
+  end
+
+  return root_dir(bufnr, opts.lsp.root_markers) == server_root
+end
+
+local function crash_recovery_buffers(opts, preferred_bufnr, server_root)
+  local buffers = {}
+  local seen = {}
+
+  local function add(bufnr)
+    if not seen[bufnr] and buffer_matches_server(opts, bufnr, server_root) then
+      buffers[#buffers + 1] = bufnr
+      seen[bufnr] = true
+    end
+  end
+
+  add(preferred_bufnr)
+  for _, candidate_bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    add(candidate_bufnr)
+  end
+
+  return buffers
+end
+
+local function reset_crash_recovery(opts, bufnr)
+  local server_root = root_dir(bufnr, opts.lsp.root_markers)
+  lsp_recovery.reset(opts.lsp.name, server_root)
+end
+
+local function configure_crash_recovery(config, opts, bufnr, start_opts)
+  local server_root = config.root_dir
+  lsp_recovery.configure(config, {
+    opts = opts.lsp.crash_recovery,
+    name = opts.lsp.name,
+    start_opts = start_opts,
+    forget_client = forget_client_id,
+    matching_buffers = function()
+      return crash_recovery_buffers(opts, bufnr, server_root)
+    end,
+    has_live_client = function(candidate_bufnr)
+      return live_clients(opts, candidate_bufnr)[1] ~= nil
+    end,
+    start = function(candidate_bufnr, recovery_start_opts)
+      start_client(opts, candidate_bufnr, recovery_start_opts)
+    end,
+  })
 end
 
 local function close_handle(handle)
@@ -1515,6 +1572,7 @@ local function start_client_inner(opts, bufnr, start_opts)
     notifications.emit(config_err, vim.log.levels.ERROR, { ark_key = "lsp-config-invalid" })
     return nil
   end
+  configure_crash_recovery(desired, opts, bufnr, start_opts)
   for _, client in ipairs(live_clients(opts, bufnr)) do
     if same_server(client.config, desired) then
       if not wait_for_client_sync then
@@ -1592,6 +1650,7 @@ end
 
 local function restart_client(opts, bufnr, start_opts)
   bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
+  reset_crash_recovery(opts, bufnr)
 
   for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr, name = opts.lsp.name })) do
     stop_lsp_client(client)

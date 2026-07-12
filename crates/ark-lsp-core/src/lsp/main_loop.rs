@@ -382,7 +382,7 @@ impl GlobalState {
         match event {
             Event::Lsp(msg) => match *msg {
                 LspMessage::Notification(sequence, notif) => {
-                    lsp::log_info!("{notif:#?}");
+                    log::trace!("LSP notification: {}", notif.method());
 
                     let result = match notif {
                         LspNotification::Initialized(_params) => {
@@ -439,7 +439,7 @@ impl GlobalState {
                 },
 
                 LspMessage::Request(request, tx) => {
-                    lsp::log_info!("{request:#?}");
+                    log::trace!("LSP request: {}", request.method());
 
                     match request {
                         LspRequest::Initialize(params) => {
