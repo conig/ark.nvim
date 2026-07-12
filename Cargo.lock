@@ -259,7 +259,7 @@ dependencies = [
  "serde",
  "tracing",
  "tree-sitter",
- "tree-sitter-r 1.1.0",
+ "tree-sitter-r",
 ]
 
 [[package]]
@@ -465,7 +465,7 @@ dependencies = [
  "tracing-error",
  "tracing-subscriber",
  "tree-sitter",
- "tree-sitter-r 1.2.0",
+ "tree-sitter-r",
  "url",
  "uuid",
  "walkdir",
@@ -527,7 +527,7 @@ dependencies = [
  "tower-lsp",
  "tracing",
  "tree-sitter",
- "tree-sitter-r 1.2.0",
+ "tree-sitter-r",
  "url",
  "uuid",
  "walkdir",
@@ -4356,15 +4356,6 @@ checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 name = "tree-sitter-r"
 version = "1.1.0"
 source = "git+https://github.com/r-lib/tree-sitter-r?rev=daa26a2ff0d9546e9125c7d8bcec046027f02070#daa26a2ff0d9546e9125c7d8bcec046027f02070"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-r"
-version = "1.2.0"
-source = "git+https://github.com/r-lib/tree-sitter-r?rev=95aff097aa927a66bb357f715b58cde821be8867#95aff097aa927a66bb357f715b58cde821be8867"
 dependencies = [
  "cc",
  "tree-sitter-language",
