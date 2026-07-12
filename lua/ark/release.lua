@@ -122,6 +122,8 @@ function M.install_command()
     manifest.product_version,
     "--target",
     target.rust_target,
+    "--bridge-schema",
+    manifest.compatibility.bridge_schema,
     "--asset-url",
     base_url .. "/" .. target.asset,
     "--checksum-url",
@@ -132,12 +134,39 @@ function M.install_command()
 end
 
 function M.rollback_command()
+  local manifest, manifest_err = M.manifest()
+  if not manifest then
+    return nil, manifest_err
+  end
+  local target, target_err = M.release_target()
+  if not target then
+    return nil, target_err
+  end
+
   return {
     repo_root() .. "/scripts/install-release.sh",
     "rollback",
+    "--version",
+    manifest.product_version,
+    "--target",
+    target.rust_target,
+    "--bridge-schema",
+    manifest.compatibility.bridge_schema,
     "--install-root",
     M.install_root(),
   }
+end
+
+local function metadata_matches_release(metadata, manifest, target)
+  return type(metadata) == "table"
+    and type(manifest) == "table"
+    and type(manifest.compatibility) == "table"
+    and type(target) == "table"
+    and metadata.component == "ark-lsp"
+    and metadata.product_version == manifest.product_version
+    and metadata.bridge_schema == manifest.compatibility.bridge_schema
+    and metadata.target == target.rust_target
+    and metadata.profile == "release"
 end
 
 local function run(command, action, callback)
@@ -172,11 +201,9 @@ end
 
 function M.install(callback)
   local manifest = M.manifest()
+  local target = M.release_target()
   local installed = M.binary_metadata()
-  if manifest and installed
-    and installed.product_version == manifest.product_version
-    and installed.profile == "release"
-  then
+  if metadata_matches_release(installed, manifest, target) then
     local message = "Ark release " .. manifest.product_version .. " is already installed"
     vim.notify(message, vim.log.levels.INFO, { title = "ark.nvim" })
     if callback then
@@ -202,10 +229,8 @@ function M.install_sync()
     return false, manifest_err
   end
   local installed = M.binary_metadata()
-  if installed
-    and installed.product_version == manifest.product_version
-    and installed.profile == "release"
-  then
+  local target = M.release_target()
+  if metadata_matches_release(installed, manifest, target) then
     return true, "Ark release " .. manifest.product_version .. " is already installed"
   end
 
@@ -221,7 +246,15 @@ function M.install_sync()
 end
 
 function M.rollback(callback)
-  return run(M.rollback_command(), "Ark rollback", callback)
+  local command, err = M.rollback_command()
+  if not command then
+    vim.notify(err, vim.log.levels.ERROR, { title = "ark.nvim" })
+    if callback then
+      callback(false, err)
+    end
+    return nil, err
+  end
+  return run(command, "Ark rollback", callback)
 end
 
 function M.binary_metadata(path)
@@ -248,6 +281,7 @@ function M.status()
   return {
     product_version = manifest and manifest.product_version or nil,
     release_tag = manifest and manifest.release_tag or nil,
+    release_channel = manifest and manifest.release_channel or nil,
     compatibility = manifest and manifest.compatibility or nil,
     supported_environment = manifest and manifest.supported_environment or nil,
     manifest_error = manifest_err,

@@ -2,7 +2,7 @@ local M = {}
 
 local catalog = {
   E_CONFIG = { state = "unsupported", action = "Fix the named require('ark').setup() key or value, then restart Neovim." },
-  E_INSTALL = { state = "update_in_progress", action = "Run :Ark install again; use :Ark rollback if the active release is unusable." },
+  E_INSTALL = { state = "update_in_progress", action = "Run :Ark install again; pin the previous plugin release before using :Ark rollback." },
   E_LSP_UNAVAILABLE = { state = "static_only", action = "Run :Ark install, then :Ark refresh." },
   E_BACKEND_UNAVAILABLE = { state = "static_only", action = "Install the configured backend requirement or select session.backend = 'terminal'." },
   E_BRIDGE_MISSING = { state = "live_degraded", action = "Run :Ark pane restart; use :checkhealth ark if it remains unavailable." },

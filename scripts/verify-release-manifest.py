@@ -6,7 +6,8 @@ import pathlib
 import re
 import subprocess
 import sys
-import tomllib
+
+from _toml_utils import find_string_array, find_string_value
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -38,6 +39,20 @@ def validate_source(manifest: dict) -> None:
     expected_tag = f"v{version}"
     if manifest.get("release_tag") != expected_tag:
         fail(f"release_tag must be {expected_tag!r}")
+
+    channel = manifest.get("release_channel")
+    if channel not in {"alpha", "beta", "stable"}:
+        fail("release_channel must be one of: alpha, beta, stable")
+    prerelease = version.partition("-")[2]
+    if channel == "stable" and prerelease:
+        fail("stable release_channel cannot use a prerelease product_version")
+    prerelease_channel = prerelease.split(".", 1)[0]
+    if channel in {"alpha", "beta"} and prerelease_channel != channel:
+        fail(f"{channel} release_channel requires a -{channel} product_version")
+
+    release_notes = ROOT / "docs" / "releases" / f"{expected_tag}.md"
+    if not release_notes.is_file():
+        fail(f"release notes are missing: {release_notes.relative_to(ROOT)}")
 
     compatibility = manifest.get("compatibility")
     if not isinstance(compatibility, dict):
@@ -72,17 +87,21 @@ def validate_source(manifest: dict) -> None:
             fail(f"duplicate release asset: {asset}")
         assets.add(asset)
 
-    cargo = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
-    if cargo.get("workspace", {}).get("default-members") != ["crates/ark-lsp"]:
+    default_members = find_string_array(
+        ROOT / "Cargo.toml", "workspace", "default-members"
+    )
+    if default_members != ["crates/ark-lsp"]:
         fail("Cargo default-members must contain only the ark-lsp product root")
 
-    toolchain = tomllib.loads((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))
-    channel = toolchain.get("toolchain", {}).get("channel")
+    channel = find_string_value(
+        ROOT / "rust-toolchain.toml", "toolchain", "channel"
+    )
     if not isinstance(channel, str) or not re.fullmatch(r"\d+\.\d+\.\d+", channel):
         fail("rust-toolchain.toml must pin an exact stable release")
 
-    rustfmt = tomllib.loads((ROOT / "rustfmt-toolchain.toml").read_text(encoding="utf-8"))
-    rustfmt_channel = rustfmt.get("toolchain", {}).get("channel")
+    rustfmt_channel = find_string_value(
+        ROOT / "rustfmt-toolchain.toml", "toolchain", "channel"
+    )
     if not isinstance(rustfmt_channel, str) or not re.fullmatch(
         r"nightly-\d{4}-\d{2}-\d{2}", rustfmt_channel
     ):
@@ -122,13 +141,33 @@ def validate_artifact(manifest: dict, artifact: pathlib.Path) -> None:
         fail(f"artifact target is not release-tier: {metadata.get('target')!r}")
 
 
+def validate_publish_ready(manifest: dict) -> None:
+    version = manifest["product_version"]
+    notes_path = ROOT / "docs" / "releases" / f"v{version}.md"
+    notes = notes_path.read_text(encoding="utf-8")
+    first_line = next(iter(notes.splitlines()), "")
+    if "(planned)" in first_line.lower() or "has not yet been tagged or published" in notes:
+        fail(f"release notes are still marked planned: {notes_path.relative_to(ROOT)}")
+
+    changelog_path = ROOT / "CHANGELOG.md"
+    changelog = changelog_path.read_text(encoding="utf-8")
+    if (
+        f"## {version} - Planned" in changelog
+        or "This version has not been tagged or published" in changelog
+    ):
+        fail(f"changelog still marks {version} as planned")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifact", type=pathlib.Path)
+    parser.add_argument("--for-publish", action="store_true")
     args = parser.parse_args()
 
     manifest = load_manifest()
     validate_source(manifest)
+    if args.for_publish:
+        validate_publish_ready(manifest)
     if args.artifact is not None:
         validate_artifact(manifest, args.artifact.resolve())
     print("release manifest check passed")

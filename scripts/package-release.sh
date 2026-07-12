@@ -14,6 +14,7 @@ manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 target = manifest["release_targets"][0]
 print(manifest["product_version"])
 print(manifest["release_tag"])
+print(manifest["release_channel"])
 print(target["rust_target"])
 print(target["asset"])
 print(target["checksum_asset"])
@@ -22,9 +23,10 @@ PY
 
 product_version=${release_fields[0]}
 release_tag=${release_fields[1]}
-rust_target=${release_fields[2]}
-asset=${release_fields[3]}
-checksum_asset=${release_fields[4]}
+release_channel=${release_fields[2]}
+rust_target=${release_fields[3]}
+asset=${release_fields[4]}
+checksum_asset=${release_fields[5]}
 build_commit=$(git -C "${repo_root}" rev-parse HEAD)
 
 if [[ "${ARK_SKIP_RELEASE_BUILD:-0}" != "1" ]]; then
@@ -64,6 +66,7 @@ import pathlib
 metadata = {
     "product_version": ${product_version@Q},
     "release_tag": ${release_tag@Q},
+    "release_channel": ${release_channel@Q},
     "target": ${rust_target@Q},
     "asset": ${asset@Q},
     "sha256": ${asset_sha256@Q},

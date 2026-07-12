@@ -10,11 +10,15 @@ permissions:
   id-token: write
   attestations: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Verify and publish Linux x86_64 release
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
         with:
@@ -25,7 +29,9 @@ jobs:
         run: |
           manifest_tag=$(python3 -c 'import json; print(json.load(open("release-manifest.json"))["release_tag"])')
           test "${RELEASE_TAG}" = "${manifest_tag}"
-          python3 scripts/verify-release-manifest.py
+          test "$(git describe --tags --exact-match HEAD)" = "${RELEASE_TAG}"
+          test -f "docs/releases/${RELEASE_TAG}.md"
+          python3 scripts/verify-release-manifest.py --for-publish
       - uses: Swatinem/rust-cache@v2
       - uses: rhysd/action-setup-vim@v1
         with:
@@ -48,10 +54,12 @@ jobs:
           manifest = json.load(open("release-manifest.json"))
           target = manifest["release_targets"][0]
           print(f"PRODUCT_VERSION={manifest['product_version']}")
+          print(f"RELEASE_CHANNEL={manifest['release_channel']}")
           print(f"RUST_TARGET={target['rust_target']}")
+          print(f"BRIDGE_SCHEMA={manifest['compatibility']['bridge_schema']}")
           print(f"RELEASE_ASSET={target['asset']}")
           PY
-      - name: Run required product gates
+      - name: Run non-E2E product gates
         run: scripts/verify-product.sh --skip-e2e
       - name: Build release assets
         run: scripts/package-release.sh dist/release
@@ -61,15 +69,16 @@ jobs:
           scripts/install-release.sh install \
             --version "${PRODUCT_VERSION}" \
             --target "${RUST_TARGET}" \
+            --bridge-schema "${BRIDGE_SCHEMA}" \
             --asset-url "file://${GITHUB_WORKSPACE}/${asset}" \
             --checksum-url "file://${GITHUB_WORKSPACE}/${asset}.sha256" \
             --install-root "${RUNNER_TEMP}/ark"
-      - name: Smoke static and live product paths with installed artifact
+      - name: Run required and live product paths with installed artifact
         env:
           ARK_NVIM_DEV_MODE: '0'
           ARK_NVIM_INSTALL_ROOT: ${{ runner.temp }}/ark
         run: |
-          scripts/run-e2e-test.sh --init NONE tests/e2e/detached_parity.lua
+          scripts/run-full-suite.sh --skip-rust --skip-clippy --tier required
           scripts/run-e2e-test.sh --init NONE tests/e2e/current_env_completion_timing.lua
       - name: Attest release binary provenance
         uses: actions/attest@v4
@@ -79,8 +88,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          mapfile -t release_flags < <(scripts/release-publication-flags.sh "${RELEASE_CHANNEL}")
           gh release create "${GITHUB_REF_NAME}" \
             dist/release/* \
+            "${release_flags[@]}" \
             --verify-tag \
             --title "Ark ${GITHUB_REF_NAME}" \
             --notes-file "docs/releases/${GITHUB_REF_NAME}.md"

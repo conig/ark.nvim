@@ -153,10 +153,11 @@ The minimal recommended `lazy.nvim` setup keeps:
 - `nvim-slimetree` plus `vim-slime` as the send path from buffer to REPL
 - `ark.nvim` as the pane/LSP/session layer
 
-The normal install downloads an optimized, checksummed `ark-lsp` release into
-Neovim's data directory. It does not require Rust or Cargo. The `lazy.nvim`
-build hook below uses Ark's synchronous installer; the same operation is
-available later as `:Ark install` or `:ArkInstall`.
+The planned normal install downloads an optimized, checksummed `ark-lsp`
+release into Neovim's data directory without Rust or Cargo. Release status:
+`v0.1.0-alpha.1` has not yet been tagged or published, so the runnable setup
+below deliberately tracks `main`, builds `ark-lsp` from source, and requires
+the pinned Rust toolchain described in [BUILDING.md](BUILDING.md).
 
 If you already run another R LSP such as `r_language_server`, disable it for
 `r`, `rmd`, `qmd`, and `quarto` first. `ark.nvim` is meant to be the only R LSP
@@ -306,17 +307,16 @@ return {
   },
   {
     "conig/ark.nvim",
+    branch = "main",
     ft = { "r", "rmd", "qmd", "quarto" },
     dependencies = {
       "Saghen/blink.cmp",
       "jpalardy/vim-slime",
       "conig/nvim-slimetree",
     },
-    build = function()
-      local ok, err = require("ark.release").install_sync()
-      if not ok then
-        error(err, 0)
-      end
+    build = "cargo build -p ark-lsp",
+    init = function()
+      vim.env.ARK_NVIM_DEV_MODE = "1"
     end,
     config = function()
       require("ark").setup({
@@ -329,6 +329,33 @@ return {
   },
 }
 ```
+
+The planned first channel is `alpha`. After `v0.1.0-alpha.1` is published,
+replace the `branch`, `build`, and `init` entries above with the exact-tag
+release lane:
+
+```lua
+version = "v0.1.0-alpha.1",
+build = function()
+  local ok, err = require("ark.release").install_sync()
+  if not ok then
+    error(err, 0)
+  end
+end,
+```
+
+Published installs must pin an exact release tag; tracking `main` while
+installing a tagged `ark-lsp` would violate Ark's exact plugin/LSP/bridge
+compatibility contract. To upgrade, change `version` to the next published tag,
+sync the plugin so its build hook installs the matching artifact, then run
+`:Ark pane restart` and `:Ark refresh`.
+
+Rollback is also a whole-product operation. Pin `version` to the previous tag
+and sync/restart the plugin first. The build hook normally activates the
+matching binary during that sync. If your plugin manager does not run the build
+hook, load the previous plugin checkout and run `:Ark rollback`; Ark refuses to
+activate `previous` unless its product version, target, release profile, and
+bridge schema match that plugin release.
 
 ### Local checkout
 
@@ -602,8 +629,9 @@ By default the plugin will try these `ark-lsp` locations in order:
 
 Set `ARK_NVIM_DEV_MODE=1` for a contributor checkout. Only that explicit mode
 allows `target/debug/ark-lsp` to take precedence over the installed release.
-Use `:Ark rollback` or `:ArkRollback` to atomically return to the previous
-installed release.
+`:Ark rollback` and `:ArkRollback` activate the previous installed binary only
+after the plugin checkout has been pinned to that same release; this prevents a
+mixed-version product.
 
 After an upgrade or rollback, run `:Ark pane restart` and `:Ark refresh` so the
 plugin, LSP, and bridge all use the same product version. The current support

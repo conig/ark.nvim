@@ -41,6 +41,9 @@ local ok, err = xpcall(function()
   if manifest.product_version ~= "0.1.0-alpha.1" then
     error("unexpected product version: " .. vim.inspect(manifest.product_version), 0)
   end
+  if manifest.release_channel ~= "alpha" then
+    error("unexpected release channel: " .. vim.inspect(manifest.release_channel), 0)
+  end
 
   local target = assert(release.release_target({ sysname = "Linux", machine = "x86_64" }))
   if target.rust_target ~= "x86_64-unknown-linux-gnu" then
@@ -92,6 +95,18 @@ local ok, err = xpcall(function()
   local rendered = table.concat(command, " ")
   if not rendered:find(target.asset, 1, true) or not rendered:find(target.checksum_asset, 1, true) then
     error("install command did not select the manifest target assets: " .. rendered, 0)
+  end
+  if not rendered:find(manifest.compatibility.bridge_schema, 1, true) then
+    error("install command did not enforce the bridge schema: " .. rendered, 0)
+  end
+
+  local rollback = assert(release.rollback_command())
+  local rollback_rendered = table.concat(rollback, " ")
+  if not rollback_rendered:find(manifest.product_version, 1, true)
+    or not rollback_rendered:find(target.rust_target, 1, true)
+    or not rollback_rendered:find(manifest.compatibility.bridge_schema, 1, true)
+  then
+    error("rollback command did not enforce the active plugin identity: " .. rollback_rendered, 0)
   end
 end, debug.traceback)
 

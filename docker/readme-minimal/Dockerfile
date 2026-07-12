@@ -64,6 +64,7 @@ RUN asset=$(find dist/readme -maxdepth 1 -type f -name 'ark-lsp-*' ! -name '*.sh
   && scripts/install-release.sh install \
     --version "$(python3 -c 'import json; print(json.load(open("release-manifest.json"))["product_version"])')" \
     --target "$(python3 -c 'import json; print(json.load(open("release-manifest.json"))["release_targets"][0]["rust_target"])')" \
+    --bridge-schema "$(python3 -c 'import json; print(json.load(open("release-manifest.json"))["compatibility"]["bridge_schema"])')" \
     --asset-url "file:///work/ark.nvim/${asset}" \
     --checksum-url "file:///work/ark.nvim/${asset}.sha256" \
     --install-root "${HOME}/.local/share/nvim/ark"

@@ -2,6 +2,7 @@
   "manifest_version": 1,
   "product_version": "0.1.0-alpha.1",
   "release_tag": "v0.1.0-alpha.1",
+  "release_channel": "alpha",
   "repository": "conig/ark.nvim",
   "compatibility": {
     "policy": "exact-product-version",

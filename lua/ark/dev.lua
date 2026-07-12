@@ -121,6 +121,18 @@ local function rust_source_paths()
     end
   end
 
+  if #paths == 0 then
+    for _, crate in ipairs(PRODUCT_RUST_CRATES) do
+      local source_root = ROOT .. "/crates/" .. crate .. "/src"
+      for _, path in ipairs(vim.fn.glob(source_root .. "/**/*", false, true)) do
+        local stat = uv and uv.fs_stat and uv.fs_stat(path) or nil
+        if type(stat) == "table" and stat.type == "file" then
+          paths[#paths + 1] = vim.fs.normalize(path)
+        end
+      end
+    end
+  end
+
   for _, crate in ipairs(PRODUCT_RUST_CRATES) do
     paths[#paths + 1] = ROOT .. "/crates/" .. crate .. "/Cargo.toml"
     local build_script = ROOT .. "/crates/" .. crate .. "/build.rs"

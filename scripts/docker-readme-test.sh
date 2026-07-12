@@ -53,7 +53,11 @@ context_fingerprint() {
   (
     cd "${repo_root}"
     {
-      git ls-files -co --exclude-standard -z
+      while IFS= read -r -d '' path; do
+        if [[ -f "${path}" ]]; then
+          printf '%s\0' "${path}"
+        fi
+      done < <(git ls-files -co --exclude-standard -z)
       find "${dist_dir}" -maxdepth 1 -type f -print0
     } \
       | sort -z \

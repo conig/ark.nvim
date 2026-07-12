@@ -23,6 +23,11 @@ Common failures:
 - Read-only state/install location: fix ownership or set `ARK_STATUS_DIR` /
   `ARK_NVIM_INSTALL_ROOT` before Neovim starts.
 
+For rollback, first pin and load the previous plugin release. Its build hook
+normally selects the matching LSP; otherwise run `:Ark rollback` from that
+checkout. Ark deliberately refuses binary-only cross-version rollback. Restart
+the pane and refresh after every upgrade or rollback.
+
 Ark error codes are stable support categories. `E_CONFIG` names invalid setup
 paths; `E_BRIDGE_*` and `E_IPC_*` identify the live boundary; `E_EVAL` means the
 requested R object/expression was unavailable. User-visible errors include a

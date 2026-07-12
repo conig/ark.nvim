@@ -340,7 +340,7 @@ end, { desc = "Install the checksummed ark-lsp release artifact" })
 
 vim.api.nvim_create_user_command("ArkRollback", function()
   run_release_action("rollback")
-end, { desc = "Roll back to the previous installed ark-lsp release" })
+end, { desc = "Activate the previous ark-lsp matching this plugin release" })
 
 vim.api.nvim_create_user_command("ArkPaneStart", function()
   require("ark").start_pane()

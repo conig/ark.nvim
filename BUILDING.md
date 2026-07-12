@@ -1,15 +1,22 @@
 ## Building
 
-The workspace currently declares `rust-version = "1.94"` and defaults to the
-`stable` Rust channel via `rust-toolchain.toml`.
+The workspace MSRV is `rust-version = "1.94"`. This checkout pins ordinary
+development and CI commands to Rust `1.97.0` through `rust-toolchain.toml` so
+contributors use the same compiler.
 
-If your installed `stable` toolchain is older than `1.94`, update it first:
+Install the pinned development toolchain if rustup has not already done so:
 
 ```sh
-rustup update stable
+rustup toolchain install 1.97.0 --profile minimal --component clippy
 ```
 
-After that, ordinary `cargo` commands are fine.
+After that, ordinary `cargo` commands use `1.97.0`. Formatting is separately
+pinned because the workspace rustfmt settings require nightly features:
+
+```sh
+rustup toolchain install nightly-2025-07-18 --profile minimal --component rustfmt
+cargo +nightly-2025-07-18 fmt --all
+```
 
 ## Useful Commands
 
@@ -56,4 +63,5 @@ Print the pane launcher command from Neovim:
 - The managed pane bootstraps the vendored `packages/arkbridge` runtime into the first writable library path by default, or `ARK_NVIM_SESSION_LIB` when set.
 - Use `:ArkRefresh` after the managed pane becomes ready if you want to restart the buffer LSP with fresh session bridge metadata.
 - Use `:checkhealth ark` to inspect prerequisites and binary discovery without starting a pane or LSP.
-- Formatting still uses nightly-only `rustfmt` options today, so `cargo fmt` is not yet a stable-only workflow.
+- Formatting uses the exact nightly toolchain shown above; do not rely on an
+  ambient `nightly` alias.
