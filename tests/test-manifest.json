@@ -109,6 +109,8 @@
     {
       "names": [
         "ark_dispatch_command.lua",
+        "ark_console_init_plugin_fallback.lua",
+        "ark_console_init_user_config.lua",
         "ark_view_popup_routing.lua",
         "detached_parity.lua",
         "health.lua",

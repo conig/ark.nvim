@@ -80,8 +80,12 @@ vim.opt.fillchars = {
   lastline = " ",
 }
 
+if type(repl_config_dir) == "string" then
+  source_optional_lua(repl_config_dir .. "/init.lua")
+end
+
 local ok_autopairs, autopairs = pcall(require, "nvim-autopairs")
-if ok_autopairs and type(autopairs.setup) == "function" then
+if ok_autopairs and type(autopairs.setup) == "function" and type(autopairs.config) ~= "table" then
   pcall(autopairs.setup, {})
 end
 
@@ -140,10 +144,6 @@ if ok_blink then
       default = { "lsp", "path", "buffer" },
     },
   })
-end
-
-if type(repl_config_dir) == "string" then
-  source_optional_lua(repl_config_dir .. "/init.lua")
 end
 
 pcall(function()

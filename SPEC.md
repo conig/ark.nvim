@@ -458,14 +458,23 @@ RPC endpoint are live; that transport readiness is independent of bridge
 readiness for language features. A missing RPC endpoint must return an explicit
 not-ready error and must never fall through to raw tmux paste into the console
 UI.
-Its completion key policy uses `Enter` or `Tab` to accept a visible Blink
-completion, uses `Enter` to submit when no completion menu is visible, uses
-`Alt-Enter` to insert a newline without accepting completion, and uses
+Its completion key policy uses `Tab` to accept a visible Blink completion,
+uses `Enter` to dismiss any visible completion and submit the current input,
+uses `Alt-Enter` to insert a newline without accepting completion, and uses
 `Shift-Tab` as the visible-menu bypass for inserting a literal tab without
 accepting completion.
 For R plotting and pipe workflows, the console also maps `<leader>\` to append
 `|>` and `<leader>=` to append `+`, each opening a new editable continuation
 line in the current console input.
+
+The standalone console discovers optional user configuration at
+`~/.config/ark.nvim/ark-repl/init.lua`, or the directory selected by
+`ARK_NVIM_REPL_CONFIG_DIR`. Ark makes the supported optional plugin paths
+available and establishes its console UI defaults before sourcing that file.
+Only afterward does it supply fallback Blink and `nvim-autopairs`
+configuration, preserving personal setup performed through shared modules from
+the normal Neovim runtimepath. Ark-owned console buffer invariants and mappings
+are installed later and remain authoritative.
 
 The raw launcher remains the default fallback and must not degrade.
 

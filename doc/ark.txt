@@ -214,6 +214,15 @@ view.popup.width, view.popup.height ~
 view.popup.nvim.bin ~
     Neovim executable used by ArkView popups.
 
+Standalone console personal configuration ~
+    The standalone `nvim-console` sources
+    `~/.config/ark.nvim/ark-repl/init.lua`, or the `init.lua` under
+    `ARK_NVIM_REPL_CONFIG_DIR`, after establishing console UI defaults and
+    making optional plugin paths importable. Ark supplies fallback Blink and
+    nvim-autopairs setup afterward, so personal setup wins. The normal Neovim
+    config remains on `runtimepath`; shared modules under its `lua/` directory
+    can be loaded with `require()` instead of being copied.
+
 Configuration is validated before setup mutates editor state. Unknown keys,
 wrong types, and invalid enum values raise `E_CONFIG` with the exact path and
 accepted values. This is intentional: misspellings must not silently fall back

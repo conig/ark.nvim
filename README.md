@@ -726,10 +726,15 @@ lazy-installed `nvim-autopairs` when available, so normal quote and bracket
 pairing works in the REPL. The raw launcher remains the default fallback.
 
 The standalone REPL sources optional user configuration from
-`~/.config/ark.nvim/ark-repl/init.lua` by default. That directory is added to
-the REPL Neovim runtimepath first, so modules under its `lua/` directory are
-available to `require()`. Set `ARK_NVIM_REPL_CONFIG_DIR` to use a different
-directory.
+`~/.config/ark.nvim/ark-repl/init.lua` by default. Ark first makes its optional
+Blink and `nvim-autopairs` installations importable and applies the console UI
+defaults, then sources the personal init before supplying fallback plugin
+configuration. Personal Blink configuration therefore wins, and Ark only calls
+`nvim-autopairs.setup()` when the personal config has not already configured
+it. The REPL config directory and the normal Neovim config directory remain on
+`runtimepath`, so this init can `require()` shared modules from either one's
+`lua/` directory instead of duplicating them. Set `ARK_NVIM_REPL_CONFIG_DIR` to
+use a different directory.
 
 ## Environment Knobs
 
