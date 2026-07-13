@@ -33,6 +33,9 @@ local ok, err = pcall(function()
     auto_start_lsp = false,
     async_startup = false,
     configure_slime = false,
+    view = {
+      display = "tab",
+    },
   })
 
   local runtime_ready = false

@@ -87,8 +87,8 @@ local function fail_with_diagnostics(message, pane_id)
 end
 
 local ark = require("ark")
-local original_view_popup = ark.view_popup
-ark.view_popup = function(expr, bufnr, opts)
+local original_view = ark.view
+ark.view = function(expr, bufnr, opts)
   view_calls[#view_calls + 1] = {
     expr = expr,
     bufnr = bufnr,
@@ -202,7 +202,7 @@ end, debug.traceback)
 if original_parent_rpc ~= nil then
   _G.__ark_nvim_view_rpc = original_parent_rpc
 end
-ark.view_popup = original_view_popup
+ark.view = original_view
 vim.notify = original_notify
 
 if not ok then

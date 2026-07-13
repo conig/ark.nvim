@@ -6,24 +6,21 @@ function M.new(deps)
     send = deps.send,
   }
   local add_candidate_bufnr = deps.add_candidate_bufnr
-  local current_nvim_server = deps.current_nvim_server
   local ensure_runtime_ready = deps.ensure_runtime_ready
   local ensure_setup = deps.ensure_setup
   local expression = deps.expression
   local is_ark_runtime_buffer = deps.is_ark_runtime_buffer
   local lsp = deps.lsp
-  local normalize_view_display = deps.normalize_view_display
   local notify = deps.notify
+  local open_view_tmux_popup = deps.open_view_tmux_popup
   local options = deps.options
   local resolve_bufnr = deps.resolve_bufnr
   local resolve_view_source_bufnr = deps.resolve_view_source_bufnr
   local r_string_literal = deps.r_string_literal
-  local session_backend = deps.session_backend
   local should_use_tmux_view_popup = deps.should_use_tmux_view_popup
   local target_tools = deps.target_tools
   local target_view = deps.target_view
   local view = deps.view
-  local view_popup_backend = deps.view_popup_backend
   local with_runtime_ready = deps.with_runtime_ready
   local tar_read_target_name
 
@@ -1087,47 +1084,17 @@ function M.new(deps)
         options = options,
         notify = notify,
       })
-      local server = current_nvim_server()
-      if type(server) == "string" and server ~= "" then
-        local backend_id, backend_err = view_popup_backend.register({
-          lsp = backend.lsp,
-          on_dispose = backend.stop,
-          options = options,
-          source_bufnr = source_bufnr,
-        })
-        local view_opts = type(options) == "table" and type(options.view) == "table" and options.view or {}
-        if backend_id then
-          local popup_opts = vim.tbl_deep_extend("force", view_opts.popup or {}, {
-            title = "ArkView: " .. backend.expr,
-          })
-          local opened, popup_err = session_backend.view_popup(options, server, backend_id, backend.expr, popup_opts)
-          if opened then
-            return opened
-          end
-  
-          view_popup_backend.unregister(backend_id)
-          if normalize_view_display(view_opts.display) == "tmux_popup" then
-            local err = popup_err or "failed to open tmux ArkView popup"
-            notify(err, vim.log.levels.WARN)
-            return nil, err
-          end
-        else
-          backend.stop()
-          if normalize_view_display(view_opts.display) == "tmux_popup" then
-            local err = backend_err or "failed to register target ArkView popup backend"
-            notify(err, vim.log.levels.WARN)
-            return nil, err
-          end
-        end
-      else
-        backend.stop()
-        local view_opts = type(options) == "table" and type(options.view) == "table" and options.view or {}
-        if normalize_view_display(view_opts.display) == "tmux_popup" then
-          local err = "tmux ArkView popup requires this Neovim instance to have an RPC server"
-          notify(err, vim.log.levels.WARN)
-          return nil, err
-        end
+      local opened, popup_err = open_view_tmux_popup(backend.expr, source_bufnr, {
+        lsp = backend.lsp,
+        on_dispose = backend.stop,
+      })
+      if opened then
+        return opened
       end
+
+      local err = popup_err or "failed to open tmux ArkView popup"
+      notify(err, vim.log.levels.WARN)
+      return nil, err
     end
   
     return target_view.open({

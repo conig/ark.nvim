@@ -34,7 +34,11 @@ end
 local ok, err = pcall(function()
   rebuild_bridge_runtime()
 
-  ark_test.setup_managed_buffer(buffer_path, { "" })
+  ark_test.setup_managed_buffer(buffer_path, { "" }, {
+    view = {
+      display = "tab",
+    },
+  })
 
   local original_input = vim.ui.input
   vim.ui.input = function(opts, on_confirm)

@@ -109,6 +109,7 @@
     {
       "names": [
         "ark_dispatch_command.lua",
+        "ark_view_popup_routing.lua",
         "detached_parity.lua",
         "health.lua",
         "health_degraded_scenarios.lua",

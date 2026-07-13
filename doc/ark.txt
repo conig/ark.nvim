@@ -113,7 +113,10 @@ help.display ~
     `auto`, `float`, or `tmux_popup` (common aliases are accepted).
 
 view.display ~
-    `auto`, `tab`, or `tmux_popup` (common aliases are accepted).
+    `auto`, `tab`, or `tmux_popup` (common aliases are accepted). `auto` uses a
+    centered tmux popup for every ArkView entry point when Neovim is running
+    inside tmux on the tmux backend; `tab` is the explicit in-process opt-out.
+    Popup launch errors are reported instead of falling back to a tab.
 
 tmux.pane_layout ~
     `auto`, `side_by_side`, or `stacked`. Layout aliases are accepted.

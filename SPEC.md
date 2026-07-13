@@ -263,9 +263,11 @@ Responsibilities:
 - install a scoped managed-session `View()` hook that routes data-viewer
   requests back to ArkView through the same Neovim RPC path, while preserving
   base R `View()` behavior as fallback
-- present console-originated ArkView tabs through a tmux popup UI in auto mode
-  when the Ark console is running inside tmux, so small console panes do not
-  constrain data-grid inspection
+- present every ArkView entry point through a tmux popup UI in auto mode when
+  Ark is using the tmux backend inside tmux, so editor and console panes do not
+  constrain data-grid inspection; once this popup route is selected, launcher
+  failures remain visible instead of silently changing to an in-process tab,
+  while explicit `view.display = "tab"` remains the opt-out
 - answer bridge requests for live data-explorer sessions, table paging, and
   list/object-tree inspection
 - serve ArkView table pages by `offset` and `limit`, preserving `limit = 0` as

@@ -24,8 +24,8 @@ vim.bo[source_buf].filetype = "r"
 vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, { "mtcars" })
 
 local calls = {}
-local original_view_popup = ark.view_popup
-ark.view_popup = function(expr, bufnr)
+local original_view = ark.view
+ark.view = function(expr, bufnr)
   calls[#calls + 1] = {
     expr = expr,
     bufnr = bufnr,
@@ -51,7 +51,7 @@ if calls[1].expr ~= "mtcars" or calls[1].bufnr ~= source_buf then
   ark_test.fail("unexpected parent ArkView RPC dispatch: " .. vim.inspect(calls))
 end
 
-ark.view_popup = original_view_popup
+ark.view = original_view
 
 vim.print({
   ark_view_parent_rpc = "ok",

@@ -83,6 +83,9 @@ ark.setup({
   auto_start_lsp = false,
   async_startup = false,
   configure_slime = false,
+  view = {
+    display = "tab",
+  },
 })
 
 lsp.start = function(_opts, bufnr)

@@ -440,6 +440,10 @@ The explorer is backed by the managed R session. It can page through tabular
 objects, sort and filter columns, inspect cell values, show column profiles,
 export the current view, and display the R code used for the active view. It is
 for quick local inspection, not a replacement for a full IDE data pane.
+With the tmux backend, ArkView opens every editor-, console-, and target-driven
+view in a centered tmux popup by default. Set `view.display = "tab"` to keep the
+explorer in the current Neovim instance instead. If a selected popup cannot be
+launched, Ark reports the launch error rather than silently opening a tab.
 When the grid is scrolled vertically, ArkView keeps the column header visible
 above the first visible row.
 
