@@ -116,6 +116,18 @@ function M.check()
   report.ok("Configured session backend: " .. backend)
   report.ok("Configured console frontend: " .. frontend)
 
+  if vim.fn.has("linux") == 1 and defaults.lsp.file_watch ~= false then
+    if executable("inotifywait") then
+      report.ok("`inotifywait` is available for efficient Linux workspace file watching")
+    else
+      report.warn(
+        "`inotifywait` is unavailable; Neovim's fallback file watcher can block startup in large workspaces. "
+          .. "Recovery: install inotify-tools and restart Neovim. If external file discovery is not needed, "
+          .. "set lsp.file_watch = false."
+      )
+    end
+  end
+
   local release_status = release.status()
   if release_status.product_version then
     report.ok("Ark product version: " .. release_status.product_version)

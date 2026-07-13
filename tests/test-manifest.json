@@ -112,6 +112,7 @@
         "detached_parity.lua",
         "health.lua",
         "health_degraded_scenarios.lua",
+        "health_inotify_tools.lua",
         "lsp_info_log_redaction.lua",
         "lsp_sync_start_bootstrap.lua",
         "lsp_sync_start_pending_client.lua",

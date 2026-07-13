@@ -37,6 +37,11 @@ Supported environment:
 - tmux for the default backend, or Neovim terminal support for the terminal
   backend
 
+On Linux, inotify-tools is strongly recommended when the default workspace
+file watching is enabled. Without it, Neovim uses a slower per-directory
+fallback that can block startup in large workspaces. `:checkhealth ark` reports
+whether the efficient backend is available.
+
 Normal installation downloads a checksummed release binary and does not need
 Rust. Once available, pin the plugin to the exact published release tag (the
 first is planned as `v0.1.0-alpha.1`, but is not yet published); tracking
@@ -133,7 +138,10 @@ lsp.name, lsp.cmd ~
     stdio.
 
 lsp.file_watch ~
-    Enable workspace file watching. Default: true.
+    Enable workspace file watching. Default: true. On Linux, install
+    inotify-tools so Neovim can watch large workspaces without its slower
+    per-directory fallback. `:checkhealth ark` reports whether the efficient
+    backend is available.
 
 lsp.root_markers ~
     Workspace root markers. Default: .git, .Rproj, DESCRIPTION, renv.lock.
@@ -358,9 +366,9 @@ multi-host, and Windows managed-pane operation are outside v1 scope.
 7. HEALTH AND SUPPORT REPORTS                                     *ark-support*
 
 `:checkhealth ark` is read-only. It checks Neovim/R versions, backend
-requirements, jsonlite, launcher/LSP discovery, release and bridge
-compatibility, writable install/state locations, and stale ready status files.
-It does not start an R session.
+requirements, jsonlite, efficient Linux workspace file watching, launcher/LSP
+discovery, release and bridge compatibility, writable install/state locations,
+and stale ready status files. It does not start an R session.
 
 `:Ark report` opens `ark://support-report` as a preview. It includes normalized
 component facts, the product state, and read-only health results. It omits

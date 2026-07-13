@@ -131,6 +131,11 @@ managed Neovim terminal split instead. The terminal backend supports the same
 LSP and bridge contract, but tmux-only features such as Ark tabs are not
 available there.
 
+On Linux, install `inotify-tools` so Neovim can keep Ark's default workspace
+file watching responsive. Without it, Neovim uses a recursive per-directory
+fallback that can block startup in large projects. `:checkhealth ark` reports
+whether the efficient backend is available.
+
 For `{targets}` workflows, install the R package `targets`. `data.table` is
 optional but improves coverage for data-table shaped completion and inspection
 workflows when your project uses it.

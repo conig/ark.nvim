@@ -903,11 +903,13 @@ plugin error catalog.
 
 `:checkhealth ark` is read-only and must not start a managed R session. It
 validates released component compatibility, supported Neovim/R/platform facts,
-backend requirements, `jsonlite`, executable discovery, writable install/state
-locations, and incompatible ready status files. `:Ark report` works before
-setup and in degraded mode. It opens a local preview and selects only normalized
-component/state/health facts; it does not include auth tokens, cookies, arbitrary
-environment values, source contents, R values, or unrelated logs.
+backend requirements, `jsonlite`, executable discovery, an efficient Linux
+workspace file-watch backend when file watching is enabled, writable
+install/state locations, and incompatible ready status files. `:Ark report`
+works before setup and in degraded mode. It opens a local preview and selects
+only normalized component/state/health facts; it does not include auth tokens,
+cookies, arbitrary environment values, source contents, R values, or unrelated
+logs.
 
 Native `:help ark` is the complete command/configuration reference. Inherited
 Positron and Jupyter documentation is isolated under `doc/upstream/` and is not

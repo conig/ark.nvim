@@ -10,6 +10,8 @@ the canonical `posit-dev/ark` repository.
   runtime state model.
 - Added `:Ark report`, a preview-first redacted diagnostic report, and expanded
   read-only health checks for component compatibility and writable state.
+- Added Linux `inotify-tools` health guidance so efficient workspace file
+  watching is visible before Neovim's fallback stalls large projects.
 - Added native `:help ark`, troubleshooting, architecture, compatibility,
   upgrade, and rollback documentation.
 - Isolated inherited Positron/Jupyter documentation under `doc/upstream/`.
