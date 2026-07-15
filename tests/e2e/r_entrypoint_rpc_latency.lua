@@ -72,14 +72,14 @@ local current_label = nil
 local current_start = nil
 
 local original_help_topic = ark.help_topic
-local original_view_popup = ark.view_popup
+local original_view = ark.view
 
 ark.help_topic = function(topic, bufnr)
   samples[current_label][#samples[current_label] + 1] = elapsed_ms(current_start)
   return topic, nil
 end
 
-ark.view_popup = function(expr, bufnr)
+ark.view = function(expr, bufnr)
   samples[current_label][#samples[current_label] + 1] = elapsed_ms(current_start)
   return true, nil
 end
@@ -137,7 +137,7 @@ measure("console_view", function()
 end)
 
 ark.help_topic = original_help_topic
-ark.view_popup = original_view_popup
+ark.view = original_view
 
 local max_ms = tonumber(vim.env.ARK_R_ENTRYPOINT_RPC_MAX_MS or "8") or 8
 local medians = {

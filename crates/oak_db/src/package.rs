@@ -221,11 +221,9 @@ impl Package {
     #[salsa::tracked(returns(ref))]
     pub fn index(self, db: &dyn Db) -> Option<Index> {
         // Depend on `index_revision()` so a bump forces a re-read
-        match self.index_revision(db) {
-            Some(revision) => report_untracked_if_zero(db, revision),
-            // Workspace packages don't have an `INDEX`
-            None => return None,
-        }
+        // Workspace packages don't have an `INDEX`.
+        let revision = self.index_revision(db)?;
+        report_untracked_if_zero(db, revision);
 
         let Some(parent) = self
             .description_path(db)

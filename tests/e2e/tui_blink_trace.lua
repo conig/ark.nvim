@@ -88,8 +88,13 @@ local function snapshot(label, extra)
     }
   end
 
+  -- `ark.status({ include_lsp = true })` performs a synchronous LSP request.
+  -- Never issue it from InsertCharPre instrumentation: delaying that event
+  -- past Ark's pair-recovery timer can run the timer before Neovim applies the
+  -- character, making the trace itself change the behavior under test.
+  local insert_char_pre = label == "InsertCharPre" or label:find("^ArkHandleInsertCharPre:") ~= nil
   local ok_ark, ark = pcall(require, "ark")
-  if ok_ark and ark and type(ark.status) == "function" then
+  if not insert_char_pre and ok_ark and ark and type(ark.status) == "function" then
     local ok_status, status = pcall(ark.status, { include_lsp = true })
     if ok_status and type(status) == "table" then
       local lsp_status = type(status.lsp_status) == "table" and status.lsp_status or {}

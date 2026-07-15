@@ -3,6 +3,7 @@
   "environment": "Linux CI or a local machine with Neovim 0.11, R 4.2+, and tmux; tmux-backed benchmarks run serially",
   "baseline_policy": "Update tests/performance-baseline.json only from a reviewed five-run scheduled artifact after investigating regressions",
   "benchmarks": {
+    "large_file_edit_diagnostics_timing.lua": { "runs": 1 },
     "startup_budget_350ms.lua": { "runs": 5 },
     "current_env_completion_timing.lua": { "runs": 1 },
     "r_entrypoint_rpc_latency.lua": { "runs": 1 },

@@ -1,6 +1,7 @@
 .DS_Store
 /target
 /dist
+/artifacts
 tags
 *.tags
 .Rproj.user
