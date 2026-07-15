@@ -20,13 +20,12 @@ use tower_lsp::lsp_types::Range;
 use tree_sitter::Node;
 use tree_sitter::Query;
 use url::Url;
-use walkdir::DirEntry;
-use walkdir::WalkDir;
 
 use crate::lsp;
 use crate::lsp::document::Document;
 use crate::lsp::targets_project;
 use crate::lsp::traits::node::NodeExt;
+use crate::lsp::workspace_walker;
 use crate::treesitter::BinaryOperatorType;
 use crate::treesitter::NodeType;
 use crate::treesitter::NodeTypeExt;
@@ -97,36 +96,6 @@ static SOURCED_TARGET_PIPELINE_URIS: LazyLock<Mutex<HashSet<Url>>> =
 pub(crate) static INDEXER_TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(Default::default);
 pub static RE_COMMENT_SECTION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(#+)\s*(.*?)\s*[#=-]{4,}\s*$").unwrap());
-
-#[tracing::instrument(level = "info", skip_all)]
-pub fn start(folders: Vec<String>) {
-    let now = std::time::Instant::now();
-    lsp::log_info!("Initial indexing started");
-
-    for folder in folders {
-        let walker = WalkDir::new(folder);
-        for entry in walker.into_iter().filter_entry(filter_entry) {
-            let Ok(entry) = entry else {
-                continue;
-            };
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let Ok(uri) = Url::from_file_path(entry.path()) else {
-                lsp::log_warn!("Can't convert file path to URI {:?}", entry.path());
-                continue;
-            };
-            if let Err(err) = create(&uri) {
-                lsp::log_error!("Can't index file {:?}: {err:?}", entry.path());
-            }
-        }
-    }
-
-    lsp::log_info!(
-        "Initial indexing finished after {}ms",
-        now.elapsed().as_millis()
-    );
-}
 
 /// Search the workspace files and return the first symbol match
 pub fn find(symbol: &str) -> Option<(FileId, IndexEntry)> {
@@ -239,6 +208,38 @@ pub(crate) fn rename(old_uri: &Url, new_uri: &Url) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) fn remove_workspace_roots(removed: &[Url], retained: &[Url]) -> usize {
+    let should_remove = |uri: &Url| {
+        removed.iter().any(|root| uri_is_within_root(uri, root)) &&
+            !retained.iter().any(|root| uri_is_within_root(uri, root))
+    };
+
+    let mut index = WORKSPACE_INDEX.lock().unwrap();
+    let previous_len = index.len();
+    index.retain(|file_id, _| !should_remove(file_id.as_uri()));
+    let removed_count = previous_len.saturating_sub(index.len());
+    drop(index);
+
+    SOURCED_TARGET_PIPELINE_URIS
+        .lock()
+        .unwrap()
+        .retain(|uri| !should_remove(uri));
+
+    removed_count
+}
+
+fn uri_is_within_root(uri: &Url, root: &Url) -> bool {
+    let (Ok(path), Ok(root)) = (uri.to_file_path(), root.to_file_path()) else {
+        return false;
+    };
+
+    path.starts_with(root)
+}
+
+pub(crate) fn uri_is_within_workspace_roots(uri: &Url, roots: &[Url]) -> bool {
+    roots.iter().any(|root| uri_is_within_root(uri, root))
+}
+
 #[cfg(test)]
 pub(crate) fn indexer_clear() {
     let mut index = WORKSPACE_INDEX.lock().unwrap();
@@ -261,30 +262,6 @@ impl Drop for ResetIndexerGuard {
     fn drop(&mut self) {
         indexer_clear();
     }
-}
-
-// TODO: Should we consult the project .gitignore for ignored files?
-// TODO: What about front-end ignores?
-// TODO: What about other kinds of ignores (e.g. revdepcheck)?
-pub fn filter_entry(entry: &DirEntry) -> bool {
-    let name = entry.file_name();
-
-    // skip common ignores
-    for ignore in [".git", ".Rproj.user", "node_modules", "revdep"] {
-        if name == ignore {
-            return false;
-        }
-    }
-
-    // skip project 'renv' folder
-    if name == "renv" {
-        let companion = entry.path().join("activate.R");
-        if companion.exists() {
-            return false;
-        }
-    }
-
-    true
 }
 
 // Only called for actual files during workspace walking. Documents managed by
@@ -637,17 +614,9 @@ fn targets_sourced_pipeline_uris(doc: &Document, uri: &Url) -> Vec<Url> {
     let mut uris = Vec::new();
     for path in paths {
         if path.is_dir() {
-            for entry in WalkDir::new(path).into_iter().filter_entry(filter_entry) {
-                let Ok(entry) = entry else {
-                    continue;
-                };
-                if !entry.file_type().is_file() {
-                    continue;
-                }
-                if !is_r_file(entry.path()) {
-                    continue;
-                }
-                if let Ok(uri) = Url::from_file_path(entry.path()) {
+            let discovery = workspace_walker::r_files(&[path]);
+            for path in discovery.paths {
+                if let Ok(uri) = Url::from_file_path(path) {
                     uris.push(uri);
                 }
             }
@@ -1281,6 +1250,35 @@ list(
     }
 
     #[test]
+    fn test_explicit_targets_source_file_bypasses_directory_ignore_rules() {
+        let _lock = indexer_test_lock();
+        let _guard = ResetIndexerGuard;
+        let tempdir = tempfile::tempdir().expect("expected tempdir");
+        let targets_path = tempdir.path().join("_targets.R");
+        let pipeline_path = tempdir.path().join("ignored/analysis.R");
+
+        std::fs::create_dir_all(pipeline_path.parent().unwrap()).expect("expected pipeline dir");
+        std::fs::write(tempdir.path().join(".gitignore"), "ignored/\n")
+            .expect("expected gitignore");
+        std::fs::write(
+            &targets_path,
+            "targets::tar_source(\"ignored/analysis.R\")\n",
+        )
+        .expect("expected targets script");
+        std::fs::write(
+            &pipeline_path,
+            "list(tar_target(explicit_ignored_target, 1))\n",
+        )
+        .expect("expected pipeline script");
+
+        let targets_uri = Url::from_file_path(&targets_path).expect("expected targets uri");
+        let pipeline_uri = Url::from_file_path(&pipeline_path).expect("expected pipeline uri");
+        create(&targets_uri).expect("expected targets script indexing");
+
+        assert!(find_in_file("explicit_ignored_target", &pipeline_uri).is_some());
+    }
+
+    #[test]
     fn test_index_targets_script_sources_snipe_pipeline_files() {
         let _lock = indexer_test_lock();
         let _guard = ResetIndexerGuard;
@@ -1506,5 +1504,31 @@ class <- R6::R6Class(
 
         create(&ark_uri).unwrap();
         assert!(find("foo").is_none());
+    }
+
+    #[test]
+    fn test_remove_workspace_roots_preserves_files_owned_by_retained_root() {
+        let _lock = indexer_test_lock();
+        let _guard = ResetIndexerGuard;
+        let tempdir = tempfile::tempdir().expect("expected tempdir");
+        let retained_root = tempdir.path().join("retained");
+        let removed_file = tempdir.path().join("removed.R");
+        let retained_file = retained_root.join("retained.R");
+        std::fs::create_dir_all(&retained_root).expect("expected retained root");
+        std::fs::write(&removed_file, "removed_symbol <- 1\n").unwrap();
+        std::fs::write(&retained_file, "retained_symbol <- 1\n").unwrap();
+
+        let removed_uri = Url::from_file_path(&removed_file).unwrap();
+        let retained_uri = Url::from_file_path(&retained_file).unwrap();
+        create(&removed_uri).unwrap();
+        create(&retained_uri).unwrap();
+
+        let removed_root = Url::from_directory_path(tempdir.path()).unwrap();
+        let retained_root = Url::from_directory_path(&retained_root).unwrap();
+        let count = remove_workspace_roots(&[removed_root], &[retained_root]);
+
+        assert_eq!(count, 1);
+        assert!(find("removed_symbol").is_none());
+        assert!(find("retained_symbol").is_some());
     }
 }

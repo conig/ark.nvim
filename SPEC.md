@@ -621,6 +621,22 @@ a factory and no reliable source range exists, Ark should still surface the
 manifest target but mark the definition as dynamic or manifest-only instead of
 pretending there is a precise source location.
 
+Workspace discovery runs after LSP initialization and never delays open-buffer
+language features. Initial indexing, reference searches, and directories named
+by targets source calls share one ignore-aware traversal policy: honor
+`.gitignore`, `.ignore`, repository excludes, and global Git ignores; never
+follow directory symlinks; and skip `.git`, `.Rproj.user`, `node_modules`,
+`revdep`, `renv`, and `target`. Workspace discovery indexes only `.r` and `.R`
+files, while an explicitly named individual targets source file remains eligible
+even when its containing directory is ignored.
+
+Each background scan has a process-unique generation. Workspace-folder changes
+invalidate older discovery and queued-index results, remove entries owned only
+by removed roots, and rescan the active roots. A stale scan must never replace
+current `WorldState`. Clients that support standard LSP work-done progress
+receive an indexing start and finish notification; structured logs record the
+generation, duration, root count, file count, and traversal-error count.
+
 ### Bridge Requirements
 
 `arkbridge` should gain a small `{targets}` request family. Candidate requests:

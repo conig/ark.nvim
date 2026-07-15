@@ -125,7 +125,9 @@
         "report_command.lua",
         "targets_commands.lua",
         "targets_project_store.lua",
-        "unterminated_string_diagnostic.lua"
+        "unterminated_string_diagnostic.lua",
+        "workspace_folder_changes.lua",
+        "workspace_indexing_background.lua"
       ],
       "tier": "fast",
       "layer": "component",

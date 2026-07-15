@@ -43,6 +43,7 @@ pub mod symbols;
 pub mod target_context;
 pub mod targets_project;
 pub mod util;
+pub(crate) mod workspace_walker;
 pub use ark_lsp_support::events;
 pub use ark_lsp_support::notifications;
 pub use ark_lsp_support::traits;

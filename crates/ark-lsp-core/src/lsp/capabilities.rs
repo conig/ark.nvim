@@ -18,6 +18,7 @@ pub(crate) struct Capabilities {
     dynamic_registration_for_did_change_watched_files: bool,
     code_action_literal_support: bool,
     workspace_edit_document_changes: bool,
+    work_done_progress: bool,
 }
 
 impl Capabilities {
@@ -54,11 +55,18 @@ impl Capabilities {
             .and_then(|workspace_edit| workspace_edit.document_changes)
             .is_some_and(|document_changes| document_changes);
 
+        let work_done_progress = client_capabilities
+            .window
+            .as_ref()
+            .and_then(|window| window.work_done_progress)
+            .unwrap_or(false);
+
         Self {
             dynamic_registration_for_did_change_configuration,
             dynamic_registration_for_did_change_watched_files,
             code_action_literal_support,
             workspace_edit_document_changes,
+            work_done_progress,
         }
     }
 
@@ -86,6 +94,10 @@ impl Capabilities {
 
     pub(crate) fn workspace_edit_document_changes(&self) -> bool {
         self.workspace_edit_document_changes
+    }
+
+    pub(crate) fn work_done_progress(&self) -> bool {
+        self.work_done_progress
     }
 
     // Currently only used for testing

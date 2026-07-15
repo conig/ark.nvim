@@ -156,6 +156,7 @@ pub(crate) struct DetachedStatusSnapshot {
 #[derive(Clone, Default, Debug)]
 pub(crate) struct Workspace {
     pub folders: Vec<Url>,
+    pub generation: u64,
 }
 
 impl WorldState {

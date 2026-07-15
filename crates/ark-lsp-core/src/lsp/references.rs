@@ -18,17 +18,16 @@ use tower_lsp::lsp_types::ReferenceParams;
 use tower_lsp::lsp_types::Url;
 use tree_sitter::Node;
 use tree_sitter::Point;
-use walkdir::WalkDir;
 
 use crate::lsp;
 use crate::lsp::document::Document;
 use crate::lsp::indexer;
-use crate::lsp::indexer::filter_entry;
 use crate::lsp::state::with_document;
 use crate::lsp::state::WorldState;
 use crate::lsp::traits::cursor::TreeCursorExt;
 use crate::lsp::traits::node::NodeExt;
 use crate::lsp::traits::url::UrlExt;
+use crate::lsp::workspace_walker;
 use crate::treesitter::ExtractOperatorType;
 use crate::treesitter::NodeType;
 use crate::treesitter::NodeTypeExt;
@@ -196,17 +195,11 @@ fn find_references_in_folder(
     locations: &mut Vec<Location>,
     state: &WorldState,
 ) {
-    let walker = WalkDir::new(path);
-    for entry in walker.into_iter().filter_entry(filter_entry) {
-        let entry = unwrap!(entry, Err(_) => { continue; });
-        let path = entry.path();
-        if !is_reference_search_file(path) {
-            continue;
-        }
-
+    let discovery = workspace_walker::reference_files(&[path.to_path_buf()]);
+    for path in discovery.paths {
         lsp::log_info!("found R file {}", path.display());
-        let result = with_document(path, state, |document| {
-            find_references_in_document(context, path, document, locations)
+        let result = with_document(&path, state, |document| {
+            find_references_in_document(context, &path, document, locations)
         });
 
         match result {
@@ -217,17 +210,6 @@ fn find_references_in_folder(
             },
         }
     }
-}
-
-fn is_reference_search_file(path: &Path) -> bool {
-    let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
-        return false;
-    };
-
-    matches!(
-        extension.to_ascii_lowercase().as_str(),
-        "r" | "rmd" | "qmd" | "quarto"
-    )
 }
 
 fn find_references_in_document(
@@ -320,6 +302,7 @@ mod tests {
                 folders: vec![
                     Url::from_directory_path(tempdir.path()).expect("expected workspace uri")
                 ],
+                ..Default::default()
             },
             ..Default::default()
         };

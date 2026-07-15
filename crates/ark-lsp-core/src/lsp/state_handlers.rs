@@ -7,6 +7,9 @@
 
 #![allow(clippy::items_after_test_module)]
 
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+
 #[cfg(feature = "attached-runtime")]
 use aether_path::FilePath;
 use anyhow::anyhow;
@@ -22,6 +25,7 @@ use tower_lsp::lsp_types::DeleteFilesParams;
 use tower_lsp::lsp_types::DidChangeConfigurationParams;
 use tower_lsp::lsp_types::DidChangeTextDocumentParams;
 use tower_lsp::lsp_types::DidChangeWatchedFilesParams;
+use tower_lsp::lsp_types::DidChangeWorkspaceFoldersParams;
 use tower_lsp::lsp_types::DidCloseTextDocumentParams;
 use tower_lsp::lsp_types::DidOpenTextDocumentParams;
 use tower_lsp::lsp_types::DocumentOnTypeFormattingOptions;
@@ -77,6 +81,8 @@ use crate::lsp::session_bridge::SessionBridgeConfig;
 use crate::lsp::state::workspace_uris;
 use crate::lsp::state::RuntimeMode;
 use crate::lsp::state::WorldState;
+
+static NEXT_WORKSPACE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -452,62 +458,13 @@ pub(crate) fn initialize(
 ) -> LspResult<InitializeResult> {
     lsp_state.capabilities = Capabilities::new(params.capabilities);
 
-    // Initialize the workspace folders
-    let mut folders: Vec<String> = Vec::new();
-    if let Some(workspace_folders) = params.workspace_folders {
-        for folder in workspace_folders.iter() {
-            state.workspace.folders.push(folder.uri.clone());
-            if let Ok(path) = folder.uri.to_file_path() {
-                // Try to load package from this workspace folder and set as
-                // root if found. This means we're dealing with a package
-                // source.
-                if state.root.is_none() {
-                    match Package::load_from_folder(&path) {
-                        Ok(Some(pkg)) => {
-                            log::info!(
-                                "Root: Loaded package `{pkg}` from {path} as project root",
-                                pkg = pkg.description().name,
-                                path = path.display()
-                            );
-                            state.root = Some(SourceRoot::Package(pkg));
-                        },
-                        Ok(None) => {
-                            log::info!(
-                                "Root: No package found at {path}, treating as folder of scripts",
-                                path = path.display()
-                            );
-                        },
-                        Err(err) => {
-                            log::warn!(
-                                "Root: Error loading package at {path}: {err}",
-                                path = path.display()
-                            );
-                        },
-                    }
-                }
-                if let Some(path_str) = path.to_str() {
-                    folders.push(path_str.to_string());
-                }
-            }
-        }
-    }
-
-    if state.runtime_mode == RuntimeMode::Detached && state.root.is_none() {
-        let temp_dir = std::env::temp_dir();
-        folders.retain(|folder| {
-            let is_temp_root = std::path::Path::new(folder) == temp_dir;
-            if is_temp_root {
-                log::info!(
-                    "Skipping initial indexing for detached scratch workspace root {}",
-                    folder
-                );
-            }
-            !is_temp_root
-        });
-    }
-
-    // Start first round of indexing
-    lsp::main_loop::index_start(folders, state.clone());
+    let folders = params
+        .workspace_folders
+        .unwrap_or_default()
+        .into_iter()
+        .map(|folder| folder.uri)
+        .collect();
+    set_workspace_folders(state, folders);
 
     Ok(InitializeResult {
         server_info: Some(ServerInfo {
@@ -597,6 +554,96 @@ pub(crate) fn initialize(
             ..ServerCapabilities::default()
         },
     })
+}
+
+#[derive(Debug)]
+pub(crate) struct WorkspaceFolderChange {
+    pub(crate) added: Vec<Url>,
+    pub(crate) removed: Vec<Url>,
+    pub(crate) generation: u64,
+    pub(crate) changed: bool,
+}
+
+pub(crate) fn did_change_workspace_folders(
+    params: DidChangeWorkspaceFoldersParams,
+    state: &mut WorldState,
+) -> WorkspaceFolderChange {
+    let mut folders = state.workspace.folders.clone();
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
+
+    for folder in params.event.removed {
+        let previous_len = folders.len();
+        folders.retain(|uri| uri != &folder.uri);
+        if folders.len() != previous_len {
+            removed.push(folder.uri);
+        }
+    }
+
+    for folder in params.event.added {
+        if !folders.contains(&folder.uri) {
+            folders.push(folder.uri.clone());
+            added.push(folder.uri);
+        }
+    }
+
+    let changed = !added.is_empty() || !removed.is_empty();
+    if changed {
+        set_workspace_folders(state, folders);
+    }
+
+    WorkspaceFolderChange {
+        added,
+        removed,
+        generation: state.workspace.generation,
+        changed,
+    }
+}
+
+fn set_workspace_folders(state: &mut WorldState, folders: Vec<Url>) {
+    let mut unique = Vec::new();
+    for folder in folders {
+        if !unique.contains(&folder) {
+            unique.push(folder);
+        }
+    }
+
+    state.workspace.folders = unique;
+    state.workspace.generation = NEXT_WORKSPACE_GENERATION.fetch_add(1, Ordering::Relaxed);
+    state.root = discover_source_root(&state.workspace.folders);
+}
+
+fn discover_source_root(folders: &[Url]) -> Option<SourceRoot> {
+    for folder in folders {
+        let Ok(path) = folder.to_file_path() else {
+            continue;
+        };
+
+        match Package::load_from_folder(&path) {
+            Ok(Some(package)) => {
+                log::info!(
+                    "Root: Loaded package `{package}` from {path} as project root",
+                    package = package.description().name,
+                    path = path.display()
+                );
+                return Some(SourceRoot::Package(package));
+            },
+            Ok(None) => {
+                log::info!(
+                    "Root: No package found at {path}, treating as folder of scripts",
+                    path = path.display()
+                );
+            },
+            Err(err) => {
+                log::warn!(
+                    "Root: Error loading package at {path}: {err}",
+                    path = path.display()
+                );
+            },
+        }
+    }
+
+    None
 }
 
 #[tracing::instrument(level = "info", skip_all)]
@@ -1022,7 +1069,65 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
+    use tower_lsp::lsp_types::WorkspaceFolder;
+    use tower_lsp::lsp_types::WorkspaceFoldersChangeEvent;
+
     use super::*;
+
+    #[test]
+    fn workspace_folder_changes_update_roots_and_generation() {
+        let root = Url::parse("file:///tmp/ark-workspace-root").unwrap();
+        let added = Url::parse("file:///tmp/ark-workspace-added").unwrap();
+        let mut state = WorldState::detached();
+        set_workspace_folders(&mut state, vec![root.clone(), root.clone()]);
+        let initial_generation = state.workspace.generation;
+
+        let change = did_change_workspace_folders(
+            DidChangeWorkspaceFoldersParams {
+                event: WorkspaceFoldersChangeEvent {
+                    added: vec![WorkspaceFolder {
+                        uri: added.clone(),
+                        name: String::from("added"),
+                    }],
+                    removed: vec![WorkspaceFolder {
+                        uri: root.clone(),
+                        name: String::from("root"),
+                    }],
+                },
+            },
+            &mut state,
+        );
+
+        assert!(change.changed);
+        assert_eq!(change.added, vec![added.clone()]);
+        assert_eq!(change.removed, vec![root]);
+        assert!(change.generation > initial_generation);
+        assert_eq!(state.workspace.folders, vec![added]);
+    }
+
+    #[test]
+    fn duplicate_workspace_folder_notification_does_not_invalidate_scan() {
+        let root = Url::parse("file:///tmp/ark-workspace-root").unwrap();
+        let mut state = WorldState::detached();
+        set_workspace_folders(&mut state, vec![root.clone()]);
+        let initial_generation = state.workspace.generation;
+
+        let change = did_change_workspace_folders(
+            DidChangeWorkspaceFoldersParams {
+                event: WorkspaceFoldersChangeEvent {
+                    added: vec![WorkspaceFolder {
+                        uri: root,
+                        name: String::from("root"),
+                    }],
+                    removed: Vec::new(),
+                },
+            },
+            &mut state,
+        );
+
+        assert!(!change.changed);
+        assert_eq!(state.workspace.generation, initial_generation);
+    }
     fn spawn_bootstrap_bridge(auth_token: &str, response_delay: std::time::Duration) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");
         let port = listener

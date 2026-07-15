@@ -31,6 +31,7 @@ ego-tree.workspace = true
 futures.workspace = true
 harp.workspace = true
 home.workspace = true
+ignore.workspace = true
 libc.workspace = true
 libr.workspace = true
 log.workspace = true
@@ -53,7 +54,6 @@ tree-sitter.workspace = true
 tree-sitter-r.workspace = true
 url.workspace = true
 uuid.workspace = true
-walkdir.workspace = true
 yaml-rust2.workspace = true
 
 [build-dependencies]

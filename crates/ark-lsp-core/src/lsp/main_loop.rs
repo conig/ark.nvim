@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future;
 use std::path::Path;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -28,6 +29,13 @@ use tokio::task::JoinHandle;
 use tower_lsp::lsp_types;
 use tower_lsp::lsp_types::Diagnostic;
 use tower_lsp::lsp_types::MessageType;
+use tower_lsp::lsp_types::ProgressParams;
+use tower_lsp::lsp_types::ProgressParamsValue;
+use tower_lsp::lsp_types::ProgressToken;
+use tower_lsp::lsp_types::WorkDoneProgress;
+use tower_lsp::lsp_types::WorkDoneProgressBegin;
+use tower_lsp::lsp_types::WorkDoneProgressCreateParams;
+use tower_lsp::lsp_types::WorkDoneProgressEnd;
 use tower_lsp::Client;
 use url::Url;
 
@@ -51,10 +59,10 @@ pub use crate::lsp::notifications::DidCloseVirtualDocumentParams;
 pub use crate::lsp::notifications::DidOpenVirtualDocumentParams;
 pub use crate::lsp::notifications::KernelNotification;
 use crate::lsp::session_bridge_runtime::BridgeRequestControl;
-#[cfg(test)]
 use crate::lsp::state::RuntimeMode;
 use crate::lsp::state::WorldState;
 use crate::lsp::state_handlers;
+use crate::lsp::workspace_walker;
 use crate::url::ExtUrl;
 
 pub(crate) type TokioUnboundedSender<T> = tokio::sync::mpsc::UnboundedSender<T>;
@@ -125,6 +133,28 @@ pub(crate) enum InternalEvent {
         response_tx: TokioUnboundedSender<RequestResponse>,
         freshness: RequestFreshness,
     },
+    WorkspaceScanDiscovered(WorkspaceScanDiscovered),
+    WorkspaceScanApplied(WorkspaceScanCompletion),
+}
+
+#[derive(Debug)]
+pub(crate) struct WorkspaceScanDiscovered {
+    generation: u64,
+    uris: Vec<Url>,
+    root_count: usize,
+    error_count: usize,
+    started_at: std::time::Instant,
+    progress_token: Option<ProgressToken>,
+}
+
+#[derive(Debug)]
+pub(crate) struct WorkspaceScanCompletion {
+    generation: u64,
+    file_count: usize,
+    root_count: usize,
+    error_count: usize,
+    started_at: std::time::Instant,
+    progress_token: Option<ProgressToken>,
 }
 
 #[derive(Debug)]
@@ -386,7 +416,10 @@ impl GlobalState {
 
                     let result = match notif {
                         LspNotification::Initialized(_params) => {
-                            handlers::handle_initialized(&self.client, &self.lsp_state).await
+                            let result =
+                                handlers::handle_initialized(&self.client, &self.lsp_state).await;
+                            self.start_workspace_scan();
+                            result
                         },
                         LspNotification::SessionUpdate(params) => {
                             let hydration =
@@ -394,8 +427,44 @@ impl GlobalState {
                             self.spawn_detached_hydrations(hydration);
                             Ok(())
                         },
-                        LspNotification::DidChangeWorkspaceFolders(_params) => {
-                            // TODO: Restart indexer with new folders.
+                        LspNotification::DidChangeWorkspaceFolders(params) => {
+                            let change = state_handlers::did_change_workspace_folders(
+                                params,
+                                &mut self.world,
+                            );
+                            if change.changed {
+                                // Publish the new generation before deleting entries so any
+                                // in-flight tasks from the old scan become stale immediately.
+                                store_latest_world_state(&self.world);
+                                let removed_count = indexer::remove_workspace_roots(
+                                    &change.removed,
+                                    &self.world.workspace.folders,
+                                );
+                                tracing::info!(
+                                    generation = change.generation,
+                                    added_root_count = change.added.len(),
+                                    removed_root_count = change.removed.len(),
+                                    removed_file_count = removed_count,
+                                    "Workspace folders changed"
+                                );
+                                self.start_workspace_scan();
+
+                                let open_uris: Vec<_> = self
+                                    .world
+                                    .documents
+                                    .keys()
+                                    .filter(|uri| {
+                                        indexer::uri_is_within_workspace_roots(
+                                            uri,
+                                            &self.world.workspace.folders,
+                                        )
+                                    })
+                                    .cloned()
+                                    .collect();
+                                if !open_uris.is_empty() {
+                                    index_update(open_uris, self.world.clone());
+                                }
+                            }
                             Ok(())
                         },
                         LspNotification::DidChangeConfiguration(params) => {
@@ -607,6 +676,56 @@ impl GlobalState {
                         freshness,
                     )?;
                 },
+                InternalEvent::WorkspaceScanDiscovered(discovery) => {
+                    if !workspace_scan_is_current(discovery.generation, &self.world) {
+                        tracing::info!(
+                            generation = discovery.generation,
+                            current_generation = self.world.workspace.generation,
+                            file_count = discovery.uris.len(),
+                            "Discarding stale workspace discovery"
+                        );
+                        finish_workspace_progress(
+                            &self.client,
+                            discovery.progress_token,
+                            String::from("Superseded by a newer workspace scan"),
+                        )
+                        .await;
+                    } else {
+                        index_create_workspace_scan(
+                            discovery,
+                            self.events_tx.clone(),
+                        );
+                    }
+                },
+                InternalEvent::WorkspaceScanApplied(completion) => {
+                    let current = workspace_scan_is_current(completion.generation, &self.world);
+                    let duration_ms = completion.started_at.elapsed().as_millis();
+                    tracing::info!(
+                        generation = completion.generation,
+                        current,
+                        duration_ms,
+                        file_count = completion.file_count,
+                        root_count = completion.root_count,
+                        error_count = completion.error_count,
+                        "Workspace indexing finished"
+                    );
+
+                    let message = if current {
+                        diagnostics_refresh_all_from_state(&self.world);
+                        format!(
+                            "Indexed {} R files in {}ms",
+                            completion.file_count, duration_ms
+                        )
+                    } else {
+                        String::from("Superseded by a newer workspace scan")
+                    };
+                    finish_workspace_progress(
+                        &self.client,
+                        completion.progress_token,
+                        message,
+                    )
+                    .await;
+                },
             },
         }
 
@@ -618,6 +737,73 @@ impl GlobalState {
         }
 
         Ok(())
+    }
+
+    fn start_workspace_scan(&self) {
+        let roots = workspace_scan_roots(&self.world);
+        if roots.is_empty() {
+            tracing::info!(
+                generation = self.world.workspace.generation,
+                "Workspace indexing skipped because there are no indexable roots"
+            );
+            return;
+        }
+
+        let generation = self.world.workspace.generation;
+        let root_count = roots.len();
+        let work_done_progress = self.lsp_state.capabilities.work_done_progress();
+        let client = self.client.clone();
+        let events_tx = self.events_tx.clone();
+        let started_at = std::time::Instant::now();
+
+        tracing::info!(generation, root_count, "Workspace indexing started");
+
+        tokio::spawn(async move {
+            // Start discovery immediately. Progress negotiation happens concurrently and
+            // must never hold up filesystem work.
+            let discovery = task::spawn_blocking(move || workspace_walker::r_files(&roots));
+            let progress_token =
+                begin_workspace_progress(&client, work_done_progress, generation).await;
+
+            let discovery = match discovery.await {
+                Ok(discovery) => discovery,
+                Err(error) => {
+                    tracing::warn!(generation, %error, "Workspace discovery task failed");
+                    finish_workspace_progress(
+                        &client,
+                        progress_token,
+                        String::from("Workspace indexing failed"),
+                    )
+                    .await;
+                    return;
+                },
+            };
+
+            let mut error_count = discovery.error_count;
+            let mut uris = Vec::with_capacity(discovery.paths.len());
+            for path in discovery.paths {
+                match Url::from_file_path(&path) {
+                    Ok(uri) => uris.push(uri),
+                    Err(()) => {
+                        tracing::warn!(path = %path.display(), "Can't convert workspace path to URI");
+                        error_count += 1;
+                    },
+                }
+            }
+
+            if let Err(error) = events_tx.send(Event::Internal(Box::new(
+                InternalEvent::WorkspaceScanDiscovered(WorkspaceScanDiscovered {
+                    generation,
+                    uris,
+                    root_count,
+                    error_count,
+                    started_at,
+                    progress_token,
+                }),
+            ))) {
+                tracing::warn!(generation, %error, "Can't deliver workspace discovery result");
+            }
+        });
     }
 
     /// Spawn blocking thread for LSP request handler
@@ -995,6 +1181,96 @@ pub(crate) fn publish_diagnostics(uri: Url, diagnostics: Vec<Diagnostic>, versio
     ));
 }
 
+fn workspace_scan_roots(state: &WorldState) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    for folder in &state.workspace.folders {
+        let Ok(path) = folder.to_file_path() else {
+            continue;
+        };
+
+        let detached_scratch_root = state.runtime_mode == RuntimeMode::Detached &&
+            state.root.is_none() &&
+            path == std::env::temp_dir();
+        if detached_scratch_root {
+            tracing::info!(
+                root = %path.display(),
+                "Skipping detached scratch workspace indexing"
+            );
+            continue;
+        }
+
+        if !roots.contains(&path) {
+            roots.push(path);
+        }
+    }
+
+    roots
+}
+
+fn workspace_scan_is_current(generation: u64, state: &WorldState) -> bool {
+    generation == state.workspace.generation
+}
+
+async fn begin_workspace_progress(
+    client: &Client,
+    supported: bool,
+    generation: u64,
+) -> Option<ProgressToken> {
+    if !supported {
+        return None;
+    }
+
+    let token = ProgressToken::String(format!("ark-workspace-index-{generation}"));
+    let progress_created = client.send_request::<lsp_types::request::WorkDoneProgressCreate>(
+        WorkDoneProgressCreateParams {
+            token: token.clone(),
+        },
+    );
+    let progress_created =
+        tokio::time::timeout(std::time::Duration::from_secs(1), progress_created).await;
+    match progress_created {
+        Ok(Ok(())) => {},
+        Ok(Err(error)) => {
+            tracing::warn!(generation, %error, "Client rejected workspace indexing progress");
+            return None;
+        },
+        Err(error) => {
+            tracing::warn!(generation, %error, "Workspace indexing progress request timed out");
+            return None;
+        },
+    }
+
+    client
+        .send_notification::<lsp_types::notification::Progress>(ProgressParams {
+            token: token.clone(),
+            value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(WorkDoneProgressBegin {
+                title: String::from("Indexing R workspace"),
+                cancellable: Some(false),
+                message: Some(String::from("Discovering R files")),
+                percentage: None,
+            })),
+        })
+        .await;
+
+    Some(token)
+}
+
+async fn finish_workspace_progress(client: &Client, token: Option<ProgressToken>, message: String) {
+    let Some(token) = token else {
+        return;
+    };
+
+    client
+        .send_notification::<lsp_types::notification::Progress>(ProgressParams {
+            token,
+            value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(WorkDoneProgressEnd {
+                message: Some(message),
+            })),
+        })
+        .await;
+}
+
 #[derive(Debug)]
 pub(crate) enum IndexerQueueTask {
     Indexer(IndexerTask),
@@ -1002,11 +1278,29 @@ pub(crate) enum IndexerQueueTask {
 }
 
 #[derive(Debug)]
-pub enum IndexerTask {
-    Create { uri: Url },
-    Delete { uri: Url },
-    Rename { uri: Url, new: Url },
-    Update { uri: Url, document: Document },
+pub(crate) enum IndexerTask {
+    Create {
+        uri: Url,
+        workspace_generation: u64,
+    },
+    Delete {
+        uri: Url,
+        workspace_generation: u64,
+    },
+    Rename {
+        uri: Url,
+        new: Url,
+        workspace_generation: u64,
+    },
+    Update {
+        uri: Url,
+        document: Document,
+        workspace_generation: u64,
+    },
+    FinishWorkspaceScan {
+        completion: WorkspaceScanCompletion,
+        events_tx: TokioUnboundedSender<Event>,
+    },
 }
 
 #[derive(Debug)]
@@ -1029,6 +1323,7 @@ fn summarize_indexer_task(batch: &[IndexerTask]) -> String {
             IndexerTask::Delete { .. } => "Delete",
             IndexerTask::Rename { .. } => "Rename",
             IndexerTask::Update { .. } => "Update",
+            IndexerTask::FinishWorkspaceScan { .. } => "FinishWorkspaceScan",
         };
         *counts.entry(type_name).or_insert(0) += 1;
     }
@@ -1131,24 +1426,63 @@ async fn process_indexer_batch(batch: Vec<IndexerTask>) {
 
     for task in batch {
         let result: anyhow::Result<()> = async {
-            match &task {
-                IndexerTask::Create { uri } => {
-                    indexer::create(uri)?;
+            match task {
+                IndexerTask::Create {
+                    uri,
+                    workspace_generation,
+                } => {
+                    if !latest_workspace_generation_is(workspace_generation) {
+                        tracing::trace!(
+                            %uri,
+                            workspace_generation,
+                            "Skipping stale workspace index task"
+                        );
+                        return Ok(());
+                    }
+                    indexer::create(&uri)?;
                 },
 
-                IndexerTask::Update { uri, document } => {
-                    indexer::update(document, uri)?;
+                IndexerTask::Update {
+                    uri,
+                    document,
+                    workspace_generation,
+                } => {
+                    if !latest_workspace_generation_is(workspace_generation) {
+                        return Ok(());
+                    }
+                    indexer::update(&document, &uri)?;
                 },
 
-                IndexerTask::Delete { uri } => {
-                    indexer::delete(uri)?;
+                IndexerTask::Delete {
+                    uri,
+                    workspace_generation,
+                } => {
+                    if !latest_workspace_generation_is(workspace_generation) {
+                        return Ok(());
+                    }
+                    indexer::delete(&uri)?;
                 },
 
                 IndexerTask::Rename {
                     uri: old_uri,
                     new: new_uri,
+                    workspace_generation,
                 } => {
-                    indexer::rename(old_uri, new_uri)?;
+                    if !latest_workspace_generation_is(workspace_generation) {
+                        return Ok(());
+                    }
+                    indexer::rename(&old_uri, &new_uri)?;
+                },
+
+                IndexerTask::FinishWorkspaceScan {
+                    completion,
+                    events_tx,
+                } => {
+                    events_tx
+                        .send(Event::Internal(Box::new(
+                            InternalEvent::WorkspaceScanApplied(completion),
+                        )))
+                        .map_err(|error| anyhow!("failed to finish workspace scan: {error}"))?;
                 },
             }
 
@@ -1208,50 +1542,42 @@ async fn process_diagnostics_batch(batch: Vec<RefreshDiagnosticsTask>) {
     }
 }
 
-pub(crate) fn index_start(folders: Vec<String>, state: WorldState) {
-    lsp::log_info!("Initial indexing started");
-
-    let uris: Vec<Url> = folders
-        .into_iter()
-        .flat_map(|folder| {
-            walkdir::WalkDir::new(folder)
-                .into_iter()
-                .filter_entry(indexer::filter_entry)
-                .filter_map(|entry| {
-                    let entry = match entry {
-                        Ok(e) => e,
-                        Err(_) => return None,
-                    };
-
-                    if !entry.file_type().is_file() {
-                        return None;
-                    }
-                    let path = entry.path();
-
-                    // Only index R files
-                    let ext = path.extension().unwrap_or_default();
-                    if ext != "r" && ext != "R" {
-                        return None;
-                    }
-
-                    if let Ok(uri) = url::Url::from_file_path(path) {
-                        Some(uri)
-                    } else {
-                        tracing::warn!("Can't convert path to URI: {:?}", path);
-                        None
-                    }
-                })
-        })
-        .collect();
-
-    index_create(uris, state);
-}
-
 pub(crate) fn index_create(uris: Vec<Url>, state: WorldState) {
     store_latest_world_state(&state);
+    queue_index_creates(uris, state.workspace.generation);
+    diagnostics_refresh_all_latest();
+}
 
+fn index_create_workspace_scan(
+    discovery: WorkspaceScanDiscovered,
+    events_tx: TokioUnboundedSender<Event>,
+) {
+    let file_count = discovery.uris.len();
+    queue_index_creates(discovery.uris, discovery.generation);
+
+    let completion = WorkspaceScanCompletion {
+        generation: discovery.generation,
+        file_count,
+        root_count: discovery.root_count,
+        error_count: discovery.error_count,
+        started_at: discovery.started_at,
+        progress_token: discovery.progress_token,
+    };
+    INDEXER_QUEUE
+        .send(IndexerQueueTask::Indexer(
+            IndexerTask::FinishWorkspaceScan {
+                completion,
+                events_tx,
+            },
+        ))
+        .unwrap_or_else(|error| {
+            crate::lsp::log_error!("Failed to queue workspace scan completion: {error}")
+        });
+}
+
+fn queue_index_creates(uris: Vec<Url>, workspace_generation: u64) {
     let mut queued_uris = HashSet::new();
-    let mut related_disk_uris = Vec::new();
+    let mut related_disk_uris = HashSet::new();
 
     for uri in uris {
         if !ExtUrl::is_indexable(&uri) {
@@ -1259,8 +1585,8 @@ pub(crate) fn index_create(uris: Vec<Url>, state: WorldState) {
         }
 
         if let Some(targets_uri) = related_targets_script_uri(&uri) {
-            if targets_uri != uri && !related_disk_uris.contains(&targets_uri) {
-                related_disk_uris.push(targets_uri);
+            if targets_uri != uri {
+                related_disk_uris.insert(targets_uri);
             }
         }
 
@@ -1269,7 +1595,10 @@ pub(crate) fn index_create(uris: Vec<Url>, state: WorldState) {
         }
 
         INDEXER_QUEUE
-            .send(IndexerQueueTask::Indexer(IndexerTask::Create { uri }))
+            .send(IndexerQueueTask::Indexer(IndexerTask::Create {
+                uri,
+                workspace_generation,
+            }))
             .unwrap_or_else(|err| crate::lsp::log_error!("Failed to queue index create: {err}"));
     }
 
@@ -1279,15 +1608,17 @@ pub(crate) fn index_create(uris: Vec<Url>, state: WorldState) {
         }
 
         INDEXER_QUEUE
-            .send(IndexerQueueTask::Indexer(IndexerTask::Create { uri }))
+            .send(IndexerQueueTask::Indexer(IndexerTask::Create {
+                uri,
+                workspace_generation,
+            }))
             .unwrap_or_else(|err| crate::lsp::log_error!("Failed to queue index create: {err}"));
     }
-
-    diagnostics_refresh_all_latest();
 }
 
 pub(crate) fn index_update(uris: Vec<Url>, state: WorldState) {
     store_latest_world_state(&state);
+    let workspace_generation = state.workspace.generation;
 
     let mut related_disk_uris = Vec::new();
 
@@ -1314,13 +1645,17 @@ pub(crate) fn index_update(uris: Vec<Url>, state: WorldState) {
             .send(IndexerQueueTask::Indexer(IndexerTask::Update {
                 document,
                 uri,
+                workspace_generation,
             }))
             .unwrap_or_else(|err| lsp::log_error!("Failed to queue index update: {err}"));
     }
 
     for uri in related_disk_uris {
         INDEXER_QUEUE
-            .send(IndexerQueueTask::Indexer(IndexerTask::Create { uri }))
+            .send(IndexerQueueTask::Indexer(IndexerTask::Create {
+                uri,
+                workspace_generation,
+            }))
             .unwrap_or_else(|err| crate::lsp::log_error!("Failed to queue index create: {err}"));
     }
 
@@ -1335,10 +1670,14 @@ fn related_targets_script_uri(uri: &Url) -> Option<Url> {
 
 pub(crate) fn index_delete(uris: Vec<Url>, state: WorldState) {
     store_latest_world_state(&state);
+    let workspace_generation = state.workspace.generation;
 
     for uri in uris {
         INDEXER_QUEUE
-            .send(IndexerQueueTask::Indexer(IndexerTask::Delete { uri }))
+            .send(IndexerQueueTask::Indexer(IndexerTask::Delete {
+                uri,
+                workspace_generation,
+            }))
             .unwrap_or_else(|err| lsp::log_error!("Failed to queue index update: {err}"));
     }
 
@@ -1349,12 +1688,14 @@ pub(crate) fn index_delete(uris: Vec<Url>, state: WorldState) {
 
 pub(crate) fn index_rename(uris: Vec<(Url, Url)>, state: WorldState) {
     store_latest_world_state(&state);
+    let workspace_generation = state.workspace.generation;
 
     for (old, new) in uris {
         INDEXER_QUEUE
             .send(IndexerQueueTask::Indexer(IndexerTask::Rename {
                 uri: old,
                 new,
+                workspace_generation,
             }))
             .unwrap_or_else(|err| lsp::log_error!("Failed to queue index update: {err}"));
     }
@@ -1372,6 +1713,10 @@ pub(crate) fn store_latest_world_state(state: &WorldState) {
 fn latest_world_state() -> Option<WorldState> {
     let latest = LATEST_WORLD_STATE.read().unwrap();
     latest.clone()
+}
+
+fn latest_workspace_generation_is(generation: u64) -> bool {
+    latest_world_state().is_some_and(|state| state.workspace.generation == generation)
 }
 
 pub(crate) fn diagnostics_refresh_all_from_state(state: &WorldState) {
@@ -1414,6 +1759,60 @@ mod tests {
     use super::*;
     use crate::lsp::session_bridge::SessionBridge;
     use crate::lsp::session_bridge::SessionBridgeConfig;
+
+    #[test]
+    fn workspace_scan_generation_rejects_stale_results() {
+        let state = WorldState {
+            workspace: crate::lsp::state::Workspace {
+                generation: 12,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(workspace_scan_is_current(12, &state));
+        assert!(!workspace_scan_is_current(11, &state));
+    }
+
+    #[tokio::test]
+    async fn stale_workspace_index_task_is_ignored() {
+        let _lock = indexer::indexer_test_lock();
+        let _guard = indexer::ResetIndexerGuard;
+        let tempdir = tempfile::tempdir().expect("expected tempdir");
+        let path = tempdir.path().join("stale.R");
+        std::fs::write(&path, "stale_workspace_symbol <- 1\n").unwrap();
+        let uri = Url::from_file_path(path).unwrap();
+
+        store_latest_world_state(&WorldState {
+            workspace: crate::lsp::state::Workspace {
+                generation: 22,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        process_indexer_batch(vec![IndexerTask::Create {
+            uri,
+            workspace_generation: 21,
+        }])
+        .await;
+
+        assert!(indexer::find("stale_workspace_symbol").is_none());
+    }
+
+    #[test]
+    fn detached_temp_workspace_is_not_scanned() {
+        let state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            workspace: crate::lsp::state::Workspace {
+                folders: vec![Url::from_directory_path(std::env::temp_dir()).unwrap()],
+                generation: 1,
+            },
+            ..Default::default()
+        };
+
+        assert!(workspace_scan_roots(&state).is_empty());
+    }
 
     fn spawn_counting_bridge(count: Arc<AtomicUsize>) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");

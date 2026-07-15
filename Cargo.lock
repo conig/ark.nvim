@@ -505,6 +505,7 @@ dependencies = [
  "futures",
  "harp",
  "home",
+ "ignore",
  "insta",
  "libc",
  "libr",
@@ -530,7 +531,6 @@ dependencies = [
  "tree-sitter-r",
  "url",
  "uuid",
- "walkdir",
  "yaml-rust2",
 ]
 
