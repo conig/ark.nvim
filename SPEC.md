@@ -132,6 +132,9 @@ Primary surfaces:
 
 - [lua/ark/init.lua](/home/marine/repos/ark.nvim/lua/ark/init.lua)
 - [lua/ark/runtime_controller.lua](/home/marine/repos/ark.nvim/lua/ark/runtime_controller.lua)
+- [lua/ark/console.lua](/home/marine/repos/ark.nvim/lua/ark/console.lua)
+- [lua/ark/console_ansi.lua](/home/marine/repos/ark.nvim/lua/ark/console_ansi.lua)
+- [lua/ark/console_transcript.lua](/home/marine/repos/ark.nvim/lua/ark/console_transcript.lua)
 - [lua/ark/startup_state.lua](/home/marine/repos/ark.nvim/lua/ark/startup_state.lua)
 - [lua/ark/help_render.lua](/home/marine/repos/ark.nvim/lua/ark/help_render.lua)
 - [lua/ark/target_actions.lua](/home/marine/repos/ark.nvim/lua/ark/target_actions.lua)
@@ -155,6 +158,9 @@ Responsibilities:
   controller, without duplicating mutable ownership in the command facade
 - keep `ark.lsp` callable compatibility while status-file watches and Ark
   custom-request adaptation live behind dedicated internal components
+- keep console PTY, buffer, completion, and lifecycle state in the console
+  controller while streaming ANSI decoding and transcript classification remain
+  pure, editor-independent transformations
 - reconcile startup through one per-buffer, generation-aware state model with
   independent LSP and managed-session tracks; invalid and stale transitions are
   retained in status rather than silently mutating readiness

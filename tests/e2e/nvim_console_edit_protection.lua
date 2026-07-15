@@ -57,10 +57,16 @@ if not ok then
   ark_test.fail("failed to submit initial console input: " .. tostring(submit_err))
 end
 
-ark_test.wait_for("initial transcript output", 10000, function()
+local initial_output = vim.wait(10000, function()
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   return table.concat(lines, "\n"):find("#> console saw: old_call%(%)") ~= nil
-end)
+end, 20, false)
+if not initial_output then
+  ark_test.fail("timed out waiting for initial transcript output: " .. vim.inspect({
+    lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false),
+    status = require("ark.console").status(bufnr),
+  }))
+end
 
 stop_insert_mode()
 local before = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
