@@ -1774,10 +1774,11 @@ mod tests {
         assert!(!workspace_scan_is_current(11, &state));
     }
 
-    #[tokio::test]
-    async fn stale_workspace_index_task_is_ignored() {
+    #[test]
+    fn stale_workspace_index_task_is_ignored() {
         let _lock = indexer::indexer_test_lock();
         let _guard = indexer::ResetIndexerGuard;
+        let runtime = tokio::runtime::Runtime::new().expect("expected tokio runtime");
         let tempdir = tempfile::tempdir().expect("expected tempdir");
         let path = tempdir.path().join("stale.R");
         std::fs::write(&path, "stale_workspace_symbol <- 1\n").unwrap();
@@ -1791,11 +1792,10 @@ mod tests {
             ..Default::default()
         });
 
-        process_indexer_batch(vec![IndexerTask::Create {
+        runtime.block_on(process_indexer_batch(vec![IndexerTask::Create {
             uri,
             workspace_generation: 21,
-        }])
-        .await;
+        }]));
 
         assert!(indexer::find("stale_workspace_symbol").is_none());
     }
