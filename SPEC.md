@@ -145,6 +145,9 @@ Primary surfaces:
 - [lua/ark/session.lua](/home/marine/repos/ark.nvim/lua/ark/session.lua)
 - [lua/ark/session_runtime.lua](/home/marine/repos/ark.nvim/lua/ark/session_runtime.lua)
 - [lua/ark/tmux.lua](/home/marine/repos/ark.nvim/lua/ark/tmux.lua)
+- [lua/ark/tmux_transport.lua](/home/marine/repos/ark.nvim/lua/ark/tmux_transport.lua)
+- [lua/ark/tmux_layout.lua](/home/marine/repos/ark.nvim/lua/ark/tmux_layout.lua)
+- [lua/ark/tmux_popup.lua](/home/marine/repos/ark.nvim/lua/ark/tmux_popup.lua)
 - [lua/ark/terminal.lua](/home/marine/repos/ark.nvim/lua/ark/terminal.lua)
 - [plugin/ark.lua](/home/marine/repos/ark.nvim/plugin/ark.lua)
 - [lua/ark/health.lua](/home/marine/repos/ark.nvim/lua/ark/health.lua)
@@ -161,6 +164,8 @@ Responsibilities:
 - keep console PTY, buffer, completion, and lifecycle state in the console
   controller while streaming ANSI decoding and transcript classification remain
   pure, editor-independent transformations
+- keep tmux pane/tab lifecycle state in the tmux facade while command transport,
+  geometry decisions, and popup argument/launcher construction stay stateless
 - reconcile startup through one per-buffer, generation-aware state model with
   independent LSP and managed-session tracks; invalid and stale transitions are
   retained in status rather than silently mutating readiness

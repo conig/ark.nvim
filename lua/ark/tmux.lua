@@ -1,8 +1,24 @@
 local session_runtime = require("ark.session_runtime")
 local console_frontend = require("ark.console_frontend")
+local layout_calculator = require("ark.tmux_layout")
+local popup_builder = require("ark.tmux_popup")
+local transport = require("ark.tmux_transport")
 local uv = vim.uv or vim.loop
 
 local M = {}
+local find_listed_pane = layout_calculator.find_pane
+local normalize_pane_layout = layout_calculator.normalize
+local pane_layout = layout_calculator.layout
+local panes_share_column = layout_calculator.share_column
+local panes_share_row = layout_calculator.share_row
+local parse_percent = layout_calculator.parse_percent
+local parse_positive_integer = layout_calculator.parse_positive_integer
+local popup_display_args = popup_builder.display_args
+local run_tmux = transport.run
+local shell_join = transport.shell_join
+local start_tmux = transport.start
+local strip_ansi = transport.strip_ansi
+local trim = transport.trim
 local prompt_ready_cache = {}
 local PROMPT_READY_CACHE_TTL_MS = 100
 local FAST_TAB_PRUNE_TTL_MS = 1000
@@ -64,69 +80,9 @@ end
 state = normalize_state(state)
 _G.__ark_nvim_state = state
 
-local function trim(s)
-  return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
-end
-
 local function monotonic_ms()
   local clock = (uv and uv.hrtime) and uv.hrtime or vim.loop.hrtime
   return math.floor(clock() / 1e6)
-end
-
-local function tmux_command(args)
-  local command = { "tmux" }
-  local explicit_socket = vim.env.ARK_TMUX_SOCKET
-  if type(explicit_socket) == "string" and explicit_socket ~= "" then
-    command[#command + 1] = "-S"
-    command[#command + 1] = explicit_socket
-  else
-    local tmux_env = vim.env.TMUX
-    if type(tmux_env) == "string" and tmux_env ~= "" then
-      local socket = vim.split(tmux_env, ",", { plain = true })[1]
-      if type(socket) == "string" and socket ~= "" then
-        command[#command + 1] = "-S"
-        command[#command + 1] = socket
-      end
-    end
-  end
-  vim.list_extend(command, args)
-  return command
-end
-
-local function run_tmux(args)
-  local command = tmux_command(args)
-  local output = vim.fn.system(command)
-  if vim.v.shell_error ~= 0 then
-    return nil, trim(output)
-  end
-
-  return trim(output), nil
-end
-
-local function start_tmux(args, job_opts)
-  local command = tmux_command(args)
-  job_opts = job_opts or { detach = true }
-  local ok, job_id = pcall(vim.fn.jobstart, command, job_opts)
-  if not ok then
-    return nil, tostring(job_id)
-  end
-  if type(job_id) ~= "number" or job_id <= 0 then
-    return nil, "failed to start tmux command"
-  end
-
-  return true, nil
-end
-
-local function strip_ansi(text)
-  return (text or ""):gsub("\27%[[0-9;]*[%a]", "")
-end
-
-local function shell_join(args)
-  local escaped = {}
-  for _, arg in ipairs(args or {}) do
-    escaped[#escaped + 1] = vim.fn.shellescape(tostring(arg))
-  end
-  return table.concat(escaped, " ")
 end
 
 local function plugin_root()
@@ -163,35 +119,6 @@ local function popup_temp_path(suffix)
   )
 end
 
-local function parse_percent(value)
-  value = trim(value)
-  if value == "" or value:sub(1, 1) == "-" then
-    return nil
-  end
-
-  local pct = tonumber(value:match("(%d+)"))
-  if not pct then
-    return nil
-  end
-
-  if pct < 10 then
-    pct = 10
-  elseif pct > 90 then
-    pct = 90
-  end
-
-  return tostring(pct)
-end
-
-local function parse_positive_integer(value)
-  local number = tonumber(value)
-  if not number or number <= 0 then
-    return nil
-  end
-
-  return math.floor(number)
-end
-
 local function tmux_format_integer(args)
   local output = run_tmux(args)
   return parse_positive_integer(output)
@@ -220,38 +147,9 @@ local function popup_available_width(target_client, target)
   return width
 end
 
-local function help_popup_content_width(lines, title)
-  local width = 0
-  for _, line in ipairs(lines or {}) do
-    width = math.max(width, vim.fn.strdisplaywidth(strip_ansi(line or ""):gsub("%s+$", "")))
-  end
-
-  if type(title) == "string" and title ~= "" then
-    width = math.max(width, vim.fn.strdisplaywidth(title))
-  end
-
-  return width
-end
-
 local function help_popup_width(lines, title, opts, target_client, target)
-  if opts.width ~= nil and opts.width ~= "auto" then
-    return tostring(opts.width)
-  end
-
   local available = popup_available_width(target_client, target)
-  local max_width = available and math.floor(available * 0.9) or nil
-  local min_width = parse_positive_integer(opts.min_width) or 40
-  if max_width then
-    min_width = math.min(min_width, max_width)
-  end
-
-  local desired = help_popup_content_width(lines, title) + 4
-  desired = math.max(min_width, desired)
-  if max_width then
-    desired = math.min(desired, max_width)
-  end
-
-  return tostring(math.max(1, desired))
+  return popup_builder.help_width(lines, title, opts, available, vim.fn.strdisplaywidth, strip_ansi)
 end
 
 local function pane_exists(pane_id)
@@ -483,52 +381,6 @@ local function resolve_popup_target(opts)
   end
 
   return target, nil
-end
-
-local function popup_display_args(opts)
-  opts = opts or {}
-  local args = {
-    "display-popup",
-    "-E",
-    "-w",
-    tostring(opts.width),
-    "-h",
-    tostring(opts.height),
-    "-x",
-    "C",
-    "-y",
-    "C",
-  }
-
-  if opts.border == false then
-    args[#args + 1] = "-B"
-  end
-  if opts.border ~= false and type(opts.border_lines) == "string" and opts.border_lines ~= "" then
-    vim.list_extend(args, { "-b", opts.border_lines })
-  end
-  if type(opts.style) == "string" and opts.style ~= "" then
-    vim.list_extend(args, { "-s", opts.style })
-  end
-  if opts.border ~= false and type(opts.border_style) == "string" and opts.border_style ~= "" then
-    vim.list_extend(args, { "-S", opts.border_style })
-  end
-
-  for _, env in ipairs(opts.env or {}) do
-    vim.list_extend(args, { "-e", env })
-  end
-
-  if type(opts.target_client) == "string" and opts.target_client ~= "" then
-    vim.list_extend(args, { "-c", opts.target_client })
-  else
-    vim.list_extend(args, { "-t", opts.target })
-  end
-
-  if type(opts.title) == "string" and opts.title ~= "" then
-    vim.list_extend(args, { "-T", opts.title })
-  end
-
-  args[#args + 1] = opts.command
-  return args
 end
 
 local function standalone_console_context()
@@ -888,120 +740,7 @@ local function list_window_panes(target)
     return nil, "failed to list tmux panes: " .. tostring(err or "unknown")
   end
 
-  local panes = {}
-  for line in (output .. "\n"):gmatch("(.-)\n") do
-    if line ~= "" then
-      local pane_id, left, top, width, height, window_width_value, window_height_value =
-        line:match("^([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)\t([^\t]+)$")
-      left = tonumber(left)
-      top = tonumber(top)
-      width = tonumber(width)
-      height = tonumber(height)
-      window_width_value = tonumber(window_width_value)
-      window_height_value = tonumber(window_height_value)
-      if pane_id and left and top and width and height and window_width_value and window_height_value then
-        panes[#panes + 1] = {
-          pane_id = pane_id,
-          left = left,
-          top = top,
-          width = width,
-          height = height,
-          window_width = window_width_value,
-          window_height = window_height_value,
-        }
-      end
-    end
-  end
-
-  return panes, nil
-end
-
-local function find_listed_pane(panes, pane_id)
-  for _, pane in ipairs(panes or {}) do
-    if pane.pane_id == pane_id then
-      return pane
-    end
-  end
-  return nil
-end
-
-local function panes_share_column(a, b)
-  return a and b and a.left == b.left and a.width == b.width
-end
-
-local function panes_share_row(a, b)
-  return a and b and a.top == b.top and a.height == b.height
-end
-
-local function pane_spans_window_height(pane)
-  return pane and pane.top == 0 and pane.height >= (pane.window_height - 1)
-end
-
-local function normalize_pane_layout(value)
-  if value == nil then
-    return "auto"
-  end
-  if type(value) ~= "string" or value == "" then
-    return nil
-  end
-
-  value = value:lower()
-  if value == "auto" then
-    return value
-  end
-  if value == "side_by_side" or value == "horizontal" or value == "landscape" then
-    return "side_by_side"
-  end
-  if value == "stacked" or value == "vertical" or value == "portrait" then
-    return "stacked"
-  end
-
-  return nil
-end
-
-local function pane_layout(name)
-  if name == "stacked" then
-    return {
-      name = "stacked",
-      split_flag = "-v",
-    }
-  end
-
-  return {
-    name = "side_by_side",
-    split_flag = "-h",
-  }
-end
-
-local function resolve_pane_layout_from_size(config, width, height)
-  local layout_name = normalize_pane_layout(config.pane_layout)
-  if not layout_name then
-    return nil, "invalid ark.nvim tmux.pane_layout: " .. tostring(config.pane_layout)
-  end
-
-  if layout_name ~= "auto" then
-    return pane_layout(layout_name), nil
-  end
-
-  width = tonumber(width)
-  height = tonumber(height)
-  if not width or width <= 0 then
-    return nil, "failed to resolve tmux window width"
-  end
-  if not height or height <= 0 then
-    return nil, "failed to resolve tmux window height"
-  end
-
-  local stacked_max_width = tonumber(config.stacked_max_width)
-  if stacked_max_width and stacked_max_width > 0 and width <= stacked_max_width then
-    return pane_layout("stacked"), nil
-  end
-
-  if height > width then
-    return pane_layout("stacked"), nil
-  end
-
-  return pane_layout("side_by_side"), nil
+  return layout_calculator.parse_panes(output), nil
 end
 
 local function resolve_pane_layout(target, config)
@@ -1084,79 +823,19 @@ local function active_pane_layout(pane_id, config)
   return resolve_pane_layout(pane_id, config)
 end
 
-local function existing_side_split_target_from_panes(panes, anchor_pane_id)
-  local anchor = find_listed_pane(panes, anchor_pane_id)
-  if not anchor or #panes < 2 or not pane_spans_window_height(anchor) then
-    return nil
-  end
-
-  local leftmost = anchor.left
-  local target = nil
-  for _, pane in ipairs(panes) do
-    if pane_spans_window_height(pane) then
-      if pane.left < leftmost then
-        leftmost = pane.left
-      end
-      if pane.left > anchor.left and (not target or pane.left < target.left) then
-        target = pane
-      end
-    end
-  end
-
-  if target then
-    return target.pane_id
-  end
-
-  if anchor.left > leftmost then
-    return anchor.pane_id
-  end
-
-  return nil
-end
-
-local function existing_side_split_target(anchor_pane_id)
-  local panes = list_window_panes(anchor_pane_id)
-  if not panes then
-    return nil
-  end
-
-  return existing_side_split_target_from_panes(panes, anchor_pane_id)
-end
-
 local function visible_pane_placement(anchor_pane_id, config)
   local panes, panes_err = list_window_panes(anchor_pane_id)
   if not panes then
     return nil, panes_err
   end
-
-  local anchor = find_listed_pane(panes, anchor_pane_id)
-  if not anchor then
-    return nil, "failed to find tmux anchor pane: " .. tostring(anchor_pane_id)
-  end
-
-  local layout, layout_err = resolve_pane_layout_from_size(config, anchor.window_width, anchor.window_height)
-  if not layout then
-    return nil, layout_err
-  end
-
-  local placement = {
-    layout = layout,
-    target_pane_id = anchor_pane_id,
-    before = false,
-    percent = pane_percent_for_layout(config, layout.name),
-  }
-
-  if layout.name == "side_by_side" then
-    local side_target = existing_side_split_target_from_panes(panes, anchor_pane_id)
-    if side_target then
-      placement.layout = pane_layout("stacked")
-      placement.target_pane_id = side_target
-      placement.before = true
-      placement.percent = "50"
+  return layout_calculator.visible_placement(
+    panes,
+    anchor_pane_id,
+    config,
+    function(layout_name)
+      return pane_percent_for_layout(config, layout_name)
     end
-  end
-
-  return placement, nil
+  )
 end
 
 local function slot_size_cells(layout)
@@ -2045,13 +1724,7 @@ function M.help_popup(_config, text, opts)
     cleanup_args[#cleanup_args + 1] = vim.fn.shellescape(cleanup_path)
   end
 
-  local script_lines = {
-    "#!/bin/sh",
-    shell_join(popup_command_args),
-    "status=$?",
-    "rm -f -- " .. table.concat(cleanup_args, " "),
-    "exit $status",
-  }
+  local script_lines = popup_builder.launcher_lines(shell_join(popup_command_args), cleanup_args)
   local script_ok, script_err = pcall(vim.fn.writefile, script_lines, script, "b")
   if not script_ok then
     pcall(vim.fn.delete, path)
@@ -2301,12 +1974,10 @@ function M.view_popup(_config, server, backend_id, expr, opts)
 
   local escaped_script = vim.fn.shellescape(script)
   local escaped_startup_buffer = vim.fn.shellescape(startup_buffer)
-  local command_body = shell_join(nvim_args)
-    .. "; status=$?; rm -f -- "
-    .. escaped_script
-    .. " "
-    .. escaped_startup_buffer
-    .. "; exit $status"
+  local command_body = popup_builder.cleaned_command(shell_join(nvim_args), {
+    escaped_script,
+    escaped_startup_buffer,
+  })
   local command = "sh -lc " .. vim.fn.shellescape(command_body)
 
   local target_client = attached_client_for_pane(target)
