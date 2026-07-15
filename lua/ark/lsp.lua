@@ -2,44 +2,16 @@ local M = {}
 local notifications = require("ark.notifications")
 local dev = require("ark.dev")
 local lsp_recovery = require("ark.lsp_recovery")
+local request_adapter = require("ark.lsp_request_adapter")
+local session_watch_controller = require("ark.lsp_session_watch")
 local session_backend = require("ark.session")
 local session_runtime = require("ark.session_runtime")
 local uv = vim.uv or vim.loop
 
 local SESSION_UPDATE_METHOD = "ark/updateSession"
 local SESSION_BOOTSTRAP_METHOD = "ark/internal/bootstrapSession"
-local HELP_TOPIC_METHOD = "ark/textDocument/helpTopic"
-local HELP_TEXT_METHOD = "ark/internal/helpText"
-local PACKAGE_INSTALL_METHOD = "ark/internal/packageInstall"
 local STATUS_REQUEST_METHOD = "ark/internal/status"
-local VIEW_OPEN_METHOD = "ark/internal/viewOpen"
-local VIEW_STATE_METHOD = "ark/internal/viewState"
-local VIEW_PAGE_METHOD = "ark/internal/viewPage"
-local VIEW_SORT_METHOD = "ark/internal/viewSort"
-local VIEW_FILTER_METHOD = "ark/internal/viewFilter"
-local VIEW_VALUES_METHOD = "ark/internal/viewValues"
-local VIEW_SCHEMA_SEARCH_METHOD = "ark/internal/viewSchemaSearch"
-local VIEW_PROFILE_METHOD = "ark/internal/viewProfile"
-local VIEW_CODE_METHOD = "ark/internal/viewCode"
-local VIEW_EXPORT_METHOD = "ark/internal/viewExport"
-local VIEW_CELL_METHOD = "ark/internal/viewCell"
-local VIEW_CLOSE_METHOD = "ark/internal/viewClose"
-local OBJECT_CHILDREN_METHOD = "ark/internal/objectChildren"
-local OBJECT_DETAIL_METHOD = "ark/internal/objectDetail"
-local OBJECT_TABLE_METHOD = "ark/internal/objectTable"
-local OBJECT_SEARCH_METHOD = "ark/internal/objectSearch"
-local VIEW_REQUEST_TIMEOUT_MS = 12000
-local TARGETS_PROJECT_INFO_METHOD = "ark/internal/targetsProjectInfo"
-local TARGETS_MANIFEST_METHOD = "ark/internal/targetsManifest"
-local TARGETS_NETWORK_METHOD = "ark/internal/targetsNetwork"
-local TARGETS_META_METHOD = "ark/internal/targetsMeta"
-local TARGETS_OBJECT_META_METHOD = "ark/internal/targetsObjectMeta"
-local TARGETS_VIEW_OPEN_METHOD = "ark/internal/targetsViewOpen"
-local TARGETS_ACTION_METHOD = "ark/internal/targetsAction"
 
-local session_watches = {}
-local buffer_watch_cleanup = {}
-local buffer_watch_keys = {}
 local client_session_payloads = {}
 local client_pending_session_payloads = {}
 local client_status_payloads = {}
@@ -53,6 +25,8 @@ local session_watch_finished
 local session_poll_finished
 local start_client
 local startup_ready_callback = nil
+local requests
+local session_watch
 local STATUS_CACHE_TTL_MS = 250
 local STATUS_THROTTLE_MS = 100
 local SESSION_WATCH_POLL_MS = 50
@@ -78,6 +52,15 @@ local function resolve_bufnr(bufnr)
   end
   return bufnr
 end
+
+session_watch = session_watch_controller.new({
+  filetype_enabled = filetype_enabled,
+  on_detach = function(bufnr)
+    pending_startup_bootstraps[bufnr] = nil
+  end,
+  poll_ms = SESSION_WATCH_POLL_MS,
+  resolve_bufnr = resolve_bufnr,
+})
 
 local function live_client(client)
   return client and client.initialized and not (client.is_stopped and client:is_stopped())
@@ -207,6 +190,15 @@ end
 local function live_clients(opts, bufnr)
   return session_clients(opts, bufnr)
 end
+
+requests = request_adapter.new({
+  client_for_buffer = function(opts, bufnr)
+    return live_clients(opts, bufnr)[1]
+  end,
+  filetype_enabled = filetype_enabled,
+  live_client = live_client,
+  resolve_bufnr = resolve_bufnr,
+})
 
 local function named_clients(opts, bufnr)
   return session_clients(opts, bufnr, {
@@ -415,15 +407,6 @@ local function configure_crash_recovery(config, opts, bufnr, start_opts)
   })
 end
 
-local function close_handle(handle)
-  if not handle then
-    return
-  end
-
-  pcall(handle.stop, handle)
-  pcall(handle.close, handle)
-end
-
 local function session_buffers(opts)
   local buffers = {}
 
@@ -434,97 +417,6 @@ local function session_buffers(opts)
   end
 
   return buffers
-end
-
-local function watch_has_buffers(watch)
-  if type(watch) ~= "table" then
-    return false
-  end
-
-  for bufnr, _ in pairs(watch.bufnrs or {}) do
-    if vim.api.nvim_buf_is_valid(bufnr) and buffer_watch_keys[bufnr] == watch.key then
-      return true
-    end
-  end
-
-  return false
-end
-
-local function stop_session_watch(key)
-  local watch = session_watches[key]
-  if type(watch) ~= "table" then
-    return
-  end
-
-  close_handle(watch.watcher)
-  watch.watcher = nil
-  watch.poll_token = nil
-
-  for bufnr, _ in pairs(watch.bufnrs or {}) do
-    if buffer_watch_keys[bufnr] == key then
-      buffer_watch_keys[bufnr] = nil
-    end
-  end
-
-  session_watches[key] = nil
-end
-
-local function detach_buffer_watch(bufnr)
-  local key = buffer_watch_keys[bufnr]
-  buffer_watch_keys[bufnr] = nil
-  buffer_watch_cleanup[bufnr] = nil
-  pending_startup_bootstraps[bufnr] = nil
-
-  if type(key) ~= "string" or key == "" then
-    return
-  end
-
-  local watch = session_watches[key]
-  if type(watch) ~= "table" then
-    return
-  end
-
-  watch.bufnrs[bufnr] = nil
-  if not watch_has_buffers(watch) then
-    stop_session_watch(key)
-  end
-end
-
-local function attach_buffer_watch(status_path, bufnr)
-  local current_key = buffer_watch_keys[bufnr]
-  if current_key and current_key ~= status_path then
-    detach_buffer_watch(bufnr)
-  end
-
-  local watch = session_watches[status_path]
-  if type(watch) ~= "table" then
-    watch = {
-      key = status_path,
-      bufnrs = {},
-      watcher = nil,
-      poll_token = nil,
-    }
-    session_watches[status_path] = watch
-  end
-
-  watch.bufnrs[bufnr] = true
-  buffer_watch_keys[bufnr] = status_path
-  return watch
-end
-
-local function ensure_session_watch_cleanup(bufnr)
-  if buffer_watch_cleanup[bufnr] or not vim.api.nvim_buf_is_valid(bufnr) then
-    return
-  end
-
-  buffer_watch_cleanup[bufnr] = true
-  vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
-    buffer = bufnr,
-    once = true,
-    callback = function()
-      detach_buffer_watch(bufnr)
-    end,
-  })
 end
 
 local function normalize_repl_ready(status)
@@ -639,93 +531,9 @@ local function console_session_snapshot(opts, snapshot_opts, bufnr)
   }
 end
 
-local function is_content_modified_error(err)
-  if type(err) == "table" and err.code == -32801 then
-    return true
-  end
-  return type(err) == "string" and err:find("stale because", 1, true) ~= nil
-end
-
-local function request_result(client, method, params, timeout_ms, bufnr)
-  local timeout = timeout_ms or 5000
-  local deadline = uv.hrtime() + timeout * 1e6
-
-  while true do
-    local remaining = math.max(1, math.floor((deadline - uv.hrtime()) / 1e6))
-    local response, err = client:request_sync(method, params, remaining, bufnr or 0)
-    if err then
-      return nil, err
-    end
-    if not response then
-      return nil, "no response"
-    end
-
-    local response_error = response.error or response.err
-    if is_content_modified_error(response_error) and uv.hrtime() < deadline then
-      vim.wait(10, function()
-        return false
-      end, 5, false)
-    elseif response_error then
-      return nil, vim.inspect(response_error)
-    else
-      return response.result, nil
-    end
-  end
-end
-
-local function request_error_message(err)
-  if err == nil then
-    return nil
-  end
-  if type(err) == "string" then
-    return err
-  end
-  if type(err) == "table" and type(err.message) == "string" then
-    return err.message
-  end
-  return vim.inspect(err)
-end
-
-local function request_result_async(client, method, params, timeout_ms, bufnr, callback)
-  local completed = false
-  local request_id = nil
-
-  local function finish(result, err)
-    if completed then
-      return
-    end
-    completed = true
-    callback(result, err)
-  end
-
-  local ok, id = client:request(method, params or {}, function(err, result)
-    if err then
-      finish(nil, request_error_message(err))
-      return
-    end
-    finish(result, nil)
-  end, bufnr or 0)
-
-  if not ok then
-    finish(nil, "request failed")
-    return nil, "request failed"
-  end
-
-  request_id = id
-  if timeout_ms and timeout_ms > 0 then
-    vim.defer_fn(function()
-      if completed then
-        return
-      end
-      if request_id and type(client.cancel_request) == "function" then
-        client:cancel_request(request_id)
-      end
-      finish(nil, "timeout")
-    end, timeout_ms)
-  end
-
-  return true
-end
+local is_content_modified_error = requests.is_content_modified_error
+local request_result = requests.request
+local request_result_async = requests.request_async
 
 local function cache_client_session(client, payload)
   if not client or type(client.id) ~= "number" then
@@ -809,36 +617,6 @@ end
 
 local function payload_present(payload)
   return type(payload) == "table" and next(payload) ~= nil
-end
-
-local function same_session_identity(lhs, rhs)
-  if type(lhs) ~= "table" or type(rhs) ~= "table" then
-    return false
-  end
-
-  return (lhs.kind or "") == (rhs.kind or "")
-    and (lhs.backend or "") == (rhs.backend or "")
-    and (lhs.sessionId or "") == (rhs.sessionId or "")
-    and (lhs.statusFile or "") == (rhs.statusFile or "")
-    and (lhs.tmuxSocket or "") == (rhs.tmuxSocket or "")
-    and (lhs.tmuxSession or "") == (rhs.tmuxSession or "")
-    and (lhs.tmuxPane or "") == (rhs.tmuxPane or "")
-end
-
-local function status_unavailable(payload)
-  if type(payload) ~= "table" then
-    return true
-  end
-
-  return (payload.status == nil or payload.status == "") and payload.replReady ~= true
-end
-
-local function suppress_transient_status_downgrade(previous, current)
-  return type(previous) == "table"
-    and previous.status == "ready"
-    and previous.replReady == true
-    and status_unavailable(current)
-    and same_session_identity(previous, current)
 end
 
 local function startup_bootstrap_pending(bufnr)
@@ -983,7 +761,7 @@ local function notify_client_session(client, payload)
   if vim.deep_equal(client_pending_session_payloads[client.id], normalized) then
     return
   end
-  if suppress_transient_status_downgrade(previous, normalized) then
+  if session_watch.suppress_stale_payload(previous, normalized) then
     return
   end
 
@@ -1003,31 +781,12 @@ local function notify_sessions(opts, bufnr, payload)
   end
 end
 
-local function first_watched_bufnr(watch)
-  if type(watch) ~= "table" then
-    return nil
-  end
-
-  for bufnr, _ in pairs(watch.bufnrs or {}) do
-    if vim.api.nvim_buf_is_valid(bufnr) and buffer_watch_keys[bufnr] == watch.key then
-      return bufnr
-    end
-  end
-
-  return nil
-end
-
 local function notify_watch_sessions(opts, watch, payload)
   if type(watch) ~= "table" then
     return
   end
 
-  local bufnrs = {}
-  for bufnr, _ in pairs(watch.bufnrs or {}) do
-    if vim.api.nvim_buf_is_valid(bufnr) and buffer_watch_keys[bufnr] == watch.key then
-      bufnrs[#bufnrs + 1] = bufnr
-    end
-  end
+  local bufnrs = session_watch.buffers(watch)
 
   local clients = clients_for_buffers(opts, bufnrs)
   local normalized = payload or session_payload(opts, { fast = true }, bufnrs[1])
@@ -1057,12 +816,7 @@ local function watch_payload_delivered(opts, watch, payload)
     return false
   end
 
-  local bufnrs = {}
-  for bufnr, _ in pairs(watch.bufnrs or {}) do
-    if vim.api.nvim_buf_is_valid(bufnr) and buffer_watch_keys[bufnr] == watch.key then
-      bufnrs[#bufnrs + 1] = bufnr
-    end
-  end
+  local bufnrs = session_watch.buffers(watch)
 
   local clients = clients_for_buffers(opts, bufnrs)
   if #clients == 0 then
@@ -1087,15 +841,10 @@ local function bootstrap_pending_startups(opts, watch, payload, source)
     return
   end
 
-  for bufnr, _ in pairs(watch.bufnrs or {}) do
+  for _, bufnr in ipairs(session_watch.buffers(watch)) do
     if not startup_bootstrap_pending(bufnr) then
       goto continue
     end
-    if not vim.api.nvim_buf_is_valid(bufnr) or buffer_watch_keys[bufnr] ~= watch.key then
-      set_startup_bootstrap_pending(bufnr, false)
-      goto continue
-    end
-
     local client = session_clients(opts, bufnr)[1]
     if not live_client(client) then
       goto continue
@@ -1263,47 +1012,6 @@ start_pending_bootstrap_async = function(client, opts, bufnr, payload, source, n
   return true
 end
 
-local function watch_status_file(status_path, on_change)
-  if not uv or type(status_path) ~= "string" or status_path == "" then
-    return nil
-  end
-
-  local watch_path = vim.fs.dirname(status_path)
-  if type(watch_path) ~= "string" or watch_path == "" then
-    return nil
-  end
-
-  vim.fn.mkdir(watch_path, "p")
-
-  local scheduled = false
-  local function trigger()
-    if scheduled then
-      return
-    end
-
-    scheduled = true
-    vim.schedule(function()
-      scheduled = false
-      on_change()
-    end)
-  end
-
-  if uv.new_fs_event then
-    local watcher = uv.new_fs_event()
-    if watcher then
-      local ok = watcher:start(watch_path, {}, function()
-        trigger()
-      end)
-      if ok then
-        return watcher
-      end
-      close_handle(watcher)
-    end
-  end
-
-  return nil
-end
-
 session_watch_finished = function(opts, bufnr, payload)
   if next(payload) == nil or payload.status == "error" then
     return true
@@ -1323,7 +1031,7 @@ local function watch_startup_bootstrap_pending(watch)
     return false
   end
 
-  for bufnr, _ in pairs(watch.bufnrs or {}) do
+  for _, bufnr in ipairs(session_watch.buffers(watch)) do
     if startup_bootstrap_pending(bufnr) then
       return true
     end
@@ -1338,113 +1046,20 @@ local function watch_poll_finished(opts, watch, payload)
     and watch_payload_delivered(opts, watch, payload)
 end
 
-local function start_session_watch_poll(opts, status_path)
-  local watch = session_watches[status_path]
-  if type(watch) ~= "table" then
-    return nil
-  end
-  if watch.poll_token ~= nil then
-    return watch
-  end
-
-  local token = (tonumber(watch.poll_token) or 0) + 1
-  watch.poll_token = token
-
-  local function poll()
-    local current_watch = session_watches[status_path]
-    if type(current_watch) ~= "table" or current_watch.poll_token ~= token then
-      return
-    end
-
-    local current = session_payload(opts, { fast = true }, first_watched_bufnr(current_watch))
-    if current.statusFile ~= status_path then
-      stop_session_watch(status_path)
-      return
-    end
-
-    notify_watch_sessions(opts, current_watch, current)
-    bootstrap_pending_startups(opts, current_watch, current, STARTUP_READY_SOURCES.poll)
-    if session_watch_finished(opts, nil, current) then
-      stop_session_watch(status_path)
-      return
-    end
-    if watch_poll_finished(opts, current_watch, current) then
-      current_watch.poll_token = nil
-      return
-    end
-
-    vim.defer_fn(poll, SESSION_WATCH_POLL_MS)
-  end
-
-  vim.defer_fn(poll, SESSION_WATCH_POLL_MS)
-  return watch
-end
-
 local function ensure_session_watch(opts, bufnr, payload, watch_opts)
-  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
   watch_opts = watch_opts or {}
-  if not vim.api.nvim_buf_is_valid(bufnr) then
-    detach_buffer_watch(bufnr)
-    return nil
-  end
-  if not filetype_enabled(opts.filetypes, vim.bo[bufnr].filetype) then
-    detach_buffer_watch(bufnr)
-    return nil
-  end
-
-  local current_payload = payload or session_payload(opts, { fast = true }, bufnr)
-  local status_path = current_payload.statusFile
-  if type(status_path) ~= "string" or status_path == "" then
-    detach_buffer_watch(bufnr)
-    return nil
-  end
-
-  local watch = attach_buffer_watch(status_path, bufnr)
-  ensure_session_watch_cleanup(bufnr)
-
-  if watch_opts.notify_immediately ~= false then
-    notify_watch_sessions(opts, watch, current_payload)
-  end
-
-  if session_watch_finished(opts, bufnr, current_payload) then
-    stop_session_watch(watch.key)
-    return watch
-  end
-
-  if not watch.watcher then
-    local watch_key = watch.key
-    local watcher = watch_status_file(status_path, function()
-      local current_watch = session_watches[watch_key]
-      if type(current_watch) ~= "table" then
-        return
-      end
-
-      local current = session_payload(opts, { fast = true }, first_watched_bufnr(current_watch))
-      if current.statusFile ~= watch_key then
-        stop_session_watch(watch_key)
-        return
-      end
-
-      notify_watch_sessions(opts, current_watch, current)
-      bootstrap_pending_startups(opts, current_watch, current, STARTUP_READY_SOURCES.watch)
-      if session_watch_finished(opts, nil, current) then
-        stop_session_watch(watch_key)
-      elseif watch_poll_finished(opts, current_watch, current) then
-        current_watch.poll_token = nil
-      else
-        start_session_watch_poll(opts, watch_key)
-      end
-    end)
-    if watcher then
-      watch.watcher = watcher
-    end
-  end
-
-  if watch.watcher then
-    return watch
-  end
-
-  return start_session_watch_poll(opts, status_path)
+  return session_watch.ensure(opts, bufnr, payload, {
+    bootstrap = bootstrap_pending_startups,
+    finished = session_watch_finished,
+    notify = notify_watch_sessions,
+    notify_immediately = watch_opts.notify_immediately,
+    payload = function(payload_opts, payload_bufnr)
+      return session_payload(payload_opts, { fast = true }, payload_bufnr)
+    end,
+    poll_finished = watch_poll_finished,
+    poll_source = STARTUP_READY_SOURCES.poll,
+    watch_source = STARTUP_READY_SOURCES.watch,
+  })
 end
 
 local function start_startup_bootstrap(opts, bufnr, client, payload, source, notify_on_error)
@@ -1873,309 +1488,119 @@ function M.status(opts, bufnr, status_opts)
 end
 
 function M.help_topic(opts, bufnr, position)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
-
-  local current_filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or nil
-  if not filetype_enabled(opts.filetypes, current_filetype) then
-    return nil, "current buffer filetype is not managed by ark.nvim"
-  end
-
-  local client = live_clients(opts, bufnr)[1]
-  if not live_client(client) then
-    return nil, "ark_lsp client unavailable"
-  end
-
-  local text_document = vim.lsp.util.make_text_document_params(bufnr)
-
-  local target_position = position
-  if type(target_position) ~= "table" then
-    local cursor = vim.api.nvim_win_get_cursor(0)
-    target_position = {
-      line = cursor[1] - 1,
-      character = cursor[2],
-    }
-  end
-
-  local function request_topic(request_position)
-    local result, err = request_result(client, HELP_TOPIC_METHOD, {
-      textDocument = text_document,
-      position = request_position,
-    }, 1000, bufnr)
-
-    if err then
-      return nil, err
-    end
-    if type(result) ~= "table" or type(result.topic) ~= "string" or result.topic == "" then
-      return nil, "no help topic found"
-    end
-
-    return result.topic, nil
-  end
-
-  local topic, err = request_topic(target_position)
-  if topic then
-    return topic, nil
-  end
-
-  return nil, err
+  return requests.help_topic(opts, bufnr, position)
 end
 
 function M.help_text(opts, bufnr, topic)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
-
-  local current_filetype = vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].filetype or nil
-  if not filetype_enabled(opts.filetypes, current_filetype) then
-    return nil, "current buffer filetype is not managed by ark.nvim"
-  end
-
-  if type(topic) ~= "string" or topic == "" then
-    return nil, "missing help topic"
-  end
-
-  local client = live_clients(opts, bufnr)[1]
-  if not live_client(client) then
-    return nil, "ark_lsp client unavailable"
-  end
-
-  local result, err = request_result(client, HELP_TEXT_METHOD, {
-    topic = topic,
-  }, 3000, bufnr)
-
-  if err then
-    return nil, err
-  end
-  if type(result) ~= "table" or type(result.text) ~= "string" or result.text == "" then
-    return nil, "no help text found"
-  end
-
-  if not vim.islist(result.references) then
-    result.references = {}
-  end
-
-  return result, nil
-end
-
-local function view_request(opts, bufnr, method, params, timeout_ms)
-  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
-  local client = live_clients(opts, bufnr)[1]
-  if not live_client(client) then
-    return nil, "ark_lsp client unavailable"
-  end
-
-  return request_result(client, method, params or {}, timeout_ms or 5000, bufnr)
-end
-
-local function view_request_async(opts, bufnr, method, params, timeout_ms, callback)
-  bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
-  local client = live_clients(opts, bufnr)[1]
-  if not live_client(client) then
-    callback(nil, "ark_lsp client unavailable")
-    return nil, "ark_lsp client unavailable"
-  end
-
-  return request_result_async(client, method, params or {}, timeout_ms or 5000, bufnr, callback)
+  return requests.help_text(opts, bufnr, topic)
 end
 
 function M.view_open(opts, bufnr, expr)
-  return view_request(opts, bufnr, VIEW_OPEN_METHOD, {
-    expr = expr,
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.view_open(opts, bufnr, expr)
 end
 
 function M.view_state(opts, bufnr, session_id)
-  return view_request(opts, bufnr, VIEW_STATE_METHOD, {
-    sessionId = session_id,
-  }, VIEW_REQUEST_TIMEOUT_MS)
-end
-
-local function view_page_params(session_id, offset, limit, columns)
-  local params = {
-    sessionId = session_id,
-    offset = offset or 0,
-    limit = limit or 0,
-  }
-  if vim.islist(columns) and #columns > 0 then
-    params.columns = columns
-  end
-  return params
+  return requests.view_state(opts, bufnr, session_id)
 end
 
 function M.view_page(opts, bufnr, session_id, offset, limit, columns)
-  local params = view_page_params(session_id, offset, limit, columns)
-  return view_request(opts, bufnr, VIEW_PAGE_METHOD, params, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.view_page(opts, bufnr, session_id, offset, limit, columns)
 end
 
 function M.view_page_async(opts, bufnr, session_id, offset, limit, columns, callback)
-  local params = view_page_params(session_id, offset, limit, columns)
-  return view_request_async(opts, bufnr, VIEW_PAGE_METHOD, params, VIEW_REQUEST_TIMEOUT_MS, callback)
+  return requests.view_page_async(opts, bufnr, session_id, offset, limit, columns, callback)
 end
 
 function M.view_sort(opts, bufnr, session_id, column_index, direction)
-  return view_request(opts, bufnr, VIEW_SORT_METHOD, {
-    sessionId = session_id,
-    columnIndex = column_index,
-    direction = direction,
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.view_sort(opts, bufnr, session_id, column_index, direction)
 end
 
 function M.view_filter(opts, bufnr, session_id, column_index, query, mode, value_key, label)
-  return view_request(opts, bufnr, VIEW_FILTER_METHOD, {
-    sessionId = session_id,
-    columnIndex = column_index,
-    query = query,
-    mode = mode or "contains",
-    valueKey = value_key or "",
-    label = label or "",
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.view_filter(opts, bufnr, session_id, column_index, query, mode, value_key, label)
 end
 
 function M.view_values(opts, bufnr, session_id, column_index)
-  return view_request(opts, bufnr, VIEW_VALUES_METHOD, {
-    sessionId = session_id,
-    columnIndex = column_index,
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.view_values(opts, bufnr, session_id, column_index)
 end
 
 function M.view_schema_search(opts, bufnr, session_id, query)
-  return view_request(opts, bufnr, VIEW_SCHEMA_SEARCH_METHOD, {
-    sessionId = session_id,
-    query = query,
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.view_schema_search(opts, bufnr, session_id, query)
 end
 
 function M.view_profile(opts, bufnr, session_id, column_index)
-  return view_request(opts, bufnr, VIEW_PROFILE_METHOD, {
-    sessionId = session_id,
-    columnIndex = column_index,
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.view_profile(opts, bufnr, session_id, column_index)
 end
 
 function M.view_code(opts, bufnr, session_id)
-  return view_request(opts, bufnr, VIEW_CODE_METHOD, {
-    sessionId = session_id,
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.view_code(opts, bufnr, session_id)
 end
 
 function M.view_export(opts, bufnr, session_id, format)
-  return view_request(opts, bufnr, VIEW_EXPORT_METHOD, {
-    sessionId = session_id,
-    format = format or "tsv",
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.view_export(opts, bufnr, session_id, format)
 end
 
 function M.view_cell(opts, bufnr, session_id, row_index, column_index)
-  return view_request(opts, bufnr, VIEW_CELL_METHOD, {
-    sessionId = session_id,
-    rowIndex = row_index,
-    columnIndex = column_index,
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.view_cell(opts, bufnr, session_id, row_index, column_index)
 end
 
 function M.view_close(opts, bufnr, session_id)
-  return view_request(opts, bufnr, VIEW_CLOSE_METHOD, {
-    sessionId = session_id,
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.view_close(opts, bufnr, session_id)
 end
 
 function M.object_children(opts, bufnr, session_id, node_id, offset, limit)
-  return view_request(opts, bufnr, OBJECT_CHILDREN_METHOD, {
-    sessionId = session_id,
-    nodeId = node_id or "",
-    offset = offset or 0,
-    limit = limit or 0,
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.object_children(opts, bufnr, session_id, node_id, offset, limit)
 end
 
 function M.object_detail(opts, bufnr, session_id, node_id)
-  return view_request(opts, bufnr, OBJECT_DETAIL_METHOD, {
-    sessionId = session_id,
-    nodeId = node_id or "",
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.object_detail(opts, bufnr, session_id, node_id)
 end
 
 function M.object_table(opts, bufnr, session_id, node_id)
-  return view_request(opts, bufnr, OBJECT_TABLE_METHOD, {
-    sessionId = session_id,
-    nodeId = node_id or "",
-  }, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.object_table(opts, bufnr, session_id, node_id)
 end
 
 function M.object_search(opts, bufnr, session_id, query, max_nodes, max_results)
-  return view_request(opts, bufnr, OBJECT_SEARCH_METHOD, {
-    sessionId = session_id,
-    query = query or "",
-    maxNodes = max_nodes or 1000,
-    maxResults = max_results or 100,
-  }, VIEW_REQUEST_TIMEOUT_MS)
-end
-
-local function targets_project_payload(project)
-  project = project or {}
-  return {
-    root = project.root or "",
-    script = project.script or "",
-    store = project.store or "",
-  }
+  return requests.object_search(opts, bufnr, session_id, query, max_nodes, max_results)
 end
 
 function M.targets_project_info(opts, bufnr, project)
-  return view_request(opts, bufnr, TARGETS_PROJECT_INFO_METHOD, targets_project_payload(project), 3000)
+  return requests.targets_project_info(opts, bufnr, project)
 end
 
 function M.targets_manifest(opts, bufnr, project)
-  return view_request(opts, bufnr, TARGETS_MANIFEST_METHOD, targets_project_payload(project), 5000)
+  return requests.targets_manifest(opts, bufnr, project)
 end
 
 function M.targets_network(opts, bufnr, project)
-  return view_request(opts, bufnr, TARGETS_NETWORK_METHOD, targets_project_payload(project), 5000)
+  return requests.targets_network(opts, bufnr, project)
 end
 
 function M.targets_meta(opts, bufnr, project, names)
-  local payload = targets_project_payload(project)
-  payload.names = names or {}
-  return view_request(opts, bufnr, TARGETS_META_METHOD, payload, 5000)
+  return requests.targets_meta(opts, bufnr, project, names)
 end
 
 function M.targets_object_meta(opts, bufnr, project, name)
-  local payload = targets_project_payload(project)
-  payload.name = name or ""
-  return view_request(opts, bufnr, TARGETS_OBJECT_META_METHOD, payload, 5000)
+  return requests.targets_object_meta(opts, bufnr, project, name)
 end
 
 function M.targets_view_open(opts, bufnr, project, name)
-  local payload = targets_project_payload(project)
-  payload.name = name or ""
-  return view_request(opts, bufnr, TARGETS_VIEW_OPEN_METHOD, payload, VIEW_REQUEST_TIMEOUT_MS)
+  return requests.targets_view_open(opts, bufnr, project, name)
 end
 
 function M.targets_action(opts, bufnr, project, action, names)
-  local payload = targets_project_payload(project)
-  payload.action = action or ""
-  payload.names = names or {}
-  return view_request(opts, bufnr, TARGETS_ACTION_METHOD, payload, 120000)
+  return requests.targets_action(opts, bufnr, project, action, names)
 end
 
 function M.targets_action_async(opts, bufnr, project, action, names, callback)
-  local payload = targets_project_payload(project)
-  payload.action = action or ""
-  payload.names = names or {}
-  return view_request_async(opts, bufnr, TARGETS_ACTION_METHOD, payload, 120000, callback)
+  return requests.targets_action_async(opts, bufnr, project, action, names, callback)
 end
 
 function M.package_install(opts, bufnr, packages, description, dry_run)
-  return view_request(opts, bufnr, PACKAGE_INSTALL_METHOD, {
-    packages = packages or {},
-    description = description or "",
-    dryRun = dry_run == true,
-  }, 600000)
+  return requests.package_install(opts, bufnr, packages, description, dry_run)
 end
 
 function M.package_install_async(opts, bufnr, packages, description, dry_run, callback)
-  return view_request_async(opts, bufnr, PACKAGE_INSTALL_METHOD, {
-    packages = packages or {},
-    description = description or "",
-    dryRun = dry_run == true,
-  }, 600000, callback)
+  return requests.package_install_async(opts, bufnr, packages, description, dry_run, callback)
 end
 
 return M

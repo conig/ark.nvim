@@ -131,10 +131,13 @@ performed explicitly.
 Primary surfaces:
 
 - [lua/ark/init.lua](/home/marine/repos/ark.nvim/lua/ark/init.lua)
+- [lua/ark/runtime_controller.lua](/home/marine/repos/ark.nvim/lua/ark/runtime_controller.lua)
 - [lua/ark/startup_state.lua](/home/marine/repos/ark.nvim/lua/ark/startup_state.lua)
 - [lua/ark/help_render.lua](/home/marine/repos/ark.nvim/lua/ark/help_render.lua)
 - [lua/ark/target_actions.lua](/home/marine/repos/ark.nvim/lua/ark/target_actions.lua)
 - [lua/ark/lsp.lua](/home/marine/repos/ark.nvim/lua/ark/lsp.lua)
+- [lua/ark/lsp_request_adapter.lua](/home/marine/repos/ark.nvim/lua/ark/lsp_request_adapter.lua)
+- [lua/ark/lsp_session_watch.lua](/home/marine/repos/ark.nvim/lua/ark/lsp_session_watch.lua)
 - [lua/ark/lsp_recovery.lua](/home/marine/repos/ark.nvim/lua/ark/lsp_recovery.lua)
 - [lua/ark/session.lua](/home/marine/repos/ark.nvim/lua/ark/session.lua)
 - [lua/ark/session_runtime.lua](/home/marine/repos/ark.nvim/lua/ark/session_runtime.lua)
@@ -148,6 +151,10 @@ Responsibilities:
 - keep `lua/ark/init.lua` as the composition root and stable public facade;
   feature rendering and target/package actions are delegated to their owning
   modules through narrow injected interfaces
+- keep runtime readiness waiters and managed/console session routing in one
+  controller, without duplicating mutable ownership in the command facade
+- keep `ark.lsp` callable compatibility while status-file watches and Ark
+  custom-request adaptation live behind dedicated internal components
 - reconcile startup through one per-buffer, generation-aware state model with
   independent LSP and managed-session tracks; invalid and stale transitions are
   retained in status rather than silently mutating readiness
