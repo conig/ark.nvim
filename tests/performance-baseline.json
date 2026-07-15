@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
-  "source": "2026-07-10 reviewed local baseline on the canonical development machine; replace only with reviewed local results after investigating regressions",
+  "source": "2026-07-15 reviewed post-sync hardening baseline on the canonical development machine at e157fc79; 10 serial startup samples plus the 503-sample canonical benchmark; replace only with reviewed local results after investigating regressions",
   "events": {
-    "startup.main_buffer_unlock": { "p50_ms": 953.0, "p95_ms": 990.0 },
-    "completion.bridge_ping": { "p50_ms": 1.391, "p95_ms": 1.659 },
-    "completion.bridge": { "p50_ms": 24.303, "p95_ms": 36.151 },
-    "completion.lsp": { "p50_ms": 33.871, "p95_ms": 40.624 },
+    "startup.main_buffer_unlock": { "p50_ms": 303.0, "p95_ms": 368.0 },
+    "completion.bridge_ping": { "p50_ms": 0.403, "p95_ms": 0.590 },
+    "completion.bridge": { "p50_ms": 23.912, "p95_ms": 26.159 },
+    "completion.lsp": { "p50_ms": 31.990, "p95_ms": 33.384 },
     "rpc.parent_help": { "p50_ms": 0.0, "p95_ms": 0.0 },
     "rpc.parent_view": { "p50_ms": 0.0, "p95_ms": 0.0 },
     "rpc.console_help": { "p50_ms": 0.0, "p95_ms": 0.0 },
     "rpc.console_view": { "p50_ms": 0.0, "p95_ms": 0.0 },
-    "arkview.open": { "p50_ms": 17.144, "p95_ms": 21.128 },
-    "arkview.page": { "p50_ms": 0.422, "p95_ms": 0.768 },
-    "arkview.cursor": { "p50_ms": 0.008, "p95_ms": 0.025 }
+    "arkview.open": { "p50_ms": 21.001, "p95_ms": 22.529 },
+    "arkview.page": { "p50_ms": 0.402, "p95_ms": 0.497 },
+    "arkview.cursor": { "p50_ms": 0.010, "p95_ms": 0.034 }
   }
 }

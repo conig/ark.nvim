@@ -69,3 +69,35 @@ Retries are evidence only. The local runner never converts a failed semantic
 assertion into a pass. Failed E2Es retain their isolated temporary directory
 and log and print both paths, while successful runs remove them unless
 `--keep-artifacts` is requested.
+
+## Reviewed post-sync hardening baseline
+
+The 2026-07-15 baseline covers the tree at `e157fc79` plus the subsequent
+baseline-record update, after merging upstream `a00853de` in `ca1d19d0`. It was
+collected on the canonical Arch Linux development machine with Rust/Cargo 1.97,
+Neovim 0.12.4, R 4.6.1, tmux 3.7b, and ripgrep 15.1.
+
+- `just verify-product` passed, including 507 active `ark-lsp-core` unit tests
+  with one manual benchmark ignored and an `R CMD check` with zero warnings or
+  notes.
+- `just verify-upstream-compat` passed every retained workspace, integration,
+  and doctest target, including the Amalthea integration path.
+- `just verify` passed all 249 manifest-classified E2Es across the unit, fast,
+  serial-integration, full-TUI, performance, and soak tiers.
+- `just benchmark` passed all hard and rolling-baseline limits across 503
+  samples. The reviewed p95 values are stored in
+  `tests/performance-baseline.json`.
+
+Ten serial samples on the 10,000-file ignored-workspace fixture reduced LSP
+initialization p95 from 179.362 ms at `a04e5a78` to 11.498 ms, a 93.6%
+improvement. Cross-file definition lookup succeeded after background indexing
+in every sample. Ten serial managed-session cold starts reduced p95 from 390 ms
+to 368 ms and remained well below the 1200 ms hard budget.
+
+The final gate exposed two hardening-test defects before passing: a standard
+mutex guard crossing an async test await, and a target-completion test that
+assumed synchronous workspace indexing. The first now uses a synchronous test
+runtime boundary; the second waits only for its workspace-wide initial result.
+Both focused regressions and the complete suite passed afterward. The earlier
+2026-07-10 rolling values remain available in Git history as a historical
+baseline rather than the active performance policy.
