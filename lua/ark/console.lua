@@ -107,10 +107,6 @@ local function session_id_for_buffer(bufnr)
   return string.format("nvim_console__nvim_%d__buf_%d", vim.fn.getpid(), bufnr)
 end
 
-local function rpc_socket_path(config, session_id)
-  return vim.fs.normalize(session_runtime.status_root(config) .. "/" .. session_id .. ".sock")
-end
-
 local function merge_status_file(path, patch)
   if type(path) ~= "string" or path == "" or type(patch) ~= "table" then
     return
@@ -2386,11 +2382,6 @@ function M.start(opts)
   apply_terminal_ui(bufnr, opts)
   local session_id = session_id_for_buffer(bufnr)
   local runtime = opts.terminal or opts.tmux or {}
-  local socket_path = rpc_socket_path(runtime, session_id)
-  local socket_dir = vim.fs.dirname(socket_path)
-  if type(socket_dir) == "string" and socket_dir ~= "" then
-    vim.fn.mkdir(socket_dir, "p")
-  end
   state.buffers[bufnr] = {
     draft_input = nil,
     history = {},
@@ -2403,7 +2394,7 @@ function M.start(opts)
     pending_output_group = nil,
     pending_echo_lines = {},
     prompt_state = "top-level",
-    rpc_socket = socket_path,
+    rpc_socket = nil,
     rpc_running = false,
     session_id = session_id,
     status_path = session_runtime.status_file_path(runtime, session_id),
@@ -2416,7 +2407,9 @@ function M.start(opts)
   place_prompt(bufnr)
   refresh_valid_snapshot(bufnr, state.buffers[bufnr])
 
-  local ok_server, server_result = pcall(vim.fn.serverstart, state.buffers[bufnr].rpc_socket)
+  -- Full tmux session IDs can exceed the Unix socket pathname limit and alias
+  -- distinct panes, so let Neovim generate a short process-unique address.
+  local ok_server, server_result = pcall(vim.fn.serverstart, "ark-console")
   if ok_server and type(server_result) == "string" and server_result ~= "" then
     state.buffers[bufnr].rpc_socket = server_result
     state.buffers[bufnr].rpc_running = true

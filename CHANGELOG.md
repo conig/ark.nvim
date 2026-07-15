@@ -51,6 +51,8 @@ the canonical `posit-dev/ark` repository.
 - Treated a live managed `nvim-console` RPC endpoint as the code-send readiness
   boundary and prevented missing endpoints from falling through to raw tmux
   paste.
+- Prevented long tmux session names from aliasing managed `nvim-console` RPC
+  sockets at the Unix pathname limit and blocking code sends.
 
 ## 0.1.0-alpha.1 - Planned
 

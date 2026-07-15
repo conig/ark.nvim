@@ -120,6 +120,7 @@
         "lsp_sync_start_bootstrap.lua",
         "lsp_sync_start_pending_client.lua",
         "native_help.lua",
+        "nvim_console_long_session_rpc.lua",
         "release_manifest_and_discovery.lua",
         "report_command.lua",
         "targets_commands.lua",
