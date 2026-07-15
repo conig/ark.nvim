@@ -129,19 +129,25 @@ impl ScanCompleted {
         let package_entities: Vec<Package> = packages
             .into_iter()
             .map(|pkg| {
+                // Workspace packages never have an `INDEX`
+                let index_revision = None;
+
                 root.set_package(
                     db,
                     pkg.description_path,
                     pkg.name,
                     pkg.description_revision,
                     pkg.namespace_revision,
+                    index_revision,
                     pkg.files,
                     pkg.scripts,
                 )
             })
             .collect();
 
-        root.set_packages(db).to(package_entities);
+        if root.packages(db) != &package_entities {
+            root.set_packages(db).to(package_entities);
+        }
         root.set_workspace_scripts(db, scripts);
     }
 }
@@ -229,7 +235,9 @@ impl ScanScheduler {
             };
             new_roots.push(root);
         }
-        db.workspace_roots().set_roots(db).to(new_roots);
+        if db.workspace_roots().roots(db) != &new_roots {
+            db.workspace_roots().set_roots(db).to(new_roots);
+        }
 
         requests
     }

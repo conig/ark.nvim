@@ -37,7 +37,7 @@ impl Package {
         let mut symbols = namespace.exports.clone().to_vec();
 
         // Add all documented symbols. This should cover documented datasets.
-        symbols.extend(index.names.clone());
+        symbols.extend(index.names().iter().cloned());
 
         let exported_symbols = SortedVec::from_vec(symbols);
 
@@ -80,15 +80,20 @@ impl Package {
             Namespace::default()
         };
 
-        let index = match Index::load_from_folder(package_path) {
-            Ok(index) => index,
-            Err(err) => {
-                log::warn!(
-                    "Can't load INDEX file from `{path}`: {err:?}",
-                    path = package_path.to_string_lossy()
-                );
-                Index::default()
-            },
+        let index_path = package_path.join("INDEX");
+        let index = if !index_path.is_file() {
+            Index::default()
+        } else {
+            match fs::read_to_string(&index_path) {
+                Ok(contents) => Index::parse(&contents),
+                Err(err) => {
+                    log::warn!(
+                        "Can't load INDEX file from `{path}`: {err:?}",
+                        path = index_path.to_string_lossy()
+                    );
+                    Index::default()
+                },
+            }
         };
 
         Ok(Some(Self::new(
@@ -198,9 +203,7 @@ mod tests {
             ..Default::default()
         };
 
-        let index = Index {
-            names: vec!["c".to_string(), "a".to_string(), "a".to_string()],
-        };
+        let index = Index::parse("c  C\na  A\na  Duplicate A\n");
 
         let pkg = new_package("foo", ns, index);
         assert_eq!(&*pkg.exported_symbols, &["a", "b", "c"]);

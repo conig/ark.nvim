@@ -93,7 +93,6 @@ use harp::utils::r_typeof;
 use harp::CONSOLE_THREAD_ID;
 use libr::R_BaseNamespace;
 use libr::R_ProcessEvents;
-use libr::R_RunPendingFinalizers;
 use libr::Rf_ScalarInteger;
 use libr::Rf_error;
 use libr::Rf_findVarInFrame;
@@ -132,8 +131,7 @@ use console_filter::ConsoleFilter;
 pub use console_repl::catching_panics;
 pub(crate) use console_repl::console_inputs;
 pub(crate) use console_repl::r_busy;
-#[cfg(unix)]
-pub(crate) use console_repl::r_polled_events;
+pub(crate) use console_repl::r_interrupt_events;
 pub(crate) use console_repl::r_read_console;
 pub(crate) use console_repl::r_show_message;
 pub(crate) use console_repl::r_suicide;
@@ -151,6 +149,7 @@ use crate::comm_handler::EnvironmentChanged;
 use crate::dap::dap_state::Breakpoint;
 use crate::dap::Dap;
 use crate::help::message::HelpEvent;
+use crate::help::r_help::HelpPorts;
 use crate::help::r_help::RHelp;
 use crate::lsp::events::EVENTS;
 use crate::lsp::main_loop::DidCloseVirtualDocumentParams;
@@ -236,24 +235,24 @@ pub struct Console {
     autoprint_output: String,
 
     /// Channel to send and receive tasks from `QueuedRTask`s
-    tasks_interrupt_rx: Receiver<QueuedRTask>,
     tasks_idle_rx: Receiver<QueuedRTask>,
     tasks_idle_any_rx: Receiver<QueuedRTask>,
     try_idle_rx: Receiver<TryIdleTask>,
     pending_futures: HashMap<Uuid, (BoxFuture<'static, ()>, RTaskStartInfo, Option<String>)>,
 
-    /// The UI comm, stored separately from `comms` so that `ui_comm()` can
-    /// borrow it independently of the comms map.
-    ui_comm: DebugRefCell<Option<ConsoleComm>>,
+    /// Comm IDs of the singleton UI and help comms, if connected. Opening a
+    /// new one replaces the old. The comms themselves live in `comms` like
+    /// any others.
+    ui_comm_id: DebugRefCell<Option<String>>,
+    help_comm_id: DebugRefCell<Option<String>>,
 
     /// Error captured by our global condition handler during the last iteration
     /// of the REPL.
     last_error: Option<Exception>,
 
-    /// Channel to communicate with the Help thread
-    help_event_tx: Option<Sender<HelpEvent>>,
-    /// R help port
-    help_port: Option<u16>,
+    /// Ports for the R help server and our proxy, set once both are running.
+    /// `None` until then.
+    help_ports: Option<HelpPorts>,
 
     /// Event channel for notifying the LSP. In principle, could be a Jupyter comm.
     lsp_events_tx: Option<LspEventSender>,
@@ -354,7 +353,11 @@ pub struct Console {
     read_console_env_stack: DebugRefCell<Vec<RObject>>,
 
     /// Comm handlers registered on the R thread (keyed by comm ID).
-    comms: DebugRefCell<HashMap<String, ConsoleComm>>,
+    ///
+    /// Entries are `Rc` so dispatch can clone one out and drop the map borrow
+    /// before running the handler. That keeps the map free for the handler to
+    /// reenter (e.g. a data explorer opening a child comm).
+    comms: DebugRefCell<HashMap<String, Rc<ConsoleComm>>>,
 
     /// Graphics device state (plot recording, rendering, comm management).
     device_context: Rc<DeviceContext>,

@@ -29,7 +29,6 @@ pub mod object;
 pub mod options;
 pub mod parse;
 pub mod parser;
-pub mod polled_events;
 pub mod protect;
 pub mod r;
 pub mod raii;
@@ -272,7 +271,7 @@ macro_rules! push_rds {
 /// Uses thread_local storage to avoid issues with SEXP being non-Sync.
 /// Usage:
 ///
-/// ```
+/// ```text
 /// harp::once! {
 ///     static NAME: Type = initialization_expression;
 /// }

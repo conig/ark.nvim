@@ -91,7 +91,7 @@ impl MessageType for UiFrontendRequest {
 ///
 /// Example usage:
 ///
-/// ```
+/// ```text
 /// comm_rpc_message!("my_method")
 /// comm_rpc_message!("my_method", foo = 1, bar = my_value)
 /// ```

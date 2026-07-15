@@ -67,7 +67,7 @@ hmac = "0.13.0"
 home = "0.5.12"
 ignore = "0.4.23"
 insta = "1.47.2"
-itertools = "0.14.0"
+itertools = "0.15.0"
 libc = "0.2.186"
 libloading = "0.9.0"
 libr = { path = "crates/libr" }
@@ -78,7 +78,6 @@ notify = "8.2.0"
 oak_cache = { path = "crates/oak_cache" }
 oak_core = { path = "crates/oak_core" }
 oak_db = { path = "crates/oak_db" }
-oak_fs = { path = "crates/oak_fs" }
 oak_ide = { path = "crates/oak_ide" }
 oak_index_vec = { path = "crates/oak_index_vec" }
 oak_package_metadata = { path = "crates/oak_package_metadata" }
@@ -99,9 +98,9 @@ reqwest-middleware = "0.5.1"
 reqwest-retry = "0.9.1"
 rust-embed = "8.11.0"
 rustc-hash = "2.1.2"
-salsa = { version = "0.26.2", features = ["compact_str"] }
-salsa-macros = "0.26.2"
-scraper = "0.26.0"
+salsa = { version = "0.27.2", features = ["compact_str"] }
+salsa-macros = "0.27.2"
+scraper = "0.27.0"
 semver = "1.0.28"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }

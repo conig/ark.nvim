@@ -1505,9 +1505,7 @@ mtcars$mp";
                     ..Default::default()
                 },
                 Namespace::default(),
-                Index {
-                    names: vec![String::from("mtcars")],
-                },
+                Index::parse("mtcars  Motor Trend Car Road Tests\n"),
             );
             let state = WorldState {
                 library: Library::new(vec![]).insert("datasets", datasets),

@@ -22,12 +22,6 @@ use oak_cache::Cache;
 /// Cache version
 const CACHE_VERSION: &str = "v1";
 
-/// LRU capacity for cached CRAN package source trees
-const CRAN_CAPACITY: usize = 200;
-
-/// LRU capacity for cached R version source trees, kept small because each is large
-const R_CAPACITY: usize = 5;
-
 /// Downloads and caches whole package / R version source trees
 ///
 /// Each cache holds its shared root lock for the life of this `SourceCache`, so any path
@@ -39,19 +33,19 @@ pub struct SourceCache {
 }
 
 impl SourceCache {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn open() -> anyhow::Result<Self> {
         Ok(Self {
-            cran: Cache::new(&format!("source/{CACHE_VERSION}/cran"), CRAN_CAPACITY)?,
-            r: Cache::new(&format!("source/{CACHE_VERSION}/r"), R_CAPACITY)?,
+            cran: Cache::open(&format!("source/{CACHE_VERSION}/cran"))?,
+            r: Cache::open(&format!("source/{CACHE_VERSION}/r"))?,
         })
     }
 
-    /// Like [`SourceCache::new`], but rooted at an explicit `root` rather than the shared
-    /// cache directory. Only useful for testing against a temp directory.
-    pub fn new_in(root: PathBuf) -> anyhow::Result<Self> {
+    /// Like [`SourceCache::open`], but rooted at an explicit `root` rather than the
+    /// shared cache directory. Only useful for testing against a temp directory.
+    pub fn open_in(root: PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
-            cran: Cache::new_in(root.join("cran"), CRAN_CAPACITY)?,
-            r: Cache::new_in(root.join("r"), R_CAPACITY)?,
+            cran: Cache::open_in(root.join("cran"))?,
+            r: Cache::open_in(root.join("r"))?,
         })
     }
 
@@ -102,7 +96,7 @@ mod tests {
     #[test]
     fn test_cran_round_trip() {
         let dir = TempDir::new().unwrap();
-        let source = SourceCache::new_in(dir.path().to_path_buf()).unwrap();
+        let source = SourceCache::open_in(dir.path().to_path_buf()).unwrap();
 
         // Miss before insert
         assert_eq!(source.get_cran("vctrs", "0.7.2"), None);
@@ -127,7 +121,7 @@ mod tests {
     #[test]
     fn test_cran_not_found() {
         let dir = TempDir::new().unwrap();
-        let source = SourceCache::new_in(dir.path().to_path_buf()).unwrap();
+        let source = SourceCache::open_in(dir.path().to_path_buf()).unwrap();
         assert_eq!(
             source.insert_cran("definitely_not_a_package", "0.0.0"),
             None
@@ -139,7 +133,7 @@ mod tests {
     #[test]
     fn test_r_round_trip() {
         let dir = TempDir::new().unwrap();
-        let source = SourceCache::new_in(dir.path().to_path_buf()).unwrap();
+        let source = SourceCache::open_in(dir.path().to_path_buf()).unwrap();
 
         let root = source.insert_r("4.5.0").unwrap();
 
@@ -156,7 +150,7 @@ mod tests {
     #[test]
     fn test_r_unknown_version() {
         let dir = TempDir::new().unwrap();
-        let source = SourceCache::new_in(dir.path().to_path_buf()).unwrap();
+        let source = SourceCache::open_in(dir.path().to_path_buf()).unwrap();
         assert_eq!(source.insert_r("0.0.0"), None);
     }
 }
