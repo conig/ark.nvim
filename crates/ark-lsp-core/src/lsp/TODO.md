@@ -2,11 +2,6 @@
 LSP TODO
 ========
 
-- [] Verify whether the completion positions are computed in terms of character counts, or byte offsets.
-     We need to be careful since tree-sitter wants byte offsets for its computed positions. If we've got
-     this wrong, I expect that attempts to navigate completion positions could get out-of-sync after the
-     document is edited (especially with copy + paste of ranges with multiple lines).
-
 - [] How should strings and quoted symbols be presented in the completion list?
      Do we want to display their quoted representation, or display the "raw" representation and then
      quote them appropriately on insertion?

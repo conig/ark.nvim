@@ -906,6 +906,10 @@ Neovim product.
   falling through to unrelated sources.
 - Static and live execution plans share the same handled/unique/composite state
   model and preserve the documented precedence tests.
+- LSP request and edit positions use the client's negotiated encoding (UTF-16
+  for Neovim), while tree-sitter points use byte columns. All conversions cross
+  the `Document` line-index boundary; a multibyte-prefix regression applies a
+  returned completion edit to prove the round trip does not corrupt the buffer.
 
 ### Verification Expectations
 
@@ -925,6 +929,7 @@ High-value regression coverage for this tranche includes:
 - package-string and argument-string completion
 - frontmatter output completion
 - inline `` `r ` `` empty-prefix completion
+- completion edits after multibyte text on the same line
 - prose `.Rmd` cases where non-semantic completion must not leave stale Blink
   UI behind
 
