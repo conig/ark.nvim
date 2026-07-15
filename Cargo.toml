@@ -134,3 +134,9 @@ xdg = "3.0.0"
 yaml-rust2 = "0.11"
 # We need ZMQ 4.3.5 to fix polling issues on Windows arm64
 zmq = { git = "https://github.com/erickt/rust-zmq", rev = "5d78967" }
+
+[patch.crates-io]
+# `proc-macro-error2` is archived, and its final release triggers a Rust
+# future-incompatibility lint. Pin the minimal fix proposed upstream in
+# https://github.com/GnomedDev/proc-macro-error-2/pull/14.
+proc-macro-error2 = { git = "https://github.com/GnomedDev/proc-macro-error-2", rev = "53ff94b61c678593158db1a3d50269c6f0de0db7" }
