@@ -100,8 +100,13 @@ Binary discovery is explicit:
 4. a repo-local optimized source build
 
 A repo-local debug build is considered only when `ARK_NVIM_DEV_MODE=1`.
-Contributor rebuild commands remain available, but normal buffer startup never
-silently compiles Rust.
+Normal startup may use an existing repo-local optimized build, but it never
+scans Rust sources or invokes Cargo. Contributor rebuilds remain explicitly
+available through `:ArkBuildLsp`. In development mode, existing repo-local
+binaries receive one coalesced freshness probe after Neovim becomes idle;
+source discovery uses asynchronous `rg --files`, and a missing `rg` skips the
+automatic probe with an actionable warning instead of recursively globbing the
+checkout.
 
 `just verify-product` is the authoritative routine product gate. It uses exact
 Rust and rustfmt toolchains and covers the active Rust crates, `arkbridge`, the
@@ -356,8 +361,9 @@ interactive R evaluation is not safe. The late result is discarded.
 - Detached startup can begin immediately and hydrate later through trusted
   status-file data plus bridge bootstrap.
 - Existing detached binaries and pane-side bridge runtimes should not force
-  source-tree freshness scans on the immediate startup path; those checks may
-  run shortly afterward in the background instead.
+  source-tree freshness scans on the immediate startup path. Detached-binary
+  checks run shortly afterward only in explicit development mode; normal mode
+  does no automatic source discovery or compilation.
 - Startup diagnostics should retain the existing pane and LSP readiness
   milestones, but the user-facing "main buffer unlocked" mark should be
   recorded directly from successful detached session bootstrap when that signal

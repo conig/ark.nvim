@@ -24,12 +24,14 @@ pcall(uv.fs_utime, release_probe, now - 200, now - 200)
 pcall(uv.fs_utime, source_probe, now, now)
 
 local original_executable = vim.fn.executable
-local original_systemlist = vim.fn.systemlist
 local original_jobstart = vim.fn.jobstart
+local original_system = vim.system
 
 local job_cmd = nil
 local job_opts = nil
 local completed = nil
+local rg_calls = 0
+local job_calls = 0
 
 vim.fn.executable = function(cmd)
   if cmd == "cargo" or cmd == "rg" then
@@ -38,14 +40,19 @@ vim.fn.executable = function(cmd)
   return original_executable(cmd)
 end
 
-vim.fn.systemlist = function(cmd)
+vim.system = function(cmd, opts, on_exit)
   if type(cmd) == "table" and cmd[1] == "rg" then
-    return { source_probe }
+    rg_calls = rg_calls + 1
+    vim.schedule(function()
+      on_exit({ code = 0, stdout = source_probe .. "\n", stderr = "" })
+    end)
+    return {}
   end
-  return original_systemlist(cmd)
+  return original_system(cmd, opts, on_exit)
 end
 
 vim.fn.jobstart = function(cmd, opts)
+  job_calls = job_calls + 1
   job_cmd = vim.deepcopy(cmd)
   job_opts = opts
   return 4242
@@ -70,6 +77,7 @@ local ok, err = pcall(function()
   local cmd = { built_binary, "--runtime-mode", "detached" }
 
   local resolved, resolve_err = dev.ensure_current_detached_lsp_cmd(vim.deepcopy(cmd), {
+    development_mode = true,
     on_build_complete = function(result)
       completed = result
     end,
@@ -80,6 +88,12 @@ local ok, err = pcall(function()
   if not vim.deep_equal(resolved, cmd) then
     error("expected existing detached binary to be returned immediately", 0)
   end
+  local repeated, repeated_err = dev.ensure_current_detached_lsp_cmd(vim.deepcopy(cmd), {
+    development_mode = true,
+  })
+  if repeated_err ~= nil or not vim.deep_equal(repeated, cmd) then
+    error("unexpected repeated detached ark-lsp resolution: " .. vim.inspect({ repeated, repeated_err }), 0)
+  end
 
   local started = vim.wait(1000, function()
     return job_opts ~= nil
@@ -89,6 +103,12 @@ local ok, err = pcall(function()
   end
   if not vim.deep_equal(job_cmd, { "cargo", "build", "-p", "ark-lsp" }) then
     error("expected debug binary freshness to use a debug build, got " .. vim.inspect(job_cmd), 0)
+  end
+  if rg_calls ~= 1 or job_calls ~= 1 then
+    error("concurrent freshness requests were not coalesced: " .. vim.inspect({
+      rg_calls = rg_calls,
+      job_calls = job_calls,
+    }), 0)
   end
 
   if build_float() ~= nil then
@@ -128,7 +148,7 @@ local ok, err = pcall(function()
     release_probe,
     "--runtime-mode",
     "detached",
-  })
+  }, { development_mode = true })
   if release_err ~= nil or release_resolved[1] ~= release_probe then
     error("unexpected release binary resolution: " .. vim.inspect({ release_resolved, release_err }), 0)
   end
@@ -139,6 +159,12 @@ local ok, err = pcall(function()
   if not release_started then
     error("expected stale release binary to start a background freshness rebuild", 0)
   end
+  if rg_calls ~= 2 then
+    error("expected one asynchronous source discovery per completed build generation, got " .. tostring(rg_calls), 0)
+  end
+  if job_calls ~= 2 then
+    error("expected one build per stale binary generation, got " .. tostring(job_calls), 0)
+  end
   if not vim.deep_equal(job_cmd, { "cargo", "build", "-p", "ark-lsp", "--release" }) then
     error("expected release binary freshness to use a release build, got " .. vim.inspect(job_cmd), 0)
   end
@@ -148,8 +174,8 @@ local ok, err = pcall(function()
 end)
 
 vim.fn.executable = original_executable
-vim.fn.systemlist = original_systemlist
 vim.fn.jobstart = original_jobstart
+vim.system = original_system
 vim.fn.delete(source_probe)
 vim.fn.delete(release_probe)
 if not built_binary_existed then

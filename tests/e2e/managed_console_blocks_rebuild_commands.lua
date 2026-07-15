@@ -12,6 +12,7 @@ package.loaded["ark.view"] = {}
 
 local original_standalone = vim.env.ARK_NVIM_CONSOLE_STANDALONE
 local original_managed = vim.env.ARK_NVIM_MANAGED_PANE
+local original_dev_mode = vim.env.ARK_NVIM_DEV_MODE
 local original_backend = vim.env.ARK_SESSION_BACKEND
 local original_session = vim.env.ARK_SESSION_ID
 local original_jobstart = vim.fn.jobstart
@@ -24,6 +25,7 @@ end
 
 vim.env.ARK_NVIM_CONSOLE_STANDALONE = "1"
 vim.env.ARK_NVIM_MANAGED_PANE = "1"
+vim.env.ARK_NVIM_DEV_MODE = "1"
 vim.env.ARK_SESSION_BACKEND = "tmux"
 vim.env.ARK_SESSION_ID = "tmux_socket__tmux_session__tmux_pane"
 
@@ -47,6 +49,7 @@ end)
 
 vim.env.ARK_NVIM_CONSOLE_STANDALONE = original_standalone
 vim.env.ARK_NVIM_MANAGED_PANE = original_managed
+vim.env.ARK_NVIM_DEV_MODE = original_dev_mode
 vim.env.ARK_SESSION_BACKEND = original_backend
 vim.env.ARK_SESSION_ID = original_session
 vim.fn.jobstart = original_jobstart

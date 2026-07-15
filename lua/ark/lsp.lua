@@ -1494,7 +1494,10 @@ end
 
 function M.config(opts, bufnr, _config_opts)
   bufnr = resolve_bufnr(bufnr) or vim.api.nvim_get_current_buf()
-  local cmd, cmd_err = dev.ensure_current_detached_lsp_cmd(opts.lsp.cmd, _config_opts)
+  local resolve_opts = vim.tbl_extend("force", _config_opts or {}, {
+    development_mode = opts.development_mode == true,
+  })
+  local cmd, cmd_err = dev.ensure_current_detached_lsp_cmd(opts.lsp.cmd, resolve_opts)
   if not cmd then
     return nil, cmd_err
   end

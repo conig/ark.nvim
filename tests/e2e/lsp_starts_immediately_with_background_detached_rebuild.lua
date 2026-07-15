@@ -1,9 +1,11 @@
 vim.opt.rtp:prepend(vim.fn.getcwd())
 
 local ensure_calls = 0
+local ensure_development_modes = {}
 package.loaded["ark.dev"] = {
   ensure_current_detached_lsp_cmd = function(cmd, opts)
     ensure_calls = ensure_calls + 1
+    ensure_development_modes[#ensure_development_modes + 1] = opts and opts.development_mode
     if ensure_calls == 1 then
       vim.defer_fn(function()
         opts.on_build_complete({
@@ -119,6 +121,7 @@ local ok, err = pcall(function()
   vim.bo[buf].filetype = "r"
 
   local opts = {
+    development_mode = true,
     filetypes = { "r" },
     lsp = {
       name = "ark_lsp",
@@ -150,6 +153,10 @@ local ok, err = pcall(function()
   end, 20, false)
   if not rebuilt then
     error("expected background detached rebuild to trigger a controlled restart", 0)
+  end
+
+  if not vim.deep_equal(ensure_development_modes, { true, true }) then
+    error("LSP resolution did not receive explicit development mode: " .. vim.inspect(ensure_development_modes), 0)
   end
 
   if not vim.deep_equal(stopped, { 1 }) then

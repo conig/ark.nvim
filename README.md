@@ -638,7 +638,11 @@ By default the plugin will try these `ark-lsp` locations in order:
 4. `target/release/ark-lsp` as an explicit source-build fallback
 
 Set `ARK_NVIM_DEV_MODE=1` for a contributor checkout. Only that explicit mode
-allows `target/debug/ark-lsp` to take precedence over the installed release.
+allows `target/debug/ark-lsp` to take precedence over the installed release and
+enables an idle, asynchronous source-freshness probe. That probe requires `rg`;
+without it Ark keeps using the existing binary and asks you to run
+`:ArkBuildLsp` explicitly. Normal mode never scans the checkout or invokes
+Cargo during startup.
 `:Ark rollback` and `:ArkRollback` activate the previous installed binary only
 after the plugin checkout has been pinned to that same release; this prevents a
 mixed-version product.

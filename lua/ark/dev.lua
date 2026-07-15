@@ -11,14 +11,16 @@ local ROOT = repo_root()
 local DEBUG_BUILD_CMD = { "cargo", "build", "-p", "ark-lsp" }
 local RELEASE_BUILD_CMD = { "cargo", "build", "-p", "ark-lsp", "--release" }
 local SPINNER_FRAMES = { "[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]" }
-local FRESHNESS_PROBE_DEFER_MS = 250
 local SOURCE_SCAN_CACHE_TTL_MS = 1000
 local checked = {}
 local freshness_checks = {}
+local missing_rg_warned = false
 local source_scan_cache = {
   checked_ms = 0,
   newest_mtime = nil,
   newest_path = nil,
+  listeners = {},
+  running = false,
 }
 local PRODUCT_RUST_CRATES = {
   "aether_path",
@@ -107,32 +109,7 @@ local function build_spec(binary)
   }
 end
 
-local function rust_source_paths()
-  local paths = {}
-
-  if vim.fn.executable("rg") == 1 then
-    local command = { "rg", "--files" }
-    for _, crate in ipairs(PRODUCT_RUST_CRATES) do
-      command[#command + 1] = ROOT .. "/crates/" .. crate .. "/src"
-    end
-    paths = vim.fn.systemlist(command)
-    if vim.v.shell_error ~= 0 then
-      paths = {}
-    end
-  end
-
-  if #paths == 0 then
-    for _, crate in ipairs(PRODUCT_RUST_CRATES) do
-      local source_root = ROOT .. "/crates/" .. crate .. "/src"
-      for _, path in ipairs(vim.fn.glob(source_root .. "/**/*", false, true)) do
-        local stat = uv and uv.fs_stat and uv.fs_stat(path) or nil
-        if type(stat) == "table" and stat.type == "file" then
-          paths[#paths + 1] = vim.fs.normalize(path)
-        end
-      end
-    end
-  end
-
+local function append_manifest_paths(paths)
   for _, crate in ipairs(PRODUCT_RUST_CRATES) do
     paths[#paths + 1] = ROOT .. "/crates/" .. crate .. "/Cargo.toml"
     local build_script = ROOT .. "/crates/" .. crate .. "/build.rs"
@@ -147,31 +124,122 @@ local function rust_source_paths()
   return paths
 end
 
+local function rust_source_command()
+  local command = { "rg", "--files" }
+  for _, crate in ipairs(PRODUCT_RUST_CRATES) do
+    command[#command + 1] = ROOT .. "/crates/" .. crate .. "/src"
+  end
+  return command
+end
+
+local function rust_source_paths()
+  local paths = {}
+  if vim.fn.executable("rg") == 1 then
+    paths = vim.fn.systemlist(rust_source_command())
+    if vim.v.shell_error ~= 0 then
+      paths = {}
+    end
+  end
+
+  return append_manifest_paths(paths)
+end
+
 function M.rust_source_paths()
   return vim.deepcopy(rust_source_paths())
 end
 
-local function newest_source_mtime()
-  local now = monotonic_ms()
-  if now - (tonumber(source_scan_cache.checked_ms) or 0) < SOURCE_SCAN_CACHE_TTL_MS then
-    return source_scan_cache.newest_mtime, source_scan_cache.newest_path
+local function finish_source_scan(newest_mtime, newest_path, err)
+  local listeners = source_scan_cache.listeners
+  source_scan_cache.listeners = {}
+  source_scan_cache.running = false
+
+  if not err then
+    source_scan_cache.checked_ms = monotonic_ms()
+    source_scan_cache.newest_mtime = newest_mtime
+    source_scan_cache.newest_path = newest_path
   end
 
+  for _, listener in ipairs(listeners) do
+    listener(newest_mtime, newest_path, err)
+  end
+end
+
+local function newest_mtime_async(paths, callback)
   local newest_mtime = 0
   local newest_path = nil
+  local next_index = 1
+  local active = 0
+  local completed = 0
+  local concurrency = math.min(32, #paths)
 
-  for _, path in ipairs(rust_source_paths()) do
-    local mtime = stat_mtime(path)
-    if type(mtime) == "number" and mtime > newest_mtime then
-      newest_mtime = mtime
-      newest_path = path
-    end
+  if #paths == 0 then
+    callback(newest_mtime, newest_path)
+    return
   end
 
-  source_scan_cache.checked_ms = now
-  source_scan_cache.newest_mtime = newest_mtime
-  source_scan_cache.newest_path = newest_path
-  return newest_mtime, newest_path
+  local launch
+  launch = function()
+    while active < concurrency and next_index <= #paths do
+      local path = paths[next_index]
+      next_index = next_index + 1
+      active = active + 1
+      uv.fs_stat(path, function(_, stat)
+        active = active - 1
+        completed = completed + 1
+        local mtime = stat and stat.mtime and stat.mtime.sec or nil
+        if type(mtime) == "number" and mtime > newest_mtime then
+          newest_mtime = mtime
+          newest_path = path
+        end
+
+        if completed == #paths then
+          vim.schedule(function()
+            callback(newest_mtime, newest_path)
+          end)
+          return
+        end
+        launch()
+      end)
+    end
+  end
+  launch()
+end
+
+local function newest_source_mtime_async(callback)
+  local now = monotonic_ms()
+  if now - (tonumber(source_scan_cache.checked_ms) or 0) < SOURCE_SCAN_CACHE_TTL_MS then
+    callback(source_scan_cache.newest_mtime, source_scan_cache.newest_path)
+    return
+  end
+
+  source_scan_cache.listeners[#source_scan_cache.listeners + 1] = callback
+  if source_scan_cache.running then
+    return
+  end
+
+  if vim.fn.executable("rg") ~= 1 then
+    finish_source_scan(nil, nil, "`rg` is unavailable")
+    return
+  end
+
+  source_scan_cache.running = true
+  local started, system_err = pcall(vim.system, rust_source_command(), { text = true }, function(result)
+    vim.schedule(function()
+      if result.code ~= 0 then
+        finish_source_scan(nil, nil, string.format("`rg --files` exited with status %d", result.code))
+        return
+      end
+
+      local paths = vim.split(result.stdout or "", "\n", { plain = true, trimempty = true })
+      append_manifest_paths(paths)
+      newest_mtime_async(paths, function(newest_mtime, newest_path)
+        finish_source_scan(newest_mtime, newest_path, nil)
+      end)
+    end)
+  end)
+  if not started then
+    finish_source_scan(nil, nil, system_err)
+  end
 end
 
 local function elapsed_ms()
@@ -421,6 +489,8 @@ local function finish_build(result)
     checked = {}
     freshness_checks = {}
     source_scan_cache.checked_ms = 0
+    source_scan_cache.newest_mtime = nil
+    source_scan_cache.newest_path = nil
     local ms = elapsed_ms()
     local suffix = ms and string.format(" in %d ms", ms) or ""
     append_output_status("detached ark-lsp rebuilt" .. suffix .. "; Ark will attach or restart the LSP for managed R buffers.")
@@ -580,7 +650,43 @@ local function start_build(opts)
   return true, nil
 end
 
+local function schedule_when_idle(callback)
+  if uv and uv.new_idle then
+    local idle = uv.new_idle()
+    idle:start(function()
+      idle:stop()
+      idle:close()
+      vim.schedule(callback)
+    end)
+    return
+  end
+
+  vim.api.nvim_create_autocmd("SafeState", {
+    once = true,
+    callback = callback,
+    desc = "Check detached ark-lsp freshness after startup becomes idle",
+  })
+end
+
+local function warn_freshness_probe_skipped(err)
+  if missing_rg_warned then
+    return
+  end
+  missing_rg_warned = true
+  notify(
+    string.format(
+      "automatic ark-lsp freshness checking was skipped in development mode (%s); install `rg` or run :ArkBuildLsp explicitly",
+      tostring(err)
+    ),
+    vim.log.levels.WARN
+  )
+end
+
 local function maybe_schedule_freshness_probe(binary, opts)
+  if not (opts and opts.development_mode == true) then
+    return
+  end
+
   local binary_mtime = stat_mtime(binary) or 0
   if binary_mtime == 0 then
     return
@@ -592,6 +698,7 @@ local function maybe_schedule_freshness_probe(binary, opts)
       binary_mtime = nil,
       checked_ms = 0,
       listeners = {},
+      probing = false,
       scheduled = false,
     }
     freshness_checks[binary] = state
@@ -629,62 +736,70 @@ local function maybe_schedule_freshness_probe(binary, opts)
 
   state.binary_mtime = binary_mtime
   state.scheduled = true
-  vim.defer_fn(function()
+  schedule_when_idle(function()
     local current_state = freshness_checks[binary]
     if type(current_state) ~= "table" or current_state.binary_mtime ~= binary_mtime then
       return
     end
 
     current_state.scheduled = false
-    current_state.checked_ms = monotonic_ms()
-
-    local newest_mtime, newest_path = newest_source_mtime()
-    local current_binary_mtime = stat_mtime(binary) or 0
-    if current_binary_mtime == 0 or current_binary_mtime ~= binary_mtime then
-      run_freshness_listeners(take_freshness_listeners(current_state), {
-        ok = current_binary_mtime ~= 0,
-        binary_path = binary,
-      })
+    if current_state.probing then
       return
     end
+    current_state.probing = true
 
-    local listeners = take_freshness_listeners(current_state)
-    if type(newest_mtime) ~= "number" or newest_mtime <= current_binary_mtime then
+    newest_source_mtime_async(function(newest_mtime, newest_path, scan_err)
+      local latest_state = freshness_checks[binary]
+      if type(latest_state) ~= "table" or latest_state.binary_mtime ~= binary_mtime then
+        return
+      end
+      latest_state.probing = false
+      latest_state.checked_ms = monotonic_ms()
+
+      if scan_err then
+        take_freshness_listeners(latest_state)
+        warn_freshness_probe_skipped(scan_err)
+        return
+      end
+
+      local current_binary_mtime = stat_mtime(binary) or 0
+      if current_binary_mtime == 0 or current_binary_mtime ~= binary_mtime then
+        take_freshness_listeners(latest_state)
+        return
+      end
+
+      local listeners = take_freshness_listeners(latest_state)
+      if type(newest_mtime) ~= "number" or newest_mtime <= current_binary_mtime then
+        return
+      end
+
+      local ok, build_err = start_build({
+        binary_path = binary,
+        on_complete = function(result)
+          run_freshness_listeners(listeners, result)
+        end,
+        background = true,
+        show_output = false,
+        user_initiated = opts and opts.user_initiated == true,
+      })
+      if ok then
+        return
+      end
+
+      notify(
+        string.format(
+          "background detached ark-lsp rebuild could not start; using current binary (%s)",
+          tostring(build_err)
+        ),
+        vim.log.levels.WARN
+      )
       run_freshness_listeners(listeners, {
-        ok = true,
-        background_check = true,
-        binary_path = binary,
-        stale = false,
+        ok = false,
+        error = build_err,
+        newest_path = newest_path,
       })
-      return
-    end
-
-    local ok, build_err = start_build({
-      binary_path = binary,
-      on_complete = function(result)
-        run_freshness_listeners(listeners, result)
-      end,
-      background = true,
-      show_output = false,
-      user_initiated = opts and opts.user_initiated == true,
-    })
-    if ok then
-      return
-    end
-
-    notify(
-      string.format(
-        "background detached ark-lsp rebuild could not start; using current binary (%s)",
-        tostring(build_err)
-      ),
-      vim.log.levels.WARN
-    )
-    run_freshness_listeners(listeners, {
-      ok = false,
-      error = build_err,
-      newest_path = newest_path,
-    })
-  end, FRESHNESS_PROBE_DEFER_MS)
+    end)
+  end)
 end
 
 function M.ensure_current_detached_lsp_cmd(cmd, opts)
@@ -700,6 +815,15 @@ function M.ensure_current_detached_lsp_cmd(cmd, opts)
   end
 
   local binary_mtime = stat_mtime(binary) or 0
+  local development_mode = opts.development_mode == true
+
+  if not development_mode then
+    if binary_mtime == 0 then
+      return nil, "detached ark-lsp binary is missing; run :ArkBuildLsp explicitly or configure an installed binary"
+    end
+    return current_binary_cmd(cmd, binary), nil
+  end
+
   local cache_key = table.concat({
     binary,
     tostring(binary_mtime),

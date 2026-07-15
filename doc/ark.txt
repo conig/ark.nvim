@@ -465,7 +465,11 @@ overrides are mainly for launchers, test fixtures, and machine-specific paths.
 10. DEVELOPMENT MODE                                                  *ark-dev*
 
 Set `ARK_NVIM_DEV_MODE=1` before requiring Ark to prefer repo-local debug and
-release binaries. Build with: >sh
+release binaries. In that mode Ark checks source freshness after Neovim becomes
+idle using `rg --files`; concurrent checks and builds are coalesced. If `rg` is
+unavailable, automatic checking is skipped and `:ArkBuildLsp` remains the
+explicit rebuild path. Normal mode never scans Rust sources or invokes Cargo
+during startup. Build manually with: >sh
 
   cargo build -p ark-lsp
 <
