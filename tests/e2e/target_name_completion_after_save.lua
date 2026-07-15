@@ -93,8 +93,12 @@ start_lsp_for_current_buffer()
 open_file(analysis_file)
 start_lsp_for_current_buffer()
 
-local initial_labels = completion_labels()
-if not contains(initial_labels, "old_target_name") then
+local initial_labels = nil
+local indexed = vim.wait(10000, function()
+  initial_labels = completion_labels()
+  return contains(initial_labels, "old_target_name")
+end, 100, false)
+if not indexed then
   fail("initial target completion missing old target: " .. vim.inspect(initial_labels))
 end
 
