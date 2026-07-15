@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "source": "2026-07-10 local TODO 4 baseline artifact; replace only with a reviewed scheduled five-run artifact",
+  "source": "2026-07-10 reviewed local baseline on the canonical development machine; replace only with reviewed local results after investigating regressions",
   "events": {
     "startup.main_buffer_unlock": { "p50_ms": 953.0, "p95_ms": 990.0 },
     "completion.bridge_ping": { "p50_ms": 1.391, "p95_ms": 1.659 },

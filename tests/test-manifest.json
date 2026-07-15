@@ -65,7 +65,7 @@
         "ark_view_cursor_movement_responsiveness.lua",
         "current_env_completion_timing.lua",
         "r_entrypoint_rpc_latency.lua",
-        "startup_budget_350ms.lua"
+        "startup_latency_budget.lua"
       ],
       "tier": "performance",
       "layer": "performance",
@@ -129,7 +129,7 @@
       ],
       "tier": "fast",
       "layer": "component",
-      "contract": "deterministic pull-request product confidence",
+      "contract": "deterministic routine product confidence",
       "dependencies": ["neovim"],
       "serial": true,
       "typical_runtime": "under 30 seconds",

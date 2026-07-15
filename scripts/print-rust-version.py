@@ -2,9 +2,9 @@
 """
 Prints the workspace `rust-version` from `Cargo.toml`.
 
-Used by CI to pin the MSRV toolchain. Exits non-zero (and prints nothing on
-stdout) if the value is missing, so `$(...)` substitution doesn't silently
-produce an empty toolchain name.
+Used by local compatibility checks to select the MSRV toolchain. Exits
+non-zero (and prints nothing on stdout) if the value is missing, so `$(...)`
+substitution doesn't silently produce an empty toolchain name.
 """
 
 import sys

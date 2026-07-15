@@ -23,12 +23,12 @@ the canonical `posit-dev/ark` repository.
 - Hardened release installation with orphaned-lock recovery, full
   version/target/profile/bridge-schema validation, and whole-product rollback
   that refuses incompatible previous binaries.
-- Made the alpha/beta/stable publication channel explicit, kept prereleases
-  out of GitHub's latest slot, added blocking minimum/current compatibility
-  lanes plus non-blocking Neovim nightly, and run required E2Es against the
-  clean-installed release artifact before publication.
+- Made the alpha/beta/stable publication channel explicit, kept planned
+  prereleases out of the latest slot, documented minimum/current compatibility
+  checks plus optional Neovim nightly checks, and require local E2Es against
+  the clean-installed package before manual publication.
 - Replaced inherited issue/contribution boilerplate with Ark-specific bug,
-  feature, pull-request, reproduction, and redacted-support guidance.
+  feature, contribution, reproduction, and redacted-support guidance.
 - Diagnosed unmatched R string quotes at the quote itself while preserving
   valid multiline, escaped-newline, and single-quoted raw strings.
 - Added bounded per-workspace `ark-lsp` crash recovery with exponential
@@ -66,7 +66,7 @@ this section before cutting the release from a fully verified commit.
   compatibility-checked whole-product rollback.
 - Added embedded product/build metadata through `ark-lsp --version --json`.
 - Added product-owned Rust, Neovim, R-package, clean-install, and live-session
-  CI gates plus a tag-driven release workflow.
+  local verification gates plus manual checksummed release packaging.
 
 ### Changed
 

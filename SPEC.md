@@ -53,8 +53,9 @@ rather than part of the default build or release path.
 `release-manifest.json` is the single product-version and compatibility source
 for the plugin, detached LSP build, bridge launcher metadata, release asset
 names, release channel, and release notes. The current channel is `alpha`; its
-GitHub releases are published as prereleases and explicitly not marked latest.
-The first product release line uses exact product
+planned release remains unpublished. When it is published manually, alpha and
+beta releases must be marked as prereleases and must not be marked latest. The
+first product release line uses exact product
 version compatibility across plugin and `ark-lsp`, plus bridge schema `v1`.
 Version skew must be reported as an actionable incompatibility rather than
 silently treated as a healthy live session.
@@ -77,10 +78,10 @@ The first release tier is deliberately narrow:
 - tmux as the canonical backend, with the built-in terminal backend additive
 
 macOS remains a source-build/contributor path until it has a clean artifact and
-live-session release job. Windows managed sessions remain outside the product
-boundary.
+live-session release verification. Windows managed sessions remain outside the
+product boundary.
 
-Normal installation uses a raw optimized `ark-lsp` GitHub release asset and a
+Normal installation uses a raw optimized `ark-lsp` release asset and a
 separate SHA-256 file. Ark installs immutable versions under
 `stdpath("data") .. "/ark/releases"`, smoke tests the embedded version, target,
 release profile, and bridge schema, then atomically changes the `current`
@@ -102,18 +103,21 @@ A repo-local debug build is considered only when `ARK_NVIM_DEV_MODE=1`.
 Contributor rebuild commands remain available, but normal buffer startup never
 silently compiles Rust.
 
-The required product gate is `.github/workflows/product-ci.yml` and
-`just verify-product`. It uses exact Rust and rustfmt toolchains and covers the
-active Rust crates, `arkbridge`, the installer/rollback contract, a release
-artifact clean install, static LSP startup, live bridge attach, and a Rust-free
-README container. Broader inherited workspace matrices run separately as
-scheduled upstream-compatibility checks. Required compatibility jobs cover the
-minimum supported Neovim/R pair and current stable releases; Neovim nightly is
-an explicit non-blocking early-warning lane. Release tags are
-`v<product-version>`; the release workflow rejects a tag that does not match the
-manifest, clean-installs the packaged artifact, runs the required product tier
-against it, and publishes the binary, checksum, reproducibility metadata, and
-provenance attestation together.
+`just verify-product` is the authoritative routine product gate. It uses exact
+Rust and rustfmt toolchains and covers the active Rust crates, `arkbridge`, the
+installer/rollback contract, a release-artifact clean install, static LSP
+startup, live bridge attach, and a Rust-free README container. `just verify`
+is the full pre-release suite, `just verify-upstream-compat` exercises retained
+workspace compatibility, and `just benchmark` runs the canonical local
+performance suite.
+
+Packaging and publication are intentionally manual. The release operator must
+verify that `v<product-version>` matches the manifest, run every pre-release
+command above, use `scripts/package-release.sh` to create the optimized binary,
+SHA-256 checksum, and build metadata, clean-install that exact package, and
+review the retained logs before creating a tag or publishing any asset. The
+planned `0.1.0-alpha.1` release remains unpublished until that procedure is
+performed explicitly.
 
 ## Current Runtime Shape
 
@@ -947,18 +951,20 @@ layer:
 The product test inventory is `tests/test-manifest.json`. It is the single
 source of truth for Lua test tier, ownership, dependencies, protected contract,
 serial execution, runtime expectation, flake policy, and shared-session use.
-The required pull-request selection combines the pure `unit` and deterministic
-`fast` tiers. `serial-integration`, prepared-fixture `full-tui`, `performance`,
-and `soak` remain deeper gates, and `scripts/run-full-suite.sh --tier full`
-remains the canonical pre-release suite. Tests that declare no tmux dependency
-must run without creating a tmux server.
+`just verify-product` combines the pure `unit` and deterministic `fast` tiers
+with the product's Rust and packaging contracts. `serial-integration`,
+prepared-fixture `full-tui`, `performance`, and `soak` remain deeper local
+gates, and `just verify` is the canonical pre-release suite. Tests that declare
+no tmux dependency must run without creating a tmux server.
 
 Full-TUI verification uses the pinned repo-owned fixture described by
 `tests/e2e/fixture-lock.json`; test execution must not clone plugins. Performance
 governance records schema-versioned samples for named user-visible events and
 checks repeated p50, p95, and worst-case results against both reviewed rolling
-baselines and versioned hard budgets. Raw samples, summaries, and failure logs
-are retained by scheduled CI.
+baselines and versioned hard budgets. Results are reviewed on the canonical
+development machine. Raw samples, summaries, transcripts, and failure logs are
+retained under the path printed by `just benchmark`; every failed run must
+print those retained paths.
 
 High-value smoke coverage for the current product boundary includes:
 
@@ -986,5 +992,7 @@ Treat `ark.nvim` as:
 - primarily in a polish, identity, and hardening phase rather than a broad
   feature-expansion phase
 
-The discrete implementation roadmap for that hardening phase is tracked in
-[TODO-product-readiness.md](/home/marine/repos/ark.nvim/TODO-product-readiness.md).
+The durable architecture, release, and verification contracts for that
+hardening phase live in this specification and `docs/testing.md`. Deferred
+upstream state-model work remains documented in
+`crates/ark-lsp-core/UPSTREAM_STATE_MODEL.md`.

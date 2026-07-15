@@ -15,8 +15,8 @@ Status after implementation:
 - TODO 3 resolved by documented decision: keep the current `Document` and
   fork-owned indexer model for now, with future port guidance in
   `crates/ark-lsp-core/UPSTREAM_STATE_MODEL.md`.
-- TODO 4 implemented: test workflow display names now match upstream again;
-  upstream release workflow deletion remains an intentional product divergence.
+- TODO 4 resolved: upstream automation files are intentionally excluded. This
+  fork's authoritative verification and release procedures are local.
 
 This file is for follow-up work that should make future syncs from
 `posit-dev/ark` easier without undoing the Neovim product boundary. Treat these
@@ -306,6 +306,15 @@ The fork preserved its active Neovim LSP boundary and kept upstream's low-level
 crate updates around it. That was the right sync decision, but it leaves a
 future integration decision open.
 
+The 2026-07-15 sync through upstream `a00853de` reaffirmed that decision. It
+adopted Salsa 0.27.2 and upstream changes to Oak package resolution, workspace
+inputs, definition/reference search, cache invalidation, and scan scheduling.
+Those low-level changes are retained and verified, while the detached Neovim
+server still relies on `Document`, bridge/session fields in `WorldState`, and
+the fork-owned indexer. This hardening cycle may improve that indexer's walker,
+generation handling, and workspace-folder lifecycle, but it must not turn that
+work into an `OpenFile`/`OakDatabase` migration.
+
 Relevant upstream files to compare:
 
 ```sh
@@ -410,76 +419,16 @@ cargo test -p oak_db -p oak_scan -p oak_ide -p ark-lsp --lib
 If the change touches live bridge behavior, add focused live/tmux verification
 or document a manual path before calling it complete.
 
-## TODO 4: Decide whether local GitHub workflow branding is worth recurring merge conflicts
+## TODO 4: Upstream automation policy (resolved)
 
-### Goal
+Upstream automation files are intentionally excluded from this fork. Do not
+restore files under `.github/workflows/` during an upstream sync. The supported
+product contracts are the local `just verify-product`, `just verify`, and
+`just benchmark` commands plus the documented manual, checksummed packaging
+procedure. Non-executing contribution metadata may still be retained.
 
-Remove recurring trivial conflicts in GitHub workflow names if the local
-branding does not matter enough to keep them.
-
-This is intentionally small. Do not spend much engineering time here.
-
-### Current Discovery
-
-The current differences in test workflow files are only display names:
-
-```diff
--name: "Test Ark"
-+name: "Test ark.nvim"
-```
-
-and similarly for Linux, macOS, and Windows. The fork also deletes upstream
-release workflows, which is probably intentional because this repository does
-not ship upstream Ark releases.
-
-Discovery commands:
-
-```sh
-git diff upstream/main...HEAD -- .github/workflows/test-linux.yml .github/workflows/test-macos.yml .github/workflows/test-windows.yml .github/workflows/test.yml
-git diff --name-status upstream/main...HEAD -- '.github/workflows/*.yml' '.github/workflows/*.yaml'
-```
-
-### Possible Implementation Routes
-
-Option A: accept upstream test workflow names.
-
-- Rename the workflows back to upstream names.
-- This removes recurring one-line conflicts at the cost of less precise branding
-  in the GitHub Actions UI.
-
-Option B: keep local names and document that this conflict is accepted.
-
-- Add a short note near the workflow files or in this TODO if the branding is
-  intentionally useful.
-- Future sync agents can then resolve these conflicts quickly without revisiting
-  the decision.
-
-Option C: isolate fork-specific workflow naming in a separate wrapper.
-
-- Only worth considering if workflow churn grows beyond names.
-- Avoid making CI more complex just to preserve display text.
-
-### Things To Watch
-
-- Do not restore upstream release workflows unless the release strategy has
-  changed. They are a separate product decision from test workflow display
-  names.
-- If changing workflow names, no Rust/Lua verification is needed, but YAML
-  syntax should still be checked by inspection or CI.
-
-### Acceptance Criteria
-
-- Either local workflow names match upstream again, or the repo documents that
-  the display-name drift is intentional.
-- Future sync agents can resolve workflow-name conflicts without additional
-  investigation.
-
-Suggested verification:
-
-```sh
-git diff --check
-git diff upstream/main...HEAD -- .github/workflows/test-linux.yml .github/workflows/test-macos.yml .github/workflows/test-windows.yml .github/workflows/test.yml
-```
+Future sync agents should treat automation-file deletions as a deliberate
+product-boundary resolution, not as conflicts requiring file-by-file review.
 
 ## Non-TODO: Keep These Divergences Unless Product Direction Changes
 

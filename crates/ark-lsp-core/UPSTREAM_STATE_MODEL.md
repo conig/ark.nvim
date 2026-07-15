@@ -1,6 +1,6 @@
 # Upstream LSP State Model Decision
 
-Decision date: 2026-06-30
+Decision date: 2026-06-30; reaffirmed 2026-07-15
 
 ## Decision
 
@@ -11,6 +11,14 @@ The fork should keep the current `Document` plus fork-owned indexer model until
 the port is planned as its own behavior-preserving refactor. The shared
 `ark-lsp-core` crate extraction already removes the recurring path-shared source
 conflict without changing the active Neovim runtime model.
+
+The 2026-07-15 sync through upstream `a00853de` retained the upgrade to Salsa
+0.27.2 and upstream changes to Oak workspace inputs, package resolution,
+definition/reference search, invalidation, and scan scheduling. Those changes
+do not remove the fork-specific migration risks below. The current pre-alpha
+hardening work is therefore limited to improving the existing walk policy,
+background scan generations, and workspace-folder lifecycle; it must not
+migrate the semantic state model or remove the fork-owned indexer.
 
 ## Evidence
 

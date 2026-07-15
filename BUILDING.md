@@ -1,8 +1,8 @@
 ## Building
 
 The workspace MSRV is `rust-version = "1.94"`. This checkout pins ordinary
-development and CI commands to Rust `1.97.0` through `rust-toolchain.toml` so
-contributors use the same compiler.
+development and release-verification commands to Rust `1.97.0` through
+`rust-toolchain.toml` so contributors use the same compiler.
 
 Install the pinned development toolchain if rustup has not already done so:
 

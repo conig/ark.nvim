@@ -140,8 +140,8 @@ For `{targets}` workflows, install the R package `targets`. `data.table` is
 optional but improves coverage for data-table shaped completion and inspection
 workflows when your project uses it.
 
-The checked-in Docker README harness pins Neovim `v0.12.1` and also exercises
-the minimum supported `0.11` release line in product CI.
+The checked-in Docker README harness pins Neovim `v0.12.1`. The minimum
+supported `0.11.3` release line is checked locally before a release.
 
 Install the R dependency once:
 
@@ -533,11 +533,11 @@ For a single branch-confidence run, use:
 just verify-product
 ```
 
-That required product gate checks the pinned release manifest/toolchains,
+That routine product gate checks the pinned release manifest/toolchains,
 product Rust crates, `arkbridge`, release installer contracts, and focused
-Neovim product smokes. `just verify` remains the broader serial full-confidence
-suite, while `just verify-upstream-compat` explicitly exercises the retained
-upstream workspace.
+Neovim product smokes. `just verify` is the broader serial pre-release suite,
+`just verify-upstream-compat` explicitly exercises the retained upstream
+workspace, and `just benchmark` runs the canonical local performance suite.
 
 For extra ambient-user-config coverage, override the init explicitly:
 
@@ -576,8 +576,9 @@ For a noninteractive smoke run in the container:
 ./scripts/docker-readme-test.sh auto smoke
 ```
 
-The wrapper packages the same optimized release artifact used by CI, then
-builds an Ubuntu 24.04 image with no Rust compiler or Cargo. The image installs the
+The wrapper packages the same optimized release artifact produced by the
+manual release procedure, then builds an Ubuntu 24.04 image with no Rust
+compiler or Cargo. The image installs the
 checksummed artifact through Ark's normal installer, installs the
 README-minimal plugins and Debian R dependencies, and bakes in the Tree-sitter
 `r` and `markdown` parsers needed by the isolated config. It currently pins

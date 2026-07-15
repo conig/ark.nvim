@@ -137,7 +137,7 @@ mark("main_buffer_unlocked")
 local startup = ark_test.startup_status(bufnr) or {}
 local startup_elapsed_ms = tonumber(startup.main_buffer_unlock_elapsed_ms) or elapsed_ms()
 perf.record("startup.main_buffer_unlock", startup_elapsed_ms, {
-  test = "startup_budget_350ms.lua",
+  test = "startup_latency_budget.lua",
   condition = "cold managed tmux session",
   fixture = "one R buffer, live bridge, hydrated LSP",
 })

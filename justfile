@@ -16,7 +16,7 @@ test-insta:
 clippy:
   cargo clippy -p ark-lsp --all-targets -- -D warnings
 
-# Run the required Neovim product gate
+# Run the routine Neovim product gate
 verify-product *ARGS:
   ./scripts/verify-product.sh {{ARGS}}
 
@@ -27,6 +27,10 @@ verify-upstream-compat *ARGS:
 # Run the full verification suite
 verify *ARGS:
   ./scripts/run-full-suite.sh {{ARGS}}
+
+# Run the canonical local performance suite
+benchmark *ARGS:
+  ./scripts/run-performance-suite.sh {{ARGS}}
 
 # Reformat source files
 format:
