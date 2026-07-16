@@ -1,18 +1,29 @@
+local view_layout = require("ark.view_layout")
+local view_paging = require("ark.view_paging")
+
 local M = {}
 
 local states = {}
 local highlight_namespace = vim.api.nvim_create_namespace("ark-view")
-local grid_column_min_width = 8
-local grid_column_override_min_width = 4
-local grid_column_override_max_width = 200
-local grid_column_max_width = grid_column_override_max_width
-local grid_column_width_step = 8
-local grid_column_separator_width = 3
-local grid_horizontal_render_min_width = 420
-local grid_horizontal_render_width_multiplier = 3
-local grid_vertical_render_min_rows = 160
-local grid_vertical_render_height_multiplier = 4
-local grid_vertical_render_max_rows = 400
+local grid_column_min_width = view_layout.column_min_width
+local grid_column_override_min_width = view_layout.column_override_min_width
+local grid_column_override_max_width = view_layout.column_override_max_width
+local grid_column_width_step = view_layout.column_width_step
+
+local display_width = view_layout.display_width
+local clamp_width = view_layout.clamp_width
+local sidebar_split_width = view_layout.sidebar_split_width
+local clip_text = view_layout.clip_text
+local pad_text = view_layout.pad_text
+local blank_text = view_layout.blank_text
+local column_class_label = view_layout.column_class_label
+local split_display_width = view_layout.split_display_width
+
+local schema_by_index = view_layout.schema_by_index
+local row_value = view_layout.row_value
+local schema_position_for_column = view_layout.schema_position_for_column
+local requested_page_limit = view_paging.requested_page_limit
+
 local refresh_page
 local request_page_async
 local move_virtual_rows
@@ -101,98 +112,8 @@ local function set_buffer_lines(buf, lines)
   vim.bo[buf].readonly = true
 end
 
-local function display_width(text)
-  return vim.fn.strdisplaywidth(tostring(text or ""))
-end
-
-local function clamp_width(width, min_width, max_width)
-  width = tonumber(width) or min_width
-  return math.max(min_width, math.min(max_width, width))
-end
-
-local function sidebar_split_width(total_width)
-  total_width = tonumber(total_width) or vim.o.columns
-  total_width = math.max(1, total_width)
-
-  local max_sidebar_width = math.max(1, math.floor((total_width - 1) / 4))
-  local target = math.floor(total_width * 0.2)
-  target = math.max(12, math.min(34, target))
-
-  return math.max(1, math.min(target, max_sidebar_width))
-end
-
-local function clip_text(text, width)
-  text = tostring(text or "")
-  if width <= 0 then
-    return ""
-  end
-  if display_width(text) <= width then
-    return text
-  end
-  if width == 1 then
-    return text:sub(1, 1)
-  end
-  return text:sub(1, width - 1) .. ">"
-end
-
-local function pad_text(text, width)
-  text = clip_text(text, width)
-  local padding = width - display_width(text)
-  if padding <= 0 then
-    return text
-  end
-  return text .. string.rep(" ", padding)
-end
-
-local function blank_text(width)
-  return string.rep(" ", math.max(0, tonumber(width) or 0))
-end
-
 local function header_line_count(state)
   return math.max(1, #(state and state.grid_header_lines or {}))
-end
-
-local function column_class_label(item)
-  if type(item) ~= "table" then
-    return "<unknown>"
-  end
-
-  local class = item.class or item.type or "unknown"
-  if type(class) == "table" then
-    class = table.concat(class, "/")
-  end
-  class = vim.trim(tostring(class or ""))
-  if class == "" then
-    class = "unknown"
-  end
-
-  return "<" .. class .. ">"
-end
-
-local function split_display_width(text, width)
-  text = tostring(text or "")
-  width = tonumber(width) or 0
-  if width <= 0 then
-    return { "" }
-  end
-  if display_width(text) <= width then
-    return { text }
-  end
-
-  local lines = {}
-  local current = ""
-  local count = vim.fn.strchars(text)
-  for index = 0, count - 1 do
-    local char = vim.fn.strcharpart(text, index, 1)
-    if current ~= "" and display_width(current .. char) > width then
-      lines[#lines + 1] = current
-      current = char
-    else
-      current = current .. char
-    end
-  end
-  lines[#lines + 1] = current
-  return lines
 end
 
 local function statusline_escape(text)
@@ -473,24 +394,6 @@ local function apply_profile_highlights(buf, lines)
   end
 end
 
-local function schema_by_index(state, column_index)
-  for _, item in ipairs(state.schema or {}) do
-    if tonumber(item.index) == tonumber(column_index) then
-      return item
-    end
-  end
-  return nil
-end
-
-local function row_value(row, column_index)
-  if type(row) ~= "table" then
-    return nil
-  end
-
-  local numeric = tonumber(column_index)
-  return row[numeric] or row[tostring(numeric)]
-end
-
 local function column_label(state, column_index)
   local item = schema_by_index(state, column_index)
   return (item and item.name) or ("#" .. tostring(column_index))
@@ -666,21 +569,6 @@ local function grid_column_is_visible(state, column_index)
   end
 
   return false
-end
-
-local function schema_position_for_column(state, column_index)
-  local target = tonumber(column_index)
-  if not target then
-    return nil
-  end
-
-  for position, item in ipairs(state.schema or {}) do
-    if tonumber(item.index) == target then
-      return position
-    end
-  end
-
-  return nil
 end
 
 local function update_sidebar_cursor(state)
@@ -915,85 +803,14 @@ local function show_details(state, title, text)
   render_details(state, title, text)
 end
 
-local function column_width_for_schema_item(state, item)
-  local column_index = tonumber(item and item.index)
-  if not column_index then
-    return grid_column_min_width
-  end
-
-  local override = tonumber((state.column_width_overrides or {})[column_index])
-  if override then
-    return clamp_width(override, grid_column_override_min_width, grid_column_override_max_width)
-  end
-
-  local width = clamp_width(
-    math.max(display_width(item.name or ""), display_width(column_class_label(item))),
-    grid_column_min_width,
-    grid_column_max_width
-  )
-  for _, row in ipairs(state.rows or {}) do
-    width = math.max(
-      width,
-      clamp_width(display_width(row_value(row, column_index)), grid_column_min_width, grid_column_max_width)
-    )
-  end
-
-  return clamp_width(width, grid_column_min_width, grid_column_max_width)
-end
-
-local function fit_column_widths(widths, indices, available, fixed)
-  fixed = fixed or {}
-  local total = 0
-  for _, index in ipairs(indices) do
-    if fixed[index] then
-      widths[index] = clamp_width(widths[index], grid_column_override_min_width, grid_column_override_max_width)
-    else
-      widths[index] = clamp_width(widths[index], grid_column_min_width, grid_column_max_width)
-    end
-    total = total + widths[index]
-  end
-
-  while total > available do
-    local shrinkable = {}
-    for _, index in ipairs(indices) do
-      if not fixed[index] and widths[index] > grid_column_min_width then
-        shrinkable[#shrinkable + 1] = index
-      end
-    end
-    if #shrinkable == 0 then
-      break
-    end
-
-    local overflow = total - available
-    local shrink_each = math.max(1, math.floor(overflow / #shrinkable))
-    local changed = false
-    for _, index in ipairs(shrinkable) do
-      local shrink = math.min(widths[index] - grid_column_min_width, shrink_each)
-      if shrink > 0 then
-        widths[index] = widths[index] - shrink
-        total = total - shrink
-        changed = true
-      end
-      if total <= available then
-        break
-      end
-    end
-    if not changed then
-      break
-    end
-  end
-
-  return widths
-end
-
-local function grid_render_width_budget(state)
+local function grid_viewport_width(state)
   local width = tonumber(vim.o.columns) or 80
   if tonumber(state.grid_width_override) then
     width = tonumber(state.grid_width_override)
   elseif valid_win(state.grid_win) then
     width = vim.api.nvim_win_get_width(state.grid_win)
   end
-  return math.max(grid_horizontal_render_min_width, width * grid_horizontal_render_width_multiplier)
+  return width
 end
 
 local function grid_row_window_height(state)
@@ -1006,230 +823,42 @@ local function grid_row_window_height(state)
   return tonumber(vim.o.lines) or 24
 end
 
-local function virtual_row_limit(state)
-  local height = math.max(1, tonumber(grid_row_window_height(state)) or 24)
-  local limit = math.floor(height * grid_vertical_render_height_multiplier)
-  return math.max(grid_vertical_render_min_rows, math.min(grid_vertical_render_max_rows, limit))
-end
-
-local function requested_page_limit(state)
-  return math.max(0, tonumber(state and state.requested_page_limit or 0) or 0)
-end
-
-local function virtual_rows_allowed(state)
-  return not (state and state.virtual_rows_allowed == false)
-end
-
-local function should_virtualize_rows(state)
-  return virtual_rows_allowed(state)
-    and requested_page_limit(state) == 0
-    and (tonumber(state and state.total_rows or 0) or 0) > virtual_row_limit(state)
-end
-
 local function update_virtual_rows(state)
-  if not state then
-    return false
-  end
-  state.virtual_rows = should_virtualize_rows(state)
-  return state.virtual_rows
+  return view_paging.update_virtual_rows(state, grid_row_window_height(state))
 end
 
 local function row_request_limit(state)
-  if update_virtual_rows(state) then
-    return virtual_row_limit(state)
-  end
-  return requested_page_limit(state)
+  return view_paging.row_request_limit(state, grid_row_window_height(state))
 end
 
 local function max_page_offset(state, limit)
   limit = tonumber(limit or row_request_limit(state)) or 0
-  if limit < 1 then
-    return 0
-  end
-  return math.max(0, (tonumber(state and state.total_rows or 0) or 0) - limit)
+  return view_paging.max_page_offset(state, limit)
 end
 
 local function normalize_page_offset(state, offset, limit)
-  offset = math.max(0, tonumber(offset or (state and state.page_offset) or 0) or 0)
   limit = tonumber(limit or row_request_limit(state)) or 0
-  if limit > 0 then
-    offset = math.min(offset, max_page_offset(state, limit))
-  end
-  return offset
+  return view_paging.normalize_page_offset(state, offset, limit)
 end
 
 local function visible_grid_columns(state, row_width)
-  local schema = state.schema or {}
-  if #schema == 0 then
-    return {}, {}, {}
-  end
-
-  local selected_position = schema_position_for_column(state, state.selected_column) or 1
-  selected_position = math.max(1, math.min(#schema, selected_position))
-
-  local widths = {}
-  local positions = {}
-  local total_width = row_width
-  local budget = grid_render_width_budget(state)
-
-  local function add_position(position, at_start, force)
-    local item = schema[position]
-    if not item then
-      return false
-    end
-
-    local column_index = tonumber(item.index) or 0
-    local width = column_width_for_schema_item(state, item)
-    local next_width = total_width + grid_column_separator_width + width
-    if not force and #positions > 0 and next_width > budget then
-      return false
-    end
-
-    widths[column_index] = width
-    if at_start then
-      table.insert(positions, 1, position)
-    else
-      positions[#positions + 1] = position
-    end
-    total_width = next_width
-    return true
-  end
-
-  add_position(selected_position, false, true)
-
-  local left = selected_position - 1
-  local right = selected_position + 1
-  local left_open = left >= 1
-  local right_open = right <= #schema
-  local prefer_left = selected_position > 1
-
-  while left_open or right_open do
-    local progressed = false
-
-    if prefer_left then
-      if left_open then
-        if add_position(left, true, false) then
-          left = left - 1
-          left_open = left >= 1
-          progressed = true
-        else
-          left_open = false
-        end
-      end
-      if right_open then
-        if add_position(right, false, false) then
-          right = right + 1
-          right_open = right <= #schema
-          progressed = true
-        else
-          right_open = false
-        end
-      end
-    else
-      if right_open then
-        if add_position(right, false, false) then
-          right = right + 1
-          right_open = right <= #schema
-          progressed = true
-        else
-          right_open = false
-        end
-      end
-      if left_open then
-        if add_position(left, true, false) then
-          left = left - 1
-          left_open = left >= 1
-          progressed = true
-        else
-          left_open = false
-        end
-      end
-    end
-
-    prefer_left = not prefer_left
-    if not progressed then
-      break
-    end
-  end
-
-  local visible_schema = {}
-  for _, position in ipairs(positions) do
-    visible_schema[#visible_schema + 1] = schema[position]
-  end
-
-  return visible_schema, widths, positions
+  return view_layout.visible_grid_columns(state, row_width, grid_viewport_width(state))
 end
 
 local function grid_page_columns(state)
   local row_width = math.max(4, display_width(tostring(state.total_rows or 0)))
-  local visible_schema = visible_grid_columns(state, row_width)
-  local columns = {}
-  local seen = {}
-  local function add(column_index)
-    column_index = tonumber(column_index)
-    if not column_index or seen[column_index] then
-      return
-    end
-    seen[column_index] = true
-    columns[#columns + 1] = column_index
-  end
-  for _, item in ipairs(visible_schema or {}) do
-    add(item.index)
-  end
-  add(state.pinned_column)
-  return columns
+  return view_layout.page_columns(state, row_width, grid_viewport_width(state))
 end
 
-local function page_includes_column(state, column_index)
-  local columns = state and state.page_columns
-  if type(columns) ~= "table" or #columns == 0 then
-    return true
-  end
-
-  local target = tonumber(column_index)
-  if not target then
-    return false
-  end
-  for _, loaded_column in ipairs(columns) do
-    if tonumber(loaded_column) == target then
-      return true
-    end
-  end
-  return false
-end
+local page_includes_column = view_layout.page_includes_column
 
 local function column_width_for_rows(state, column_index, row_width)
-  local widths = {}
-  local fixed = {}
-  local indices = { column_index }
-  local item = schema_by_index(state, column_index)
-  local override = tonumber((state.column_width_overrides or {})[column_index])
-  if override then
-    widths[column_index] = clamp_width(override, grid_column_override_min_width, grid_column_override_max_width)
-    fixed[column_index] = true
-  else
-    widths[column_index] = clamp_width(
-      math.max(display_width(item and item.name or ""), display_width(column_class_label(item))),
-      grid_column_min_width,
-      grid_column_max_width
-    )
-  end
-  for _, row in ipairs(state.rows or {}) do
-    if not fixed[column_index] then
-      widths[column_index] = math.max(
-        widths[column_index],
-        clamp_width(display_width(row_value(row, column_index)), grid_column_min_width, grid_column_max_width)
-      )
-    end
-  end
-  local editor_width = tonumber(vim.o.columns) or 80
-  local pinned_width = math.max(12, math.floor(editor_width * 0.5))
-  local available = math.max(
-    grid_column_min_width,
-    pinned_width - row_width - grid_column_separator_width - 1
+  return view_layout.pinned_column_width(
+    state,
+    column_index,
+    row_width,
+    tonumber(vim.o.columns) or 80
   )
-  fit_column_widths(widths, indices, available, fixed)
-  return widths[column_index]
 end
 
 local function close_pinned_window(state)

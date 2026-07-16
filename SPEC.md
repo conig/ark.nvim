@@ -208,6 +208,13 @@ Responsibilities:
   such as `?lm` in managed R panes can route to ArkHelp without reinterpreting
   submitted console input
 - expose a dedicated `ArkView` tabpage data explorer for live tabular objects
+- keep ArkView width measurement, visible-column projection, and text layout in
+  `view_layout.lua`, and keep bounded-row and page-offset policy in
+  `view_paging.lua`; `view.lua` owns Neovim windows, rendering orchestration,
+  interaction state, and LSP requests
+- reuse automatic column-width measurements while the current schema and page
+  rows are unchanged, so render-only interactions do not rescan loaded cells;
+  replacing either table invalidates the cached measurements
 - open `{targets}` objects from the configured target store through a direct
   target-store ArkView backend, including tmux popup display in auto mode,
   without starting or reusing the managed R pane

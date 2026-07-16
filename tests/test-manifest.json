@@ -40,7 +40,8 @@
         "product_state_model.lua",
         "report_redaction.lua",
         "status_redacts_auth.lua",
-        "startup_state_model.lua"
+        "startup_state_model.lua",
+        "view_layout_policy.lua"
       ],
       "tier": "unit",
       "layer": "pure-unit",
