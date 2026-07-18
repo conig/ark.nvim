@@ -42,6 +42,35 @@ if vim.fn.filereadable(stamp_path) ~= 1 then
   error("expected arkbridge install stamp to be written", 0)
 end
 
+local sentinel_path = vim.fs.normalize(lib_path .. "/arkbridge/ark-setup-idempotent")
+vim.fn.writefile({ "preserved" }, sentinel_path)
+
+local repeat_output = vim.fn.system({
+  "R",
+  "--slave",
+  "--no-restore",
+  "--no-save",
+  "--no-site-file",
+  "--no-init-file",
+  "-f",
+  vim.fs.normalize(vim.fn.getcwd() .. "/scripts/ark-install-bridge.R"),
+  "--args",
+  vim.fs.normalize(vim.fn.getcwd() .. "/packages/arkbridge"),
+  lib_path,
+  stamp_path,
+  "0",
+  "2",
+})
+
+if vim.v.shell_error ~= 0 then
+  error("expected a current arkbridge install to be reusable, got:\n" .. tostring(repeat_output), 0)
+end
+
+if vim.fn.filereadable(sentinel_path) ~= 1 then
+  error("expected a current arkbridge install to be skipped instead of replaced", 0)
+end
+
 vim.print({
   bridge_runtime_install_recovers_fresh_lock = "ok",
+  bridge_runtime_install_is_idempotent = "ok",
 })

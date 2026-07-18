@@ -108,6 +108,17 @@ source discovery uses asynchronous `rg --files`, and a missing `rg` skips the
 automatic probe with an actionable warning instead of recursively globbing the
 checkout.
 
+The canonical source-install entrypoint is `scripts/ark-setup`. It performs a
+complete capability preflight before the product build, including compiling a
+small native R extension rather than inferring readiness from executable names.
+It builds the optimized repo-local `ark-lsp`, validates its embedded product
+version, profile, and bridge schema, installs a missing `jsonlite` plus the
+matching `arkbridge` into Ark's private R library, and verifies Neovim component
+discovery. Setup never invokes `sudo` or a system package manager; missing
+system capabilities are reported with an actionable platform-specific command.
+Setup logs are retained, reruns reuse current bridge installations, and the
+managed-session freshness installer remains the runtime recovery path.
+
 `just verify-product` is the authoritative routine product gate. It uses exact
 Rust and rustfmt toolchains and covers the active Rust crates, `arkbridge`, the
 installer/rollback contract, a release-artifact clean install, static LSP

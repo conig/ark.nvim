@@ -11,12 +11,14 @@ local original_status_dir = vim.env.ARK_STATUS_DIR
 local original_console_frontend = vim.env.ARK_NVIM_CONSOLE_FRONTEND
 local original_console_bin = vim.env.ARK_NVIM_CONSOLE_BIN
 local original_console_command = vim.env.ARK_NVIM_CONSOLE_COMMAND
+local original_session_lib = vim.env.ARK_NVIM_SESSION_LIB
 
 local temp_root = vim.fn.tempname()
 local lsp_bin = temp_root .. "-ark-lsp"
 local launcher = temp_root .. "-launcher.sh"
 local nvim_console = temp_root .. "-ark-console"
 local status_dir = temp_root .. "-status"
+local session_lib = temp_root .. "-r-lib"
 vim.fn.mkdir(status_dir, "p")
 vim.fn.writefile({ "#!/bin/sh", "exit 0" }, lsp_bin)
 vim.fn.writefile({ "#!/bin/sh", "exit 0" }, launcher)
@@ -56,6 +58,9 @@ vim.fn.systemlist = function(cmd)
     return { "R version 4.4.1" }
   end
   if type(cmd) == "table" and cmd[1] == "R" and cmd[2] == "--slave" then
+    if not tostring(cmd[4]):find(session_lib, 1, true) then
+      error("expected the jsonlite health probe to include Ark's private R library: " .. vim.inspect(cmd), 0)
+    end
     return { "yes" }
   end
   return original_systemlist(cmd)
@@ -68,6 +73,7 @@ vim.env.ARK_NVIM_CONSOLE_FRONTEND = "nvim-console"
 vim.env.ARK_NVIM_CONSOLE_BIN = nvim_console
 vim.env.ARK_NVIM_CONSOLE_COMMAND = "Ark console"
 vim.env.ARK_STATUS_DIR = status_dir
+vim.env.ARK_NVIM_SESSION_LIB = session_lib
 
 local ok, err = pcall(function()
   package.loaded["ark.health"] = nil
@@ -131,6 +137,7 @@ vim.env.ARK_NVIM_CONSOLE_FRONTEND = original_console_frontend
 vim.env.ARK_NVIM_CONSOLE_BIN = original_console_bin
 vim.env.ARK_NVIM_CONSOLE_COMMAND = original_console_command
 vim.env.ARK_STATUS_DIR = original_status_dir
+vim.env.ARK_NVIM_SESSION_LIB = original_session_lib
 
 if not ok then
   error(err, 0)

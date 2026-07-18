@@ -119,11 +119,20 @@ You need:
 
 - Neovim `0.11.3` or newer with built-in LSP support
 - `R >= 4.2`
-- the R package `jsonlite`
-- `curl` and `sha256sum` for the release installer
+- a working native R package toolchain for the live-session bridge: a C
+  compiler, `make`, and the development files for the installed R
 - the Tree-sitter parsers needed by `nvim-slimetree` for send-current mappings
   such as normal-mode `<CR>` and `<leader><CR>`; at minimum, `.R` buffers need
   the `r` parser
+
+The current unpublished source channel additionally needs the pinned Rust
+toolchain described in [BUILDING.md](BUILDING.md).
+
+`scripts/ark-setup` checks those capabilities before building and installs a
+missing `jsonlite` into Ark's private R library. Published binary installs use
+`curl` and `sha256sum` and do not require Rust, but the current pane-side bridge
+still installs from source and therefore retains the native R toolchain
+requirement.
 
 For the default tmux backend, you also need `tmux`, and Neovim must itself be
 running inside tmux. If you set `session.backend = "terminal"`, Ark uses a
@@ -143,12 +152,6 @@ workflows when your project uses it.
 The checked-in Docker README harness pins Neovim `v0.12.1`. The minimum
 supported `0.11.3` release line is checked locally before a release.
 
-Install the R dependency once:
-
-```r
-install.packages("jsonlite")
-```
-
 ## Installation
 
 The minimal recommended `lazy.nvim` setup keeps:
@@ -161,8 +164,31 @@ The minimal recommended `lazy.nvim` setup keeps:
 The planned normal install downloads an optimized, checksummed `ark-lsp`
 release into Neovim's data directory without Rust or Cargo. Release status:
 `v0.1.0-alpha.1` has not yet been tagged or published, so the runnable setup
-below deliberately tracks `main`, builds `ark-lsp` from source, and requires
-the pinned Rust toolchain described in [BUILDING.md](BUILDING.md).
+below deliberately tracks `main` and uses the repo-owned source setup command.
+It preflights Neovim, R, Cargo, and native R compilation before building the
+optimized LSP, installs the bridge into Ark's private R library, verifies the
+component versions, and retains a complete setup log. It never invokes `sudo`
+or a system package manager.
+
+To check a machine without building Ark or installing R packages:
+
+```sh
+./scripts/ark-setup --check
+```
+
+For the standalone console without a plugin manager:
+
+```sh
+git clone https://github.com/conig/ark.nvim
+cd ark.nvim
+./scripts/ark-setup
+./scripts/ark-console
+```
+
+If a native prerequisite is missing, setup reports the relevant package-manager
+command but leaves that system change to you. By default it installs a missing
+`jsonlite` from `https://cloud.r-project.org`; use `--cran-repo`,
+`ARK_SETUP_CRAN_REPO`, or `--no-install-r-deps` to control that behavior.
 
 If you already run another R LSP such as `r_language_server`, disable it for
 `r`, `rmd`, `qmd`, and `quarto` first. `ark.nvim` is meant to be the only R LSP
@@ -319,7 +345,7 @@ return {
       "jpalardy/vim-slime",
       "conig/nvim-slimetree",
     },
-    build = "cargo build -p ark-lsp",
+    build = "./scripts/ark-setup",
     init = function()
       vim.env.ARK_NVIM_DEV_MODE = "1"
     end,
@@ -371,7 +397,7 @@ source-build path explicitly:
 ```lua
 {
   dir = "~/repos/ark.nvim",
-  build = "cargo build -p ark-lsp",
+  build = "./scripts/ark-setup",
   init = function()
     vim.env.ARK_NVIM_DEV_MODE = "1"
   end,
@@ -379,9 +405,10 @@ source-build path explicitly:
 ```
 
 The repository pins the development compiler to Rust `1.97.0` and the
-formatting toolchain to `nightly-2025-07-18`. A normal user install does not use
-either toolchain. Use `cargo build --release -p ark-lsp` for an optimized manual
-source fallback when no release artifact exists for your platform.
+formatting toolchain to `nightly-2025-07-18`. The future published-binary lane
+does not use either toolchain. Use `scripts/ark-setup` for an optimized source
+installation when no release artifact exists for your platform; direct Cargo
+commands remain available for contributor iteration.
 
 ## REPL Workflow
 

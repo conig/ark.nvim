@@ -55,6 +55,12 @@ local function version_at_least(actual, minimum)
   return true
 end
 
+local function r_string_literal(value)
+  value = tostring(value or "")
+  value = value:gsub("\\", "\\\\"):gsub('"', '\\"')
+  return '"' .. value .. '"'
+end
+
 local function writable_location(path)
   local candidate = path
   while type(candidate) == "string" and candidate ~= "" do
@@ -202,12 +208,15 @@ function M.check()
       r_bin,
       "--slave",
       "-e",
-      'cat(if (requireNamespace("jsonlite", quietly = TRUE)) "yes" else "no")',
+      string.format(
+        '.libPaths(unique(c(%s, .libPaths()))); cat(if (requireNamespace("jsonlite", quietly = TRUE)) "yes" else "no")',
+        r_string_literal(bridge_lib)
+      ),
     })
     if ok_jsonlite and jsonlite_lines[1] == "yes" then
-      report.ok("R package `jsonlite` is installed")
+      report.ok("R package `jsonlite` is available to the Ark runtime")
     else
-      report.error("R package `jsonlite` is required. Recovery: run install.packages('jsonlite') in R.")
+      report.error("R package `jsonlite` is required. Recovery: run scripts/ark-setup or install.packages('jsonlite') in R.")
     end
   else
     report.error("R executable is unavailable: " .. r_bin .. ". Recovery: install R 4.2+ or set ARK_NVIM_R_BIN.")

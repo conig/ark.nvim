@@ -32,7 +32,8 @@ Supported environment:
 
 - Neovim 0.11.3 or newer
 - R 4.2 or newer
-- jsonlite in the R library
+- a C compiler, make, and the development files for the installed R so the
+  pane-side bridge can be built
 - Linux x86_64 with glibc 2.35 or newer for published binaries
 - tmux for the default backend, or Neovim terminal support for the terminal
   backend
@@ -41,6 +42,22 @@ On Linux, inotify-tools is strongly recommended when the default workspace
 file watching is enabled. Without it, Neovim uses a slower per-directory
 fallback that can block startup in large workspaces. `:checkhealth ark` reports
 whether the efficient backend is available.
+
+The unpublished source channel additionally needs Cargo. From a source checkout
+run: >sh
+
+  ./scripts/ark-setup
+<
+This checks every prerequisite before building, compiles the optimized
+`ark-lsp`, installs jsonlite when missing, installs arkbridge into Ark's private
+R library, and verifies component discovery. It never invokes sudo or a system
+package manager. Check without building Ark or installing R packages with: >sh
+
+  ./scripts/ark-setup --check
+<
+Setup retains a complete log under the XDG state directory. Run
+`./scripts/ark-setup --help` for private-library, CRAN-repository, and dependency
+controls.
 
 Normal installation downloads a checksummed release binary and does not need
 Rust. Once available, pin the plugin to the exact published release tag (the
@@ -414,7 +431,8 @@ Tmux backend will not attach ~
     Start Neovim inside tmux, or configure `session.backend = "terminal"`.
 
 jsonlite missing ~
-    Run `install.packages("jsonlite")` in R.
+    Run `scripts/ark-setup`. For a manual user-library installation, run
+    `install.packages("jsonlite")` in R.
 
 State/install directory not writable ~
     Fix ownership, or set `ARK_STATUS_DIR` / `ARK_NVIM_INSTALL_ROOT` to a
@@ -469,12 +487,17 @@ release binaries. In that mode Ark checks source freshness after Neovim becomes
 idle using `rg --files`; concurrent checks and builds are coalesced. If `rg` is
 unavailable, automatic checking is skipped and `:ArkBuildLsp` remains the
 explicit rebuild path. Normal mode never scans Rust sources or invokes Cargo
-during startup. Build manually with: >sh
+during startup. Prepare the complete source product with: >sh
+
+  ./scripts/ark-setup
+<
+For LSP-only contributor iteration, build manually with: >sh
 
   cargo build -p ark-lsp
 <
-Normal users should not enable development mode and do not need Cargo. Product
-tests and architecture are documented in `docs/testing.md` and `SPEC.md`.
+Published-binary users should not enable development mode and do not need
+Cargo. Product tests and architecture are documented in `docs/testing.md` and
+`SPEC.md`.
 
 ==============================================================================
 vim:tw=78:ts=8:noet:ft=help:norl:

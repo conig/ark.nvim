@@ -18,6 +18,24 @@ rustup toolchain install nightly-2025-07-18 --profile minimal --component rustfm
 cargo +nightly-2025-07-18 fmt --all
 ```
 
+## Source Setup
+
+The supported source-install entrypoint is:
+
+```sh
+./scripts/ark-setup
+```
+
+It checks Neovim `>= 0.11.3`, R `>= 4.2`, the pinned Cargo toolchain, and real
+native R package compilation before doing any product build. It then builds the
+optimized `target/release/ark-lsp`, installs `jsonlite` when needed, installs
+`arkbridge` into Ark's private Neovim data library, and verifies Neovim's
+component discovery. It never installs system packages or invokes `sudo`.
+
+Use `./scripts/ark-setup --check` for a prerequisite-only check. Full logs
+default to `$XDG_STATE_HOME/ark/setup/` or `~/.local/state/ark/setup/`; run
+`./scripts/ark-setup --help` for path, repository, and dependency controls.
+
 ## Useful Commands
 
 Build or check the standalone LSP:
@@ -61,6 +79,8 @@ Print the pane launcher command from Neovim:
 - `ark-lsp` currently defaults to `--runtime-mode detached`.
 - The Neovim plugin uses the repo-local `scripts/ark-r-launcher.sh` launcher.
 - The managed pane bootstraps the vendored `packages/arkbridge` runtime into the first writable library path by default, or `ARK_NVIM_SESSION_LIB` when set.
+- `scripts/ark-setup` installs that runtime eagerly, while the managed pane
+  retains its existing freshness check and recovery install as a fallback.
 - Use `:ArkRefresh` after the managed pane becomes ready if you want to restart the buffer LSP with fresh session bridge metadata.
 - Use `:checkhealth ark` to inspect prerequisites and binary discovery without starting a pane or LSP.
 - Formatting uses the exact nightly toolchain shown above; do not rely on an

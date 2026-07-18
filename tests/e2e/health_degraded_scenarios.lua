@@ -46,7 +46,7 @@ local ok, err = xpcall(function()
   end
   local terminal = require("ark.health").collect()
   assert(has(terminal, "ok", "Neovim terminal support"), vim.inspect(terminal))
-  assert(has(terminal, "error", "install.packages('jsonlite')"), vim.inspect(terminal))
+  assert(has(terminal, "error", "scripts/ark-setup"), vim.inspect(terminal))
   assert(not has(terminal, "error", "tmux"), vim.inspect(terminal))
 
   local status_dir = vim.fn.tempname()

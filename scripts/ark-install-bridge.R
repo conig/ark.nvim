@@ -5,6 +5,7 @@ lib_path <- if (length(args) >= 2L) args[[2]] else ""
 stamp_path <- if (length(args) >= 3L) args[[3]] else ""
 source_mtime <- suppressWarnings(as.integer(if (length(args) >= 4L) args[[4]] else "0"))
 runtime_revision <- suppressWarnings(as.integer(if (length(args) >= 5L) args[[5]] else "0"))
+dependency_repo <- if (length(args) >= 6L) args[[6]] else ""
 
 if (!nzchar(pkg_path) || !dir.exists(pkg_path)) {
   stop("missing arkbridge package source path", call. = FALSE)
@@ -57,6 +58,62 @@ clear_install_lock(lock_dir)
 
 .libPaths(unique(c(lib_path, .libPaths())))
 
+if (!requireNamespace("jsonlite", quietly = TRUE)) {
+  if (!nzchar(dependency_repo)) {
+    stop(
+      paste0(
+        "R package `jsonlite` is required to install arkbridge; ",
+        "run scripts/ark-setup or install.packages('jsonlite')"
+      ),
+      call. = FALSE
+    )
+  }
+
+  message("Installing missing R dependency `jsonlite` into ", lib_path)
+  utils::install.packages(
+    "jsonlite",
+    repos = dependency_repo,
+    lib = lib_path
+  )
+}
+
+if (!requireNamespace("jsonlite", quietly = TRUE)) {
+  stop("jsonlite installation completed but the namespace is unavailable", call. = FALSE)
+}
+
+if (!is.finite(source_mtime) || source_mtime <= 0L) {
+  source_files <- list.files(
+    pkg_path,
+    all.files = TRUE,
+    full.names = TRUE,
+    recursive = TRUE,
+    no.. = TRUE
+  )
+  source_info <- file.info(source_files)
+  source_times <- as.numeric(source_info$mtime)
+  source_times <- source_times[is.finite(source_times)]
+  source_mtime <- if (length(source_times) > 0L) {
+    as.integer(max(source_times))
+  } else {
+    0L
+  }
+}
+
+installed_path <- tryCatch(find.package("arkbridge", lib.loc = lib_path), error = function(e) "")
+if (nzchar(installed_path) && file.exists(stamp_path)) {
+  installed_stamp <- tryCatch(
+    jsonlite::fromJSON(stamp_path, simplifyVector = TRUE),
+    error = function(e) NULL
+  )
+  if (
+    is.list(installed_stamp) &&
+      identical(as.integer(installed_stamp$source_mtime), as.integer(source_mtime)) &&
+      identical(as.integer(installed_stamp$runtime_revision), as.integer(runtime_revision))
+  ) {
+    quit(save = "no", status = 0L, runLast = FALSE)
+  }
+}
+
 old_warn <- getOption("warn")
 options(warn = 2)
 on.exit(options(warn = old_warn), add = TRUE)
@@ -87,4 +144,6 @@ payload <- list(
 
 tmp_path <- tempfile("arkbridge-install-", tmpdir = stamp_dir, fileext = ".json")
 writeLines(jsonlite::toJSON(payload, auto_unbox = TRUE, pretty = FALSE), tmp_path, useBytes = TRUE)
-file.rename(tmp_path, stamp_path)
+if (!file.rename(tmp_path, stamp_path)) {
+  stop("failed to publish arkbridge install stamp", call. = FALSE)
+}

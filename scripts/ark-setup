@@ -1,0 +1,411 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/ark-setup [options]
+
+Builds the source checkout's optimized ark-lsp, installs the matching
+arkbridge runtime into Ark's private R library, and verifies both components.
+
+Options:
+  --check                  Check prerequisites without building Ark or installing R packages
+  --session-lib <dir>      Override the Ark-owned R library directory
+  --cran-repo <url>        Repository used only when jsonlite is missing
+  --no-install-r-deps      Do not install a missing jsonlite dependency
+  --log-dir <dir>          Override the setup log directory
+  -h, --help               Show this help
+
+Environment overrides:
+  ARK_NVIM_R_BIN           R executable (default: R)
+  ARK_NVIM_CONSOLE_NVIM    Neovim executable (default: nvim)
+  ARK_SETUP_CARGO_BIN      Cargo executable (default: cargo)
+  ARK_SETUP_TARGET_DIR     Cargo target directory (default: <checkout>/target)
+  ARK_SETUP_DATA_DIR       Neovim data directory override
+  ARK_SETUP_LOG_DIR        Setup log directory override
+  ARK_SETUP_CRAN_REPO      CRAN repository override
+
+The setup command never invokes sudo or a system package manager.
+EOF
+}
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+check_only=0
+session_lib="${ARK_NVIM_SESSION_LIB:-}"
+cran_repo="${ARK_SETUP_CRAN_REPO:-https://cloud.r-project.org}"
+install_r_deps=1
+log_dir="${ARK_SETUP_LOG_DIR:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check)
+      check_only=1
+      shift
+      ;;
+    --session-lib)
+      session_lib=${2:?missing value for --session-lib}
+      shift 2
+      ;;
+    --cran-repo)
+      cran_repo=${2:?missing value for --cran-repo}
+      shift 2
+      ;;
+    --no-install-r-deps)
+      install_r_deps=0
+      shift
+      ;;
+    --log-dir)
+      log_dir=${2:?missing value for --log-dir}
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ ! -f "${repo_root}/Cargo.toml" || ! -d "${repo_root}/packages/arkbridge" ]]; then
+  echo "ark-setup must run from a complete ark.nvim source checkout" >&2
+  exit 1
+fi
+
+if [[ -z "${log_dir}" ]]; then
+  if [[ -n "${XDG_STATE_HOME:-}" ]]; then
+    log_dir="${XDG_STATE_HOME}/ark/setup"
+  elif [[ -n "${HOME:-}" ]]; then
+    log_dir="${HOME}/.local/state/ark/setup"
+  else
+    log_dir="${TMPDIR:-/tmp}/ark-setup-logs"
+  fi
+fi
+
+mkdir -p -- "${log_dir}"
+log_path="${log_dir}/source-setup-$(date +%Y%m%d-%H%M%S)-$$.log"
+: >"${log_path}"
+
+temporary_dir=""
+on_exit() {
+  local status=$?
+  if [[ -n "${temporary_dir}" && -d "${temporary_dir}" ]]; then
+    rm -rf -- "${temporary_dir}"
+  fi
+  if [[ "${status}" -ne 0 ]]; then
+    printf '\nArk source setup failed. Full log: %s\n' "${log_path}" >&2
+  fi
+}
+trap on_exit EXIT INT TERM
+
+say() {
+  printf '%s\n' "$*" | tee -a "${log_path}"
+}
+
+note() {
+  say "  $*"
+}
+
+pass() {
+  say "✓ $*"
+}
+
+problem() {
+  say "✗ $*" >&2
+  preflight_failed=1
+}
+
+resolve_command() {
+  local candidate=$1
+  if [[ "${candidate}" == */* ]]; then
+    if [[ -x "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+    return 1
+  fi
+  command -v -- "${candidate}" 2>/dev/null
+}
+
+version_at_least() {
+  local actual=$1
+  local minimum=$2
+  local actual_major actual_minor actual_patch
+  local minimum_major minimum_minor minimum_patch
+  IFS=. read -r actual_major actual_minor actual_patch <<<"${actual}"
+  IFS=. read -r minimum_major minimum_minor minimum_patch <<<"${minimum}"
+  actual_major=${actual_major:-0}
+  actual_minor=${actual_minor:-0}
+  actual_patch=${actual_patch:-0}
+  minimum_major=${minimum_major:-0}
+  minimum_minor=${minimum_minor:-0}
+  minimum_patch=${minimum_patch:-0}
+
+  if (( actual_major != minimum_major )); then
+    (( actual_major > minimum_major ))
+    return
+  fi
+  if (( actual_minor != minimum_minor )); then
+    (( actual_minor > minimum_minor ))
+    return
+  fi
+  (( actual_patch >= minimum_patch ))
+}
+
+writable_parent() {
+  local candidate=$1
+  local parent
+  while [[ ! -e "${candidate}" ]]; do
+    parent=$(dirname -- "${candidate}")
+    if [[ "${parent}" == "${candidate}" ]]; then
+      return 1
+    fi
+    candidate=${parent}
+  done
+  [[ -d "${candidate}" && -w "${candidate}" ]]
+}
+
+native_toolchain_recovery() {
+  local os_name distro_id
+  os_name=$(uname -s 2>/dev/null || true)
+  if [[ "${os_name}" == "Darwin" ]]; then
+    note "Install Apple's command-line tools, then rerun setup:"
+    note "  xcode-select --install"
+    return
+  fi
+
+  distro_id=""
+  if [[ -r /etc/os-release ]]; then
+    distro_id=$(sed -n 's/^ID=//p' /etc/os-release | sed -n '1p' | tr -d '"')
+  fi
+  case "${distro_id}" in
+    debian | ubuntu | linuxmint | pop)
+      note "Install the native R build prerequisites, then rerun setup:"
+      note "  sudo apt install build-essential r-base-dev"
+      ;;
+    fedora | rhel | centos | rocky | almalinux)
+      note "Install the native R build prerequisites, then rerun setup:"
+      note "  sudo dnf install gcc make R-devel"
+      ;;
+    arch | manjaro)
+      note "Install the native R build prerequisites, then rerun setup:"
+      note "  sudo pacman -S base-devel r"
+      ;;
+    *)
+      note "Install a C compiler, make, and the development files for this R installation."
+      ;;
+  esac
+}
+
+json_field() {
+  local field=$1
+  local payload=$2
+  printf '%s\n' "${payload}" | sed -n "s/.*\"${field}\":\"\([^\"]*\)\".*/\1/p" | sed -n '1p'
+}
+
+manifest_field() {
+  local field=$1
+  sed -n "s/^[[:space:]]*\"${field}\":[[:space:]]*\"\([^\"]*\)\".*/\1/p" \
+    "${repo_root}/release-manifest.json" | sed -n '1p'
+}
+
+nvim_value() {
+  local lua=$1
+  local output
+  if ! output=$(env ARK_SETUP_REPO_ROOT="${repo_root}" "${nvim_bin}" \
+    --headless -u NONE -i NONE -n \
+    --cmd "lua ${lua}; io.stdout:write('ARK_SETUP_VALUE=' .. tostring(_G.__ark_setup_value) .. '\\n')" \
+    --cmd "qa!" 2>&1)
+  then
+    printf '%s\n' "${output}" >>"${log_path}"
+    return 1
+  fi
+  printf '%s\n' "${output}" >>"${log_path}"
+  printf '%s\n' "${output}" | sed -n 's/^ARK_SETUP_VALUE=//p' | sed -n '1p'
+}
+
+preflight_failed=0
+nvim_candidate=${ARK_NVIM_CONSOLE_NVIM:-nvim}
+r_candidate=${ARK_NVIM_R_BIN:-R}
+cargo_candidate=${ARK_SETUP_CARGO_BIN:-cargo}
+nvim_bin=""
+r_bin=""
+cargo_bin=""
+
+say "Ark source setup"
+note "checkout: ${repo_root}"
+note "log: ${log_path}"
+say ""
+say "Checking prerequisites..."
+
+if nvim_bin=$(resolve_command "${nvim_candidate}"); then
+  nvim_version=$("${nvim_bin}" --version 2>>"${log_path}" | sed -n 's/^NVIM v\([0-9][0-9.]*\).*/\1/p' | sed -n '1p')
+  if [[ -n "${nvim_version}" ]] && version_at_least "${nvim_version}" "0.11.3"; then
+    pass "Neovim ${nvim_version}: ${nvim_bin}"
+  else
+    problem "Neovim 0.11.3 or newer is required; found ${nvim_version:-an unreadable version}"
+    note "See https://neovim.io/doc/install/"
+  fi
+else
+  problem "Neovim is not available: ${nvim_candidate}"
+  note "Install Neovim 0.11.3 or newer: https://neovim.io/doc/install/"
+fi
+
+if r_bin=$(resolve_command "${r_candidate}"); then
+  r_version=$("${r_bin}" --version 2>>"${log_path}" | sed -n 's/^R version \([0-9][0-9.]*\).*/\1/p' | sed -n '1p')
+  if [[ -n "${r_version}" ]] && version_at_least "${r_version}" "4.2.0"; then
+    pass "R ${r_version}: ${r_bin}"
+  else
+    problem "R 4.2 or newer is required; found ${r_version:-an unreadable version}"
+  fi
+else
+  problem "R is not available: ${r_candidate}"
+  note "Install R 4.2 or newer, or set ARK_NVIM_R_BIN."
+fi
+
+if cargo_bin=$(resolve_command "${cargo_candidate}"); then
+  if cargo_version=$(cd -- "${repo_root}" && "${cargo_bin}" --version 2>>"${log_path}"); then
+    pass "Rust build toolchain: ${cargo_version}"
+  else
+    problem "Cargo is present but the checkout's pinned Rust toolchain is unavailable"
+    note "Run: rustup toolchain install 1.97.0 --profile minimal"
+  fi
+else
+  problem "Cargo is not available: ${cargo_candidate}"
+  note "Install Rust with rustup, then rerun setup: https://rustup.rs/"
+fi
+
+if [[ -n "${r_bin}" ]]; then
+  temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/ark-setup.XXXXXX")
+  printf '%s\n' \
+    '#include <R.h>' \
+    '#include <Rinternals.h>' \
+    'SEXP ark_setup_probe(SEXP value) { return value; }' \
+    >"${temporary_dir}/ark_setup_probe.c"
+  if (cd -- "${temporary_dir}" && "${r_bin}" CMD SHLIB ark_setup_probe.c) >>"${log_path}" 2>&1; then
+    pass "R can compile and link native packages"
+  else
+    problem "R cannot compile a native package with its configured toolchain"
+    native_toolchain_recovery
+  fi
+fi
+
+if [[ "${preflight_failed}" -ne 0 ]]; then
+  exit 1
+fi
+
+data_dir=${ARK_SETUP_DATA_DIR:-}
+if [[ -z "${data_dir}" ]]; then
+  data_dir=$(nvim_value "_G.__ark_setup_value = vim.fn.stdpath('data')")
+fi
+if [[ -z "${data_dir}" ]]; then
+  problem "Neovim did not report a data directory"
+  exit 1
+fi
+
+if [[ -z "${session_lib}" ]]; then
+  session_lib="${data_dir}/ark/r-lib"
+fi
+target_dir=${ARK_SETUP_TARGET_DIR:-${repo_root}/target}
+lsp_binary="${target_dir}/release/ark-lsp"
+
+if ! writable_parent "${target_dir}"; then
+  problem "Cargo target location is not writable: ${target_dir}"
+fi
+if ! writable_parent "${session_lib}"; then
+  problem "Ark's private R library location is not writable: ${session_lib}"
+fi
+if [[ "${preflight_failed}" -ne 0 ]]; then
+  exit 1
+fi
+
+note "optimized LSP: ${lsp_binary}"
+note "private R library: ${session_lib}"
+
+if [[ "${check_only}" -eq 1 ]]; then
+  say ""
+  pass "This checkout is ready for a source build"
+  exit 0
+fi
+
+say ""
+say "Building optimized ark-lsp..."
+env CARGO_TARGET_DIR="${target_dir}" "${cargo_bin}" build --locked --release -p ark-lsp 2>&1 | tee -a "${log_path}"
+
+if [[ ! -x "${lsp_binary}" ]]; then
+  problem "Cargo completed without producing an executable ark-lsp at ${lsp_binary}"
+  exit 1
+fi
+
+metadata=$("${lsp_binary}" --version --json 2>>"${log_path}")
+printf '%s\n' "${metadata}" >>"${log_path}"
+expected_version=$(manifest_field product_version)
+expected_schema=$(manifest_field bridge_schema)
+actual_component=$(json_field component "${metadata}")
+actual_version=$(json_field product_version "${metadata}")
+actual_schema=$(json_field bridge_schema "${metadata}")
+actual_profile=$(json_field profile "${metadata}")
+if [[ "${actual_component}" != "ark-lsp" \
+  || "${actual_version}" != "${expected_version}" \
+  || "${actual_schema}" != "${expected_schema}" \
+  || "${actual_profile}" != "release" ]]
+then
+  problem "The built ark-lsp metadata does not match this checkout's product contract"
+  note "expected version=${expected_version}, schema=${expected_schema}, profile=release"
+  note "actual version=${actual_version:-unknown}, schema=${actual_schema:-unknown}, profile=${actual_profile:-unknown}"
+  exit 1
+fi
+pass "Built ark-lsp ${actual_version} (${actual_profile})"
+
+runtime_revision=$(nvim_value "vim.opt.runtimepath:prepend(vim.env.ARK_SETUP_REPO_ROOT); _G.__ark_setup_value = require('ark.bridge').status().required_runtime_revision")
+if [[ ! "${runtime_revision}" =~ ^[0-9]+$ ]]; then
+  problem "Could not determine the required arkbridge runtime revision"
+  exit 1
+fi
+
+dependency_repo=""
+if [[ "${install_r_deps}" -eq 1 ]]; then
+  dependency_repo=${cran_repo}
+fi
+
+mkdir -p -- "${session_lib}"
+say ""
+say "Preparing pane-side arkbridge runtime..."
+"${r_bin}" --slave --no-restore --no-save --no-site-file --no-init-file \
+  -f "${repo_root}/scripts/ark-install-bridge.R" \
+  --args \
+  "${repo_root}/packages/arkbridge" \
+  "${session_lib}" \
+  "${session_lib}/.arkbridge-install.json" \
+  0 \
+  "${runtime_revision}" \
+  "${dependency_repo}" \
+  2>&1 | tee -a "${log_path}"
+
+env ARK_SETUP_R_LIB="${session_lib}" "${r_bin}" \
+  --slave --no-restore --no-save --no-site-file --no-init-file \
+  -e 'lib <- Sys.getenv("ARK_SETUP_R_LIB"); .libPaths(unique(c(lib, .libPaths()))); loadNamespace("jsonlite"); loadNamespace("arkbridge", lib.loc = lib); cat("ok\n")' \
+  >>"${log_path}" 2>&1
+pass "arkbridge is ready in ${session_lib}"
+
+say ""
+say "Verifying Neovim can load this source installation..."
+(
+  unset ARK_NVIM_DEV_MODE
+  export ARK_NVIM_LSP_BIN="${lsp_binary}"
+  export ARK_NVIM_SESSION_LIB="${session_lib}"
+  export ARK_SETUP_REPO_ROOT="${repo_root}"
+  "${nvim_bin}" --headless -u NONE -i NONE -n \
+    --cmd "lua vim.opt.runtimepath:prepend(vim.env.ARK_SETUP_REPO_ROOT)" \
+    --cmd "lua local cfg = require('ark.config').defaults(); assert(vim.fs.normalize(cfg.lsp.cmd[1]) == vim.fs.normalize(vim.env.ARK_NVIM_LSP_BIN), 'ark-lsp discovery mismatch'); assert(vim.fs.normalize(cfg.tmux.session_lib_path) == vim.fs.normalize(vim.env.ARK_NVIM_SESSION_LIB), 'arkbridge library discovery mismatch')" \
+    --cmd "qa!"
+) >>"${log_path}" 2>&1
+pass "Neovim discovered the built LSP and private R runtime"
+
+say ""
+pass "Ark source setup is complete"
+note "Run :checkhealth ark after loading the plugin."
+note "Full log: ${log_path}"
