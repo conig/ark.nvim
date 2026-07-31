@@ -49,6 +49,14 @@ pub(crate) fn provide_detached_pre_bridge_completions(
     document_context: &DocumentContext,
     state: &WorldState,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
+    // Static package metadata contains only exports. Let `pkg:::member` go to
+    // the managed R session, which can enumerate namespace internals. The
+    // later static fallback still claims this context with an empty result
+    // when a session bridge is unavailable.
+    if unique::is_internal_namespace_member_completion(document_context) {
+        return Ok(None);
+    }
+
     let completion_context = CompletionContext::new(document_context, state);
     match plan_detached_static_completions(&completion_context)? {
         CompletionPlan::HandledEmpty => Ok(Some(vec![])),
@@ -89,5 +97,32 @@ pub(crate) fn provide_detached_static_completions(
         )?
         .unwrap_or_default()),
         CompletionPlan::Unique(_) => Ok(vec![]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::point_from_cursor;
+    use crate::lsp::document::Document;
+    use crate::lsp::state::RuntimeMode;
+
+    #[test]
+    fn test_detached_internal_namespace_completion_defers_to_bridge_but_static_fallback_is_empty() {
+        let (text, point) = point_from_cursor("utils:::as.bibentry@");
+        let document = Document::new(&text, None);
+        let document_context = DocumentContext::new(&document, point, None);
+        let state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            ..Default::default()
+        };
+
+        let pre_bridge = provide_detached_pre_bridge_completions(&document_context, &state)
+            .expect("expected pre-bridge completion result");
+        assert!(pre_bridge.is_none());
+
+        let fallback = provide_detached_static_completions(&document_context, &state)
+            .expect("expected static completion result");
+        assert!(fallback.is_empty());
     }
 }

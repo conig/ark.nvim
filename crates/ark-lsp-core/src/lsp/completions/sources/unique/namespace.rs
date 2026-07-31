@@ -25,6 +25,7 @@ use crate::lsp::completions::completion_item::completion_item_from_namespace;
 use crate::lsp::completions::completion_item::completion_item_from_package;
 use crate::lsp::completions::sources::utils::set_sort_text_by_words_first;
 use crate::lsp::completions::sources::CompletionSource;
+use crate::lsp::document_context::DocumentContext;
 use crate::lsp::traits::node::NodeExt;
 use crate::treesitter::NamespaceOperatorType;
 use crate::treesitter::NodeType;
@@ -55,17 +56,7 @@ fn completions_from_namespace(
     }
 
     let context = completion_context.document_context;
-    let node = context.node;
-
-    // We expect `DocumentContext` to have drilled down into the CST to the anonymous node,
-    // we will find the actual `NamespaceOperator` node here
-    let node = match node.node_type() {
-        NodeType::Anonymous(kind) if matches!(kind.as_str(), "::" | ":::") => {
-            namespace_node_from_colons(node, context.point)
-        },
-        NodeType::Identifier => namespace_node_from_identifier(node),
-        _ => return Ok(None),
-    };
+    let node = namespace_node_from_context_node(context.node, context.point);
 
     let mut completions: Vec<CompletionItem> = vec![];
 
@@ -140,15 +131,7 @@ fn completions_from_namespace_static(
     completion_context: &CompletionContext,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
     let context = completion_context.document_context;
-    let node = context.node;
-
-    let node = match node.node_type() {
-        NodeType::Anonymous(kind) if matches!(kind.as_str(), "::" | ":::") => {
-            namespace_node_from_colons(node, context.point)
-        },
-        NodeType::Identifier => namespace_node_from_identifier(node),
-        _ => return Ok(None),
-    };
+    let node = namespace_node_from_context_node(context.node, context.point);
 
     let mut completions = Vec::new();
 
@@ -196,6 +179,15 @@ fn completions_from_namespace_static(
     Ok(Some(completions))
 }
 
+pub(super) fn is_internal_namespace_member_completion(context: &DocumentContext) -> bool {
+    matches!(
+        namespace_node_from_context_node(context.node, context.point),
+        NamespaceNodeKind::Node(node)
+            if node.node_type()
+                == NodeType::NamespaceOperator(NamespaceOperatorType::Internal)
+    )
+}
+
 enum NamespaceNodeKind<'tree> {
     /// We aren't in a namespace node, allow other completions to run
     None,
@@ -207,6 +199,18 @@ enum NamespaceNodeKind<'tree> {
     PackageName,
     /// We found the namespace node
     Node(tree_sitter::Node<'tree>),
+}
+
+// `DocumentContext` drills down into the CST to the anonymous `::` / `:::`
+// token when completion is requested immediately after an operator.
+fn namespace_node_from_context_node(node: Node, point: Point) -> NamespaceNodeKind {
+    match node.node_type() {
+        NodeType::Anonymous(kind) if matches!(kind.as_str(), "::" | ":::") => {
+            namespace_node_from_colons(node, point)
+        },
+        NodeType::Identifier => namespace_node_from_identifier(node),
+        _ => NamespaceNodeKind::None,
+    }
 }
 
 fn namespace_node_from_colons(node: Node, point: Point) -> NamespaceNodeKind {

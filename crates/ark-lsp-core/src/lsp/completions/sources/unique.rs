@@ -28,6 +28,7 @@ use crate::lsp::completions::sources::unique::frontmatter::FrontmatterSource;
 use crate::lsp::completions::sources::unique::namespace::NamespaceSource;
 use crate::lsp::completions::sources::unique::string::StringSource;
 use crate::lsp::completions::sources::CompletionSource;
+use crate::lsp::document_context::DocumentContext;
 
 fn collect_source_plan<S>(
     kind: UniqueSourceKind,
@@ -160,6 +161,10 @@ pub(crate) fn first_detached_static_source_plan(
 
 pub(crate) fn string_path_preempts_bridge(completion_context: &CompletionContext) -> bool {
     string::is_path_completion_context(completion_context.document_context)
+}
+
+pub(crate) fn is_internal_namespace_member_completion(context: &DocumentContext) -> bool {
+    namespace::is_internal_namespace_member_completion(context)
 }
 
 /// Each unique source is tried in order until one returns completions
