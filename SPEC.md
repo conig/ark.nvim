@@ -512,6 +512,18 @@ accepting completion.
 For R plotting and pipe workflows, the console also maps `<leader>\` to append
 `|>` and `<leader>=` to append `+`, each opening a new editable continuation
 line in the current console input.
+While R is evaluating submitted code, the active prompt shows a smooth,
+rainbow-colored braille spinner (`⠋` through `⠏`): its glyph completes a cycle
+in about one second while its rainbow transition remains slower at about three
+seconds. The spinner is delayed by one second and shows a static `* ` marker
+before then, avoiding animation for quick commands. After one minute, it adds a
+compact minute-level elapsed-time label such as `1m` or `1h3m`; seconds are not
+shown. Multiline submissions are dispatched one line at a time so intermediate
+R continuation prompts do not replace the busy indicator; a genuine incomplete
+submission still returns to the editable `+` continuation prompt. Live
+carriage-return progress emitted by R takes precedence over the spinner. If a
+second code send arrives while a multiline submission is still being
+dispatched, it queues behind every unsent line instead of replacing them.
 
 The standalone console discovers optional user configuration at
 `~/.config/ark.nvim/ark-repl/init.lua`, or the directory selected by

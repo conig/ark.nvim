@@ -12,6 +12,7 @@ local strip_prompt_suffix = console_transcript.strip_prompt_suffix
 local styled_chunks = console_transcript.styled_chunks
 local submitted_output_group = console_transcript.submitted_output_group
 local transcript_lines_from_output = console_transcript.lines_from_output
+local uv = vim.uv or vim.loop
 
 local prompt_ns = vim.api.nvim_create_namespace("ArkConsole")
 local transcript_prompt_ns = vim.api.nvim_create_namespace("ArkConsoleTranscriptPrompt")
@@ -21,8 +22,30 @@ local output_prefix_conceal_ns = vim.api.nvim_create_namespace("ArkConsoleOutput
 local console_server_fn = "__ark_console_rpc_send"
 local console_help_fn = "__ark_console_rpc_ark_help"
 local console_view_fn = "__ark_console_rpc_ark_view"
+local busy_spinner_frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+local busy_spinner_colors = {
+  "#ff6b6b",
+  "#ff9f43",
+  "#ffd166",
+  "#b8e45e",
+  "#70d6a3",
+  "#5dd9d3",
+  "#6bb5ff",
+  "#8b8cff",
+  "#c084fc",
+  "#f472b6",
+}
+-- Keep glyph motion smooth while the rainbow transition remains calm.
+local busy_spinner_delay_ms = 1000
+local busy_spinner_interval_ms = 100
+local busy_spinner_color_every = 3
 local job_running
 local install_paste_handler
+local input_start_line
+local place_prompt
+local focus_input
+local paste_text_at_input_cursor
+local refresh_output_prefix_conceal
 local state = _G.__ark_nvim_console_state
 if type(state) ~= "table" then
   state = {
@@ -323,6 +346,102 @@ local function pending_output_chunks(info)
   return styled_chunks(pending, info.output_pending_spans or {}, "ArkConsoleOutput")
 end
 
+local function stop_busy_spinner(info)
+  if type(info) ~= "table" then
+    return
+  end
+
+  local timer = info.busy_spinner_timer
+  info.busy_spinner_timer = nil
+  info.busy_spinner_active = false
+  if timer then
+    pcall(timer.stop, timer)
+    pcall(timer.close, timer)
+  end
+end
+
+local function start_busy_spinner(bufnr, info)
+  if info.busy_spinner_timer ~= nil or not uv or type(uv.new_timer) ~= "function" then
+    return
+  end
+
+  local timer = uv.new_timer()
+  if not timer then
+    return
+  end
+
+  info.busy_spinner_index = 1
+  info.busy_spinner_color_index = 1
+  info.busy_spinner_tick = 0
+  info.busy_spinner_active = false
+  info.busy_spinner_timer = timer
+  timer:start(busy_spinner_delay_ms, busy_spinner_interval_ms, vim.schedule_wrap(function()
+    local current = state.buffers[bufnr]
+    if current ~= info
+      or current.busy_spinner_timer ~= timer
+      or current.closed == true
+      or not vim.api.nvim_buf_is_valid(bufnr)
+      or current.prompt_state ~= "busy"
+    then
+      stop_busy_spinner(current or info)
+      return
+    end
+
+    if pending_output_chunks(current) then
+      return
+    end
+
+    if not current.busy_spinner_active then
+      current.busy_spinner_active = true
+      place_prompt(bufnr)
+      return
+    end
+
+    current.busy_spinner_index = (current.busy_spinner_index % #busy_spinner_frames) + 1
+    current.busy_spinner_tick = (tonumber(current.busy_spinner_tick) or 0) + 1
+    if current.busy_spinner_tick % busy_spinner_color_every == 0 then
+      current.busy_spinner_color_index = (current.busy_spinner_color_index % #busy_spinner_colors) + 1
+    end
+    place_prompt(bufnr)
+  end))
+end
+
+local function busy_spinner_chunk(info)
+  local frame_index = tonumber(info.busy_spinner_index) or 1
+  frame_index = math.max(1, math.min(frame_index, #busy_spinner_frames))
+  local color_index = tonumber(info.busy_spinner_color_index) or 1
+  color_index = math.max(1, math.min(color_index, #busy_spinner_colors))
+  local elapsed = 0
+  if uv and type(uv.hrtime) == "function" and type(info.busy_started_at) == "number" then
+    elapsed = math.max(0, math.floor((uv.hrtime() - info.busy_started_at) / 1000000000))
+  end
+
+  local chunks = {
+    {
+      busy_spinner_frames[frame_index] .. " ",
+      "ArkConsoleBusy" .. tostring(color_index),
+    },
+  }
+  if elapsed < 60 then
+    return chunks
+  end
+
+  local days = math.floor(elapsed / 86400)
+  local hours = math.floor((elapsed % 86400) / 3600)
+  local minutes = math.floor(elapsed / 60)
+  local elapsed_text
+  if days > 0 then
+    elapsed_text = string.format("%dd%dh", days, hours)
+  elseif hours > 0 then
+    elapsed_text = string.format("%dh%dm", hours, minutes % 60)
+  else
+    elapsed_text = string.format("%dm", minutes)
+  end
+
+  chunks[#chunks + 1] = { elapsed_text, "ArkConsoleBusyElapsed" }
+  return chunks
+end
+
 local function prompt_label(info)
   if info.prompt_state == "continuation" then
     return "+ "
@@ -338,16 +457,14 @@ local function prompt_label(info)
   return "> "
 end
 
-local input_start_line
-local place_prompt
-local focus_input
-local paste_text_at_input_cursor
-local refresh_output_prefix_conceal
-
 local function setup_highlights()
   pcall(vim.api.nvim_set_hl, 0, "ArkConsolePrompt", { link = "Question", default = true })
   pcall(vim.api.nvim_set_hl, 0, "ArkConsoleOutput", { link = "Normal", default = true })
   pcall(vim.api.nvim_set_hl, 0, "ArkConsoleOutputPrefix", { link = "Comment", default = true })
+  pcall(vim.api.nvim_set_hl, 0, "ArkConsoleBusyElapsed", { link = "Comment", default = true })
+  for index, color in ipairs(busy_spinner_colors) do
+    pcall(vim.api.nvim_set_hl, 0, "ArkConsoleBusy" .. tostring(index), { fg = color })
+  end
 
   local ok, theme = pcall(require, "ark.theme")
   if ok and type(theme) == "table" then
@@ -438,8 +555,17 @@ place_prompt = function(bufnr)
   local line = input_start_line(bufnr, info)
   local pending_chunks = pending_output_chunks(info)
   if pending_chunks then
+    stop_busy_spinner(info)
     place_prompt_chunks_extmark(bufnr, prompt_ns, line, pending_chunks)
+  elseif info.prompt_state == "busy" then
+    start_busy_spinner(bufnr, info)
+    if info.busy_spinner_active then
+      place_prompt_chunks_extmark(bufnr, prompt_ns, line, busy_spinner_chunk(info))
+    else
+      place_prompt_extmark(bufnr, prompt_ns, line, prompt_label(info))
+    end
   else
+    stop_busy_spinner(info)
     place_prompt_extmark(bufnr, prompt_ns, line, prompt_label(info))
   end
 end
@@ -1295,20 +1421,62 @@ local function append_before_input(bufnr, lines)
   refresh_output_prefix_conceal(bufnr, output_prefix_conceal_enabled(bufnr))
 end
 
+local function submission_pending(info)
+  return type(info.submission_queue) == "table" and #info.submission_queue > 0
+end
+
 local function record_submission(info, text)
+  local was_pending = submission_pending(info)
   info.prompt_state = "busy"
-  info.pending_echo_lines = vim.split(text, "\n", { plain = true })
-  info.pending_output_group = submitted_output_group(text)
+  if not was_pending then
+    info.busy_started_at = uv and type(uv.hrtime) == "function" and uv.hrtime() or nil
+    info.pending_echo_lines = {}
+    info.submission_queue = {}
+  end
+  info.submission_queue[#info.submission_queue + 1] = {
+    index = 0,
+    lines = vim.split(text, "\n", { plain = true }),
+    output_group = submitted_output_group(text),
+  }
   if info.history[#info.history] ~= text then
     info.history[#info.history + 1] = text
   end
   info.history_index = nil
   info.draft_input = nil
+  return not was_pending
+end
+
+local function clear_submission(info)
+  info.submission_queue = nil
+  info.submission_lines = nil
+  info.submission_index = nil
+  info.busy_started_at = nil
+end
+
+local function send_next_submission_line(info)
+  local queue = info.submission_queue
+  while type(queue) == "table" and #queue > 0 do
+    local submission = queue[1]
+    local lines = submission.lines
+    local next_index = (tonumber(submission.index) or 0) + 1
+    if type(lines) == "table" and next_index <= #lines then
+      submission.index = next_index
+      info.pending_output_group = submission.output_group
+      info.pending_echo_lines[#info.pending_echo_lines + 1] = lines[next_index] or ""
+      vim.api.nvim_chan_send(info.jobid, (lines[next_index] or "") .. "\n")
+      return true
+    end
+    table.remove(queue, 1)
+  end
+
+  clear_submission(info)
+  return false
 end
 
 local function send_to_job(info, text)
-  vim.api.nvim_chan_send(info.jobid, text .. "\n")
-  record_submission(info, text)
+  if record_submission(info, text) then
+    send_next_submission_line(info)
+  end
 end
 
 local function parse_output(bufnr, data)
@@ -1324,9 +1492,8 @@ local function parse_output(bufnr, data)
 
   local complete = consume_terminal_output(info, chunk)
   local text, prompt = strip_prompt_suffix(info.output_pending)
+  local submission_active = prompt ~= nil and submission_pending(info)
   if prompt then
-    info.prompt_state = prompt.state
-    info.prompt_text = prompt.text
     info.output_pending = text
     info.output_pending_spans = truncate_spans(info.output_pending_spans or {}, #text)
     info.output_cursor = math.min(tonumber(info.output_cursor) or #text, #text)
@@ -1344,7 +1511,18 @@ local function parse_output(bufnr, data)
 
   local lines = transcript_lines_from_output(info, complete)
   if prompt then
-    info.pending_output_group = nil
+    local submission_continues = submission_active and send_next_submission_line(info) or false
+    if submission_continues then
+      info.prompt_state = "busy"
+      info.prompt_text = nil
+    else
+      info.prompt_state = prompt.state
+      info.prompt_text = prompt.text
+      info.pending_output_group = nil
+      if submission_active then
+        info.pending_echo_lines = {}
+      end
+    end
   end
   return lines
 end
@@ -1380,6 +1558,9 @@ local function close_resources(bufnr, opts)
   if info.resources_closed and opts.forget ~= true then
     return
   end
+
+  stop_busy_spinner(info)
+  clear_submission(info)
 
   if info.status_timer and not info.status_timer:is_closing() then
     info.status_timer:stop()
@@ -1825,6 +2006,7 @@ function M.start(opts)
     session_id = session_id,
     status_path = session_runtime.status_file_path(runtime, session_id),
     status_timer = nil,
+    submission_queue = {},
   }
   install_paste_handler()
   install_console_number_autocmds(bufnr)
@@ -2245,6 +2427,7 @@ function M.interrupt(bufnr)
 
   hide_blink_completion()
   restore_pending_protected_edit(bufnr, info)
+  clear_submission(info)
 
   local lines = current_input_lines(bufnr, info)
   local text = table.concat(lines, "\n")
