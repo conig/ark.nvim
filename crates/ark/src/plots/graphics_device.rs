@@ -678,12 +678,10 @@ impl DeviceContext {
         let ctx = self.capture_execution_context();
         self.store_plot_context(id, &ctx);
 
-        let data = unwrap!(self.create_display_data_plot(id, &ctx), Err(error) => {
+        let (data, metadata) = unwrap!(self.create_display_data_plot(id, &ctx), Err(error) => {
             log::error!("Failed to create plot due to: {error}.");
             return;
         });
-
-        let metadata = json!({});
 
         // For `DisplayData`, the `transient` slot is a simple `Value`,
         // but we can use the `TransientValue` required by `UpdateDisplayData`
@@ -786,12 +784,10 @@ impl DeviceContext {
         log::trace!("Notifying Jupyter frontend of plot update");
 
         let ctx = self.capture_execution_context();
-        let data = unwrap!(self.create_display_data_plot(id, &ctx), Err(error) => {
+        let (data, metadata) = unwrap!(self.create_display_data_plot(id, &ctx), Err(error) => {
             log::error!("Failed to create plot due to: {error}.");
             return;
         });
-
-        let metadata = json!({});
 
         let transient = TransientValue {
             display_id: id.to_string(),
@@ -809,11 +805,15 @@ impl DeviceContext {
             .log_err();
     }
 
+    /// Renders a plot for Jupyter and returns its display data and metadata.
+    ///
+    /// The image metadata contains logical dimensions so frontends display HiDPI
+    /// renders at their intended size rather than at their physical pixel dimensions.
     fn create_display_data_plot(
         &self,
         id: &PlotId,
         ctx: &ExecutionContext,
-    ) -> Result<serde_json::Value, anyhow::Error> {
+    ) -> Result<(serde_json::Value, serde_json::Value), anyhow::Error> {
         let base = ctx.render_settings.unwrap_or(PlotRenderSettings {
             size: PlotSize {
                 width: 800,
@@ -841,10 +841,18 @@ impl DeviceContext {
             return Err(anyhow!("Failed to render plot with id {id} due to: {error}."));
         });
 
-        let mut map = serde_json::Map::new();
-        map.insert("image/png".to_string(), serde_json::to_value(data)?);
+        let mime_type = Self::get_mime_type(&settings.format);
 
-        Ok(serde_json::Value::Object(map))
+        let data = json!({ mime_type: data });
+
+        let metadata = json!({
+            mime_type: {
+                "width": settings.size.width,
+                "height": settings.size.height,
+            }
+        });
+
+        Ok((data, metadata))
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
@@ -984,6 +992,12 @@ const DEFAULT_DPI: f64 = if cfg!(target_os = "macos") {
 /// Default aspect ratio (width:height) used when only output_width_px is provided.
 const DEFAULT_ASPECT_RATIO: f64 = 4.0 / 3.0;
 
+/// Default figure size in inches, matching Quarto's base/HTML format
+/// defaults (`fig-width: 7`, `fig-height: 5`). Other formats differ (e.g.
+/// pdf is 5.5 x 3.5), but Positron doesn't know the target format.
+const DEFAULT_FIG_WIDTH: f64 = 7.0;
+const DEFAULT_FIG_HEIGHT: f64 = 5.0;
+
 trait IntrinsicSizeExt {
     /// Convert an intrinsic size to a logical-pixel-based `PlotSize`.
     ///
@@ -1014,8 +1028,9 @@ trait FromExecuteRequest: Sized {
 impl FromExecuteRequest for PlotRenderSettings {
     /// Create render settings from an execute request's Positron metadata.
     ///
-    /// If `fig_width`/`fig_height` are both set (Quarto), returns settings with
-    /// size in logical pixels (inches * 96 DPI).
+    /// If `fig_width` and/or `fig_height` is set (Quarto), returns settings
+    /// with size in logical pixels (inches * DPI). Either dimension may be set
+    /// alone; the missing one falls back to the Quarto default.
     ///
     /// Otherwise if `output_width_px` is set, returns settings at that width
     /// with a 4:3 aspect ratio.
@@ -1025,17 +1040,15 @@ impl FromExecuteRequest for PlotRenderSettings {
     fn from_execute_request(req: &ExecuteRequestPositron) -> Option<Self> {
         let pixel_ratio = req.output_pixel_ratio.unwrap_or(1.0);
 
-        if let (Some(w), Some(h)) = (req.fig_width, req.fig_height) {
-            if w > 0.0 && h > 0.0 {
-                return Some(Self {
-                    size: PlotSize {
-                        width: (w * DEFAULT_DPI).round() as i64,
-                        height: (h * DEFAULT_DPI).round() as i64,
-                    },
-                    pixel_ratio,
-                    format: PlotRenderFormat::Png,
-                });
-            }
+        if let Some((width, height)) = requested_fig_size(req) {
+            return Some(Self {
+                size: PlotSize {
+                    width: (width * DEFAULT_DPI).round() as i64,
+                    height: (height * DEFAULT_DPI).round() as i64,
+                },
+                pixel_ratio,
+                format: PlotRenderFormat::Png,
+            });
         }
 
         if let Some(width_px) = req.output_width_px {
@@ -1058,22 +1071,37 @@ impl FromExecuteRequest for PlotRenderSettings {
 impl FromExecuteRequest for IntrinsicSize {
     /// Create an intrinsic size from an execute request's Positron metadata.
     ///
-    /// Only returns `Some` when both `fig_width` and `fig_height` are set
+    /// Only returns `Some` when `fig_width` and/or `fig_height` is set
     /// (i.e. Quarto sizing), providing the intrinsic size in inches.
     fn from_execute_request(req: &ExecuteRequestPositron) -> Option<Self> {
-        if let (Some(w), Some(h)) = (req.fig_width, req.fig_height) {
-            if w > 0.0 && h > 0.0 {
-                return Some(Self {
-                    width: w,
-                    height: h,
-                    unit: PlotUnit::Inches,
-                    source: String::from("Quarto"),
-                });
-            }
-        }
+        let (width, height) = requested_fig_size(req)?;
 
-        None
+        Some(Self {
+            width,
+            height,
+            unit: PlotUnit::Inches,
+            source: String::from("Quarto"),
+        })
     }
+}
+
+/// The figure size requested via `fig-width`/`fig-height`, in inches.
+///
+/// Either option may be set alone, matching `quarto render`; the missing (or
+/// non-positive) dimension falls back to the Quarto default. Returns `None`
+/// when neither dimension is set.
+fn requested_fig_size(req: &ExecuteRequestPositron) -> Option<(f64, f64)> {
+    let width = req.fig_width.filter(|width| *width > 0.0);
+    let height = req.fig_height.filter(|height| *height > 0.0);
+
+    if width.is_none() && height.is_none() {
+        return None;
+    }
+
+    Some((
+        width.unwrap_or(DEFAULT_FIG_WIDTH),
+        height.unwrap_or(DEFAULT_FIG_HEIGHT),
+    ))
 }
 
 /// Compute render settings and intrinsic size from execute request metadata.

@@ -1,13 +1,13 @@
 use std::fs;
-use std::sync::Arc;
 
 use aether_path::FilePath;
-use oak_semantic::semantic_index::ScopeId;
+use oak_semantic::semantic_index::SemanticDiagnostic;
 use oak_semantic::semantic_index::SemanticIndex;
-use oak_semantic::semantic_index::SymbolTable;
-use oak_semantic::use_def_map::UseDefMap;
 
 use crate::db::root_by_file;
+use crate::diagnostic::lower_semantic_diagnostic;
+use crate::diagnostic::Diagnostic;
+use crate::file_diagnostics::inherited_shadow_diagnostics;
 use crate::file_revision::report_untracked_if_zero;
 use crate::imports::SalsaImportsResolver;
 use crate::parse::OakParse;
@@ -55,11 +55,13 @@ use crate::Root;
 pub struct File {
     #[returns(ref)]
     pub path: FilePath,
+    #[returns(copy)]
     pub revision: FileRevision,
     #[returns(ref)]
     pub source_text_override: Option<String>,
     /// **Placement invariant.** Call this setter only through
     /// `oak_scan`'s helpers; see the type-level doc above.
+    #[returns(copy)]
     pub package: Option<Package>,
 }
 
@@ -144,8 +146,7 @@ impl File {
     /// This is a coarse query that invalidates downstream on every edit
     /// (`AstPtr` ranges inside `Definition`s shift). External consumers should
     /// go through the narrow queries: `exports()`, `imports()`, `resolve()`,
-    /// `attached_packages()`, `symbol_table()`, `use_def_map()` to shield
-    /// themselves from edit changes.
+    /// `attached_packages()` to shield themselves from edit changes.
     ///
     /// Cross-file symbol resolution (`source()` injection, NSE resolution)
     /// is driven by [`SalsaImportsResolver`].
@@ -154,24 +155,22 @@ impl File {
     /// dependency graph through both `semantic_index` and `exports`:
     /// `semantic_index(A) -> SalsaImportsResolver -> exports(B) ->
     /// semantic_index(B) -> SalsaImportsResolver -> exports(A) ->
-    /// semantic_index(A)`. Salsa picks one query to break the cycle and
-    /// panics with "set cycle_fn/cycle_initial" unless that query has a
-    /// handler. Both `semantic_index` and the narrow queries (`exports`,
-    /// `imports`, `resolve`) carry their own `cycle_result`.
+    /// semantic_index(A)`.
     ///
     /// The two handlers behave differently:
     ///
-    /// - `semantic_index` (this query, custom rebuild): the cycling
-    ///   side is rebuilt with `NoopImportsResolver`. Cross-file
-    ///   injection drops, but local analysis (scopes, use-def maps,
-    ///   function bodies) is preserved.
+    /// - `semantic_index` (this query, custom rebuild): the file is rebuilt
+    ///   with `NoopImportsResolver`. Cross-file injection drops, but local
+    ///   analysis (scopes, use-def maps, function bodies) is preserved.
     ///
-    /// - `exports` / `imports` / `resolve` (FallbackImmediate, empty):
-    ///   the cycling side gets an empty fallback for that query.
+    /// - `exports` (FallbackImmediate, empty): the file contributes no names
+    ///   for the revision.
     ///
-    /// Which handler fires depends on which query salsa first re-enters.
-    /// R doesn't allow cyclic `source()`, so the asymmetric recovery is
-    /// acceptable. TODO(diagnostics): Lint `source()` cycles.
+    /// `FallbackImmediate` causes *every* participant in the cycle to fall
+    /// back, not just the one salsa re-entered. This means both ends of a
+    /// mutual `source()` pair rebuild under Noop and none of the source effects
+    /// resolve. A [`SemanticDiagnostic::SourceCycle`] is raised to document
+    /// this state.
     ///
     /// `no_eq` skips salsa's `values_equal` check after recomputation.
     /// Backdating at this level never triggered in practice anyway: `AstPtr`
@@ -181,27 +180,34 @@ impl File {
         build_semantic_index(self, db)
     }
 
-    /// The symbol table for one scope of this file.
-    #[salsa::tracked]
-    pub fn symbol_table(self, db: &dyn Db, scope: ScopeId) -> Arc<SymbolTable> {
-        Arc::clone(self.semantic_index(db).symbols(scope))
-    }
-
-    /// The use-def map for one scope of this file.
-    #[salsa::tracked]
-    pub fn use_def_map(self, db: &dyn Db, scope: ScopeId) -> Arc<UseDefMap> {
-        Arc::clone(self.semantic_index(db).use_def_map(scope))
-    }
-
-    /// Package names from `library()` / `require()` calls in this file,
-    /// including those propagated transitively through `source()` chains.
-    /// Ordered by call-site position, which preserves R's search-path
-    /// semantics: a later `library(b)` shadows an earlier `library(a)`
-    /// when both export the same name.
+    /// Package names from `library()` / `require()` calls that run at the
+    /// file's own top level, including those propagated transitively through
+    /// `source()` chains. Ordered by call-site position, which preserves R's
+    /// search-path semantics: a later `library(b)` shadows an earlier
+    /// `library(a)` when both export the same name.
+    ///
+    /// A `library()` in a function body does not count here; for every attach
+    /// regardless of context see [`Self::attached_packages_anywhere`].
     #[salsa::tracked(returns(ref))]
     pub fn attached_packages(self, db: &dyn Db) -> Vec<Name<'_>> {
         self.semantic_index(db)
             .attached_packages()
+            .into_iter()
+            .map(|s| Name::new(db, s))
+            .collect()
+    }
+
+    /// Every `library()` / `require()` package in the file, including attaches
+    /// in function bodies and other lazy contexts (see
+    /// [`SemanticIndex::attached_packages_anywhere`]).
+    ///
+    /// Over-approximates the load-time search path. Used for workspace
+    /// dependency discovery, where a package attached only inside a function
+    /// still counts as a dependency.
+    #[salsa::tracked(returns(ref))]
+    pub fn attached_packages_anywhere(self, db: &dyn Db) -> Vec<Name<'_>> {
+        self.semantic_index(db)
+            .attached_packages_anywhere()
             .into_iter()
             .map(|s| Name::new(db, s))
             .collect()
@@ -229,7 +235,9 @@ impl File {
     /// All packages used in this file
     ///
     /// Sources:
-    /// - [Self::attached_packages()], i.e. `library()` or `require()`
+    /// - [Self::attached_packages_anywhere()], i.e. `library()` or `require()`
+    ///   anywhere in the file (a package attached only inside a function is
+    ///   still a dependency)
     /// - [Self::namespace_accessed_packages()], i.e. `::` or `:::`
     ///
     /// Packages are sorted by name and are unique. This maximizes the ability to
@@ -237,11 +245,32 @@ impl File {
     #[salsa::tracked(returns(ref))]
     pub fn used_packages(self, db: &dyn Db) -> Vec<Name<'_>> {
         let mut names: Vec<Name<'_>> = Vec::new();
-        names.extend(self.attached_packages(db));
+        names.extend(self.attached_packages_anywhere(db));
         names.extend(self.namespace_accessed_packages(db));
         names.sort_by_cached_key(|package| package.text(db));
         names.dedup();
         names
+    }
+
+    /// Diagnostics for this file.
+    ///
+    /// Not keyed on user configuration, so the memo isn't duplicated per
+    /// setting combination. Consumers filter on severity and
+    /// [`crate::DiagnosticId::is_experimental`] instead.
+    ///
+    /// Ranges shift whenever text above them changes, so unlike
+    /// `attached_packages()` and friends this query can't backdate.
+    #[salsa::tracked(returns(ref))]
+    pub fn diagnostics(self, db: &dyn Db) -> Vec<Diagnostic> {
+        let mut diagnostics: Vec<Diagnostic> = self
+            .semantic_index(db)
+            .diagnostics()
+            .iter()
+            .map(lower_semantic_diagnostic)
+            .collect();
+
+        diagnostics.extend(inherited_shadow_diagnostics(db, self));
+        diagnostics
     }
 
     /// The root containing this file, if any.
@@ -263,7 +292,7 @@ impl File {
     ///
     /// Callers that need to distinguish workspace from library roots
     /// inspect `root.kind(db)`.
-    #[salsa::tracked]
+    #[salsa::tracked(returns(copy))]
     pub fn root(self, db: &dyn Db) -> Option<Root> {
         if let Some(pkg) = self.package(db) {
             return db.root_by_package(pkg);
@@ -291,7 +320,27 @@ fn root_by_path(db: &dyn Db, path: &FilePath) -> Option<Root> {
         .map(|(_, r)| r)
 }
 
+/// Guard against stack overflow when `semantic_index` recurses across files.
+const STACK_RED_ZONE: usize = 1024 * 1024;
+const STACK_GROW_BY: usize = 8 * 1024 * 1024;
+
 fn build_semantic_index(file: File, db: &dyn Db) -> SemanticIndex {
+    #[cfg(test)]
+    let _depth = recursion_depth::enter();
+
+    if matches!(stacker::remaining_stack(), Some(left) if left < STACK_RED_ZONE) {
+        log::trace!(
+            "Deep cross-file recursion building semantic index for {}, growing the stack",
+            file.path(db)
+        );
+    }
+
+    stacker::maybe_grow(STACK_RED_ZONE, STACK_GROW_BY, || {
+        build_semantic_index_inner(file, db)
+    })
+}
+
+fn build_semantic_index_inner(file: File, db: &dyn Db) -> SemanticIndex {
     let parsed = file.parse(db);
     let resolver = SalsaImportsResolver::new(db, file);
     oak_semantic::build_index(&parsed.tree(), resolver)
@@ -299,9 +348,50 @@ fn build_semantic_index(file: File, db: &dyn Db) -> SemanticIndex {
 
 fn semantic_index_cycle_result(db: &dyn Db, _id: salsa::Id, file: File) -> SemanticIndex {
     log::warn!(
-        "Cyclic `source()` Detected at {}. Rebuilding without cross-file resolution.",
+        "Cyclic `source()` detected at {}. Rebuilding without cross-file resolution.",
         file.path(db),
     );
     let parsed = file.parse(db);
     oak_semantic::build_index(&parsed.tree(), oak_semantic::NoopImportsResolver)
+        .with_diagnostic(SemanticDiagnostic::SourceCycle)
+}
+
+/// Test-only recorder for the deepest `build_semantic_index` nesting.
+#[cfg(test)]
+pub(crate) mod recursion_depth {
+    use std::cell::Cell;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    thread_local! {
+        static CURRENT: Cell<usize> = const { Cell::new(0) };
+    }
+    static MAX: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn reset() {
+        MAX.store(0, Ordering::Relaxed);
+    }
+    pub(crate) fn max() -> usize {
+        MAX.load(Ordering::Relaxed)
+    }
+
+    /// Bumps the running depth on entry and records the peak. The returned guard
+    /// decrements on drop.
+    pub(crate) fn enter() -> Guard {
+        let depth = CURRENT.with(|current| {
+            let depth = current.get() + 1;
+            current.set(depth);
+            depth
+        });
+        MAX.fetch_max(depth, Ordering::Relaxed);
+        Guard
+    }
+
+    pub(crate) struct Guard;
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CURRENT.with(|current| current.set(current.get() - 1));
+        }
+    }
 }

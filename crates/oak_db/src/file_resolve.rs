@@ -30,16 +30,19 @@ impl<'db> File {
     ///    `source()`-forwarded entries. `ExportEntry::Import` is chased
     ///    through `exports(target)` until it lands on a `Local`. Cycles in
     ///    `source()` resolve to empty exports via `exports`'s `cycle_fn`.
-    /// 2. **`imports()` walk**: each layer is checked in priority order.
-    ///    `File` siblings are checked via their exports chain only (not their
-    ///    full `resolve`), to avoid the cycle that recursing would create.
-    ///    `Package` and `From` layers call [`Package::resolve`] with
-    ///    `Exported` visibility.
+    /// 2. **`imports_by_sourcing_file()` walk**: the file's own context plus
+    ///    one per file that sources it, each checked in priority order and the
+    ///    results unioned across contexts. `File` siblings are checked via their
+    ///    exports chain only (not their full `resolve`), to avoid the cycle
+    ///    that recursing would create. `Package` and `From` layers call
+    ///    [`Package::resolve`] with `Exported` visibility.
     ///
-    /// Returns every definition the name reaches in the first layer that binds
-    /// it, so a name with two top-level bindings yields both. The own-file
-    /// `exports()` chain shadows imports, matching R: if the file binds the
-    /// name at top level we stop there and never fall through to a package.
+    /// Returns every definition the name reaches in the first binding layer of
+    /// each context, so a name with two top-level bindings yields both, as does
+    /// a name bound in two different files that each source this one (see
+    /// [`resolve_per_sourcing_file`]). The own-file `exports()` chain shadows
+    /// imports, matching R: if the file binds the name at top level we stop
+    /// there and never fall through to a package.
     ///
     /// Each returned `Definition` is keyed by `(file, scope, name)`, so
     /// downstream queries that only depend on identity stay cached across
@@ -47,56 +50,18 @@ impl<'db> File {
     /// a position or the bound expression read `def.kind(db)` and project
     /// per-variant.
     ///
-    /// For the offset-aware, sequential-semantics variant, see
-    /// [`File::resolve_at`].
-    #[salsa::tracked]
+    /// Uses end-of-file visibility: every collation sibling and only
+    /// unconditional top-level attaches are visible, including `library()`
+    /// calls after the query's source position. [`File::resolve_at`] applies
+    /// position-specific visibility.
+    #[salsa::tracked(returns(clone))]
     pub fn resolve(self, db: &'db dyn Db, name: Name<'db>) -> Vec<Definition<'db>> {
         let exported = self.resolve_export(db, name);
         if !exported.is_empty() {
             return exported;
         }
 
-        // For each sibling `ImportLayer::File`, check the target's exports
-        // chain only. Recursing into `target.resolve()` would walk the
-        // target's imports, which include *this* file (sibling exclusion
-        // is per-file), and salsa would cycle on any unbound name.
-        //
-        // Exports-only is also what R's namespace semantics asks for. A
-        // package's namespace is the merged *exports* of its collation
-        // files, so "what does sibling B contribute to the namespace?" is
-        // exactly "what's in B's exports?". Package-wide NAMESPACE imports
-        // and the installed-package search path appear in this file's own
-        // `imports()` directly, as `From` / `Package` layers, so finding
-        // them does not require walking through siblings.
-        for layer in self.imports(db) {
-            match layer {
-                ImportLayer::File(target) => {
-                    let defs = target.resolve_export(db, name);
-                    if !defs.is_empty() {
-                        return defs;
-                    }
-                },
-                ImportLayer::Package(pkg) => {
-                    let defs = pkg.resolve(db, name, NamespaceVisibility::Exported);
-                    if !defs.is_empty() {
-                        return defs;
-                    }
-                },
-                ImportLayer::From(map) => {
-                    let name_str = name.text(db).as_str();
-                    if let Some(pkg_name) = map.get(name_str) {
-                        if let Some(pkg) = db.package_by_name(pkg_name) {
-                            let defs = pkg.resolve(db, name, NamespaceVisibility::Exported);
-                            if !defs.is_empty() {
-                                return defs;
-                            }
-                        }
-                    }
-                },
-            }
-        }
-
-        Vec::new()
+        resolve_per_sourcing_file(db, self.imports_by_sourcing_file(db), name)
     }
 
     /// Resolve the name at `offset` to its definition(s).
@@ -134,52 +99,29 @@ impl<'db> File {
         let reaching: Vec<(ScopeId, DefinitionId)> =
             index.reaching_definitions(use_scope, use_id).collect();
 
-        if !reaching.is_empty() {
-            return reaching
+        let mut definitions: Vec<Definition<'db>> = reaching
+            .into_iter()
+            .flat_map(|(scope, def_id)| self.resolve_definition(db, scope, def_id))
+            .collect();
+
+        if index.use_is_bound(use_scope, use_id) {
+            return definitions;
+        }
+
+        // At top level, `ImportView::at()` sees preceding collation files. In
+        // a function body, it sees the complete collation but keeps attaches
+        // offset- and scope-aware.
+        //
+        // An unbound path can resolve through imports, so retain in-file
+        // definitions and add distinct imported ones.
+        let imported: Vec<Definition<'db>> =
+            resolve_per_sourcing_file(db, &self.imports_by_sourcing_file_at(db, offset), name)
                 .into_iter()
-                .flat_map(|(scope, def_id)| self.resolve_definition(db, scope, def_id))
+                .filter(|def| !definitions.contains(def))
                 .collect();
-        }
+        definitions.extend(imported);
 
-        // Nothing local reaches the use, so resolve across files.
-        let file_scope = ScopeId::from(0);
-        if use_scope != file_scope {
-            // Function body: the lazy / end-of-file view the body sees at run time.
-            return self.resolve(db, name);
-        }
-
-        // Top level: collation predecessors / other visible files (exports-only
-        // chase, same as `resolve`'s imports walk). Avoids the sibling cycle and
-        // matches R's namespace semantics.
-        for layer in self.imports_at(db, offset) {
-            match layer {
-                ImportLayer::File(target) => {
-                    let defs = target.resolve_export(db, name);
-                    if !defs.is_empty() {
-                        return defs;
-                    }
-                },
-                ImportLayer::Package(pkg) => {
-                    let defs = pkg.resolve(db, name, NamespaceVisibility::Exported);
-                    if !defs.is_empty() {
-                        return defs;
-                    }
-                },
-                ImportLayer::From(map) => {
-                    let name_str = name.text(db).as_str();
-                    if let Some(pkg_name) = map.get(name_str) {
-                        if let Some(pkg) = db.package_by_name(pkg_name) {
-                            let defs = pkg.resolve(db, name, NamespaceVisibility::Exported);
-                            if !defs.is_empty() {
-                                return defs;
-                            }
-                        }
-                    }
-                },
-            }
-        }
-
-        Vec::new()
+        definitions
     }
 
     fn resolve_definition(
@@ -217,7 +159,7 @@ impl<'db> File {
     /// winner is still last.
     ///
     /// Cycles resolve to empty via `exports`'s `cycle_fn`.
-    #[salsa::tracked]
+    #[salsa::tracked(returns(clone))]
     pub(crate) fn resolve_export(self, db: &'db dyn Db, name: Name<'db>) -> Vec<Definition<'db>> {
         let mut results = Vec::new();
 
@@ -270,7 +212,7 @@ impl<'db> File {
                     // minting one here would add a bogus target at the empty
                     // `source()` call span.
                     let index = self.semantic_index(db);
-                    for &(def_id, def) in index.exports().get(name.as_ref()).into_iter().flatten() {
+                    for (def_id, def) in index.export(name.as_ref()) {
                         if matches!(def.kind(), DefinitionKind::Import { .. }) {
                             continue;
                         }
@@ -287,4 +229,83 @@ impl<'db> File {
             }
         }
     }
+}
+
+/// Resolve `name` against a single import layer, returning every definition it
+/// reaches there (empty means the layer doesn't bind it, so the caller falls
+/// through to the next layer). Shared by [`File::resolve`] and
+/// [`File::resolve_at`].
+///
+/// `File` siblings are chased through their exports only, not their full
+/// `resolve`: recursing would walk the sibling's own imports, which include
+/// *this* file, and salsa would cycle on any unbound name. Exports-only is also
+/// what R's namespace semantics asks for, a package's namespace is the merged
+/// exports of its collation files.
+pub(crate) fn resolve_import_layer<'db>(
+    db: &'db dyn Db,
+    layer: &ImportLayer,
+    name: Name<'db>,
+) -> Vec<Definition<'db>> {
+    // Reduce the layer to the package it binds `name` to, then resolve against
+    // that package's exports. A `File` sibling is the exception, resolved
+    // through its own exports chain.
+    let package = match layer {
+        ImportLayer::File(file) => return file.resolve_export(db, name),
+        ImportLayer::SourcingFile {
+            file,
+            exports_so_far,
+        } => {
+            // Checking the snapshot here rather than inside `resolve_export()`
+            // prevents a `semantic_index` read. Since the index is `no_eq` this
+            // would compromise the `File::resolve` firewall.
+            if !exports_so_far.contains(name.text(db).as_str()) {
+                return Vec::new();
+            }
+            return file.resolve_export(db, name);
+        },
+        ImportLayer::Package(package) => *package,
+        ImportLayer::From(importer) => {
+            match importer.imported_from(db).get(name.text(db).as_str()) {
+                Some(source) => match db.package_by_name(source) {
+                    Some(package) => package,
+                    None => return Vec::new(),
+                },
+                None => return Vec::new(),
+            }
+        },
+    };
+    package.resolve(db, name, NamespaceVisibility::Exported)
+}
+
+/// Resolve `name` in every context of [`File::imports_by_sourcing_file`] and
+/// union the results.
+///
+/// Within one sourcing context, first hit wins as usual. On the other hand,
+/// two files sourcing the same target do not mask each other, they provide
+/// alternative contexts. Contexts converging on one binding (a shared sourced
+/// file, a search-path package) dedupe.
+///
+/// `Vec::contains()` preserves deterministic insertion order. The linear scan
+/// is acceptable because each context yields few definitions.
+fn resolve_per_sourcing_file<'db>(
+    db: &'db dyn Db,
+    contexts: &[Vec<ImportLayer>],
+    name: Name<'db>,
+) -> Vec<Definition<'db>> {
+    let mut results: Vec<Definition<'db>> = Vec::new();
+    for context in contexts {
+        for layer in context {
+            let defs = resolve_import_layer(db, layer, name);
+            if defs.is_empty() {
+                continue;
+            }
+            for def in defs {
+                if !results.contains(&def) {
+                    results.push(def);
+                }
+            }
+            break;
+        }
+    }
+    results
 }

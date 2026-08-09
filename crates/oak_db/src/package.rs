@@ -6,6 +6,7 @@ use oak_package_metadata::description::Description;
 use oak_package_metadata::description::Priority;
 use oak_package_metadata::index::Index;
 use oak_package_metadata::namespace::Namespace;
+use rustc_hash::FxHashMap;
 use stdext::result::ResultExt;
 
 use crate::file_revision::report_untracked_if_zero;
@@ -38,11 +39,14 @@ pub struct Package {
     /// query (and the `version` / `collation` derivations on top of it), the
     /// same way `namespace_revision` drives [`Package::namespace`]. We stat
     /// `DESCRIPTION` at scan time but parse it only on demand.
+    #[returns(copy)]
     pub description_revision: FileRevision,
     /// See [Package::description_revision].
+    #[returns(copy)]
     pub namespace_revision: FileRevision,
     /// See [Package::description_revision]. [None] for workspace packages, which never
     /// have an `INDEX`.
+    #[returns(copy)]
     pub index_revision: Option<FileRevision>,
     /// In-memory `NAMESPACE`, checked by [`Package::namespace`] before it
     /// touches disk. Mirrors [`File::source_text_override`]: `None` means
@@ -52,13 +56,13 @@ pub struct Package {
     /// editing a package's `NAMESPACE` live.
     #[returns(ref)]
     pub namespace_override: Option<Namespace>,
-    /// R source files belonging to this package (the `R/*.R` files), in
-    /// R's load order. When DESCRIPTION's `Collate:` directive is
-    /// present, this is exactly the files it lists, in that order;
-    /// files in `R/` not listed are excluded (matching R's loader,
-    /// Writing R Extensions §1.1.1). When `Collate:` is absent, files
-    /// are in case-insensitive alphabetical order. TODO(diagnostics):
-    /// Lint files missing from collation.
+    /// R source files belonging to this package (the `R/*.R` files), in R's
+    /// load order. When DESCRIPTION's `Collate:` directive is present, this is
+    /// exactly the files it lists, in that order; files in `R/` not listed are
+    /// excluded (matching R's loader, Writing R Extensions §1.1.1). When
+    /// `Collate:` is absent, files are in raw basename byte order, matching R's
+    /// `LC_COLLATE=C` installation collation.
+    /// TODO(diagnostics): Lint files missing from collation.
     ///
     /// Per-package granularity: adding or removing a file in one
     /// package doesn't invalidate tracked queries reading another
@@ -124,6 +128,23 @@ impl Package {
                 Namespace::default()
             },
         }
+    }
+
+    /// NAMESPACE `importFrom` entries keyed by imported name, each mapping to
+    /// its source package name. Lets the resolution paths look up a name
+    /// directly instead of scanning [`Namespace::imports`].
+    ///
+    /// The value is the source package's name, not a resolved `Package`:
+    /// resolving through [`Db::package_by_name`] depends on which roots are
+    /// live, and baking that in here would invalidate this index on every
+    /// root change. Call sites resolve the name themselves.
+    #[salsa::tracked(returns(ref))]
+    pub(crate) fn imported_from(self, db: &dyn Db) -> FxHashMap<String, String> {
+        self.namespace(db)
+            .imports
+            .iter()
+            .map(|import| (import.name.clone(), import.package.clone()))
+            .collect()
     }
 
     /// The package's `Version:`, parsed lazily from `DESCRIPTION`. `None`
@@ -220,7 +241,7 @@ impl Package {
     /// indexes.
     #[salsa::tracked(returns(ref))]
     pub fn index(self, db: &dyn Db) -> Option<Index> {
-        // Depend on `index_revision()` so a bump forces a re-read
+        // Depend on `index_revision()` so a bump forces a re-read.
         // Workspace packages don't have an `INDEX`.
         let revision = self.index_revision(db)?;
         report_untracked_if_zero(db, revision);

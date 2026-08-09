@@ -16,6 +16,7 @@ use oak_db::OakDatabase;
 use oak_ide::goto_definition;
 
 use crate::support::install_library_package;
+use crate::support::place_in_workspace_scripts;
 use crate::support::range;
 use crate::support::upsert;
 
@@ -33,6 +34,23 @@ fn test_local_definition_navigates_to_binding() {
     assert_eq!(target.name, "x");
     assert_eq!(target.full_range, range(0, 1));
     assert_eq!(target.focus_range, range(0, 1));
+}
+
+#[test]
+fn test_navigates_from_bquote_hole_use() {
+    let mut db = OakDatabase::new();
+    let source = "x <- 1\nbquote(.(x))\n";
+    let file = upsert(&mut db, "a.R", source);
+
+    // Cursor on the `x` inside `bquote`'s `.()` hole, which is a live use.
+    let hole = source.rfind('x').unwrap() as u32;
+    let targets = goto_definition(&db, file, TextSize::from(hole));
+    assert_eq!(targets.len(), 1);
+
+    let target = &targets[0];
+    assert_eq!(target.file, file);
+    assert_eq!(target.name, "x");
+    assert_eq!(target.full_range, range(0, 1));
 }
 
 #[test]
@@ -188,4 +206,77 @@ fn test_navigates_to_both_candidates_through_source() {
     assert!(targets.iter().all(|t| t.file == helpers && t.name == "foo"));
     assert_eq!(targets[0].focus_range, range(10, 13));
     assert_eq!(targets[1].focus_range, range(24, 27));
+}
+
+#[test]
+fn test_navigates_to_assign_binding() {
+    let mut db = OakDatabase::new();
+    let file = upsert(&mut db, "a.R", "assign(\"x\", 1)\nx\n");
+
+    // Cursor on the use `x` on line 2.
+    let offset = TextSize::from("assign(\"x\", 1)\n".len() as u32);
+    let targets = goto_definition(&db, file, offset);
+    assert_eq!(targets.len(), 1);
+    let target = &targets[0];
+
+    assert_eq!(target.file, file);
+    assert_eq!(target.name, "x");
+    // Lands on the quoted name argument `"x"`.
+    assert_eq!(target.full_range, range(7, 10));
+}
+
+#[test]
+fn test_navigates_to_delayed_assign_binding() {
+    let mut db = OakDatabase::new();
+    let file = upsert(&mut db, "a.R", "delayedAssign(\"x\", expr)\nx\n");
+
+    let offset = TextSize::from("delayedAssign(\"x\", expr)\n".len() as u32);
+    let targets = goto_definition(&db, file, offset);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].name, "x");
+    assert_eq!(targets[0].full_range, range(14, 17));
+}
+
+#[test]
+fn test_navigates_from_assign_definition_site() {
+    let mut db = OakDatabase::new();
+    let file = upsert(&mut db, "a.R", "assign(\"x\", 1)\nx\n");
+
+    // Cursor on the `"x"` name literal at the definition site (offset 8, the `x`
+    // inside the quotes), not a later use. Resolving lands on the def itself.
+    let offset = TextSize::from("assign(\"".len() as u32);
+    let targets = goto_definition(&db, file, offset);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].name, "x");
+    assert_eq!(targets[0].full_range, range(7, 10));
+
+    // TODO!(nse-resolver): goto for a `%<>%`/`%<~%` binding can't be tested here
+    // yet, from a use or from its definition site. `SalsaImportsResolver` only
+    // resolves `base`, so the operators aren't recognized at this layer until
+    // the resolver walks the search path.
+}
+
+#[test]
+fn test_navigates_through_a_conditional_attach_at_one_of_two_source_calls() {
+    // The attach at the first `source()` call must remain available even though
+    // it is not visible at the second call. Otherwise `foo` has no target.
+    let mut db = OakDatabase::new();
+    let pkg_file =
+        install_library_package(&mut db, "mypkg", &["foo"], "a.R", "foo <- function() 42\n");
+
+    let main = upsert(
+        &mut db,
+        "main.R",
+        "if (dev) {\n  library(mypkg)\n  source(\"helpers.R\")\n}\nsource(\"helpers.R\")\n",
+    );
+    let helpers = upsert(&mut db, "helpers.R", "foo\n");
+    place_in_workspace_scripts(&mut db, vec![main, helpers]);
+
+    let targets = goto_definition(&db, helpers, TextSize::from(0u32));
+    assert_eq!(targets.len(), 1);
+    let target = &targets[0];
+
+    assert_eq!(target.file, pkg_file);
+    assert_eq!(target.name, "foo");
+    assert_eq!(target.full_range, range(0, 3));
 }

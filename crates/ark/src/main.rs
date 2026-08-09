@@ -23,6 +23,7 @@ use ark::traps::register_trap_handlers;
 use crossbeam::channel::unbounded;
 use harp::command::r_home_setup;
 use notify::Watcher;
+use stdext::panic_message;
 use stdext::unwrap;
 
 thread_local! {
@@ -42,7 +43,9 @@ Available options:
 -- arg1 arg2 ...             Set the argument list to pass to R; defaults to
                              --interactive
 --startup-file FILE          An R file to run on session startup
---session-mode MODE          The mode in which the session is running (console, notebook, background)
+--session-mode MODE          The mode in which the session is running: "console"
+                             (the default), "notebook", or "background". See the
+                             configuration guide.
 --no-capture-streams         Do not capture stdout/stderr from R
 --default-repos              Set the default repositories to use, by name:
                              "rstudio" ('cran.rstudio.com', the default), or
@@ -71,6 +74,9 @@ Available options:
     print!(
         r#"
 --help                       Print this help message
+
+Configuration guide:
+https://github.com/posit-dev/ark/blob/main/doc/configuration.md
 
 "#
     );
@@ -393,14 +399,7 @@ fn main() -> anyhow::Result<()> {
             String::from("No location information:")
         };
 
-        let msg: String;
-        if let Some(s) = info.downcast_ref::<&str>() {
-            msg = s.to_string();
-        } else if let Some(s) = info.downcast_ref::<String>() {
-            msg = s.clone();
-        } else {
-            msg = String::from("No contextual information.");
-        }
+        let msg = panic_message(info);
 
         // Top-level-exec and try-catch errors already contain a backtrace
         // for the R thread so don't repeat it if we see one. Only perform

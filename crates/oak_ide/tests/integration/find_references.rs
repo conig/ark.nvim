@@ -14,9 +14,11 @@ use oak_db::OakDatabase;
 use oak_ide::find_references;
 
 use crate::support::install_library_package;
+use crate::support::install_library_package_files;
 use crate::support::install_workspace_package;
 use crate::support::offset;
 use crate::support::pairs;
+use crate::support::place_in_workspace_scripts;
 use crate::support::range;
 use crate::support::ranges;
 use crate::support::upsert;
@@ -50,6 +52,19 @@ fn test_from_definition_site() {
 
     let refs = find_references(&db, file, offset(0), true);
     assert_eq!(ranges(&refs), vec![range(0, 1), range(7, 8)]);
+}
+
+#[test]
+fn test_includes_bquote_hole_use() {
+    // The `x` inside `bquote`'s `.()` hole is a live use, so find-references
+    // from the definition returns it alongside the def.
+    let source = "x <- 1\nbquote(.(x))\n";
+    let mut db = OakDatabase::new();
+    let file = upsert(&mut db, "test.R", source);
+
+    let hole = source.rfind('x').unwrap() as u32;
+    let refs = find_references(&db, file, offset(0), true);
+    assert_eq!(ranges(&refs), vec![range(0, 1), range(hole, hole + 1)]);
 }
 
 #[test]
@@ -156,6 +171,73 @@ fn test_super_assignment_targets_outer_scope() {
         range(0, 1),
         range(super_def, super_def + 1),
         range(outer_use, outer_use + 1),
+    ]);
+}
+
+#[test]
+fn test_references_from_assign_definition_site() {
+    // Find-references invoked with the cursor ON the `assign()` name literal (not
+    // a later use) resolves the binding and returns the declaration plus the use.
+    // This is what the definition's own range enables: `definition_at` hit-tests
+    // the name token at the definition site.
+    let mut db = OakDatabase::new();
+    let file = upsert(&mut db, "test.R", "assign(\"foo\", 1)\nfoo\n");
+
+    // Cursor inside the `"foo"` literal.
+    let refs = find_references(&db, file, offset(8), true);
+    assert_eq!(ranges(&refs), vec![range(7, 12), range(17, 20)]);
+
+    // TODO!(nse-resolver): find-references for a `%<>%`/`%<~%` binding can't be
+    // tested here yet, from a use or from its definition site.
+    // `SalsaImportsResolver` only resolves `base`, so the operators aren't
+    // recognized as assign effects at this layer until the resolver walks the
+    // search path.
+}
+
+// --- NSE lazy scopes ---
+
+#[test]
+fn test_on_exit_body_use_has_lazy_view() {
+    // `on.exit(x)` runs at function exit, so its read of `x` sees the whole
+    // function frame (lazy view): both `x <- 1` and the later `x <- 2` reach it.
+    // Find-references from the *second* def includes the on.exit use even though
+    // that use sits textually before it. An eager view would exclude it.
+    let source = "f <- function() {\n  x <- 1\n  on.exit(x)\n  x <- 2\n}\n";
+    let mut db = OakDatabase::new();
+    let file = upsert(&mut db, "test.R", source);
+
+    let on_exit_use = (source.find("on.exit(x)").unwrap() + "on.exit(".len()) as u32;
+    let second_def = source.rfind("x <- 2").unwrap() as u32;
+
+    let refs = find_references(&db, file, offset(second_def), true);
+    assert_eq!(ranges(&refs), vec![
+        range(on_exit_use, on_exit_use + 1),
+        range(second_def, second_def + 1),
+    ]);
+}
+
+#[test]
+fn test_bquote_hole_nested_in_quoted_call() {
+    // `foo(...)` is itself inside the quoted `expr`, so its call name is not a
+    // live use; only the escaped `.(foo)` argument is. Regression test for a
+    // reported LSP crash on this shape; it does not reproduce at this layer.
+    let source = "foo <- function() {}\nbquote(foo(.(foo)))\n";
+    let mut db = OakDatabase::new();
+    let file = upsert(&mut db, "test.R", source);
+
+    let hole_use = source.rfind("foo").unwrap() as u32;
+
+    let refs = find_references(&db, file, offset(0), true);
+    assert_eq!(ranges(&refs), vec![
+        range(0, 3),
+        range(hole_use, hole_use + 3)
+    ]);
+
+    // Same result when the cursor starts on the hole's `foo` itself.
+    let refs = find_references(&db, file, offset(hole_use), true);
+    assert_eq!(ranges(&refs), vec![
+        range(0, 3),
+        range(hole_use, hole_use + 3)
     ]);
 }
 
@@ -323,6 +405,35 @@ fn test_locally_scoped_stays_in_file() {
     ]);
 }
 
+#[test]
+fn test_cross_file_references_span_both_sourcing_files() {
+    // `a.R` and `b.R` each define their own `foo`, source `helpers.R`, and use
+    // `foo` again. Both sourcing files are separate possible runtimes of
+    // `helpers.R`, so a references search from `helpers.R`'s `foo` must cover
+    // both, not just the alphabetically-first one.
+    let mut db = OakDatabase::new();
+    let a_source = "foo <- 1\nsource(\"helpers.R\")\nfoo\n";
+    let b_source = "foo <- 2\nsource(\"helpers.R\")\nfoo\n";
+    let a = upsert(&mut db, "a.R", a_source);
+    let b = upsert(&mut db, "b.R", b_source);
+    let helpers = upsert(&mut db, "helpers.R", "foo\n");
+    place_in_workspace_scripts(&mut db, vec![a, b, helpers]);
+
+    let a_use = a_source.rfind("foo").unwrap() as u32;
+    let b_use = b_source.rfind("foo").unwrap() as u32;
+
+    let refs = find_references(&db, helpers, offset(0), true);
+    // helpers.R (cursor's file) first, then a.R and b.R alphabetically by
+    // path, def before use within each sourcing file.
+    assert_eq!(pairs(&refs), vec![
+        (helpers, range(0, 3)),
+        (a, range(0, 3)),
+        (a, range(a_use, a_use + 3)),
+        (b, range(0, 3)),
+        (b, range(b_use, b_use + 3)),
+    ]);
+}
+
 // --- Bare name <-> namespace bridge ---
 
 #[test]
@@ -442,6 +553,27 @@ fn test_cursor_in_installed_package_excludes_other_packages() {
 }
 
 #[test]
+fn test_cursor_in_non_dependency_installed_package_finds_references() {
+    // `mypkg` is not a workspace dependency, so `all_used_files()` excludes it.
+    // Reference search must still include the cursor package.
+    let mut db = OakDatabase::new();
+    let files = install_library_package_files(&mut db, "mypkg", &["foo"], &[
+        ("a.R", "foo <- function() 1\nfoo()\n"),
+        ("b.R", "foo()\n"),
+    ]);
+    let (a_file, b_file) = (files[0], files[1]);
+    let _script = upsert(&mut db, "script.R", "1 + 1\n");
+
+    let refs = find_references(&db, a_file, offset(0), true);
+
+    assert_eq!(pairs(&refs), vec![
+        (a_file, range(0, 3)),
+        (a_file, range(20, 23)),
+        (b_file, range(0, 3)),
+    ]);
+}
+
+#[test]
 fn test_cross_package_references_via_library() {
     // A script attaches `mypkg` and uses its exported `foo`. The use resolves
     // through the package layer to the binding in the package file, confirming
@@ -465,4 +597,26 @@ fn test_cross_package_references_via_library() {
         script,
         range(use_start, use_start + 3)
     )]);
+}
+
+#[test]
+fn test_cross_file_references_reach_past_a_lazy_source_call() {
+    // `load()` can source `helpers.R` after `after` is defined, so its context
+    // remains unpinned and references include `after` in `main.R`.
+    let mut db = OakDatabase::new();
+    let main_source =
+        "load <- function() source(\"helpers.R\")\nsource(\"helpers.R\")\nafter <- 1\nafter\n";
+    let main = upsert(&mut db, "main.R", main_source);
+    let helpers = upsert(&mut db, "helpers.R", "after\n");
+    place_in_workspace_scripts(&mut db, vec![helpers, main]);
+
+    let def = main_source.find("after <- 1").unwrap() as u32;
+    let use_ = main_source.rfind("after").unwrap() as u32;
+
+    let refs = find_references(&db, helpers, offset(0), true);
+    assert_eq!(pairs(&refs), vec![
+        (helpers, range(0, 5)),
+        (main, range(def, def + 5)),
+        (main, range(use_, use_ + 5)),
+    ]);
 }

@@ -13,6 +13,7 @@
 use std::path::Path;
 use std::rc::Rc;
 
+use stdext::panic_message;
 use stdext::DebugRefCell;
 
 use super::*;
@@ -664,12 +665,12 @@ impl Console {
             kernel_request_rx,
             active_request: None,
             comm_msg_originator: None,
-            execution_count: 0,
+            execution_count: Cell::new(0),
             autoprint_output: String::new(),
             ui_comm_id: DebugRefCell::new(None),
             help_comm_id: DebugRefCell::new(None),
             last_error: None,
-            help_ports: None,
+            help_ports: Cell::new(None),
             lsp_events_tx: None,
             lsp_virtual_documents: HashMap::new(),
             debug_dap: dap,
@@ -741,14 +742,7 @@ impl Console {
         match result {
             Ok(result) => result,
             Err(panic) => {
-                let msg = match panic.downcast_ref::<&str>() {
-                    Some(s) => s.to_string(),
-                    None => match panic.downcast_ref::<String>() {
-                        Some(s) => s.clone(),
-                        None => String::from("(unknown payload)"),
-                    },
-                };
-
+                let msg = panic_message(panic.as_ref());
                 Err(anyhow!("Panic in Console callback: {msg}"))
             },
         }
@@ -903,20 +897,20 @@ impl Console {
 
         // Increment counter if we are storing this execution in history
         if req.store_history {
-            self.execution_count += 1;
+            self.execution_count.update(|count| count + 1);
         }
+
+        let execution_count = self.execution_count.get();
 
         // If the code is not to be executed silently, re-broadcast the
         // execution to all frontends
         if !req.silent {
             if let Err(err) = self.iopub_tx.send(IOPubMessage::ExecuteInput(ExecuteInput {
                 code: req.code.clone(),
-                execution_count: self.execution_count,
+                execution_count,
             })) {
                 log::warn!(
-                    "Could not broadcast execution input {} to all frontends: {}",
-                    self.execution_count,
-                    err
+                    "Could not broadcast execution input {execution_count} to all frontends: {err}",
                 );
             }
         }
@@ -924,10 +918,7 @@ impl Console {
         let loc = req.code_location().log_err().flatten();
 
         // Return the code to the R console to be evaluated and the corresponding exec count
-        (
-            ConsoleInput::Input(req.code.clone(), loc),
-            self.execution_count,
-        )
+        (ConsoleInput::Input(req.code.clone(), loc), execution_count)
     }
 
     /// Invoked by R to read console input from the user.
@@ -2570,6 +2561,10 @@ impl Console {
         if let Some(text) = self.debug_filter.check_timeout() {
             self.emit_stdout(text);
         }
+
+        // Interrupt any in-flight evaluation (e.g. a Watch pane expression) that
+        // has outlived its timeout.
+        crate::timeout::check_timeout();
     }
 
     pub(super) fn eval_env(&self) -> RObject {

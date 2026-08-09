@@ -1,13 +1,21 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::slice;
 
 use biome_rowan::TextSize;
 use camino::Utf8Path;
 use oak_package_metadata::namespace::Namespace;
+use oak_semantic::semantic_index::AttachRegion;
+use oak_semantic::semantic_index::ExportsAtSource;
+use oak_semantic::semantic_index::ScopeId;
 use oak_semantic::semantic_index::SemanticCall;
 use oak_semantic::semantic_index::SemanticCallKind;
-use oak_semantic::ScopeId;
+use oak_semantic::semantic_index::SemanticIndex;
 
+use crate::directory::files_in_directory;
+use crate::load_context::load_context;
+use crate::load_context::LoadContext;
+use crate::load_context::LoadKind;
+use crate::load_context::SearchPathTail;
 use crate::Db;
 use crate::File;
 use crate::Package;
@@ -18,25 +26,245 @@ use crate::Package;
 /// package-name strings cross out of `oak_db` for resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportLayer {
-    /// A predecessor file in a package's collation, or another workspace
-    /// file. Names are resolved through `file.exports(db)`.
+    /// A file whose top level has fully run by the time this layer is read: a
+    /// collation predecessor, or a sourcing file seen from a lazy context.
+    /// Names are resolved through `file.exports(db)`.
     File(File),
-    /// NAMESPACE `importFrom(pkg, name)` entries. Maps each imported
-    /// symbol to its source package by name. Translation to `Package`
-    /// happens at resolution time.
-    From(HashMap<String, String>),
+    /// A file that sources the one being resolved, seen as of its `source()`
+    /// call. The rest of `file` hadn't run by then, so only `exports_so_far`
+    /// counts.
+    SourcingFile {
+        file: File,
+        exports_so_far: ExportsAtSource,
+    },
+    /// The package whose NAMESPACE declares `importFrom(pkg, name)` entries.
+    /// [`Package::import_index`] says which entry, if any, binds a given name.
+    From(Package),
     /// A whole package made available, either via NAMESPACE `import(pkg)`,
     /// `library()` / `require()` calls, or the default R search path.
     /// Missing packages are filtered out by `imports`.
     Package(Package),
 }
 
+/// Cross-file layers visible while a file loads.
+///
+/// `enclosing` contains definitions and NAMESPACE imports reached through the
+/// environment chain. `attaches` holds inherited and loader attaches. `tail` is
+/// the search-path suffix R searches last.
+///
+/// Keep `tail` unexpanded until [`Self::lookup_order`]. Materializing a sourced
+/// file's tail first would put its caller's attaches below `base`.
+///
+/// The file's own attaches are omitted to avoid reading its semantic index while
+/// it is building. [`File::imports`] reads them from the index, while
+/// [`SalsaImportsResolver`] uses the builder's flow-ordered set.
+///
+/// [`SalsaImportsResolver`]: crate::imports::SalsaImportsResolver
+#[derive(Debug, Clone, PartialEq, Eq, salsa::SalsaValue)]
+pub(crate) struct CrossFileLayers {
+    pub enclosing: Vec<ImportLayer>,
+    pub attaches: Vec<ImportLayer>,
+    pub tail: SearchPathTail,
+}
+
+impl CrossFileLayers {
+    /// The layers as a single lookup-ordered list, splicing the file's own
+    /// `library()` attaches into the band between the definition/namespace
+    /// layers (which outrank them) and the rest of the search path.
+    pub(crate) fn lookup_order<'a>(
+        &'a self,
+        db: &'a dyn Db,
+        own: &'a [ImportLayer],
+    ) -> impl Iterator<Item = ImportLayer> + 'a {
+        self.enclosing
+            .iter()
+            .chain(own)
+            .chain(self.attaches.iter())
+            .cloned()
+            .chain(self.tail.layers(db))
+    }
+}
+
+impl SearchPathTail {
+    fn layers(self, db: &dyn Db) -> Vec<ImportLayer> {
+        match self {
+            SearchPathTail::Base => base_layer(db).into_iter().collect(),
+            SearchPathTail::Default => default_search_path_layers(db),
+        }
+    }
+}
+
+/// Which of a file's own `library()` attaches a caller sees.
+#[derive(Clone, Copy)]
+enum AttachView<'a> {
+    /// Every attach in the file.
+    ///
+    /// Over-approximates on two axes. An attach in a function body counts even
+    /// though the body may never run, and a conditional one counts even though
+    /// its branch may not have been taken.
+    Anywhere,
+    /// Unconditional attaches in eager scopes, visible after the file finishes.
+    ///
+    /// Lazy bodies and conditional arms may not run, so their attaches are
+    /// excluded.
+    Eof,
+    /// Attaches visible at `offset` in the lazy scope `scope_id`.
+    ///
+    /// An attach in `scope_id` itself or an enclosing lazy body applies only after its
+    /// `library()` call. On the other hand, the lazy view treats an
+    /// unconditional top-level attach as visible regardless of position, which
+    /// over-approximates this case:
+    ///
+    /// ```r
+    /// f <- function() {
+    ///     cli_alert("x")
+    /// }
+    ///
+    /// f()
+    /// library(cli)
+    /// ```
+    ///
+    /// `f()` runs before `library(cli)`, so the attach is unavailable at
+    /// `cli_alert()`. In the future, call analysis could detect that order.
+    ///
+    /// Conditional attaches remain limited to their arm, and child or sibling
+    /// bodies do not reach `scope_id`.
+    Lazy { offset: TextSize, scope_id: ScopeId },
+    /// Attaches in eager scopes that are visible at any of `offsets`.
+    ///
+    /// Attaches in lazy bodies and after every offset are excluded. Multiple
+    /// offsets represent distinct `source()` sites, which may have different
+    /// attach views.
+    ///
+    /// ```r
+    /// library(pkga)
+    /// source("init.R")
+    ///
+    /// library(pkgb)
+    /// source("init.R")
+    /// ```
+    ///
+    /// or
+    ///
+    /// ```r
+    /// library(pkga)
+    /// if (cond1) {
+    ///   source("init.R")
+    /// }
+    /// library(pkgb)
+    /// ...
+    /// if (cond2) {
+    ///   source("init.R")
+    /// }
+    /// ```
+    ///
+    /// `init.R` runs twice, represented by an offset for each `source()`
+    /// call. It sees `pkga` in both cases but only the second run sees `pkgb`.
+    Eager(&'a [TextSize]),
+}
+
+impl AttachView<'_> {
+    fn sees(&self, index: &SemanticIndex, call: &SemanticCall, region: &AttachRegion) -> bool {
+        match *self {
+            AttachView::Anywhere => true,
+            AttachView::Eof => {
+                index.scope_is_eager(call.scope()) && matches!(region, AttachRegion::Unconditional)
+            },
+            AttachView::Lazy {
+                offset,
+                scope_id: scope,
+            } => match index.enclosing_lazy_scope(call.scope()) {
+                // The lazy view treats unconditional top-level attaches as
+                // preceding every body. Conditional attaches stay in their arm.
+                None => match region {
+                    AttachRegion::Unconditional => true,
+                    AttachRegion::Conditional { .. } => region.contains(call, offset),
+                },
+                // A lazy body's attach reaches only that body and its descendants,
+                // and only after the call returns.
+                Some(unit) => {
+                    index
+                        .ancestor_scope_ids(scope)
+                        .any(|ancestor| ancestor == unit) &&
+                        region.contains(call, offset)
+                },
+            },
+            AttachView::Eager(offsets) => {
+                index.scope_is_eager(call.scope()) &&
+                    offsets.iter().any(|&offset| region.contains(call, offset))
+            },
+        }
+    }
+}
+
+/// Layers that a sourcing file makes visible to the sourced file. `file` is the
+/// file holding the `source()` call.
+#[derive(Debug, Clone, PartialEq, Eq, salsa::SalsaValue)]
+pub(crate) struct InheritedLayers {
+    pub file: File,
+    pub layers: CrossFileLayers,
+}
+
+/// The point in a package's load at which a file views its collation siblings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum CollationView {
+    /// In load order (a top-level statement): only siblings sourced before this
+    /// point have loaded, so a name defined later in the collation isn't visible.
+    Eager,
+    /// The code runs after the whole collation has loaded (a function body,
+    /// or end-of-file), so every sibling is visible.
+    Deferred,
+}
+
+/// An import view combines the collation files that have loaded with the file's
+/// attaches that have run. Keeping them together ensures offset-based and
+/// offset-independent lookups use the same visibility rules.
+#[derive(Clone, Copy)]
+struct ImportView<'a> {
+    collation: CollationView,
+    attaches: AttachView<'a>,
+}
+
+impl<'a> ImportView<'a> {
+    /// Visibility after the file finishes: every collation sibling and its
+    /// unconditional top-level attaches.
+    const DEFERRED: Self = Self {
+        collation: CollationView::Deferred,
+        attaches: AttachView::Eof,
+    };
+
+    /// Eager scopes see preceding collation files and attaches that have run.
+    /// Lazy scopes see the complete collation and attaches visible from their
+    /// containing scope.
+    fn at(index: &SemanticIndex, offset: &'a TextSize) -> Self {
+        let (cursor_scope, _) = index.scope_at(*offset);
+
+        match index.scope_is_eager(cursor_scope) {
+            true => Self {
+                collation: CollationView::Eager,
+                attaches: AttachView::Eager(slice::from_ref(offset)),
+            },
+            false => Self {
+                collation: CollationView::Deferred,
+                attaches: AttachView::Lazy {
+                    offset: *offset,
+                    scope_id: cursor_scope,
+                },
+            },
+        }
+    }
+}
+
 #[salsa::tracked]
 impl File {
-    /// The import layers visible to this file at end-of-file, in R's lookup
-    /// (LIFO) priority order. Symbols that don't have local bindings (are
-    /// unbound in the file's semantic index) can be resolved against these
-    /// imports.
+    /// Every import layer this file could see, in R's lookup (LIFO) priority
+    /// order. Symbols that don't have local bindings (are unbound in the file's
+    /// semantic index) can be resolved against these imports.
+    ///
+    /// Models code that runs after the file finishes. Every collation sibling
+    /// and unconditional top-level attach is visible, even when the
+    /// `library()` call appears later in the file. Attaches inside lazy bodies
+    /// or conditional arms do not contribute because their code may not run.
     ///
     /// `library()` calls further down the file come earlier in the returned
     /// `Vec`, and collation files later in the package come earlier too. The
@@ -45,36 +273,24 @@ impl File {
     ///
     /// Offset-independent and stable across cursor moves. Recomputed only when
     /// the file's package membership, NAMESPACE, or this file's semantic calls
-    /// actually change. See [`File::imports_at`] for the offset-narrowed subset
-    /// of imports.
+    /// actually change. See [`File::imports_at`] for the position-specific
+    /// variant.
     #[salsa::tracked(returns(ref))]
     pub fn imports(self, db: &dyn Db) -> Vec<ImportLayer> {
-        match self.package(db) {
-            Some(package) if is_testthat_file(self, db) => {
-                testthat_imports(self, db, package, None)
-            },
-            Some(package) if is_package_source(self, db, package) => {
-                package_imports(self, db, package)
-            },
-            // A file with a package back-pointer that isn't a loadable `R/`
-            // file (`data-raw/`, `inst/`, a non-collated `R/` file) lives in
-            // the package but isn't loaded with it. Resolve it as a standalone
-            // script, same as a file with no package at all.
-            _ => script_imports(self, db),
-        }
+        self.imports_in(db, ImportView::DEFERRED)
     }
 
     /// Import layers visible at an `offset` in a file:
     ///
-    /// - **Cursor in lazy context**: returns the full lazy view. Lazy
-    ///   contexts like functions are treated as if they run after the
-    ///   file is fully sourced (over-approximation). Any `library()` /
-    ///   collation entry is potentially visible regardless of where it
-    ///   appears relative to the cursor.
+    /// - **Cursor in lazy context**: every collation sibling and unconditional
+    ///   top-level attach is visible. Attaches from the current or enclosing lazy
+    ///   body must precede the cursor, and conditional attaches remain limited to
+    ///   the arm that attaches them.
     ///
-    /// - **Top-level cursor (script)**: only `library()` calls that
-    ///   have occurred before `offset`. Most recently attached comes
-    ///   first.
+    /// - **Top-level cursor (script)**: `library()` calls before `offset`,
+    ///   most recently attached first. A script in an `R/` directory also
+    ///   sees its collation predecessors, most recently sourced first, the
+    ///   same convention as a package file and as with `shiny.autoload.r`.
     ///
     /// - **Top-level cursor (package)**: only collation predecessors
     ///   of this file. Most recently sourced predecessor comes
@@ -83,277 +299,445 @@ impl File {
     /// Plain method rather than `#[salsa::tracked]`. Tracking would key the
     /// cache on `(self, offset)`, creating one entry per cursor position.
     /// Skipping the cache is fine because the body just reads already-cached
-    /// subqueries (`imports`, `semantic_index`) and applies an O(n) filter.
+    /// subqueries (`cross_file_layers`, `semantic_index`) and applies an O(n)
+    /// filter.
     pub fn imports_at(self, db: &dyn Db, offset: TextSize) -> Vec<ImportLayer> {
+        self.imports_in(db, ImportView::at(self.semantic_index(db), &offset))
+    }
+
+    fn imports_in(self, db: &dyn Db, view: ImportView<'_>) -> Vec<ImportLayer> {
+        let layers = self.resolution_layers(db, view.collation);
+        let own = self.attach_layers(db, view.attaches);
+        layers.lookup_order(db, &own).collect()
+    }
+
+    /// The file's own layers and the layers it inherits from the files that
+    /// source it, flattened into one lookup order.
+    fn resolution_layers<'db>(
+        self,
+        db: &'db dyn Db,
+        view: CollationView,
+    ) -> Cow<'db, CrossFileLayers> {
+        let inherited = self.inherited_layers(db, view);
+        if inherited.is_empty() {
+            return Cow::Borrowed(self.cross_file_layers(db, view));
+        }
+
+        let mut enclosing = Vec::new();
+        let mut attaches = Vec::new();
+        for layers in self.layers_by_sourcing_file(db, view) {
+            enclosing.extend(layers.enclosing.iter().cloned());
+            attaches.extend(layers.attaches.iter().cloned());
+        }
+
+        // `LoadKind::Namespace` excludes source-site inheritance, leaving only
+        // contexts with the default session search path.
+        Cow::Owned(CrossFileLayers {
+            enclosing,
+            attaches,
+            tail: SearchPathTail::Default,
+        })
+    }
+
+    /// The lookup-ordered layers this file's lazy / end-of-file view sees: the
+    /// file's own [`File::cross_file_layers`], then one alternative per file
+    /// that sources it (see [`File::inherited_layers`]).
+    ///
+    /// The alternatives are resolved independently, not as a priority order.
+    /// Symbols resolve in each and are returned as a union of results.
+    ///
+    /// Tracked query, firewall between `resolve()` and the `no_eq`
+    /// `semantic_index` read by `attach_layers()`.
+    #[salsa::tracked(returns(ref))]
+    pub(crate) fn imports_by_sourcing_file(self, db: &dyn Db) -> Vec<Vec<ImportLayer>> {
+        self.imports_by_sourcing_file_in(db, ImportView::DEFERRED)
+    }
+
+    /// [`File::imports_by_sourcing_file`], narrowed to `offset` the way
+    /// [`File::imports_at`] narrows [`File::imports`].
+    ///
+    /// Not tracked because keying a cache on `(self, offset)` would add an entry
+    /// per cursor position.
+    pub(crate) fn imports_by_sourcing_file_at(
+        self,
+        db: &dyn Db,
+        offset: TextSize,
+    ) -> Vec<Vec<ImportLayer>> {
+        self.imports_by_sourcing_file_in(db, ImportView::at(self.semantic_index(db), &offset))
+    }
+
+    fn imports_by_sourcing_file_in(
+        self,
+        db: &dyn Db,
+        view: ImportView<'_>,
+    ) -> Vec<Vec<ImportLayer>> {
+        let own = self.attach_layers(db, view.attaches);
+        self.layers_by_sourcing_file(db, view.collation)
+            .into_iter()
+            .map(|layers| layers.lookup_order(db, &own).collect())
+            .collect()
+    }
+
+    /// Returns one import chain for each inherited sourcing context, paired with
+    /// its direct sourcing file. It excludes this file's own context because
+    /// callers compare each inherited chain with [`File::standalone_imports()`].
+    ///
+    /// Not tracked. [`File::diagnostics()`] already reads the `no_eq` semantic
+    /// index, so this query cannot add a tracked cache boundary.
+    pub(crate) fn inherited_imports_by_sourcing_file(
+        self,
+        db: &dyn Db,
+    ) -> Vec<(File, Vec<ImportLayer>)> {
+        let own = self.attach_layers(db, AttachView::Anywhere);
+        self.inherited_layers(db, CollationView::Deferred)
+            .iter()
+            .map(|site| (site.file, site.layers.lookup_order(db, &own).collect()))
+            .collect()
+    }
+
+    /// The file's own layers, plus one alternative per file that sources it.
+    fn layers_by_sourcing_file(self, db: &dyn Db, view: CollationView) -> Vec<&CrossFileLayers> {
+        let mut alternatives: Vec<&CrossFileLayers> =
+            self.own_layers(db, view).into_iter().collect();
+        alternatives.extend(
+            self.inherited_layers(db, view)
+                .iter()
+                .map(|site| &site.layers),
+        );
+        alternatives
+    }
+
+    /// [`File::cross_file_layers`], unless an inherited source site replaces a
+    /// [`LoadKind::Fallback`] context.
+    ///
+    /// The fallback assumes a non-package `R/` directory collates. An explicit
+    /// source site supplies the actual context and overrides the fallback.
+    /// Retain the fallback when cycle recovery leaves no inherited source sites.
+    fn own_layers(self, db: &dyn Db, view: CollationView) -> Option<&CrossFileLayers> {
+        if self.has_fallback_context(db, view) && !self.inherited_layers(db, view).is_empty() {
+            return None;
+        }
+        Some(self.cross_file_layers(db, view))
+    }
+
+    /// The layers `self` inherits from each file that sources it, one entry per
+    /// file in `self.sourced_by(db)`, each recursively including what that file
+    /// itself inherits. That recursion is what makes inheritance transitive
+    /// across a `main.R -> setup.R -> helpers.R` chain.
+    ///
+    /// Empty for a file with an explicit load order.
+    ///
+    /// `cycle_result` is defensive. Resolving a source site reads the target's
+    /// `exports`, meaning that a source cycle is always also a `semantic_index`
+    /// cycle which has its own recovery.
+    #[salsa::tracked(returns(ref), cycle_result =
+    inherited_layers_cycle_result)]
+    pub(crate) fn inherited_layers(self, db: &dyn Db, view: CollationView) -> Vec<InheritedLayers> {
+        if load_context(db, self, view).kind.fixes_load_order() {
+            return Vec::new();
+        }
+
+        self.sourced_by(db)
+            .iter()
+            .map(|&sourcing_file| build_inherited_layers(db, self, sourcing_file, view))
+            .collect()
+    }
+
+    /// Bare [`File::imports`], without inheritance.
+    pub(crate) fn standalone_imports(self, db: &dyn Db) -> Vec<ImportLayer> {
+        let own = self.attach_layers(db, AttachView::Anywhere);
+        self.cross_file_layers(db, CollationView::Deferred)
+            .lookup_order(db, &own)
+            .collect()
+    }
+
+    /// This file's own `library()` / `require()` attaches as `Package` layers,
+    /// in LIFO order (latest-attached first), narrowed to what `view` admits.
+    /// Reads the file's own semantic index.
+    ///
+    /// An attach to a package absent from every root is dropped (no entity).
+    fn attach_layers(self, db: &dyn Db, view: AttachView<'_>) -> Vec<ImportLayer> {
         let index = self.semantic_index(db);
-        let file_scope = ScopeId::from(0);
-        let (cursor_scope, _) = index.scope_at(offset);
+        index
+            .semantic_calls()
+            .iter()
+            .rev()
+            .filter_map(|call| match call.kind() {
+                SemanticCallKind::Attach { package, region } => Some((call, package, region)),
+                // A `library()` inside the sourced file is forwarded separately
+                // by the semantic index builder as its own `Attach`, scoped to
+                // this `source()`.
+                SemanticCallKind::Source { .. } => None,
+            })
+            .filter(|(call, _, region)| view.sees(index, call, region))
+            .filter_map(|(_, package, _)| db.package_by_name(package).map(ImportLayer::Package))
+            .collect()
+    }
 
-        // Cursor in lazy context. EOF view, same as `imports()`.
-        if cursor_scope != file_scope {
-            return self.imports(db).clone();
-        }
+    /// The cross-file layers this file sees at load time, excluding its own
+    /// attaches (see [`CrossFileLayers`]). Never reads the file's own semantic
+    /// index, so it's safe to call while that index is being built.
+    ///
+    /// Tracked and keyed on `(self, view)`. Resolving one file's effects reads
+    /// this once per annotated call, and each rebuild walks every collation
+    /// predecessor's `attached_packages`, so recomputing it per call would be
+    /// O(predecessors) each time.
+    #[salsa::tracked(returns(ref))]
+    pub(crate) fn cross_file_layers(self, db: &dyn Db, view: CollationView) -> CrossFileLayers {
+        lower_load_context(db, load_context(db, self, view))
+    }
 
-        // Top-level cursor: sequential narrowing.
-        match self.package(db) {
-            // Helpers, setup, the package, and testthat are all sourced or
-            // attached before a test file's body runs, so they stay visible
-            // at any offset. Only the file's own top-level `library()` calls
-            // narrow.
-            Some(package) if is_testthat_file(self, db) => {
-                testthat_imports(self, db, package, Some(offset))
-            },
-            Some(package) if is_package_source(self, db, package) => {
-                narrow_package_top_level(self, db, package)
-            },
-            // A packaged file that isn't a loadable `R/` file narrows like a
-            // standalone script.
-            _ => narrow_script_top_level(self, db, offset),
-        }
+    /// Whether [`File::cross_file_layers`] uses the `R/`-directory fallback.
+    ///
+    /// Tracking avoids loader detection for every [`File::imports_at`] cursor
+    /// position.
+    #[salsa::tracked(returns(copy))]
+    pub(crate) fn has_fallback_context(self, db: &dyn Db, view: CollationView) -> bool {
+        load_context(db, self, view).kind.is_fallback()
+    }
+
+    /// The collation members of `self`'s own `R/` directory, in load order.
+    ///
+    /// Path-based only. The scan-time resolver
+    /// ([`SalsaImportsResolver`](crate::imports::SalsaImportsResolver)) calls
+    /// `cross_file_layers` while `self`'s own semantic index is still being
+    /// built. The query can't recurse into the index.
+    #[salsa::tracked(returns(ref))]
+    pub(crate) fn collation_siblings(self, db: &dyn Db) -> Vec<File> {
+        let Some(dir) = self.path(db).as_path().and_then(Utf8Path::parent) else {
+            return Vec::new();
+        };
+        files_in_directory(db, dir)
     }
 }
 
-/// Whether `file` is one of its package's loadable `R/` files, the ones in
-/// `package.files()`. A file can carry a package back-pointer without being
-/// loadable: `data-raw/`, `inst/`, and `R/` files left out of a `Collate:`
-/// directive all land in `package.scripts()` instead and resolve as
-/// standalone scripts.
-fn is_package_source(file: File, db: &dyn Db, package: Package) -> bool {
-    package.files(db).contains(&file)
+fn inherited_layers_cycle_result(
+    _db: &dyn Db,
+    _id: salsa::Id,
+    _file: File,
+    _view: CollationView,
+) -> Vec<InheritedLayers> {
+    Vec::new()
 }
 
-fn narrow_script_top_level(file: File, db: &dyn Db, offset: TextSize) -> Vec<ImportLayer> {
-    let mut layers = attach_layers(file, db, Some(offset));
-    extend_with_default_search_path(db, &mut layers);
-    layers
-}
-
-fn narrow_package_top_level(file: File, db: &dyn Db, package: Package) -> Vec<ImportLayer> {
-    let files = package.files(db);
-    let Some(file_pos) = files.iter().position(|f| *f == file) else {
-        // File claims membership but isn't in the package's `files`.
-        // Shouldn't happen.
-        log::warn!(
-            "File {file} has package back-pointer to {package} but is not in its files",
-            file = file.path(db),
-            package = package.name(db),
-        );
-        return file.imports(db).clone();
+/// What `sourcing_file` contributes to `target`, its own bands plus what it
+/// inherits in turn.
+///
+/// Collation predecessors rank below inherited attaches because they run
+/// outside the sourcing chain.
+fn build_inherited_layers(
+    db: &dyn Db,
+    file: File,
+    source_site: File,
+    view: CollationView,
+) -> InheritedLayers {
+    let offsets = match view {
+        CollationView::Deferred => None,
+        CollationView::Eager => source_offsets(db, source_site, file),
     };
 
-    let mut layers = Vec::new();
+    let own_cross = source_site.own_layers(db, view);
+    let grandparents = source_site.inherited_layers(db, view);
 
-    // Predecessors only, in LIFO order (latest-sourced first).
-    layers.extend(
-        files[..file_pos]
+    let (own_attach, exports_so_far) = match offsets.as_deref() {
+        Some(offsets) => (
+            source_site.attach_layers(db, AttachView::Eager(offsets)),
+            source_site.semantic_index(db).exports_at_sources(offsets),
+        ),
+        None => {
+            let attach_view = match view {
+                // `file` starts after `source_site` finishes, so it inherits only
+                // `source_site`'s unconditional top-level attaches.
+                CollationView::Deferred => AttachView::Eof,
+                // A `source()` call in a lazy body has no known call position, so
+                // any attach in `source_site` may have run first.
+                CollationView::Eager => AttachView::Anywhere,
+            };
+            (source_site.attach_layers(db, attach_view), None)
+        },
+    };
+
+    // An unpinned `source()` call may run after any top-level binding, so use
+    // the whole file as over-approximation.
+    let source_layer = match exports_so_far {
+        Some(exports_so_far) => ImportLayer::SourcingFile {
+            file: source_site,
+            exports_so_far,
+        },
+        None => ImportLayer::File(source_site),
+    };
+
+    // One Source effect can load several files (`sourceDir()`, `tar_source()`).
+    // Keep track of already sourced files, since their eager top-level context
+    // can see what's already been sourced.
+    let mut enclosing: Vec<ImportLayer> = match offsets.as_deref() {
+        Some(offsets) => loaded_before(db, source_site, file, offsets)
+            .into_iter()
+            .map(ImportLayer::File)
+            .collect(),
+        None => Vec::new(),
+    };
+
+    enclosing.push(source_layer);
+    if let Some(own_cross) = own_cross {
+        enclosing.extend(own_cross.enclosing.iter().cloned());
+    }
+    enclosing.extend(
+        grandparents
             .iter()
-            .rev()
-            .copied()
-            .map(ImportLayer::File),
+            .flat_map(|site| site.layers.enclosing.iter().cloned()),
     );
 
-    let namespace = package.namespace(db);
-    extend_with_namespace_imports(namespace, &mut layers);
-    extend_with_namespace_package_imports(db, namespace, &mut layers);
+    let mut attaches = own_attach;
+    attaches.extend(
+        grandparents
+            .iter()
+            .flat_map(|site| site.layers.attaches.iter().cloned()),
+    );
+    if let Some(own_cross) = own_cross {
+        attaches.extend(own_cross.attaches.iter().cloned());
+    }
 
-    extend_with_base(db, &mut layers);
-    layers
+    InheritedLayers {
+        file: source_site,
+        layers: CrossFileLayers {
+            enclosing,
+            attaches,
+            tail: own_cross.map_or(SearchPathTail::Default, |layers| layers.tail),
+        },
+    }
 }
 
-/// The file's `library()` / `require()` attaches as `Package` layers, in LIFO
-/// order (latest-attached first). `before` selects which calls to include:
+/// Returns source-order offsets for eager `source()` calls from `sourcing_file` to
+/// `file`.
 ///
-/// - `None`: every attach. The end-of-file view, used for lazy contexts.
-/// - `Some(offset)`: only top-level (file-scope) calls that have run by
-///   `offset`. Calls nested in a block (e.g. inside `test_that({})`) are
-///   dropped, as are calls after the offset.
-fn attach_layers(file: File, db: &dyn Db, before: Option<TextSize>) -> Vec<ImportLayer> {
-    let index = file.semantic_index(db);
-    let file_scope = ScopeId::from(0);
-    index
-        .semantic_calls()
+/// `None` leaves the context unpinned when no calls target `file` or any call is
+/// lazy. A lazy call can run after the rest of `sourcing_file`, so no offset bounds
+/// its imports.
+fn source_offsets(db: &dyn Db, sourcing_file: File, file: File) -> Option<Vec<TextSize>> {
+    let index = sourcing_file.semantic_index(db);
+    let mut offsets = Vec::new();
+
+    for site in sourcing_file.source_sites(db) {
+        if site.target() != Some(file) {
+            continue;
+        }
+        if !index.scope_is_eager(site.scope()) {
+            return None;
+        }
+        offsets.push(site.offset());
+    }
+
+    match offsets.is_empty() {
+        true => None,
+        false => Some(offsets),
+    }
+}
+
+/// The files the calls at `offsets` loaded before `file`, latest first.
+///
+/// One Source effect can expand to several targets (`sourceDir()`), which share
+/// the call's offset. Only the targets ahead of `file` in its own group have run
+/// by the time `file` does.
+fn loaded_before(db: &dyn Db, source_file: File, file: File, offsets: &[TextSize]) -> Vec<File> {
+    let sites = source_file.source_sites(db);
+    let mut loaded: Vec<File> = Vec::new();
+
+    // Descending, so the latest call's targets rank first.
+    for &offset in offsets.iter().rev() {
+        let targets: Vec<File> = sites
+            .iter()
+            .filter(|site| site.offset() == offset)
+            .filter_map(|site| site.target())
+            .collect();
+        let Some(own) = targets.iter().position(|target| *target == file) else {
+            continue;
+        };
+
+        for &target in targets[..own].iter().rev() {
+            if !loaded.contains(&target) {
+                loaded.push(target);
+            }
+        }
+    }
+
+    loaded
+}
+
+/// Lowers a context while preserving resolver precedence. Visible definitions
+/// and NAMESPACE imports rank above the file's attaches, and loader-provided
+/// search-path layers rank below them.
+pub(crate) fn lower_load_context(db: &dyn Db, context: LoadContext) -> CrossFileLayers {
+    let LoadContext {
+        kind,
+        visible_files,
+        implicit_attaches,
+    } = context;
+
+    let mut enclosing: Vec<ImportLayer> = visible_files
         .iter()
-        .rev()
-        .filter(|call| match before {
-            Some(offset) => call.scope() == file_scope && call.offset() < offset,
-            None => true,
+        .copied()
+        .map(ImportLayer::File)
+        .collect();
+    if let LoadKind::Namespace(package) = kind {
+        let namespace = package.namespace(db);
+        extend_with_namespace_imports(package, namespace, &mut enclosing);
+        extend_with_namespace_package_imports(db, namespace, &mut enclosing);
+    }
+
+    // `Deferred` includes successor attaches that run later and should outrank this
+    // file's own. Ranking them below loses only names shadowed by a package a
+    // successor reattaches.
+    let mut attaches = predecessor_attach_layers(db, &visible_files);
+    attaches.extend(
+        implicit_attaches
+            .iter()
+            .filter_map(|name| db.package_by_name(name).map(ImportLayer::Package)),
+    );
+
+    CrossFileLayers {
+        enclosing,
+        attaches,
+        tail: kind.search_path_tail(),
+    }
+}
+
+/// The search-path attaches contributed by a set of load-order files, latest
+/// file first (the slice is already LIFO), each file's own attaches latest
+/// first. Reads each file's `attached_packages`, never the caller's own index.
+/// An attach to a package absent from every root is dropped (no entity).
+fn predecessor_attach_layers(db: &dyn Db, files: &[File]) -> Vec<ImportLayer> {
+    // Warm the indices in forward load order before the LIFO pass below.
+    // `files` is LIFO (latest predecessor first). Reading attaches in LIFO
+    // order demands the latest predecessor's index first, which recursively
+    // demands its own predecessors, and so on. To reduce stack depth, query
+    // attached packages in the reverse order so that each file's own
+    // predecessors are already built when its turn comes in the LIFO pass.
+    for file in files.iter().rev() {
+        file.attached_packages(db);
+    }
+
+    files
+        .iter()
+        .flat_map(|file| {
+            file.attached_packages(db)
+                .iter()
+                .rev()
+                .filter_map(|name| db.package_by_name(name.text(db)).map(ImportLayer::Package))
         })
-        .filter_map(|call| attach_layer(db, call))
         .collect()
 }
 
-fn attach_layer(db: &dyn Db, call: &SemanticCall) -> Option<ImportLayer> {
-    match call.kind() {
-        SemanticCallKind::Attach { package: name } => {
-            db.package_by_name(name).map(ImportLayer::Package)
-        },
-        SemanticCallKind::Source { .. } => {
-            // A `library()` inside the sourced file is forwarded separately by
-            // the semantic index builder as its own `Attach`, scoped to this
-            // `source()`.
-            None
-        },
-    }
-}
-
-fn script_imports(file: File, db: &dyn Db) -> Vec<ImportLayer> {
-    let mut layers = attach_layers(file, db, None);
-    extend_with_default_search_path(db, &mut layers);
-    layers
-}
-
-fn package_imports(file: File, db: &dyn Db, package: Package) -> Vec<ImportLayer> {
-    let mut layers = Vec::new();
-
-    // All package files except self, in LIFO order (latest-sourced first).
-    // Self is excluded: a file's own top-level bindings come from `exports`,
-    // and including self here would create a cycle in `resolve` for unbound
-    // names.
-    //
-    // `package.files(db)` is collation-ordered (see `Package::files`), so
-    // reversing it gives R's LIFO precedence: a name defined late in the
-    // collation shadows the same name defined earlier.
-    layers.extend(
-        package
-            .files(db)
-            .iter()
-            .rev()
-            .copied()
-            .filter(|f| *f != file)
-            .map(ImportLayer::File),
-    );
-
-    let namespace = package.namespace(db);
-    extend_with_namespace_imports(namespace, &mut layers);
-    extend_with_namespace_package_imports(db, namespace, &mut layers);
-
-    extend_with_base(db, &mut layers);
-    layers
-}
-
-/// Imports visible to a `tests/testthat/` file, in R's LIFO priority order.
-///
-/// A test file runs with the package loaded and `testthat` attached, after
-/// testthat has sourced the package's `helper*.R` and `setup*.R` files into
-/// the test environment. So the layering, highest priority first, is:
-///
-/// 1. helper/setup files (sourced into the test env, shadow everything),
-/// 2. the whole package's `R/` code,
-/// 3. the package's NAMESPACE imports,
-/// 4. the file's own top-level `library()` calls,
-/// 5. `testthat` on the search path,
-/// 6. base.
-///
-/// `offset` narrows the components of layer 4. `None` produces the end-of-file
-/// view and uses every `library()` call. `Some(offset)` uses only the calls
-/// that have run by `offset`. The other layers are sourced or attached before
-/// the file body runs, so they never narrow.
-fn testthat_imports(
-    file: File,
-    db: &dyn Db,
+/// Push the `From` layer if `package`'s namespace has any `importFrom` entries.
+fn extend_with_namespace_imports(
     package: Package,
-    offset: Option<TextSize>,
-) -> Vec<ImportLayer> {
-    let mut layers = Vec::new();
-
-    // testthat sources `helper*.R` / `setup*.R` sorted, so reversing gives
-    // LIFO precedence. Self is dropped when the file being
-    // analysed is itself a helper/setup file: its own bindings come from
-    // `exports`, and keeping it would create a cycle in `resolve()` for
-    // unbound names (same reasoning as self-exclusion in `package_imports()`).
-    let mut support: Vec<File> = package
-        .scripts(db)
-        .iter()
-        .copied()
-        .filter(|f| *f != file && is_testthat_support_file(*f, db))
-        .collect();
-    support.sort_by_cached_key(|f| testthat_support_key(*f, db));
-    layers.extend(support.into_iter().rev().map(ImportLayer::File));
-
-    // The whole package is loaded when tests run, so every `R/` file is
-    // visible. Collation order reversed for LIFO, same as `package_imports()`.
-    layers.extend(
-        package
-            .files(db)
-            .iter()
-            .rev()
-            .copied()
-            .map(ImportLayer::File),
-    );
-
-    let namespace = package.namespace(db);
-    extend_with_namespace_imports(namespace, &mut layers);
-    extend_with_namespace_package_imports(db, namespace, &mut layers);
-
-    // The test file's own top-level `library()` / `require()` calls attach to
-    // the search path, below the package namespace and its imports but above
-    // `testthat` (they run after the runner attached it).
-    layers.extend(attach_layers(file, db, offset));
-
-    if let Some(testthat) = db.package_by_name("testthat") {
-        layers.push(ImportLayer::Package(testthat));
-    }
-
-    extend_with_base(db, &mut layers);
-    layers
-}
-
-/// True when `file` sits directly in a `tests/testthat/` directory, the
-/// layout testthat sources and runs files from. This is what separates a
-/// test file from an ordinary package script under e.g. `tests/` or `inst/`.
-fn is_testthat_file(file: File, db: &dyn Db) -> bool {
-    match file.path(db).as_file() {
-        Some(path) => in_testthat_dir(path.as_path()),
-        None => false,
-    }
-}
-
-fn in_testthat_dir(path: &Utf8Path) -> bool {
-    let Some(parent) = path.parent() else {
-        return false;
-    };
-    parent.file_name() == Some("testthat") &&
-        parent.parent().and_then(Utf8Path::file_name) == Some("tests")
-}
-
-/// testthat sources `helper*.R` and `setup*.R` from `tests/testthat/` into the
-/// test environment before running any test file, so their top-level bindings
-/// are visible to every test. testthat matches `^helper.*\.[rR]$` and
-/// `^setup.*\.[rR]$`; only the basename prefix matters here, since
-/// `package.scripts` already holds nothing but `.R` files. Teardown files are
-/// sourced after tests and rarely define names tests reference, so they're left
-/// out.
-fn is_testthat_support_file(file: File, db: &dyn Db) -> bool {
-    if !is_testthat_file(file, db) {
-        return false;
-    }
-    match file.path(db).file_name() {
-        Some(name) => name.starts_with("helper") || name.starts_with("setup"),
-        None => false,
-    }
-}
-
-/// Sort key for support files, matching testthat's `sort(dir(...))` order.
-/// We sort by raw basename (byte order = C locale for ASCII): case-sensitive
-/// like testthat, and platform-stable. This is a bit different to testthat
-/// which currently sorts based on locale, but arguably this should be fixed on
-/// the testthat side.
-fn testthat_support_key(file: File, db: &dyn Db) -> Cow<'_, str> {
-    file.path(db).file_name().unwrap_or_default()
-}
-
-/// Push the `From` layer if the namespace has any `importFrom` entries.
-/// Collects them into a single map from name to source package.
-fn extend_with_namespace_imports(namespace: &Namespace, layers: &mut Vec<ImportLayer>) {
+    namespace: &Namespace,
+    layers: &mut Vec<ImportLayer>,
+) {
     if namespace.imports.is_empty() {
         return;
     }
-    let map: HashMap<String, String> = namespace
-        .imports
-        .iter()
-        .map(|imp| (imp.name.clone(), imp.package.clone()))
-        .collect();
-    layers.push(ImportLayer::From(map));
+    layers.push(ImportLayer::From(package));
 }
 
 /// Push one `Package` layer per `import(pkg)` directive in the namespace
@@ -370,18 +754,17 @@ fn extend_with_namespace_package_imports(
     }
 }
 
-/// Push the `base` package as a `Package` layer. `base` is always
-/// implicitly available inside a package.
-fn extend_with_base(db: &dyn Db, layers: &mut Vec<ImportLayer>) {
-    if let Some(base) = db.package_by_name("base") {
-        layers.push(ImportLayer::Package(base));
-    }
+/// `base`, always the last thing R searches. `None` when it isn't scanned into
+/// any root (the R system library is normally on `.libPaths()`, so it is).
+fn base_layer(db: &dyn Db) -> Option<ImportLayer> {
+    db.package_by_name("base").map(ImportLayer::Package)
 }
 
-fn extend_with_default_search_path(db: &dyn Db, layers: &mut Vec<ImportLayer>) {
-    for pkg_name in crate::search::DEFAULT_SEARCH_PATH_PACKAGES {
-        if let Some(pkg) = db.package_by_name(pkg_name) {
-            layers.push(ImportLayer::Package(pkg));
-        }
-    }
+/// The default startup search path as `Package` layers, `stats` first through
+/// `base` last. Packages absent from every root drop out.
+fn default_search_path_layers(db: &dyn Db) -> Vec<ImportLayer> {
+    crate::search::DEFAULT_SEARCH_PATH_PACKAGES
+        .iter()
+        .filter_map(|name| db.package_by_name(name).map(ImportLayer::Package))
+        .collect()
 }

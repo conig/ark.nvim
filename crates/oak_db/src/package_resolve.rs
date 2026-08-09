@@ -37,7 +37,7 @@ impl<'db> Package {
     /// Returns an empty Vec when the name isn't bound anywhere in the package,
     /// or when `Exported` is requested for a name absent from
     /// `namespace.exports`.
-    #[salsa::tracked]
+    #[salsa::tracked(returns(clone), cycle_result = resolve_cycle_result)]
     pub fn resolve(
         self,
         db: &'db dyn Db,
@@ -68,13 +68,8 @@ impl<'db> Package {
         // resolve the name among its exports instead.
         if results.is_empty() {
             let name_str = name.text(db).as_str();
-            if let Some(import) = self
-                .namespace(db)
-                .imports
-                .iter()
-                .find(|import| import.name == name_str)
-            {
-                if let Some(source) = db.package_by_name(&import.package) {
+            if let Some(source_name) = self.imported_from(db).get(name_str) {
+                if let Some(source) = db.package_by_name(source_name) {
                     results = source.resolve(db, name, NamespaceVisibility::Exported);
                 }
             }
@@ -82,4 +77,21 @@ impl<'db> Package {
 
         results
     }
+}
+
+/// Return no candidates when re-export resolution revisits the same query key.
+/// This matches the result for a re-export whose source package is not loaded.
+fn resolve_cycle_result<'db>(
+    db: &'db dyn Db,
+    _id: salsa::Id,
+    package: Package,
+    name: Name<'db>,
+    _visibility: NamespaceVisibility,
+) -> Vec<Definition<'db>> {
+    log::warn!(
+        "Cyclic NAMESPACE re-export of `{}` detected at `{}`. Resolving to no candidates.",
+        name.text(db).as_str(),
+        package.name(db),
+    );
+    Vec::new()
 }

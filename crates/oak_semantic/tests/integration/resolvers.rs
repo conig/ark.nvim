@@ -1,0 +1,99 @@
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use oak_semantic::effects;
+use oak_semantic::EffectsHandlers;
+use oak_semantic::ImportsResolver;
+use oak_semantic::SourceResolution;
+use url::Url;
+
+/// Test resolver: an explicit search path resolved against the registry.
+///
+/// Resolves a bare callee by walking `attached` (LIFO) then its own
+/// always-attached packages, returning the first package's registry annotation
+/// for the name. Base is a normal entry in the always-attached list, not a
+/// special case. Flat: no re-export chase, that's the salsa resolver's job.
+pub struct TestImportsResolver {
+    /// Packages always on the search path, base last. These stand in for the
+    /// non-flow layers (base, default search path) the salsa resolver derives.
+    always_attached: Vec<String>,
+    /// Count of `resolve_effects` consultations, so tests can assert the front
+    /// gate keeps unannotated names off the resolver.
+    consultations: Rc<Cell<usize>>,
+    /// `source()` paths this resolver knows, mapped to the names they export.
+    sources: HashMap<String, SourceResolution>,
+}
+
+impl TestImportsResolver {
+    /// Resolver with base always attached: the minimum for the bare base NSE
+    /// functions (`local`, `with`, `within`, `evalq`) to resolve.
+    pub fn with_base() -> Self {
+        Self::with_attached(&[])
+    }
+
+    /// Resolver with `packages` always attached, plus base last. For effects
+    /// contributed by a package that would otherwise need a `library()` call to
+    /// enter the flow-precise attach set, e.g. magrittr's `%<>%` operator.
+    pub fn with_attached(packages: &[&str]) -> Self {
+        let mut always_attached: Vec<String> = packages.iter().map(|pkg| pkg.to_string()).collect();
+        always_attached.push(String::from("base"));
+        Self {
+            always_attached,
+            consultations: Rc::new(Cell::new(0)),
+            sources: HashMap::new(),
+        }
+    }
+
+    /// Register a sourced file at `path` exporting `names`, so `resolve_source`
+    /// returns a resolution for it. The URL is synthesized from the path.
+    pub fn with_source(mut self, path: &str, names: &[&str]) -> Self {
+        let resolution = SourceResolution {
+            url: Url::parse(&format!("file:///{path}")).unwrap(),
+            names: names.iter().map(|name| name.to_string()).collect(),
+            packages: vec![],
+        };
+        self.sources.insert(path.to_string(), resolution);
+        self
+    }
+
+    /// A handle to the consultation counter. Clone it before moving the
+    /// resolver into `build_index`, then read it after the build.
+    pub fn consultations(&self) -> Rc<Cell<usize>> {
+        Rc::clone(&self.consultations)
+    }
+}
+
+impl ImportsResolver for TestImportsResolver {
+    fn resolve_source(&mut self, path: &str) -> Option<SourceResolution> {
+        self.sources.get(path).cloned()
+    }
+
+    fn resolve_effects(&mut self, name: &str, attached: &[String]) -> Option<EffectsHandlers> {
+        self.consultations.set(self.consultations.get() + 1);
+        attached
+            .iter()
+            .rev()
+            .chain(self.always_attached.iter())
+            .find_map(|pkg| effects::lookup(pkg, name).copied())
+    }
+}
+
+/// Resolves base effects (so `library()` itself is recognized as an attach
+/// call) but reports every package as not installed. For asserting the
+/// builder's `UninstalledPackage` diagnostic at an attach site.
+pub struct MissingPackageResolver;
+
+impl ImportsResolver for MissingPackageResolver {
+    fn resolve_source(&mut self, _path: &str) -> Option<SourceResolution> {
+        None
+    }
+
+    fn resolve_effects(&mut self, name: &str, _: &[String]) -> Option<EffectsHandlers> {
+        effects::lookup("base", name).copied()
+    }
+
+    fn package_exists(&mut self, _package: &str) -> bool {
+        false
+    }
+}

@@ -1,5 +1,9 @@
 use url::Url;
 
+use crate::effects;
+use crate::effects::DirWalk;
+use crate::effects::EffectsHandlers;
+
 /// The result of resolving a `source()` call. Returned by
 /// [`ImportsResolver::resolve_source`].
 #[derive(Clone)]
@@ -28,14 +32,17 @@ pub struct SourceResolution {
 ///   for isolated indexing (CLI tools, unit tests).
 /// - `oak_db::SalsaImportsResolver`: salsa-backed lookup against the source graph.
 ///
-/// The trait grows along two axes as new analyses land:
+/// The trait has four queries:
 ///
 /// - [`resolve_source`](ImportsResolver::resolve_source) is the bulk
 ///   query, "enumerate every name this `source("path")` brings in," used
 ///   to inject `DefinitionKind::Import` entries at each source() offset.
-/// - A future `resolve_name(scope, name)` is the point query, "find
-///   the import that resolves this specific name in this scope," used by
-///   NSE call-site analysis.
+/// - [`resolve_effects`](ImportsResolver::resolve_effects) resolves a bare
+///   callee against imports, e.g. the search path, and returns known effects.
+/// - [`resolve_qualified_effects`](ImportsResolver::resolve_qualified_effects)
+///   resolves the effects of a `pkg::fn` (or `:::) callee against a named package.
+/// - [`package_exists`](ImportsResolver::package_exists) tells whether a
+///   `library()`/`require()` target resolves to an installed package.
 pub trait ImportsResolver {
     /// Resolve a `source("path")` call to the target file's exported names
     /// and transitive `library()` attachments. The path is the literal
@@ -43,6 +50,39 @@ pub trait ImportsResolver {
     /// anchoring it (workspace root, calling file's directory, ...).
     /// Returns `None` when the target can't be located.
     fn resolve_source(&mut self, path: &str) -> Option<SourceResolution>;
+
+    /// Resolve a directory path to one resolution per R file in load order.
+    /// `path` uses the same anchor as [`resolve_source`]. `walk` determines
+    /// whether nested directories are included.
+    ///
+    /// [`resolve_source`]: ImportsResolver::resolve_source
+    fn resolve_source_dir(&mut self, path: &str, walk: DirWalk) -> Vec<SourceResolution> {
+        let _ = (path, walk);
+        Vec::new()
+    }
+
+    /// Resolve a bare callee `name` to its effects. `attached` is the packages
+    /// attached at this point, in flow order. The builder passes it in because
+    /// the resolver can't query our own semantic index without creating a
+    /// cycle.
+    fn resolve_effects(&mut self, name: &str, attached: &[String]) -> Option<EffectsHandlers> {
+        let _ = (name, attached);
+        None
+    }
+
+    /// Resolve a namespace-qualified callee `pkg::fn` (or equivalently with
+    /// `:::`) to its effects.
+    fn resolve_qualified_effects(&mut self, package: &str, name: &str) -> Option<EffectsHandlers> {
+        effects::lookup(package, name).copied()
+    }
+
+    /// Whether `package` resolves to an installed package. Defaults to
+    /// `true`: a resolver that can't answer this must not produce false
+    /// "not installed" diagnostics.
+    fn package_exists(&mut self, package: &str) -> bool {
+        let _ = package;
+        true
+    }
 }
 
 /// Resolver that returns nothing. The builder skips all cross-file

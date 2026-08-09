@@ -1,33 +1,29 @@
-use aether_parser::parse;
-use aether_parser::RParserOptions;
 use aether_syntax::RSyntaxKind;
-use oak_semantic::build_index;
 use oak_semantic::semantic_index::DefinitionId;
 use oak_semantic::semantic_index::DefinitionKind;
 use oak_semantic::semantic_index::NamespaceAccessKind;
 use oak_semantic::semantic_index::ScopeId;
 use oak_semantic::semantic_index::ScopeKind;
-use oak_semantic::semantic_index::SemanticCallKind;
 use oak_semantic::semantic_index::SemanticIndex;
 use oak_semantic::semantic_index::SymbolFlags;
 use oak_semantic::semantic_index::UseId;
-use oak_semantic::ImportsResolver;
-use oak_semantic::NoopImportsResolver;
-use oak_semantic::SourceResolution;
-use url::Url;
 
-fn index(source: &str) -> SemanticIndex {
-    let parsed = parse(source, RParserOptions::default());
+use crate::common::index;
 
-    if parsed.has_error() {
-        panic!("source has syntax errors: {source}");
-    }
-
-    build_index(&parsed.tree(), NoopImportsResolver)
-}
-
-fn semantic_call_kinds(index: &SemanticIndex) -> Vec<&SemanticCallKind> {
-    index.semantic_calls().iter().map(|c| c.kind()).collect()
+/// Project each access into a comparable tuple via the public accessors.
+fn accesses(index: &SemanticIndex) -> Vec<(&str, &str, NamespaceAccessKind, u32)> {
+    index
+        .namespace_accesses()
+        .iter()
+        .map(|access| {
+            (
+                access.package(),
+                access.symbol(),
+                access.kind(),
+                access.offset().into(),
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -832,12 +828,6 @@ fn test_super_assignment_with_use_on_value_side() {
     assert_eq!(y.flags(), SymbolFlags::IS_USED);
 }
 
-// --- NSE / quoting constructs ---
-//
-// Identifiers inside `~`, `quote()`, and `bquote()` are currently recorded
-// as uses. This is a known simplification; refining it is deferred as
-// future work. These tests document the current behaviour.
-
 #[test]
 fn test_fixme_formula_records_uses() {
     let index = index("y ~ x + z");
@@ -873,35 +863,6 @@ fn test_fixme_one_sided_formula_records_uses() {
 }
 
 #[test]
-fn test_fixme_quote_records_uses() {
-    let index = index("quote(x + y)");
-    let file = ScopeId::from(0);
-
-    assert_eq!(
-        index.symbols(file).get("quote").unwrap().flags(),
-        SymbolFlags::IS_USED
-    );
-    assert_eq!(
-        index.symbols(file).get("x").unwrap().flags(),
-        SymbolFlags::IS_USED
-    );
-    assert_eq!(
-        index.symbols(file).get("y").unwrap().flags(),
-        SymbolFlags::IS_USED
-    );
-}
-
-#[test]
-fn test_fixme_quote_records_assignment() {
-    let index = index("quote(x <- 1)");
-    let file = ScopeId::from(0);
-
-    let x = index.symbols(file).get("x").unwrap();
-    assert_eq!(x.flags(), SymbolFlags::IS_BOUND);
-    assert_eq!(index.definitions(file).len(), 1);
-}
-
-#[test]
 fn test_fixme_formula_records_assignment() {
     let index = index("~ (x <- 1)");
     let file = ScopeId::from(0);
@@ -910,8 +871,6 @@ fn test_fixme_formula_records_assignment() {
     assert_eq!(x.flags(), SymbolFlags::IS_BOUND);
     assert_eq!(index.definitions(file).len(), 1);
 }
-
-// --- Lambda syntax ---
 
 #[test]
 fn test_lambda_creates_scope() {
@@ -960,8 +919,6 @@ fn test_lambda_nested() {
     );
 }
 
-// --- Unary expressions ---
-
 #[test]
 fn test_unary_not() {
     let index = index("!x");
@@ -979,8 +936,6 @@ fn test_unary_minus() {
     let x = index.symbols(file).get("x").unwrap();
     assert_eq!(x.flags(), SymbolFlags::IS_USED);
 }
-
-// --- Return, break, next ---
 
 #[test]
 fn test_return_expression() {
@@ -1010,8 +965,6 @@ fn test_next_no_uses() {
     assert_eq!(index.uses(file).len(), 0);
 }
 
-// --- Pipe operator ---
-
 #[test]
 fn test_pipe_operator() {
     let index = index("x |> f()");
@@ -1023,8 +976,6 @@ fn test_pipe_operator() {
     let f = index.symbols(file).get("f").unwrap();
     assert_eq!(f.flags(), SymbolFlags::IS_USED);
 }
-
-// --- Chained / nested assignments ---
 
 #[test]
 fn test_chained_assignment() {
@@ -1039,8 +990,6 @@ fn test_chained_assignment() {
 
     assert_eq!(index.definitions(file).len(), 2);
 }
-
-// --- Call arguments ---
 
 #[test]
 fn test_positional_call_arguments_are_uses() {
@@ -1108,8 +1057,6 @@ fn test_nested_calls() {
     assert_eq!(x.flags(), SymbolFlags::IS_USED);
 }
 
-// --- Chained extraction ---
-
 #[test]
 fn test_chained_dollar_extraction() {
     // `x$a$b` — only `x` should be a use
@@ -1120,8 +1067,6 @@ fn test_chained_dollar_extraction() {
     let x = index.symbols(file).get("x").unwrap();
     assert_eq!(x.flags(), SymbolFlags::IS_USED);
 }
-
-// --- Subset with named argument ---
 
 #[test]
 fn test_subset_named_argument_not_use() {
@@ -1135,8 +1080,6 @@ fn test_subset_named_argument_not_use() {
     assert!(index.symbols(file).get("drop").is_none());
     assert_eq!(index.symbols(file).len(), 1);
 }
-
-// --- Backticked identifiers ---
 
 #[test]
 fn test_backticked_identifier_assignment() {
@@ -1183,8 +1126,6 @@ fn test_backticked_for_variable() {
     );
 }
 
-// --- String as assignment target ---
-
 #[test]
 fn test_string_assignment_target() {
     // `"x" <- 1` is equivalent to `x <- 1` in R
@@ -1219,8 +1160,6 @@ fn test_string_super_assignment() {
     assert_eq!(x.flags(), SymbolFlags::IS_SUPER_BOUND);
 }
 
-// --- Multiple expressions (semicolons) ---
-
 #[test]
 fn test_semicolons_multiple_expressions() {
     let index = index("x <- 1; y <- 2");
@@ -1234,8 +1173,6 @@ fn test_semicolons_multiple_expressions() {
 
     assert_eq!(index.definitions(file).len(), 2);
 }
-
-// --- Nested for loops ---
 
 #[test]
 fn test_nested_for_loops() {
@@ -1252,8 +1189,6 @@ fn test_nested_for_loops() {
     assert_eq!(index.definitions(file).len(), 2);
 }
 
-// --- Assignment in loop body ---
-
 #[test]
 fn test_assignment_in_for_body() {
     let index = index("for (i in xs) x <- i");
@@ -1268,8 +1203,6 @@ fn test_assignment_in_for_body() {
     // 2 real defs (i, x), no LoopHeader placeholders.
     assert_eq!(index.definitions(file).len(), 2);
 }
-
-// --- File exports ---
 
 #[test]
 fn test_file_exports_simple() {
@@ -1308,220 +1241,47 @@ fn test_file_exports_sequential_redef_keeps_last() {
     assert_eq!(x[0].1.range().start(), biome_rowan::TextSize::from(7));
 }
 
-// --- File directives ---
-
 #[test]
-fn test_directive_library_identifier() {
-    let index = index("library(dplyr)");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Attach {
-        package: "dplyr".into()
-    }]);
+fn test_export_matches_the_exports_map() {
+    // Nested and unbound names are file-scope symbols, but must not be exports.
+    let index = index(
+        "x <- 1\nx <- 2\nif (cond) y <- 1 else y <- 2\nf <- function() { nested <- 1 }\nprint(z)\n",
+    );
+    let exports = index.exports();
+
+    for name in ["x", "y", "f", "nested", "z", "print", "cond", "absent"] {
+        let from_map: Vec<DefinitionId> = exports
+            .get(name)
+            .into_iter()
+            .flatten()
+            .map(|&(def_id, _)| def_id)
+            .collect();
+        let from_accessor: Vec<DefinitionId> =
+            index.export(name).map(|(def_id, _)| def_id).collect();
+        assert_eq!(from_accessor, from_map);
+    }
+
+    // Assert cardinalities separately so matching omissions cannot pass.
+    assert_eq!(index.export("x").count(), 1);
+    assert_eq!(index.export("y").count(), 2);
+    assert_eq!(index.export("f").count(), 1);
+    assert_eq!(index.export("nested").count(), 0);
 }
 
 #[test]
-fn test_directive_library_string() {
-    let index = index("library(\"tidyr\")");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Attach {
-        package: "tidyr".into()
-    }]);
+fn test_export_of_a_used_but_unbound_name_is_empty() {
+    // A use interns a name without adding an entry to `final_bindings`.
+    let index = index("print(z)\n");
+    assert_eq!(index.export("print").count(), 0);
+    assert_eq!(index.export("z").count(), 0);
 }
 
 #[test]
-fn test_directive_library_single_quoted_string() {
-    let index = index("library('ggplot2')");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Attach {
-        package: "ggplot2".into()
-    }]);
-}
-
-#[test]
-fn test_directive_require() {
-    let index = index("require(data.table)");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Attach {
-        package: "data.table".into()
-    }]);
-}
-
-#[test]
-fn test_directive_multiple_libraries() {
-    let index = index("library(dplyr)\nlibrary(tidyr)\nrequire(ggplot2)");
-    assert_eq!(semantic_call_kinds(&index), [
-        &SemanticCallKind::Attach {
-            package: "dplyr".into()
-        },
-        &SemanticCallKind::Attach {
-            package: "tidyr".into()
-        },
-        &SemanticCallKind::Attach {
-            package: "ggplot2".into()
-        },
-    ]);
-}
-
-#[test]
-fn test_directive_named_argument_ignored() {
-    let index = index("library(package = dplyr)");
-    assert_eq!(semantic_call_kinds(&index), Vec::<&SemanticCallKind>::new());
-}
-
-#[test]
-fn test_directive_multiple_arguments_ignored() {
-    let index = index("library(dplyr, warn.conflicts = FALSE)");
-    assert_eq!(semantic_call_kinds(&index), Vec::<&SemanticCallKind>::new());
-}
-
-#[test]
-fn test_directive_no_arguments_ignored() {
-    let index = index("library()");
-    assert_eq!(semantic_call_kinds(&index), Vec::<&SemanticCallKind>::new());
-}
-
-#[test]
-fn test_directive_library_in_function_scope() {
-    // library() in a function body now records a scoped directive
-    let index = index("f <- function() { library(dplyr) }");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Attach {
-        package: "dplyr".into()
-    }]);
-    let semantic_calls = index.semantic_calls();
-    assert_ne!(semantic_calls[0].scope(), ScopeId::from(0));
-}
-
-#[test]
-fn test_directive_non_static_argument_ignored() {
-    let index = index("library(get_pkg())");
-    assert_eq!(semantic_call_kinds(&index), Vec::<&SemanticCallKind>::new());
-}
-
-#[test]
-fn test_directive_preserves_offset() {
-    let index = index("x <- 1\nlibrary(dplyr)");
-    let semantic_calls = index.semantic_calls();
-    assert_eq!(semantic_calls.len(), 1);
-    assert_eq!(semantic_calls[0].offset(), biome_rowan::TextSize::from(7));
-}
-
-// --- source() semantic calls ---
-//
-// The no-resolver `semantic_index` (used by `oak_db`) always records
-// a `Source` semantic call for every `source(...)` site, even when
-// the path can't be resolved cross-file. Downstream queries in
-// `oak_db` translate the path to a `Script` and inject the target's
-// exports.
-
-#[test]
-fn test_source_call_records_path() {
-    let index = index("source(\"helpers.R\")");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Source {
-        path: "helpers.R".into(),
-        resolved: None,
-    }]);
-}
-
-#[test]
-fn test_source_call_single_quoted_string() {
-    let index = index("source('helpers.R')");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Source {
-        path: "helpers.R".into(),
-        resolved: None,
-    }]);
-}
-
-#[test]
-fn test_source_call_preserves_offset() {
-    let index = index("x <- 1\nsource(\"helpers.R\")");
-    let semantic_calls = index.semantic_calls();
-    assert_eq!(semantic_calls.len(), 1);
-    assert_eq!(semantic_calls[0].offset(), biome_rowan::TextSize::from(7));
-}
-
-#[test]
-fn test_source_call_records_file_scope() {
-    let index = index("source(\"helpers.R\")");
-    let semantic_calls = index.semantic_calls();
-    assert_eq!(semantic_calls.len(), 1);
-    assert_eq!(semantic_calls[0].scope(), ScopeId::from(0));
-}
-
-#[test]
-fn test_source_call_in_function_body_records_inner_scope() {
-    let index = index("f <- function() { source(\"helpers.R\") }");
-    let semantic_calls = index.semantic_calls();
-    assert_eq!(semantic_calls.len(), 1);
-    assert_eq!(semantic_calls[0].kind(), &SemanticCallKind::Source {
-        path: "helpers.R".into(),
-        resolved: None,
-    });
-    assert_ne!(semantic_calls[0].scope(), ScopeId::from(0));
-}
-
-#[test]
-fn test_source_call_non_static_path_ignored() {
-    let index = index("source(get_path())");
-    assert_eq!(semantic_call_kinds(&index), Vec::<&SemanticCallKind>::new());
-}
-
-#[test]
-fn test_source_call_non_static_local_ignored() {
-    // `local = some_env()` isn't statically resolvable; we bail rather
-    // than record the call.
-    let index = index("source(\"helpers.R\", local = some_env())");
-    assert_eq!(semantic_call_kinds(&index), Vec::<&SemanticCallKind>::new());
-}
-
-#[test]
-fn test_source_call_local_true_recorded() {
-    let index = index("source(\"helpers.R\", local = TRUE)");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Source {
-        path: "helpers.R".into(),
-        resolved: None,
-    }]);
-}
-
-#[test]
-fn test_source_and_library_calls_coexist() {
-    let index = index("library(dplyr)\nsource(\"helpers.R\")\nrequire(tidyr)");
-    assert_eq!(semantic_call_kinds(&index), [
-        &SemanticCallKind::Attach {
-            package: "dplyr".into()
-        },
-        &SemanticCallKind::Source {
-            path: "helpers.R".into(),
-            resolved: None,
-        },
-        &SemanticCallKind::Attach {
-            package: "tidyr".into()
-        },
-    ]);
-}
-
-#[test]
-fn test_source_call_emitted_without_resolver() {
-    // The pure `semantic_index` (no resolver) doesn't produce
-    // `DefinitionKind::Import` for sourced names — those come from
-    // the legacy `_with_source_resolver` path. But the `Source`
-    // semantic call IS recorded, so downstream queries in `oak_db`
-    // can still chase the forwarding chain.
-    let index = index("source(\"helpers.R\")");
-    let file_scope = ScopeId::from(0);
-    assert_eq!(index.definitions(file_scope).iter().count(), 0);
-    assert_eq!(index.semantic_calls().len(), 1);
-}
-
-/// Project each access into a comparable tuple via the public accessors.
-fn accesses(index: &SemanticIndex) -> Vec<(&str, &str, NamespaceAccessKind, u32)> {
-    index
-        .namespace_accesses()
-        .iter()
-        .map(|access| {
-            (
-                access.package(),
-                access.symbol(),
-                access.kind(),
-                access.offset().into(),
-            )
-        })
-        .collect()
+fn test_export_keeps_the_last_of_a_sequential_redef() {
+    let index = index("x <- 1\nx <- 2");
+    let defs: Vec<_> = index.export("x").collect();
+    assert_eq!(defs.len(), 1);
+    assert_eq!(defs[0].1.range().start(), biome_rowan::TextSize::from(7));
 }
 
 #[test]
@@ -1615,402 +1375,25 @@ fn test_file_exports_if_else_keeps_both_branches() {
     ]);
 }
 
-// --- source() semantic calls: bail paths ---
-//
-// Cases where the builder can't extract a statically-resolvable
-// path, so no `Source` semantic call is emitted. The valid-path
-// cases live above ("source() semantic calls").
-
 #[test]
-fn test_source_call_identifier_path_ignored() {
-    let index = index("source(my_file)");
-    assert_eq!(semantic_call_kinds(&index), Vec::<&SemanticCallKind>::new());
+fn test_nse_lazy_snapshot_accumulates() {
+    // Lazy NSE scope (e.g. inside a function) should accumulate definitions
+    // via watchers, just like function scopes do.
+    let index = index(
+        "\
+x <- 1
+f <- function() {
+    x
 }
+x <- 2
+",
+    );
+    let fun_scope = ScopeId::from(1);
 
-#[test]
-fn test_source_call_paste0_argument_ignored() {
-    let index = index("source(paste0(\"path/\", name))");
-    assert_eq!(semantic_call_kinds(&index), Vec::<&SemanticCallKind>::new());
-}
-
-#[test]
-fn test_source_call_named_file_argument_ignored() {
-    let index = index("source(file = \"helpers.R\")");
-    assert_eq!(semantic_call_kinds(&index), Vec::<&SemanticCallKind>::new());
-}
-
-#[test]
-fn test_source_call_no_arguments_ignored() {
-    let index = index("source()");
-    assert_eq!(semantic_call_kinds(&index), Vec::<&SemanticCallKind>::new());
-}
-
-// --- declare() directives ---
-
-#[test]
-fn test_directive_declare_source_no_resolver() {
-    let index = index("declare(source(\"helpers.R\"))");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Source {
-        path: "helpers.R".into(),
-        resolved: None,
-    }]);
-}
-
-#[test]
-fn test_directive_declare_source_single_quotes_no_resolver() {
-    let index = index("declare(source('utils.R'))");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Source {
-        path: "utils.R".into(),
-        resolved: None,
-    }]);
-}
-
-#[test]
-fn test_directive_tilde_declare_source_no_resolver() {
-    let index = index("~declare(source(\"helpers.R\"))");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Source {
-        path: "helpers.R".into(),
-        resolved: None,
-    }]);
-}
-
-#[test]
-fn test_fixme_directive_declare_library_transparent() {
-    // `declare()` is transparent: the inner `library(dplyr)` is still
-    // picked up as a directive.
-    // FIXME: We should declare `declare()` as a quoting function.
-    let index = index("declare(library(dplyr))");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Attach {
-        package: "dplyr".into()
-    }]);
-}
-
-#[test]
-fn test_directive_declare_not_at_file_scope() {
-    // declare()'s argument is walked into regardless of position, so a
-    // nested source() inside a function body is still recorded.
-    let index = index("f <- function() { declare(source(\"helpers.R\")) }");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Source {
-        path: "helpers.R".into(),
-        resolved: None,
-    }]);
-}
-
-#[test]
-fn test_directive_tilde_declare_not_at_file_scope() {
-    let index = index("f <- function() { ~declare(source(\"helpers.R\")) }");
-    assert_eq!(semantic_call_kinds(&index), [&SemanticCallKind::Source {
-        path: "helpers.R".into(),
-        resolved: None,
-    }]);
-}
-
-#[test]
-fn test_directive_declare_mixed_with_bare() {
-    let index = index("library(dplyr)\ndeclare(source(\"helpers.R\"))\nsource(\"utils.R\")");
-    assert_eq!(semantic_call_kinds(&index), [
-        &SemanticCallKind::Attach {
-            package: "dplyr".into()
-        },
-        &SemanticCallKind::Source {
-            path: "helpers.R".into(),
-            resolved: None,
-        },
-        &SemanticCallKind::Source {
-            path: "utils.R".into(),
-            resolved: None,
-        },
+    // Function is lazy: snapshot includes both x <- 1 and x <- 2.
+    let (_, bindings) = index.enclosing_bindings(fun_scope, UseId::from(0)).unwrap();
+    assert_eq!(bindings.definitions(), &[
+        DefinitionId::from(0),
+        DefinitionId::from(2)
     ]);
-}
-
-#[test]
-fn test_directive_declare_source_no_resolver_records_call() {
-    let index = index("x <- 1\ndeclare(source(\"helpers.R\"))");
-    let semantic_calls = index.semantic_calls();
-    assert_eq!(semantic_calls.len(), 1);
-    assert_eq!(semantic_calls[0].kind(), &SemanticCallKind::Source {
-        path: "helpers.R".into(),
-        resolved: None,
-    });
-}
-
-#[test]
-fn test_directive_tilde_declare_source_no_resolver_records_call() {
-    let index = index("x <- 1\n~declare(source(\"helpers.R\"))");
-    let semantic_calls = index.semantic_calls();
-    assert_eq!(semantic_calls.len(), 1);
-    assert_eq!(semantic_calls[0].kind(), &SemanticCallKind::Source {
-        path: "helpers.R".into(),
-        resolved: None,
-    });
-}
-
-#[test]
-fn test_directive_declare_non_call_arg_ignored() {
-    let index = index("declare(42)");
-    assert_eq!(semantic_call_kinds(&index), Vec::<&SemanticCallKind>::new());
-}
-
-#[test]
-fn test_directive_declare_identifier_source_arg_ignored() {
-    let index = index("declare(source(my_file))");
-    assert_eq!(semantic_call_kinds(&index), Vec::<&SemanticCallKind>::new());
-}
-
-// --- source() with resolver ---
-
-fn build_test_index(source: &str, resolver: impl ImportsResolver) -> SemanticIndex {
-    let parsed = parse(source, RParserOptions::default());
-    if parsed.has_error() {
-        panic!("source has syntax errors: {source}");
-    }
-    build_index(&parsed.tree(), resolver)
-}
-
-fn helper_resolution() -> SourceResolution {
-    SourceResolution {
-        url: Url::parse("file:///test/helpers.R").unwrap(),
-        names: vec!["helper".into()],
-        packages: vec![],
-    }
-}
-
-/// Returns the same resolution for any `source()` path.
-struct ConstResolver(SourceResolution);
-
-impl ImportsResolver for ConstResolver {
-    fn resolve_source(&mut self, _path: &str) -> Option<SourceResolution> {
-        Some(self.0.clone())
-    }
-}
-
-/// Returns per-path resolutions; unknown paths yield `None`.
-struct MapResolver(std::collections::HashMap<String, SourceResolution>);
-
-impl ImportsResolver for MapResolver {
-    fn resolve_source(&mut self, path: &str) -> Option<SourceResolution> {
-        self.0.get(path).cloned()
-    }
-}
-
-#[test]
-fn test_source_resolver_injects_definitions() {
-    // At file scope, source() injects Import definitions into the use-def map.
-    let code = "source(\"helpers.R\")\nhelper\n";
-    let index = build_test_index(code, ConstResolver(helper_resolution()));
-    let file = ScopeId::from(0);
-
-    // Use 0 is `source`, use 1 is `helper`
-    let map = index.use_def_map(file);
-    let bindings = map.bindings_at_use(UseId::from(1));
-    assert!(!bindings.definitions().is_empty());
-
-    let def_id = bindings.definitions()[0];
-    let def = &index.definitions(file)[def_id];
-    assert!(matches!(def.kind(), DefinitionKind::Import { .. }));
-    match def.kind() {
-        DefinitionKind::Import { file, name, .. } => {
-            assert_eq!(file.as_str(), "file:///test/helpers.R");
-            assert_eq!(name, "helper");
-        },
-        _ => panic!("expected Import kind"),
-    }
-
-    // file_exports() includes Import-kind definitions
-    let exports = index.exports();
-    assert!(exports.iter().any(|(name, _)| *name == "helper"));
-}
-
-#[test]
-fn test_source_resolver_offset_visibility() {
-    let code = "helper\nsource(\"helpers.R\")\nhelper\n";
-    let index = build_test_index(code, ConstResolver(helper_resolution()));
-    let file = ScopeId::from(0);
-    let map = index.use_def_map(file);
-
-    // First `helper` (before source call) is unbound
-    let first = map.bindings_at_use(UseId::from(0));
-    assert!(first.may_be_unbound());
-
-    // Second `helper` (after source call) resolves to the sourced definition
-    // Uses: helper(0), source(1), helper(2)
-    let second = map.bindings_at_use(UseId::from(2));
-    assert!(!second.definitions().is_empty());
-    let def_id = second.definitions()[0];
-    let def = &index.definitions(file)[def_id];
-    assert!(matches!(def.kind(), DefinitionKind::Import { .. }));
-}
-
-#[test]
-fn test_source_resolver_in_function_scope() {
-    // source() in a function scope injects Import-kind defs into
-    // the function scope's use-def map.
-    let code = "f <- function() {\n  source(\"helpers.R\")\n  helper\n}\nhelper\n";
-    let index = build_test_index(code, ConstResolver(helper_resolution()));
-    let fun = ScopeId::from(1);
-    let file = ScopeId::from(0);
-
-    // Function scope: source(0), helper(1)
-    let fun_map = index.use_def_map(fun);
-    let inner_bindings = fun_map.bindings_at_use(UseId::from(1));
-    assert_eq!(inner_bindings.definitions().len(), 1);
-    let def = &index.definitions(fun)[inner_bindings.definitions()[0]];
-    assert!(matches!(def.kind(), DefinitionKind::Import { .. }));
-
-    // File scope: `helper` does not resolve
-    let file_map = index.use_def_map(file);
-    let outer_bindings = file_map.bindings_at_use(UseId::from(0));
-    assert!(outer_bindings.definitions().is_empty());
-    assert!(outer_bindings.may_be_unbound());
-}
-
-#[test]
-fn test_source_resolver_packages_become_attach_calls() {
-    // The source() call is always recorded as a `Source` semantic call.
-    // With a resolver, packages attached transitively by the sourced
-    // file are *additionally* recorded as `Attach` semantic calls (the
-    // legacy "library() in a sourced file propagates to caller" path).
-    let code = "source(\"helpers.R\")\n";
-    let index = build_test_index(
-        code,
-        ConstResolver(SourceResolution {
-            url: Url::parse("file:///test/helpers.R").unwrap(),
-            names: vec![],
-            packages: vec!["dplyr".into()],
-        }),
-    );
-
-    assert_eq!(semantic_call_kinds(&index), [
-        &SemanticCallKind::Source {
-            path: "helpers.R".into(),
-            resolved: Some(Url::parse("file:///test/helpers.R").unwrap()),
-        },
-        &SemanticCallKind::Attach {
-            package: "dplyr".into()
-        },
-    ]);
-}
-
-#[test]
-fn test_source_resolver_later_shadows_earlier() {
-    // At file scope, both source() calls inject Import definitions
-    // into the use-def map. The later one shadows the earlier.
-    let code = "source(\"a.R\")\nsource(\"b.R\")\nfoo\n";
-
-    let a_url = Url::parse("file:///test/a.R").unwrap();
-    let b_url = Url::parse("file:///test/b.R").unwrap();
-
-    let mut resolutions = std::collections::HashMap::new();
-    resolutions.insert("a.R".to_string(), SourceResolution {
-        url: a_url.clone(),
-        names: vec!["foo".into()],
-        packages: Vec::new(),
-    });
-    resolutions.insert("b.R".to_string(), SourceResolution {
-        url: b_url.clone(),
-        names: vec!["foo".into()],
-        packages: Vec::new(),
-    });
-
-    let index = build_test_index(code, MapResolver(resolutions));
-
-    let file = ScopeId::from(0);
-    let map = index.use_def_map(file);
-
-    // Uses: source(0), source(1), foo(2)
-    let bindings = map.bindings_at_use(UseId::from(2));
-    assert_eq!(bindings.definitions().len(), 1);
-
-    let def_id = bindings.definitions()[0];
-    let def = &index.definitions(file)[def_id];
-    assert!(matches!(def.kind(), DefinitionKind::Import { .. }));
-    match def.kind() {
-        DefinitionKind::Import { file, .. } => assert_eq!(*file, b_url),
-        _ => panic!("expected Import kind"),
-    }
-}
-
-#[test]
-fn test_source_resolver_local_true_in_function_scope() {
-    // `local = TRUE` injects Import definitions into the function
-    // scope's use-def map.
-    let code = "f <- function() {\n  source(\"helpers.R\", local = TRUE)\n  helper\n}\nhelper\n";
-    let index = build_test_index(code, ConstResolver(helper_resolution()));
-    let fun = ScopeId::from(1);
-    let file = ScopeId::from(0);
-
-    let fun_map = index.use_def_map(fun);
-    // Function scope uses: source(0), helper(1)
-    let inner_bindings = fun_map.bindings_at_use(UseId::from(1));
-    assert_eq!(inner_bindings.definitions().len(), 1);
-    let def = &index.definitions(fun)[inner_bindings.definitions()[0]];
-    assert!(matches!(def.kind(), DefinitionKind::Import { .. }));
-
-    // File scope: `helper` does not resolve
-    let file_map = index.use_def_map(file);
-    let outer_bindings = file_map.bindings_at_use(UseId::from(0));
-    assert!(outer_bindings.definitions().is_empty());
-}
-
-#[test]
-fn test_source_resolver_local_true_shadows_local_def() {
-    // `source(local = TRUE)` injects into the use-def map and
-    // shadows a prior local binding.
-    let code = "f <- function() {\n  foo <- 1\n  source(\"helpers.R\", local = TRUE)\n  foo\n}\n";
-    let index = build_test_index(
-        code,
-        ConstResolver(SourceResolution {
-            url: Url::parse("file:///test/helpers.R").unwrap(),
-            names: vec!["foo".into()],
-            packages: vec![],
-        }),
-    );
-    let fun = ScopeId::from(1);
-
-    let fun_map = index.use_def_map(fun);
-    // Function scope uses: source(0), foo(1)
-    let bindings = fun_map.bindings_at_use(UseId::from(1));
-    assert_eq!(bindings.definitions().len(), 1);
-    let def = &index.definitions(fun)[bindings.definitions()[0]];
-    assert!(matches!(def.kind(), DefinitionKind::Import { .. }));
-}
-
-#[test]
-fn test_source_resolver_local_false_does_not_shadow_local_def() {
-    // source() without `local = TRUE` in a function scope now also
-    // injects Import definitions, shadowing the local binding.
-    let code = "f <- function() {\n  foo <- 1\n  source(\"helpers.R\")\n  foo\n}\n";
-    let index = build_test_index(
-        code,
-        ConstResolver(SourceResolution {
-            url: Url::parse("file:///test/helpers.R").unwrap(),
-            names: vec!["foo".into()],
-            packages: vec![],
-        }),
-    );
-    let fun = ScopeId::from(1);
-
-    let fun_map = index.use_def_map(fun);
-    // Function scope uses: source(0), foo(1)
-    let bindings = fun_map.bindings_at_use(UseId::from(1));
-    assert_eq!(bindings.definitions().len(), 1);
-    let def = &index.definitions(fun)[bindings.definitions()[0]];
-    assert!(matches!(def.kind(), DefinitionKind::Import { .. }));
-}
-
-#[test]
-fn test_source_resolver_local_def_shadowed_by_source() {
-    // A local definition followed by source() at file scope:
-    // the source() shadows the local def.
-    let code = "helper <- 1\nsource(\"helpers.R\")\nhelper\n";
-    let index = build_test_index(code, ConstResolver(helper_resolution()));
-    let file = ScopeId::from(0);
-    let map = index.use_def_map(file);
-
-    // Uses: source(0), helper(1)
-    let bindings = map.bindings_at_use(UseId::from(1));
-    assert_eq!(bindings.definitions().len(), 1);
-    let def_id = bindings.definitions()[0];
-    let def = &index.definitions(file)[def_id];
-    assert!(matches!(def.kind(), DefinitionKind::Import { .. }));
 }

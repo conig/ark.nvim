@@ -1,62 +1,98 @@
+//! Builds the [`SemanticIndex`] for one R file.
+//!
+//! The builder splits work by "scan unit": the file or a lazy body (a function,
+//! a lazy NSE body like `reactive()`). A unit is coarser than a scope. An eager
+//! scope nested inside it, like `local({ ... })`, is part of the same scan unit,
+//! while a lazy body starts a new one.
+//!
+//! Each scan unit is built in two passes: a scan, then a walk. The walk is the
+//! pass that writes the arenas (scopes, symbols, definitions, uses, use-def
+//! maps). It can only write them correctly if it already knows two things about
+//! the scope it's in, and neither is knowable at its own cursor:
+//!
+//! - Which calls are NSE, so it can push the scope for `local({ ... })` inline
+//!   as it reaches the call. That turns on whether the callee is shadowed at
+//!   that point in the flow.
+//!
+//! - The complete set of names the scope binds, so it can resolve a nested
+//!   scope's free variable to an ancestor binding. A lazy body (a function, a
+//!   `reactive()`) can reference a definition the ancestor's own walk hasn't
+//!   reached yet. That ancestor lookup is what the walk records as an enclosing
+//!   snapshot.
+//!
+//! So there are two flow states, on purpose. The scan's flow state tracks only
+//! eager bindings and is allowed to stay coarse: at an `if` join it only keeps
+//! the names consistently bound on every path. The walk builds the precise
+//! structures, such as the use-def map, where conditionality is recorded as
+//! `may_be_unbound`.
+
+use std::iter;
 use std::sync::Arc;
 
-use aether_syntax::AnyRArgumentName;
 use aether_syntax::AnyRExpression;
-use aether_syntax::AnyRParameterName;
 use aether_syntax::AnyRValue;
-use aether_syntax::RArgumentList;
 use aether_syntax::RBinaryExpression;
-use aether_syntax::RExpressionList;
-use aether_syntax::RFunctionDefinition;
-use aether_syntax::RNamespaceExpression;
-use aether_syntax::RParameter;
-use aether_syntax::RParameters;
 use aether_syntax::RRoot;
 use aether_syntax::RSyntaxKind;
-use aether_syntax::RSyntaxNode;
 use biome_rowan::AstNode;
-use biome_rowan::AstNodeList;
-use biome_rowan::AstPtr;
-use biome_rowan::AstSeparatedList;
-use biome_rowan::SyntaxNodeCast;
 use biome_rowan::TextRange;
-use biome_rowan::WalkEvent;
-use oak_core::syntax_ext::AnyRSelectorExt;
+use biome_rowan::TextSize;
 use oak_core::syntax_ext::RIdentifierExt;
 use oak_core::syntax_ext::RStringValueExt;
 use oak_index_vec::Idx;
 use oak_index_vec::IndexVec;
 use rustc_hash::FxHashMap;
+use scan::BindingSites;
+use scan::BodyScan;
+use scan::CallResolution;
+use scan::DeferredBody;
+use scan::FlowAttaches;
+use scan::FlowState;
+use scan::OpenScope;
 use smallvec::SmallVec;
 
 use crate::resolver::ImportsResolver;
+use crate::semantic_index::BindingTimelineBuilder;
 use crate::semantic_index::Definition;
 use crate::semantic_index::DefinitionId;
-use crate::semantic_index::DefinitionKind;
 use crate::semantic_index::EnclosingSnapshotId;
 use crate::semantic_index::EnclosingSnapshotKey;
 use crate::semantic_index::NamespaceAccess;
-use crate::semantic_index::NamespaceAccessKind;
 use crate::semantic_index::Scope;
 use crate::semantic_index::ScopeId;
 use crate::semantic_index::ScopeKind;
 use crate::semantic_index::SemanticCall;
-use crate::semantic_index::SemanticCallKind;
+use crate::semantic_index::SemanticDiagnostic;
 use crate::semantic_index::SemanticIndex;
 use crate::semantic_index::SymbolFlags;
+use crate::semantic_index::SymbolId;
 use crate::semantic_index::SymbolTableBuilder;
 use crate::semantic_index::Use;
 use crate::semantic_index::UseId;
 use crate::use_def_map::UseDefMapBuilder;
 
+mod effects;
+mod scan;
+mod walk;
+
 /// Build a [`SemanticIndex`] from a parsed R file with cross-file
 /// information supplied by `resolver`. See [`ImportsResolver`] for the
 /// available impls.
+///
+/// See the module docs for the scan/walk split. The scan
+/// ([`scan_expression`]) runs first over each scope, then the walk
+/// ([`walk_expression`]) reuses its decisions and pushes NSE scopes inline.
+///
+/// [`scan_expression`]: SemanticIndexBuilder::scan_expression
+/// [`walk_expression`]: SemanticIndexBuilder::walk_expression
 pub fn build_index(root: &RRoot, resolver: impl ImportsResolver) -> SemanticIndex {
     let range = root.syntax().text_trimmed_range();
+
     let mut builder = SemanticIndexBuilder::new(range, resolver);
-    builder.pre_scan_scope(root.syntax());
-    builder.collect_expression_list(&root.expressions());
+    builder.begin_scan();
+    builder.scan_expression_list(&root.expressions());
+    builder.scan_deferred_bodies(0);
+    builder.walk_expression_list(&root.expressions());
     builder.finish()
 }
 
@@ -64,17 +100,94 @@ pub fn build_index(root: &RRoot, resolver: impl ImportsResolver) -> SemanticInde
 // parallel arrays are pushed in lockstep so they stay indexed by the same
 // `ScopeId`.
 struct SemanticIndexBuilder<R: ImportsResolver> {
+    resolver: R,
     scopes: IndexVec<ScopeId, Scope>,
+    current_scope: ScopeId,
+    // Diagnostics collected during the build and logged on `finish()`. A minimal
+    // channel for now, no user-facing surface.
+    diagnostics: Vec<SemanticDiagnostic>,
+    scan: ScanState,
+    walk: WalkState,
+}
+
+/// State owned by the scan pass.
+///
+/// Binding state comes in two views, because eager and lazy code ask
+/// different questions.
+///
+/// - An eager callee is shadowed only by bindings that already ran.
+///   `bound_so_far` reflects this view. It rewinds at branch joins and is
+///   reseeded for each scan unit. Forward bindings (defined later) and
+///   deferred bindings (`on.exit()`, `<<-`) don't enter `bound_so_far`.
+/// - A lazy body runs after its scope has finished and resolves symbols
+///   in the whole scope. `bound_anywhere` reflects this view.
+///
+/// Both views are written together by `record_binding()`. They diverge on
+/// two rules. Names inherited from enclosing scopes seed `bound_so_far` only,
+/// via `begin_scan()`. Names bound by a deferred body reach the owner's
+/// `bound_anywhere` only, because the deferred scan restores `bound_so_far`
+/// afterwards, so the name is visible to lazy readers without shadowing an
+/// eager callee after the call.
+struct ScanState {
+    bound_anywhere: IndexVec<ScopeId, BindingSites>,
+    bound_so_far: FlowState,
+    // Scopes the scan has entered that are not yet allocated in the arena,
+    // innermost last.
+    open_scopes: Vec<OpenScope>,
+    // What the scan prepared for each child body, keyed by the body's range.
+    // See [`BodyScan`].
+    body_scans: FxHashMap<TextRange, BodyScan>,
+    // Packages attached on every path so far, the attach analog of
+    // `bound_so_far` (file level and eager NSE descents, appended only when
+    // `!is_lazy()`). A `library()` on only one branch, or in a loop body that
+    // may not run, drops at the join. An eager callee reads the flow-precise
+    // prefix during the file scan. A lazy callee reads the end-of-file value
+    // during the walk, paired with `attached_inherited` for what was live where
+    // that body was defined.
+    attached_so_far: FlowAttaches,
+    // Where a conditional attach stops holding, keyed by the attaching call's
+    // offset, holding the (package, end) pairs recorded at that offset (almost
+    // always one; a `source()` forwarding several packages can produce
+    // several). Written when a branch or loop join drops the attach from
+    // `attached_so_far`, and read by the walk onto the `SemanticCall` so an
+    // offset-based consumer narrows the same way the scan does.
+    attach_effect_ends: FxHashMap<TextSize, Vec<(String, TextSize)>>,
+    // Attaches that were live where the current scan unit was defined, cleared
+    // and reseeded by `begin_scan()`. A lazy body inherits them, e.g. in
+    // `if (cond) { library(shiny); f <- function() reactive({ ... }) }`. Empty
+    // for the file scope and for any unit defined outside a branch.
+    attached_inherited: Vec<String>,
+    // Every package attached on any eager path, paired with the attaching
+    // call's range, in attach order. Unlike `attached_so_far`, this is never
+    // dropped or truncated at a branch or loop join. Used to probe whether an
+    // effect decision based on the linear view is ambiguous across paths
+    // (`record_conditional_attach_ambiguity()`).
+    attached_anywhere: Vec<(String, TextRange)>,
+    // Per-call facts resolved by the scanner in flow order, keyed by the call's
+    // range. See `CallResolution`.
+    call_resolutions: FxHashMap<TextRange, CallResolution>,
+    // `Current + Lazy` bodies (e.g. `rlang::on_load()`) queued at their call
+    // sites, scanned when their enclosing scan unit finishes.
+    deferred_bodies: Vec<DeferredBody>,
+}
+
+/// State written by the walk pass: the per-scope arenas and the flat outputs
+/// carried into the final [`SemanticIndex`]. Note that the scan reads some of
+/// this data mid-flight, which is why we keep both states in a single builder.
+struct WalkState {
     symbol_tables: IndexVec<ScopeId, SymbolTableBuilder>,
     definitions: IndexVec<ScopeId, IndexVec<DefinitionId, Definition>>,
     uses: IndexVec<ScopeId, IndexVec<UseId, Use>>,
     use_def_maps: IndexVec<ScopeId, UseDefMapBuilder>,
-    current_scope: ScopeId,
-    pre_scans: IndexVec<ScopeId, PreScanScope>,
-    enclosing_snapshots: FxHashMap<EnclosingSnapshotKey, (ScopeId, EnclosingSnapshotId)>,
+    // The chain of binding ancestors for a use, innermost first.
+    enclosing_snapshots:
+        FxHashMap<EnclosingSnapshotKey, SmallVec<[(ScopeId, EnclosingSnapshotId); 1]>>,
+    // Lazy uses share a growing snapshot per `(use scope, nested symbol,
+    // ancestor scope)`.
+    lazy_snapshots: FxHashMap<(ScopeId, SymbolId, ScopeId), EnclosingSnapshotId>,
     semantic_calls: Vec<SemanticCall>,
     namespace_accesses: Vec<NamespaceAccess>,
-    resolver: R,
+    bindings_at_sources: BindingTimelineBuilder,
 }
 
 impl<R: ImportsResolver> SemanticIndexBuilder<R> {
@@ -84,7 +197,7 @@ impl<R: ImportsResolver> SemanticIndexBuilder<R> {
         let mut definitions = IndexVec::new();
         let mut uses = IndexVec::new();
         let mut use_def_maps = IndexVec::new();
-        let mut pre_scans = IndexVec::new();
+        let mut bound_anywhere = IndexVec::new();
 
         // The descendants range starts empty (`n+1..n+1`). `pop_scope` later
         // fills in `descendants.end` with the current arena length. Everything
@@ -103,20 +216,36 @@ impl<R: ImportsResolver> SemanticIndexBuilder<R> {
         definitions.push(IndexVec::new());
         uses.push(IndexVec::new());
         use_def_maps.push(UseDefMapBuilder::new());
-        pre_scans.push(PreScanScope::new());
+        bound_anywhere.push(BindingSites::new());
 
         Self {
             scopes,
-            symbol_tables,
-            definitions,
-            uses,
-            use_def_maps,
             current_scope: file_scope,
-            pre_scans,
-            enclosing_snapshots: FxHashMap::default(),
-            semantic_calls: Vec::new(),
-            namespace_accesses: Vec::new(),
+            diagnostics: Vec::new(),
             resolver,
+            scan: ScanState {
+                bound_anywhere,
+                call_resolutions: FxHashMap::default(),
+                bound_so_far: FlowState::default(),
+                body_scans: FxHashMap::default(),
+                attached_so_far: FlowAttaches::default(),
+                attach_effect_ends: FxHashMap::default(),
+                attached_inherited: Vec::new(),
+                attached_anywhere: Vec::new(),
+                open_scopes: Vec::new(),
+                deferred_bodies: Vec::new(),
+            },
+            walk: WalkState {
+                symbol_tables,
+                definitions,
+                uses,
+                use_def_maps,
+                enclosing_snapshots: FxHashMap::default(),
+                lazy_snapshots: FxHashMap::default(),
+                semantic_calls: Vec::new(),
+                namespace_accesses: Vec::new(),
+                bindings_at_sources: BindingTimelineBuilder::default(),
+            },
         }
     }
 
@@ -136,11 +265,11 @@ impl<R: ImportsResolver> SemanticIndexBuilder<R> {
         });
         self.current_scope = id;
 
-        self.symbol_tables.push(SymbolTableBuilder::new());
-        self.definitions.push(IndexVec::new());
-        self.uses.push(IndexVec::new());
-        self.use_def_maps.push(UseDefMapBuilder::new());
-        self.pre_scans.push(PreScanScope::new());
+        self.walk.symbol_tables.push(SymbolTableBuilder::new());
+        self.walk.definitions.push(IndexVec::new());
+        self.walk.uses.push(IndexVec::new());
+        self.walk.use_def_maps.push(UseDefMapBuilder::new());
+        self.scan.bound_anywhere.push(BindingSites::new());
 
         id
     }
@@ -155,829 +284,109 @@ impl<R: ImportsResolver> SemanticIndexBuilder<R> {
         };
     }
 
-    fn add_definition(
-        &mut self,
-        name: &str,
-        flags: SymbolFlags,
-        kind: DefinitionKind,
-        range: TextRange,
-    ) {
-        let symbol_id = self.symbol_tables[self.current_scope].intern(name, flags);
-        let def_id = self.definitions[self.current_scope].push(Definition {
-            symbol: symbol_id,
-            kind,
-            range,
-        });
-        self.use_def_maps[self.current_scope].ensure_symbol(symbol_id);
-        self.use_def_maps[self.current_scope].record_definition(symbol_id, def_id);
+    /// The scope that owns definitions of a `Current + Lazy` NSE scope. The
+    /// climb is iterative to handle e.g. `on_load(on_load(...))`. Every other
+    /// scope kind (`File`, `Function`, `Nse(Nested, _)`) owns its definitions
+    /// and stops the climb.
+    fn enclosing_owner(&self) -> Option<ScopeId> {
+        let parent = self.scopes[self.current_scope].parent?;
+        self.ancestor_scope_ids(parent)
+            .find(|&scope| self.scopes[scope].kind.owns_bindings())
     }
 
-    // Super-assignment is lexically in the current scope but binds in an
-    // ancestor. We record the definition in the current scope and append
-    // it to the target scope's use-def map (without shadowing prior
-    // definitions).
-    //
-    // R's `<<-` walks up the environment chain from the parent, targeting
-    // the first scope where the symbol is already bound. If no binding is
-    // found, it assigns in the global (file) scope.
-    fn add_super_definition(&mut self, name: &str, kind: DefinitionKind, range: TextRange) {
-        let Some(parent) = self.scopes[self.current_scope].parent else {
-            // A top-level `<<-` has no enclosing frame to walk to, so it binds
-            // in the file scope it already sits in. The marker scope and the
-            // binding scope coincide, so record one definition carrying both
-            // flags rather than pushing two coinciding entries.
-            let symbol_id = self.symbol_tables[self.current_scope].intern(
-                name,
-                SymbolFlags::IS_SUPER_BOUND.union(SymbolFlags::IS_BOUND),
-            );
-            let def_id = self.definitions[self.current_scope].push(Definition {
-                symbol: symbol_id,
-                kind,
-                range,
-            });
-            self.use_def_maps[self.current_scope].ensure_symbol(symbol_id);
-            self.use_def_maps[self.current_scope].record_deferred_definition(symbol_id, def_id);
-            return;
-        };
-
-        let target_scope = self.resolve_super_target(name, parent);
-
-        let symbol_id =
-            self.symbol_tables[self.current_scope].intern(name, SymbolFlags::IS_SUPER_BOUND);
-        self.definitions[self.current_scope].push(Definition {
-            symbol: symbol_id,
-            kind: kind.clone(),
-            range,
-        });
-
-        let target_symbol = self.symbol_tables[target_scope].intern(name, SymbolFlags::IS_BOUND);
-        let target_def_id = self.definitions[target_scope].push(Definition {
-            symbol: target_symbol,
-            kind,
-            range,
-        });
-        self.use_def_maps[target_scope].ensure_symbol(target_symbol);
-        self.use_def_maps[target_scope].record_deferred_definition(target_symbol, target_def_id);
+    /// The scan unit that controls when code in `scope` runs: that scope itself
+    /// when lazy, otherwise its nearest lazy ancestor. `None` means the code
+    /// runs while the file loads.
+    ///
+    /// Mid-build twin of [`SemanticIndex::enclosing_lazy_scope`], reading the
+    /// arena the walk is still filling in.
+    fn enclosing_lazy_scope(&self, scope: ScopeId) -> Option<ScopeId> {
+        self.ancestor_scope_ids(scope)
+            .find(|&scope| self.scopes[scope].kind.is_lazy())
     }
 
-    // Walk up from `start` to the first scope where `name` already has
-    // `IS_BOUND`. Returns that scope, or the file scope if no binding is found
-    // (mirroring R's assignment to the global environment). Reaching the file
-    // scope unbound ends the walk there, so its `parent` of `None` is the
-    // natural terminator.
-    fn resolve_super_target(&self, name: &str, start: ScopeId) -> ScopeId {
-        let mut scope = start;
-        loop {
-            if let Some(id) = self.symbol_tables[scope].id(name) {
-                if self.symbol_tables[scope]
-                    .symbol(id)
-                    .flags()
-                    .contains(SymbolFlags::IS_BOUND)
-                {
-                    return scope;
-                }
-            }
-            let Some(parent) = self.scopes[scope].parent else {
-                return scope;
-            };
-            scope = parent;
-        }
+    /// Returns `scope` and its ancestors, innermost first. Mirrors
+    /// [`SemanticIndex::ancestor_scope_ids`] while the index is still being built.
+    fn ancestor_scope_ids(&self, scope: ScopeId) -> impl Iterator<Item = ScopeId> + '_ {
+        iter::successors(Some(scope), |&scope| self.scopes[scope].parent)
     }
 
-    fn add_use(&mut self, name: &str, range: TextRange) {
-        let symbol_id = self.symbol_tables[self.current_scope].intern(name, SymbolFlags::IS_USED);
-        let use_id = self.uses[self.current_scope].push(Use {
-            symbol: symbol_id,
-            range,
-        });
-        self.use_def_maps[self.current_scope].ensure_symbol(symbol_id);
-        self.use_def_maps[self.current_scope].record_use(symbol_id, use_id);
-
-        // Associate free variables with the enclosing snapshot where the
-        // variable is defined
-        if self.use_def_maps[self.current_scope].is_may_be_unbound(symbol_id) {
-            let use_key = EnclosingSnapshotKey {
-                nested_scope: self.current_scope,
-                nested_symbol: symbol_id,
-            };
-            self.register_enclosing_snapshot(name, use_key);
-        }
+    /// Whether `scope` binds `name` anywhere, regardless of flow position.
+    /// `bound_anywhere` records syntactic bindings before the walk reaches
+    /// them. `walked_binding()` adds parameters and `<<-` targets after their
+    /// binding scope has been resolved.
+    fn scope_binds_anywhere(&self, scope: ScopeId, name: &str) -> bool {
+        self.walked_binding(scope, name).is_some() || self.scan.bound_anywhere[scope].binds(name)
     }
 
-    fn register_enclosing_snapshot(&mut self, name: &str, use_key: EnclosingSnapshotKey) {
-        // We're looking for a parent definition for this scope's free variable
-        // so start from parent
-        let Some(mut current_scope) = self.scopes[self.current_scope].parent else {
-            return;
-        };
-
-        loop {
-            let found_by_flag = self.symbol_tables[current_scope]
-                .id(name)
-                .is_some_and(|sym_id| {
-                    self.symbol_tables[current_scope]
-                        .symbol(sym_id)
-                        .flags()
-                        .contains(SymbolFlags::IS_BOUND)
-                });
-
-            let found_by_prescan = self.pre_scans[current_scope].has_name(name);
-
-            if found_by_flag || found_by_prescan {
-                // Intern with empty flags: we just need a stable `SymbolId` for
-                // the lookup key. If found via `found_by_flag`, the symbol
-                // already exists with `IS_BOUND`. If found via pre-scan only,
-                // the later `add_definition` call during the full walk will set
-                // `IS_BOUND`.
-                let enclosing_symbol_id =
-                    self.symbol_tables[current_scope].intern(name, SymbolFlags::empty());
-
-                if self.enclosing_snapshots.contains_key(&use_key) {
-                    return;
-                }
-
-                self.use_def_maps[current_scope].ensure_symbol(enclosing_symbol_id);
-                let snapshot_id = self.use_def_maps[current_scope]
-                    .register_enclosing_snapshot(enclosing_symbol_id);
-                self.enclosing_snapshots
-                    .insert(use_key, (current_scope, snapshot_id));
-
-                return;
-            }
-
-            let Some(parent) = self.scopes[current_scope].parent else {
-                return;
-            };
-            current_scope = parent;
+    /// The binding site for every name counted by
+    /// [`scope_binds_anywhere`](Self::scope_binds_anywhere). Prefers the
+    /// scan-collected site in `bound_anywhere`, then falls back to an
+    /// already-walked parameter or `<<-` target. Points the lazy-shadow
+    /// diagnostic at the overwrite.
+    fn scope_binding_range(&self, scope: ScopeId, name: &str) -> Option<TextRange> {
+        if let Some(range) = self.scan.bound_anywhere[scope].binding_range(name) {
+            return Some(range);
         }
+
+        // `IS_BOUND` always has a matching `Definition` row (see the invariant
+        // in `resolve_symbol()`), so the find never misses when the flag is set.
+        let sym_id = self.walked_binding(scope, name)?;
+        self.walk.definitions[scope]
+            .iter()
+            .find(|(_id, def)| def.symbol == sym_id)
+            .map(|(_id, def)| def.range)
     }
 
-    // --- Recursive descent ---
-
-    fn collect_expression_list(&mut self, list: &RExpressionList) {
-        for expr in list.iter() {
-            self.collect_expression(&expr);
-        }
-    }
-
-    fn collect_expression(&mut self, expr: &AnyRExpression) {
-        match expr {
-            AnyRExpression::RIdentifier(ident) => {
-                let name = ident.name_text();
-                let range = ident.syntax().text_trimmed_range();
-                self.add_use(&name, range);
-            },
-
-            AnyRExpression::RDots(dots) => {
-                self.add_use("...", dots.syntax().text_trimmed_range());
-            },
-
-            AnyRExpression::RDotDotI(ddi) => {
-                let name = ddi.syntax().text_trimmed().to_string();
-                self.add_use(&name, ddi.syntax().text_trimmed_range());
-            },
-
-            AnyRExpression::RFunctionDefinition(func) => {
-                self.collect_function(func);
-            },
-
-            AnyRExpression::RBracedExpressions(braced) => {
-                self.collect_expression_list(&braced.expressions());
-            },
-
-            AnyRExpression::RBinaryExpression(bin) => {
-                // `<-`, `=`, `->`, `<<-`, and `->>` are assignments when they appear as
-                // `RBinaryExpression`. In call arguments, `=` is consumed by
-                // the parser into `RArgumentNameClause` instead, so it never
-                // reaches here.
-                if is_assignment(bin) {
-                    self.collect_assignment(bin);
-                } else {
-                    if let Ok(lhs) = bin.left() {
-                        self.collect_expression(&lhs);
-                    }
-                    if let Ok(rhs) = bin.right() {
-                        self.collect_expression(&rhs);
-                    }
-                }
-            },
-
-            // Calls and subsets need explicit handling because argument name
-            // clauses contain `RIdentifier` nodes that should not be recorded
-            // as uses.
-            AnyRExpression::RCall(call) => {
-                if let Ok(func) = call.function() {
-                    self.collect_expression(&func);
-                }
-                if let Ok(args) = call.arguments() {
-                    self.collect_arguments(&args.items());
-                }
-                // TODO(nse): When eager NSE scopes land (e.g. `local()`) we should
-                // also consider nested scopes as long as they're not lazy (e.g.
-                // function definitions or NSE calls that don't evaluate
-                // immediately.
-                self.collect_semantic_call(call);
-            },
-            AnyRExpression::RSubset(subset) => {
-                if let Ok(object) = subset.function() {
-                    self.collect_expression(&object);
-                }
-                if let Ok(args) = subset.arguments() {
-                    self.collect_arguments(&args.items());
-                }
-            },
-            AnyRExpression::RSubset2(subset) => {
-                if let Ok(object) = subset.function() {
-                    self.collect_expression(&object);
-                }
-                if let Ok(args) = subset.arguments() {
-                    self.collect_arguments(&args.items());
-                }
-            },
-
-            AnyRExpression::RExtractExpression(extract) => {
-                // For `x$name` or `x@slot`, collect the object and skip the member
-                if let Ok(object) = extract.left() {
-                    self.collect_expression(&object);
-                }
-            },
-
-            AnyRExpression::RNamespaceExpression(expr) => {
-                self.collect_namespace_access(expr);
-            },
-
-            AnyRExpression::RForStatement(stmt) => {
-                // The for variable is always bound (R sets it to NULL for
-                // empty sequences), so its binding is recorded before the
-                // snapshot. Assignments inside the body are conditional
-                // (body may not execute for empty sequences).
-                if let Ok(variable) = stmt.variable() {
-                    self.add_definition(
-                        &variable.name_text(),
-                        SymbolFlags::IS_BOUND,
-                        DefinitionKind::ForVariable(AstPtr::new(stmt)),
-                        variable.syntax().text_trimmed_range(),
-                    );
-                }
-                if let Ok(sequence) = stmt.sequence() {
-                    self.collect_expression(&sequence);
-                }
-
-                let pre_loop = self.use_def_maps[self.current_scope].snapshot();
-
-                if let Ok(body) = stmt.body() {
-                    let first_use = self.uses[self.current_scope].next_id();
-                    self.collect_expression(&body);
-                    self.use_def_maps[self.current_scope].finish_loop_defs(
-                        &pre_loop,
-                        first_use,
-                        &self.uses[self.current_scope],
-                    );
-                }
-
-                self.use_def_maps[self.current_scope].merge(pre_loop);
-            },
-
-            AnyRExpression::RIfStatement(stmt) => {
-                // Condition is always evaluated
-                if let Ok(condition) = stmt.condition() {
-                    self.collect_expression(&condition);
-                }
-
-                let pre_if = self.use_def_maps[self.current_scope].snapshot();
-
-                // If-body (consequence)
-                if let Ok(consequence) = stmt.consequence() {
-                    self.collect_expression(&consequence);
-                }
-
-                let post_if = self.use_def_maps[self.current_scope].snapshot();
-                self.use_def_maps[self.current_scope].restore(pre_if);
-
-                // Else-body (alternative), if present. If absent, the
-                // "else path" is just the pre-if state we restored to.
-                if let Some(else_clause) = stmt.else_clause() {
-                    if let Ok(alternative) = else_clause.alternative() {
-                        self.collect_expression(&alternative);
-                    }
-                }
-
-                // After: definitions from both branches are live
-                self.use_def_maps[self.current_scope].merge(post_if);
-            },
-
-            AnyRExpression::RWhileStatement(stmt) => {
-                if let Ok(condition) = stmt.condition() {
-                    self.collect_expression(&condition);
-                }
-
-                let pre_loop = self.use_def_maps[self.current_scope].snapshot();
-
-                if let Ok(body) = stmt.body() {
-                    let first_use = self.uses[self.current_scope].next_id();
-                    self.collect_expression(&body);
-                    self.use_def_maps[self.current_scope].finish_loop_defs(
-                        &pre_loop,
-                        first_use,
-                        &self.uses[self.current_scope],
-                    );
-                }
-
-                // Body may not execute
-                self.use_def_maps[self.current_scope].merge(pre_loop);
-            },
-
-            AnyRExpression::RRepeatStatement(stmt) => {
-                // Body always executes at least once, so no merge with pre-loop state.
-                if let Ok(body) = stmt.body() {
-                    let pre_loop = self.use_def_maps[self.current_scope].snapshot();
-                    let first_use = self.uses[self.current_scope].next_id();
-                    self.collect_expression(&body);
-                    self.use_def_maps[self.current_scope].finish_loop_defs(
-                        &pre_loop,
-                        first_use,
-                        &self.uses[self.current_scope],
-                    );
-                }
-            },
-
-            AnyRExpression::RBogusExpression(_) => {},
-
-            // Generic fallback: walk over descendant nodes and collect their
-            // `AnyRExpression` children, letting `collect_expression`
-            // handle their contents. This covers `RUnaryExpression`,
-            // `RParenthesizedExpression`, `RReturnExpression`, literals, and
-            // any future expression types without needing explicit arms.
-            //
-            // NOTE: This also means that identifiers and assignments inside
-            // quoting constructs (`~`, `quote()`, `bquote()`) are recorded as
-            // uses and bindings. Refining this requires special-casing these
-            // forms, which we defer as future work.
-            //
-            // Once quoting is handled, `declare()` and `~declare()` will need
-            // explicit treatment: its arguments are quoted (not evaluated) but
-            // should still be inspected for directives like `source()`.
-            // Currently this works by accident because the generic traversal is
-            // transparent to both `declare()` and `~`.
-            _ => {
-                self.collect_descendants(expr.syntax());
-            },
-        }
-    }
-
-    // Walk descendant nodes of `expr`, collecting the outermost
-    // `AnyRExpression` nodes and recursing into them via `collect_expression`.
-    // This skips intermediate wrapper nodes (e.g. `RElseClause`) while
-    // correctly stopping at expression boundaries.
-    fn collect_descendants(&mut self, node: &RSyntaxNode) {
-        let mut preorder = node.preorder();
-
-        // Skip the root node itself
-        preorder.next();
-
-        while let Some(event) = preorder.next() {
-            let WalkEvent::Enter(node) = event else {
-                continue;
-            };
-            if let Some(expr) = node.cast::<AnyRExpression>() {
-                self.collect_expression(&expr);
-                preorder.skip_subtree();
-            }
-        }
-    }
-
-    fn collect_function(&mut self, fun: &RFunctionDefinition) {
-        let scope = self.push_scope(ScopeKind::Function, fun.syntax().text_trimmed_range());
-
-        if let Ok(params) = fun.parameters() {
-            self.collect_parameters(&params);
-        }
-        if let Ok(body) = fun.body() {
-            self.pre_scan_scope(body.syntax());
-            self.collect_expression(&body);
-        }
-
-        self.pop_scope(scope);
-    }
-
-    /// Pre-scan a scope to collect all definition names (skipping nested
-    /// function bodies). Runs before the full walk so that enclosing
-    /// snapshot registration can find where free variables are bound,
-    /// even when the walk in the parent scope hasn't reached the
-    /// definition yet. Must stay in sync with the full walk's definition
-    /// handling: any construct that calls `add_definition` should have a
-    /// corresponding entry here.
-    fn pre_scan_scope(&mut self, node: &RSyntaxNode) {
-        let mut preorder = node.preorder();
-        while let Some(event) = preorder.next() {
-            let WalkEvent::Enter(node) = event else {
-                continue;
-            };
-            let Some(expr) = AnyRExpression::cast(node) else {
-                continue;
-            };
-            match &expr {
-                // NSE scopes (e.g. `local({...})`) will also need to
-                // be skipped here once recognized, since their
-                // definitions belong to a child scope.
-                AnyRExpression::RFunctionDefinition(_) => {
-                    preorder.skip_subtree();
-                },
-                AnyRExpression::RBinaryExpression(bin)
-                    if is_assignment(bin) && !is_super_assignment(bin) =>
-                {
-                    let right = is_right_assignment(bin);
-                    let target = if right { bin.right() } else { bin.left() };
-                    if let Ok(target) = target {
-                        if let Some((name, range)) = assignment_name(&target) {
-                            self.pre_scans[self.current_scope].add(name, range);
-                        }
-                    }
-                },
-                AnyRExpression::RForStatement(stmt) => {
-                    if let Ok(variable) = stmt.variable() {
-                        self.pre_scans[self.current_scope]
-                            .add(variable.name_text(), variable.syntax().text_trimmed_range());
-                    }
-                },
-                _ => {},
-            }
-        }
-    }
-
-    fn collect_parameters(&mut self, params: &RParameters) {
-        for param in params.items().iter() {
-            let Ok(param) = param else { continue };
-            self.collect_parameter(&param);
-        }
-    }
-
-    fn collect_parameter(&mut self, param: &RParameter) {
-        let flags = SymbolFlags::IS_BOUND.union(SymbolFlags::IS_PARAMETER);
-
-        if let Ok(name) = param.name() {
-            match &name {
-                AnyRParameterName::RIdentifier(ident) => {
-                    self.add_definition(
-                        &ident.name_text(),
-                        flags,
-                        DefinitionKind::Parameter(AstPtr::new(param)),
-                        ident.syntax().text_trimmed_range(),
-                    );
-                },
-                AnyRParameterName::RDots(dots) => {
-                    self.add_definition(
-                        "...",
-                        flags,
-                        DefinitionKind::Parameter(AstPtr::new(param)),
-                        dots.syntax().text_trimmed_range(),
-                    );
-                },
-                AnyRParameterName::RDotDotI(ddi) => {
-                    self.add_definition(
-                        &ddi.syntax().text_trimmed().to_string(),
-                        flags,
-                        DefinitionKind::Parameter(AstPtr::new(param)),
-                        ddi.syntax().text_trimmed_range(),
-                    );
-                },
-            }
-        }
-
-        if let Some(default) = param.default() {
-            if let Ok(value) = default.value() {
-                self.collect_expression(&value);
-            }
-        }
-    }
-
-    fn collect_assignment(&mut self, op: &RBinaryExpression) {
-        let right = is_right_assignment(op);
-        let super_assign = is_super_assignment(op);
-
-        // Value side first to record uses before the binding. The uses
-        // might refer to the same symbol as the new binding, but refer
-        // to a different place (previous binding).
-        let value = if right { op.left() } else { op.right() };
-        if let Ok(value) = value {
-            self.collect_expression(&value);
-        }
-
-        let target = if right { op.right() } else { op.left() };
-        let Ok(target) = target else { return };
-
-        let Some((name, range)) = assignment_name(&target) else {
-            // Complex target (`x$foo <- rhs`, `x[1] <- rhs`, etc.) does
-            // not represent a binding. We recurse for uses.
-            self.collect_expression(&target);
-            return;
-        };
-
-        if super_assign {
-            self.add_super_definition(
-                &name,
-                DefinitionKind::SuperAssignment(AstPtr::new(op)),
-                range,
-            );
-        } else {
-            self.add_definition(
-                &name,
-                SymbolFlags::IS_BOUND,
-                DefinitionKind::Assignment(AstPtr::new(op)),
-                range,
-            );
-        }
-    }
-
-    fn collect_arguments(&mut self, args: &RArgumentList) {
-        for item in args.iter() {
-            let Ok(arg) = item else { continue };
-            if let Some(value) = arg.value() {
-                self.collect_expression(&value);
-            }
-        }
-    }
-
-    fn collect_namespace_access(&mut self, expr: &RNamespaceExpression) {
-        let Ok(operator) = expr.operator() else {
-            return;
-        };
-        let kind = match operator.kind() {
-            RSyntaxKind::COLON2 => NamespaceAccessKind::Export,
-            RSyntaxKind::COLON3 => NamespaceAccessKind::Internal,
-            _ => return,
-        };
-        let Some(package) = expr
-            .left()
-            .ok()
-            .and_then(|selector| selector.identifier_text())
-        else {
-            return;
-        };
-        let Some(symbol) = expr
-            .right()
-            .ok()
-            .and_then(|selector| selector.identifier_text())
-        else {
-            return;
-        };
-        let offset = expr.syntax().text_trimmed_range().start();
-        self.namespace_accesses
-            .push(NamespaceAccess::new(package, symbol, kind, offset));
-    }
-
-    fn collect_semantic_call(&mut self, call: &aether_syntax::RCall) {
-        let Ok(AnyRExpression::RIdentifier(ident)) = call.function() else {
-            return;
-        };
-
-        let fn_name = ident.name_text();
-        if fn_name == "library" || fn_name == "require" {
-            self.collect_attach_call(call);
-        } else if fn_name == "source" {
-            self.collect_source_call(call);
-        }
-    }
-
-    // ## `library()` / `require()` scoping
-    //
-    // In R, `library()` always modifies the global search path regardless
-    // of where it's called. Statically, we scope the call to
-    // `self.current_scope`: at file scope it's visible everywhere (sequential
-    // execution is guaranteed), but inside a function it's only visible
-    // within that function and its children, since the function might never
-    // be called. Same reasoning as `source()` calls.
-    fn collect_attach_call(&mut self, call: &aether_syntax::RCall) {
-        let Ok(args) = call.arguments() else {
-            return;
-        };
-        let mut items = args.items().iter();
-
-        // For now, only recognise exactly one unnamed argument. We'll do
-        // argument matching later (`character.only` unquoting is another
-        // complication).
-        let Some(Ok(first_arg)) = items.next() else {
-            return;
-        };
-        if first_arg.name_clause().is_some() || items.next().is_some() {
-            return;
-        }
-        let Some(value) = first_arg.value() else {
-            return;
-        };
-
-        let pkg_name = match &value {
-            AnyRExpression::RIdentifier(ident) => Some(ident.name_text()),
-            AnyRExpression::AnyRValue(AnyRValue::RStringValue(s)) => s.string_text(),
-            _ => None,
-        };
-        let Some(pkg_name) = pkg_name else {
-            return;
-        };
-
-        let call_offset = call.syntax().text_trimmed_range().start();
-        self.semantic_calls.push(SemanticCall {
-            kind: SemanticCallKind::Attach { package: pkg_name },
-            offset: call_offset,
-            scope: self.current_scope,
-        });
-    }
-
-    // ## `source()` resolution
-    //
-    // `source("file.R")` creates `DefinitionKind::Import` forwarding
-    // bindings in the current scope for each top-level name exported by
-    // the target file. These participate in the use-def map like normal
-    // definitions (shadowing, ordering), but goto-definition chases
-    // through them via `resolve_definition` to reach the actual origin.
-    //
-    // The `local` argument is inspected only to bail: if it's set to
-    // something other than TRUE/FALSE (e.g., an environment), the call
-    // isn't statically analyzable and we skip it.
-    //
-    // TODO: In nested scopes, `local = FALSE` technically targets the
-    // global environment. We currently inject into the calling scope
-    // regardless to keep the sourcing mechanism simple. A future diagnostic
-    // should suggest `local = TRUE` in nested contexts.
-    fn collect_source_call(&mut self, call: &aether_syntax::RCall) {
-        let Ok(args) = call.arguments() else {
-            return;
-        };
-
-        let mut path: Option<String> = None;
-        let mut bail = false;
-
-        for item in args.items().iter() {
-            let Ok(arg) = item else { continue };
-
-            if let Some(name_clause) = arg.name_clause() {
-                let Ok(AnyRArgumentName::RIdentifier(name_ident)) = name_clause.name() else {
-                    continue;
-                };
-                if name_ident.name_text() == "local" {
-                    if let Some(value) = arg.value() {
-                        match value {
-                            // TRUE/FALSE are fine, we resolve uniformly. For
-                            // the FALSE in nested context case, we'll emit a
-                            // diagnostic.
-                            AnyRExpression::RTrueExpression(_) |
-                            AnyRExpression::RFalseExpression(_) => {},
-                            // With anything else (environment, non-statically
-                            // resolvable expression) is not we need to bail.
-                            _ => bail = true,
-                        }
-                    }
-                }
-            } else if path.is_none() {
-                // First positional argument: the file path
-                if let Some(AnyRExpression::AnyRValue(AnyRValue::RStringValue(s))) = arg.value() {
-                    path = s.string_text();
-                }
-            }
-        }
-
-        if bail {
-            return;
-        }
-
-        let Some(path) = path else {
-            return;
-        };
-
-        let call_offset = call.syntax().text_trimmed_range().start();
-        let resolution = self.resolver.resolve_source(&path);
-
-        // Record every `source()` call site, independent of whether the
-        // resolution was successful. `resolved` pins the canonical URL when
-        // resolution succeeded so reflective queries (diagnostics for
-        // unresolved `source()`, file-dependency views) read the outcome
-        // without re-resolving.
-        self.semantic_calls.push(SemanticCall {
-            kind: SemanticCallKind::Source {
-                path: path.clone(),
-                resolved: resolution.as_ref().map(|r| r.url.clone()),
-            },
-            offset: call_offset,
-            scope: self.current_scope,
-        });
-
-        let Some(resolution) = resolution else {
-            return;
-        };
-
-        let file = resolution.url;
-
-        for name in resolution.names {
-            // Empty range: R's `source()` imports names implicitly (unlike
-            // Python's `from x import y` where `y` appears in the text).
-            // There's no text span to assign to these definitions.
-            let range = TextRange::empty(call_offset);
-
-            self.add_definition(
-                &name,
-                SymbolFlags::IS_BOUND,
-                DefinitionKind::Import {
-                    call: AstPtr::new(call),
-                    file: file.clone(),
-                    name: name.clone(),
-                },
-                range,
-            );
-        }
-
-        // `library()` calls inside the sourced file attach packages to R's
-        // global search path at runtime, the same as a `library()` written
-        // here directly would. Emit them as `Attach` semantic calls scoped
-        // to this `source()`'s offset so scope-layer composition treats
-        // them identically to local `library()` calls.
-        for pkg in resolution.packages {
-            self.semantic_calls.push(SemanticCall {
-                kind: SemanticCallKind::Attach { package: pkg },
-                offset: call_offset,
-                scope: self.current_scope,
-            });
-        }
+    /// The symbol `name` interns to in `scope`, if the walk has already recorded
+    /// an `IS_BOUND` definition for it.
+    fn walked_binding(&self, scope: ScopeId, name: &str) -> Option<SymbolId> {
+        let sym_id = self.walk.symbol_tables[scope].id(name)?;
+        self.walk.symbol_tables[scope]
+            .symbol(sym_id)
+            .flags()
+            .contains(SymbolFlags::IS_BOUND)
+            .then_some(sym_id)
     }
 
     fn finish(mut self) -> SemanticIndex {
         self.scopes[ScopeId::from(0)].descendants.end = self.scopes.next_id();
 
         let symbol_tables = self
+            .walk
             .symbol_tables
             .into_iter()
             .map(|b| Arc::new(b.build()))
             .collect();
 
-        // The file scope's exit flow state is the file's exports. Capture it
-        // before the builders are consumed below.
-        let file_final_bindings = self.use_def_maps[ScopeId::from(0)].final_bindings().clone();
+        // Add `on.exit()`/`on_load()` assignments to exports only after eager
+        // uses and snapshots are complete, since these contexts are not live
+        // during initial execution.
+        self.walk.use_def_maps[ScopeId::from(0)].fold_lazy_defs();
+        let file_final_bindings = self.walk.use_def_maps[ScopeId::from(0)]
+            .final_bindings()
+            .clone();
 
         let use_def_maps: IndexVec<ScopeId, _> = self
+            .walk
             .use_def_maps
             .into_iter()
-            .zip(self.uses.iter())
-            .map(|(b, (_, uses))| Arc::new(b.finish(uses)))
+            .map(|b| Arc::new(b.finish()))
             .collect();
 
         SemanticIndex::new(
             self.scopes,
             symbol_tables,
-            self.definitions,
-            self.uses,
+            self.walk.definitions,
+            self.walk.uses,
             use_def_maps,
-            self.enclosing_snapshots,
-            self.semantic_calls,
-            self.namespace_accesses,
+            self.walk.enclosing_snapshots,
+            self.walk.semantic_calls,
+            self.walk.namespace_accesses,
+            self.diagnostics,
             file_final_bindings,
+            self.walk.bindings_at_sources,
         )
-    }
-}
-
-/// All definitions in a scope, collected before the full walk. Skips nested
-/// function bodies (those belong to child scopes). Two consumers:
-///
-/// - Enclosing snapshots: `has_name()` checks whether a symbol will be
-///   defined in an ancestor scope (even when the ancestor's walk hasn't reached
-///   that definition yet), so that `register_enclosing_snapshot()` can find the
-///   right ancestor for free variables.
-/// - NSE resolution: With NSE, each function call potentially pushes a scope
-///   (which can be lazy or eager). We need to resolve the called function's
-///   semantic during the walk. Inside lazy scopes (e.g. function bodies),
-///   `by_name` provides the complete set of parent definitions so that the
-///   function can be resolved against all the parent scope's definitions (if NSE
-///   semantics don't match across definitions, we pick one and lint). Intra-scope
-///   resolution is linear and uses the current `symbol_states` directly instead.
-struct PreScanScope {
-    _defs: Vec<PreScanDef>,
-    by_name: FxHashMap<String, SmallVec<[usize; 2]>>,
-}
-
-/// A single definition site found during the pre-scan. Fields are not
-/// read yet but will be used for NSE lookup.
-struct PreScanDef {
-    _name: String,
-    _range: TextRange,
-}
-
-impl PreScanScope {
-    fn new() -> Self {
-        Self {
-            _defs: Vec::new(),
-            by_name: FxHashMap::default(),
-        }
-    }
-
-    fn add(&mut self, name: String, range: TextRange) {
-        let idx = self._defs.len();
-        self.by_name.entry(name.clone()).or_default().push(idx);
-        self._defs.push(PreScanDef {
-            _name: name,
-            _range: range,
-        });
-    }
-
-    fn has_name(&self, name: &str) -> bool {
-        self.by_name.contains_key(name)
     }
 }
 

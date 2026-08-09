@@ -337,6 +337,74 @@ fn test_top_level_conditional_reports_both_arm_defs() {
     assert!(starts.contains(&source.find("foo <- 2").unwrap()));
 }
 
+#[test]
+fn test_conditional_local_does_not_shadow_package_sibling() {
+    // The conditional local exists on one path. On the other, `shared` resolves
+    // to `a.R`, so both definitions are reachable.
+    let mut db = TestDb::new();
+    let (_root, pkg) = install_workspace_package(&mut db, "pkg");
+
+    let a = make_package_file(&mut db, "workspace/pkg/R/a.R", "shared <- 1\n", pkg);
+    let b_source = "f <- function() {\n  if (cond) shared <- 2\n  shared\n}\n";
+    let b = make_package_file(&mut db, "workspace/pkg/R/b.R", b_source, pkg);
+    pkg.set_files(&mut db).to(vec![a, b]);
+
+    let offset = TextSize::from(b_source.rfind("shared").unwrap() as u32);
+    let defs = b.resolve_at(&db, offset);
+
+    let files: Vec<File> = defs.iter().map(|def| def.file(&db)).collect();
+    assert_eq!(defs.len(), 2);
+    assert!(files.contains(&b));
+    assert!(files.contains(&a));
+}
+
+#[test]
+fn test_unconditional_outer_binding_suppresses_package_sibling() {
+    // The file-scope binding is definite, so resolution cannot reach `a.R`
+    // even though `middle` binds `shared` conditionally.
+    let mut db = TestDb::new();
+    let (_root, pkg) = install_workspace_package(&mut db, "pkg");
+
+    let a = make_package_file(&mut db, "workspace/pkg/R/a.R", "shared <- 99\n", pkg);
+    let b_source = "\
+shared <- 1
+middle <- function() {
+  if (cond) shared <- 2
+  inner <- function() shared
+  inner
+}
+";
+    let b = make_package_file(&mut db, "workspace/pkg/R/b.R", b_source, pkg);
+    pkg.set_files(&mut db).to(vec![a, b]);
+
+    let offset = TextSize::from(b_source.rfind("shared").unwrap() as u32);
+    let defs = b.resolve_at(&db, offset);
+
+    let files: Vec<File> = defs.iter().map(|def| def.file(&db)).collect();
+    assert_eq!(defs.len(), 2);
+    assert!(files.iter().all(|&file| file == b));
+}
+
+#[test]
+fn test_deferred_exit_write_does_not_shadow_package_sibling() {
+    // The read runs before `on.exit()`, so it resolves to the sibling file,
+    // not the handler assignment.
+    let mut db = TestDb::new();
+    let (_root, pkg) = install_workspace_package(&mut db, "pkg");
+
+    let a = make_package_file(&mut db, "workspace/pkg/R/a.R", "shared <- 1\n", pkg);
+    let b_source = "f <- function() {\n  on.exit(shared <- 2)\n  shared\n}\n";
+    let b = make_package_file(&mut db, "workspace/pkg/R/b.R", b_source, pkg);
+    pkg.set_files(&mut db).to(vec![a, b]);
+
+    let offset = TextSize::from(b_source.rfind("shared").unwrap() as u32);
+    let defs = b.resolve_at(&db, offset);
+
+    let files: Vec<File> = defs.iter().map(|def| def.file(&db)).collect();
+    assert_eq!(defs.len(), 1);
+    assert_eq!(files, vec![a]);
+}
+
 // Package-layer resolution, remaining items. These need either installed-package
 // files as `oak_db::File` entities (for navigable locations) or a broader test
 // infrastructure:
@@ -561,4 +629,603 @@ fn test_namespace_importfrom_makes_export_resolve_in_package_file() {
 
     assert_eq!(def.file(&db), ext_file);
     assert_eq!(def.name(&db).text(&db).as_str(), "baz");
+}
+
+#[test]
+fn test_conditional_library_resolves_only_inside_its_branch() {
+    // The reported symptom of the conditional-attach bug was goto-definition,
+    // which reaches the attach layers through `resolve_at` rather than
+    // `imports_at`. Nothing says the branch ran, so the use after it resolves
+    // to nothing while the one inside the arm still lands in the package.
+    let mut db = TestDb::new();
+    let (_root, pkg) = install_library_package(&mut db, "mypkg", &["foo"], &[(
+        "library/mypkg/R/a.R",
+        "foo <- function() 42\n",
+    )]);
+    let pkg_file = pkg.files(&db)[0];
+
+    let (_ws_root, files) = setup_workspace_scripts(&mut db, "ws", &[(
+        "ws/script.R",
+        "if (cond) {\n  library(mypkg)\n  foo\n}\nfoo\n",
+    )]);
+    let script = files[0];
+    let source = script.source_text(&db).clone();
+
+    let inside = TextSize::from(source.find("  foo").unwrap() as u32 + 2);
+    assert_eq!(resolve_one(&db, script, inside).file(&db), pkg_file);
+
+    let after = TextSize::from(source.rfind("foo").unwrap() as u32);
+    assert!(script.resolve_at(&db, after).is_empty());
+}
+
+#[test]
+fn test_local_block_does_not_see_a_library_call_after_it() {
+    // `local()` runs at its call site, so a cursor inside it sees the search
+    // path as of that point: `library(mypkg)` hasn't run yet, so `foo` isn't
+    // attached.
+    let mut db = TestDb::new();
+    install_library_package(&mut db, "mypkg", &["foo"], &[(
+        "library/mypkg/R/a.R",
+        "foo <- function() 42\n",
+    )]);
+
+    let (_ws_root, files) = setup_workspace_scripts(&mut db, "ws", &[(
+        "ws/script.R",
+        "local({\n  foo\n})\nlibrary(mypkg)\n",
+    )]);
+    let script = files[0];
+    let source = script.source_text(&db).clone();
+
+    let offset = TextSize::from(source.find("  foo").unwrap() as u32 + 2);
+    assert!(script.resolve_at(&db, offset).is_empty());
+}
+
+#[test]
+fn test_local_block_sees_a_file_scope_binding_before_it() {
+    // A binding made before the block is already in place by the time
+    // `local()` runs, same as for a use at file scope.
+    let mut db = TestDb::new();
+    let source = "x <- 1\nlocal({\n  x\n})\n";
+    let file = make_file(&mut db, "a.R", source);
+
+    let offset = TextSize::from(source.rfind('x').unwrap() as u32);
+    let def = resolve_one(&db, file, offset);
+
+    assert_eq!(def.file(&db), file);
+    let range = def.name_range(&db).expect("local has a name range");
+    assert_eq!(usize::from(range.start()), 0);
+}
+
+#[test]
+fn test_lazy_use_does_not_see_a_sibling_function_body_attach() {
+    // Nothing requires `g()` to run before `f()`, so its `library()` cannot
+    // make `filter()` visible in `f()`.
+    let mut db = TestDb::new();
+    install_library_package(&mut db, "dplyr", &["filter"], &[(
+        "library/dplyr/R/a.R",
+        "filter <- function() 1\n",
+    )]);
+
+    let source = "g <- function() library(dplyr)\nf <- function() filter(x)\n";
+    let file = make_file(&mut db, "a.R", source);
+
+    let offset = TextSize::from(source.find("filter").unwrap() as u32);
+    assert!(file.resolve_at(&db, offset).is_empty());
+}
+
+#[test]
+fn test_lazy_use_does_not_see_an_attach_later_in_the_same_body() {
+    // `library()` follows `filter()` in the same function body, so it is not
+    // visible at this use.
+    let mut db = TestDb::new();
+    install_library_package(&mut db, "dplyr", &["filter"], &[(
+        "library/dplyr/R/a.R",
+        "filter <- function() 1\n",
+    )]);
+
+    let source = "f <- function() {\n  filter(x)\n  library(dplyr)\n}\n";
+    let file = make_file(&mut db, "a.R", source);
+
+    let offset = TextSize::from(source.find("filter").unwrap() as u32);
+    assert!(file.resolve_at(&db, offset).is_empty());
+}
+
+#[test]
+fn test_lazy_use_sees_an_attach_earlier_in_the_same_body() {
+    let mut db = TestDb::new();
+    let (_root, pkg) = install_library_package(&mut db, "dplyr", &["filter"], &[(
+        "library/dplyr/R/a.R",
+        "filter <- function() 1\n",
+    )]);
+    let pkg_file = pkg.files(&db)[0];
+
+    let source = "f <- function() {\n  library(dplyr)\n  filter(x)\n}\n";
+    let file = make_file(&mut db, "a.R", source);
+
+    let offset = TextSize::from(source.find("filter").unwrap() as u32);
+    assert_eq!(resolve_one(&db, file, offset).file(&db), pkg_file);
+}
+
+#[test]
+fn test_lazy_use_sees_an_unconditional_top_level_attach_after_the_function() {
+    // An unconditional top-level `library()` is visible because the function
+    // body can run after the file reaches it.
+    let mut db = TestDb::new();
+    let (_root, pkg) = install_library_package(&mut db, "dplyr", &["filter"], &[(
+        "library/dplyr/R/a.R",
+        "filter <- function() 1\n",
+    )]);
+    let pkg_file = pkg.files(&db)[0];
+
+    let source = "f <- function() filter(x)\nlibrary(dplyr)\n";
+    let file = make_file(&mut db, "a.R", source);
+
+    let offset = TextSize::from(source.find("filter").unwrap() as u32);
+    assert_eq!(resolve_one(&db, file, offset).file(&db), pkg_file);
+}
+
+#[test]
+fn test_lazy_use_does_not_see_a_conditional_attach_outside_its_arm() {
+    // `library()` inside a conditional arm is not visible from a function body
+    // outside that arm.
+    let mut db = TestDb::new();
+    install_library_package(&mut db, "dplyr", &["filter"], &[(
+        "library/dplyr/R/a.R",
+        "filter <- function() 1\n",
+    )]);
+
+    let source = "if (cond) {\n  library(dplyr)\n}\nf <- function() filter(x)\n";
+    let file = make_file(&mut db, "a.R", source);
+
+    let offset = TextSize::from(source.find("filter").unwrap() as u32);
+    assert!(file.resolve_at(&db, offset).is_empty());
+}
+
+/// A workspace holding `main.R`, which sources `helpers.R`, plus whatever else
+/// the caller lists. Returns the files in the given order.
+fn setup_sourced(db: &mut TestDb, files: &[(&str, &str)]) -> Vec<File> {
+    let root = workspace_root(db, "w");
+    let entities: Vec<File> = files
+        .iter()
+        .map(|(path, contents)| make_file(db, path, contents))
+        .collect();
+    root.set_scripts(db).to(entities.clone());
+    db.workspace_roots().set_roots(db).to(vec![root]);
+    entities
+}
+
+#[test]
+fn test_sourced_file_sees_definitions_before_the_source_call() {
+    let mut db = TestDb::new();
+    let helpers_source = "before\n";
+    let files = setup_sourced(&mut db, &[
+        ("w/main.R", "before <- 1\nsource(\"helpers.R\")\n"),
+        ("w/helpers.R", helpers_source),
+    ]);
+    let (main, helpers) = (files[0], files[1]);
+
+    let def = resolve_one(&db, helpers, TextSize::from(0));
+    assert_eq!(def.file(&db), main);
+    assert_eq!(def.name(&db).text(&db).as_str(), "before");
+}
+
+#[test]
+fn test_sourced_file_top_level_does_not_see_definitions_after_the_source_call() {
+    // `after` hadn't run when `source()` executed, so `helpers.R`'s top level
+    // genuinely can't see it. Without narrowing this resolves, because
+    // `ImportLayer::File` goes through whole-file `exports()`.
+    let mut db = TestDb::new();
+    let files = setup_sourced(&mut db, &[
+        ("w/main.R", "source(\"helpers.R\")\nafter <- 1\n"),
+        ("w/helpers.R", "after\n"),
+    ]);
+    let helpers = files[1];
+
+    assert!(helpers.resolve_at(&db, TextSize::from(0)).is_empty());
+}
+
+#[test]
+fn test_sourced_file_function_body_still_sees_definitions_after_the_source_call() {
+    // A function defined in `helpers.R` can be called from `main.R` after
+    // `main.R` finished running, so it does see `after`. Narrowing is for the
+    // Eager view only.
+    let mut db = TestDb::new();
+    let helpers_source = "f <- function() after\n";
+    let files = setup_sourced(&mut db, &[
+        ("w/main.R", "source(\"helpers.R\")\nafter <- 1\n"),
+        ("w/helpers.R", helpers_source),
+    ]);
+    let (main, helpers) = (files[0], files[1]);
+
+    let offset = TextSize::from(helpers_source.find("after").unwrap() as u32);
+    let def = resolve_one(&db, helpers, offset);
+    assert_eq!(def.file(&db), main);
+}
+
+#[test]
+fn test_conditional_definition_before_the_source_call_stays_visible() {
+    // `maybe` is only maybe-bound at the `source()` call. We over-approximate
+    // and keep it, so an unknown-symbol diagnostic won't fire on a name that
+    // might well be there.
+    let mut db = TestDb::new();
+    let files = setup_sourced(&mut db, &[
+        ("w/main.R", "if (cond) maybe <- 1\nsource(\"helpers.R\")\n"),
+        ("w/helpers.R", "maybe\n"),
+    ]);
+    let (main, helpers) = (files[0], files[1]);
+
+    let def = resolve_one(&db, helpers, TextSize::from(0));
+    assert_eq!(def.file(&db), main);
+}
+
+#[test]
+fn test_source_call_in_a_function_body_narrows_nothing() {
+    // Nothing says when (or whether) `load()` runs, so there's no program point
+    // to narrow to. `helpers.R` falls back to whole-file exports and sees
+    // `after`.
+    let mut db = TestDb::new();
+    let files = setup_sourced(&mut db, &[
+        (
+            "w/main.R",
+            "load <- function() source(\"helpers.R\")\nafter <- 1\n",
+        ),
+        ("w/helpers.R", "after\n"),
+    ]);
+    let (main, helpers) = (files[0], files[1]);
+
+    let def = resolve_one(&db, helpers, TextSize::from(0));
+    assert_eq!(def.file(&db), main);
+}
+
+#[test]
+fn test_both_sourcing_files_contribute_definitions() {
+    // Two files source the same target. Each is a separate possible runtime
+    // (in `a.R`'s run `foo` comes from `a.R`, in `b.R`'s run from `b.R`), so
+    // both bindings are visible from the sourced file, not just the
+    // alphabetically-first sourcing file.
+    let mut db = TestDb::new();
+    let files = setup_sourced(&mut db, &[
+        ("w/a.R", "foo <- 1\nsource(\"helpers.R\")\n"),
+        ("w/b.R", "foo <- 2\nsource(\"helpers.R\")\n"),
+        ("w/helpers.R", "foo\n"),
+    ]);
+    let (a, b, helpers) = (files[0], files[1], files[2]);
+
+    let defs = helpers.resolve_at(&db, TextSize::from(0));
+    let def_files: Vec<File> = defs.iter().map(|def| def.file(&db)).collect();
+    assert_eq!(def_files, vec![a, b]);
+}
+
+#[test]
+fn test_offset_narrowing_applies_independently_per_sourcing_site() {
+    // `a.R` binds `foo` before its `source()` call, `b.R` only after. The
+    // union across sourcing files doesn't defeat the per-site narrowing: only
+    // `a.R`'s binding had run by the time `helpers.R`'s top level executed in
+    // `b.R`'s chain, so `b.R` contributes nothing.
+    let mut db = TestDb::new();
+    let files = setup_sourced(&mut db, &[
+        ("w/a.R", "foo <- 1\nsource(\"helpers.R\")\n"),
+        ("w/b.R", "source(\"helpers.R\")\nfoo <- 2\n"),
+        ("w/helpers.R", "foo\n"),
+    ]);
+    let a = files[0];
+    let helpers = files[2];
+
+    let def = resolve_one(&db, helpers, TextSize::from(0));
+    assert_eq!(def.file(&db), a);
+}
+
+#[test]
+fn test_lazy_view_sees_both_sourcing_files() {
+    // A function body sees the complete collation, so each sourcing context
+    // includes bindings from `a.R` and `b.R` regardless of `source()` call
+    // positions.
+    let mut db = TestDb::new();
+    let helpers_source = "f <- function() foo\n";
+    let files = setup_sourced(&mut db, &[
+        ("w/a.R", "foo <- 1\nsource(\"helpers.R\")\n"),
+        ("w/b.R", "foo <- 2\nsource(\"helpers.R\")\n"),
+        ("w/helpers.R", helpers_source),
+    ]);
+    let (a, b, helpers) = (files[0], files[1], files[2]);
+
+    let offset = TextSize::from(helpers_source.find("foo").unwrap() as u32);
+    let defs = helpers.resolve_at(&db, offset);
+    let def_files: Vec<File> = defs.iter().map(|def| def.file(&db)).collect();
+    assert_eq!(def_files, vec![a, b]);
+}
+
+#[test]
+fn test_convergent_chains_dedupe_to_one_definition() {
+    // `a.R` and `b.R` both source `defs.R` before `helpers.R`, so both chains
+    // reach the same `foo` binding. The union must not report it twice.
+    let mut db = TestDb::new();
+    let files = setup_sourced(&mut db, &[
+        ("w/defs.R", "foo <- 1\n"),
+        ("w/a.R", "source(\"defs.R\")\nsource(\"helpers.R\")\n"),
+        ("w/b.R", "source(\"defs.R\")\nsource(\"helpers.R\")\n"),
+        ("w/helpers.R", "foo\n"),
+    ]);
+    let defs = files[0];
+    let helpers = files[3];
+
+    let def = resolve_one(&db, helpers, TextSize::from(0));
+    assert_eq!(def.file(&db), defs);
+}
+
+#[test]
+fn test_narrowing_applies_at_each_hop_of_a_source_chain() {
+    // `setup.R` sources `helpers.R` before binding `late_setup`, and `main.R`
+    // sources `setup.R` before binding `late_main`, so `helpers.R`'s top level
+    // sees neither. `early_main` ran before both calls, so it does show up.
+    let mut db = TestDb::new();
+    let files = setup_sourced(&mut db, &[
+        (
+            "w/main.R",
+            "early_main <- 1\nsource(\"setup.R\")\nlate_main <- 2\n",
+        ),
+        ("w/setup.R", "source(\"helpers.R\")\nlate_setup <- 3\n"),
+        ("w/helpers.R", "early_main\n"),
+    ]);
+    let (main, helpers) = (files[0], files[2]);
+
+    let def = resolve_one(&db, helpers, TextSize::from(0));
+    assert_eq!(def.file(&db), main);
+
+    for name in ["late_main", "late_setup"] {
+        helpers
+            .set_source_text_override(&mut db)
+            .to(Some(format!("{name}\n")));
+        assert!(helpers.resolve_at(&db, TextSize::from(0)).is_empty());
+    }
+}
+
+/// Installs two library packages. `install_library_package()` replaces the
+/// library-root list, so restore both roots after the second call.
+fn install_two_library_packages(
+    db: &mut TestDb,
+    first: (&str, &[&str]),
+    second: (&str, &[&str]),
+) -> (Package, Package) {
+    let bindings = |exports: &[&str]| {
+        exports
+            .iter()
+            .map(|name| format!("{name} <- function() 1\n"))
+            .collect::<String>()
+    };
+
+    let (first_root, first_pkg) = install_library_package(db, first.0, first.1, &[(
+        &format!("library/{}/R/a.R", first.0),
+        &bindings(first.1),
+    )]);
+    let (second_root, second_pkg) = install_library_package(db, second.0, second.1, &[(
+        &format!("library/{}/R/a.R", second.0),
+        &bindings(second.1),
+    )]);
+    db.library_roots()
+        .set_roots(db)
+        .to(vec![first_root, second_root]);
+
+    (first_pkg, second_pkg)
+}
+
+#[test]
+fn test_second_source_call_keeps_the_conditional_attach_of_the_first() {
+    // The first `source()` call must retain `pkga`. Its attachment is confined
+    // to the `if` arm and is not visible at the second call.
+    let mut db = TestDb::new();
+    let (_root, pkg) = install_library_package(&mut db, "pkga", &["foo"], &[(
+        "library/pkga/R/a.R",
+        "foo <- function() 42\n",
+    )]);
+    let pkg_file = pkg.files(&db)[0];
+
+    let files = setup_sourced(&mut db, &[
+        (
+            "w/main.R",
+            "if (dev) {\n  library(pkga)\n  source(\"helpers.R\")\n}\nsource(\"helpers.R\")\n",
+        ),
+        ("w/helpers.R", "foo\n"),
+    ]);
+    let helpers = files[1];
+
+    let def = resolve_one(&db, helpers, TextSize::from(0));
+    assert_eq!(def.file(&db), pkg_file);
+}
+
+#[test]
+fn test_source_call_in_a_function_body_keeps_attaches_after_it() {
+    // `load()` can run after `library(pkga)`, so its `source()` call cannot be
+    // bounded by its textual offset.
+    let mut db = TestDb::new();
+    let (_root, pkg) = install_library_package(&mut db, "pkga", &["foo"], &[(
+        "library/pkga/R/a.R",
+        "foo <- function() 42\n",
+    )]);
+    let pkg_file = pkg.files(&db)[0];
+
+    let files = setup_sourced(&mut db, &[
+        (
+            "w/main.R",
+            "load <- function() source(\"helpers.R\")\nlibrary(pkga)\nload()\n",
+        ),
+        ("w/helpers.R", "foo\n"),
+    ]);
+    let helpers = files[1];
+
+    let def = resolve_one(&db, helpers, TextSize::from(0));
+    assert_eq!(def.file(&db), pkg_file);
+}
+
+#[test]
+fn test_source_call_in_a_function_body_unpins_a_later_top_level_one() {
+    // A `source()` call in `load()` can run after `after` is defined despite
+    // preceding the top-level call textually, so both calls remain unpinned.
+    let mut db = TestDb::new();
+    let files = setup_sourced(&mut db, &[
+        (
+            "w/main.R",
+            "load <- function() source(\"helpers.R\")\nsource(\"helpers.R\")\nafter <- 1\n",
+        ),
+        ("w/helpers.R", "after\n"),
+    ]);
+    let (main, helpers) = (files[0], files[1]);
+
+    let def = resolve_one(&db, helpers, TextSize::from(0));
+    assert_eq!(def.file(&db), main);
+}
+
+#[test]
+fn test_source_twice_sees_the_definitions_of_both_call_sites() {
+    // The combined context includes `first` and `second`, but not `third`,
+    // because each `source()` execution sees only earlier bindings.
+    let mut db = TestDb::new();
+    let files = setup_sourced(&mut db, &[
+        (
+            "w/main.R",
+            "first <- 1\nsource(\"helpers.R\")\nsecond <- 2\nsource(\"helpers.R\")\nthird <- 3\n",
+        ),
+        ("w/helpers.R", "first\n"),
+    ]);
+    let (main, helpers) = (files[0], files[1]);
+
+    for name in ["first", "second"] {
+        helpers
+            .set_source_text_override(&mut db)
+            .to(Some(format!("{name}\n")));
+        assert_eq!(resolve_one(&db, helpers, TextSize::from(0)).file(&db), main);
+    }
+
+    helpers
+        .set_source_text_override(&mut db)
+        .to(Some("third\n".to_string()));
+    assert!(helpers.resolve_at(&db, TextSize::from(0)).is_empty());
+}
+
+#[test]
+fn test_source_twice_with_an_attach_between_keeps_both_packages() {
+    // The combined contexts retain `pkga` for `only_a` and place later-attached
+    // `pkgb` ahead of it for `shared`.
+    let mut db = TestDb::new();
+    let (pkg_a, pkg_b) = install_two_library_packages(
+        &mut db,
+        ("pkga", &["only_a", "shared"]),
+        ("pkgb", &["shared"]),
+    );
+    let (file_a, file_b) = (pkg_a.files(&db)[0], pkg_b.files(&db)[0]);
+
+    let files = setup_sourced(&mut db, &[
+        (
+            "w/main.R",
+            "library(pkga)\nsource(\"helpers.R\")\nlibrary(pkgb)\nsource(\"helpers.R\")\n",
+        ),
+        ("w/helpers.R", "only_a\n"),
+    ]);
+    let helpers = files[1];
+
+    assert_eq!(
+        resolve_one(&db, helpers, TextSize::from(0)).file(&db),
+        file_a
+    );
+
+    helpers
+        .set_source_text_override(&mut db)
+        .to(Some("shared\n".to_string()));
+    assert_eq!(
+        resolve_one(&db, helpers, TextSize::from(0)).file(&db),
+        file_b
+    );
+}
+
+#[test]
+fn test_source_call_in_an_else_arm_does_not_see_the_if_arm() {
+    // Restoring the pre-`if` flow state before the `else` arm leaves `x` unbound
+    // when `b.R` is sourced, so source-call visibility cannot be a prefix by rank.
+    let mut db = TestDb::new();
+    let files = setup_sourced(&mut db, &[
+        (
+            "w/main.R",
+            "if (cond) {\n  x <- 1\n  source(\"a.R\")\n} else {\n  source(\"b.R\")\n}\n",
+        ),
+        ("w/a.R", "x\n"),
+        ("w/b.R", "x\n"),
+    ]);
+    let (main, a, b) = (files[0], files[1], files[2]);
+
+    assert_eq!(resolve_one(&db, a, TextSize::from(0)).file(&db), main);
+    assert!(b.resolve_at(&db, TextSize::from(0)).is_empty());
+}
+
+// --- ordered expansion of a directory source ---
+
+/// `main.R` sources the whole `R/` directory in one call, which loads `a.R`
+/// then `b.R`. Returns `(db, a, b)`.
+fn dir_source_workspace(a_contents: &str, b_contents: &str) -> (TestDb, File, File) {
+    let mut db = TestDb::new();
+    let root = workspace_root(&db, "ws");
+    let main = make_file(&mut db, "ws/main.R", "sourceDir(\"R\")\n");
+    let a = make_file(&mut db, "ws/R/a.R", a_contents);
+    let b = make_file(&mut db, "ws/R/b.R", b_contents);
+    root.set_scripts(&mut db).to(vec![main, a, b]);
+    db.workspace_roots().set_roots(&mut db).to(vec![root]);
+    (db, a, b)
+}
+
+#[test]
+fn test_dir_source_top_level_sees_a_file_loaded_earlier_in_the_call() {
+    // `a.R` has fully run by the time `b.R` starts, so a top-level use in
+    // `b.R` resolves. The sourcing file's snapshot is taken before the call
+    // and holds neither name, so this can only come from the call's own
+    // ordered target list.
+    let (db, a, b) = dir_source_workspace("a_val <- 1\n", "use <- a_val\n");
+    let def = resolve_one(&db, b, TextSize::from(7));
+    assert_eq!(def.file(&db), a);
+}
+
+#[test]
+fn test_dir_source_top_level_does_not_see_a_file_loaded_later_in_the_call() {
+    // The mirror image: `b.R` hasn't run when `a.R`'s top level does, so this
+    // stays unresolved. Without it the test above would pass just as well on
+    // an implementation that made every target visible to every other.
+    let (db, a, _b) = dir_source_workspace("use <- b_val\n", "b_val <- 2\n");
+    assert!(a.resolve_at(&db, TextSize::from(7)).is_empty());
+}
+
+#[test]
+fn test_dir_source_function_body_sees_a_file_loaded_later_in_the_call() {
+    // A body runs after the whole call, so the lazy view has everything.
+    let (db, a, b) = dir_source_workspace("f <- function() b_val\n", "b_val <- 2\n");
+    let def = resolve_one(&db, a, TextSize::from(17));
+    assert_eq!(def.file(&db), b);
+}
+
+#[test]
+fn test_dir_sourced_twice_still_sees_the_files_loaded_earlier_in_each_call() {
+    // Each `sourceDir()` call is its own group of same-offset targets. `b.R`
+    // must see `a.R` through the group it belongs to, so the earlier call can't
+    // be skipped just because a later one also loads both files.
+    let mut db = TestDb::new();
+    let root = workspace_root(&db, "ws");
+    let main = make_file(&mut db, "ws/main.R", "sourceDir(\"R\")\nsourceDir(\"R\")\n");
+    let a = make_file(&mut db, "ws/R/a.R", "a_val <- 1\n");
+    let b = make_file(&mut db, "ws/R/b.R", "use <- a_val\n");
+    root.set_scripts(&mut db).to(vec![main, a, b]);
+    db.workspace_roots().set_roots(&mut db).to(vec![root]);
+
+    let def = resolve_one(&db, b, TextSize::from(7));
+    assert_eq!(def.file(&db), a);
+}
+
+#[test]
+fn test_shiny_entry_top_level_sees_the_whole_autoload_set() {
+    // `loadSupport()` has run before `app.R`'s first line, so unlike a
+    // collation there's no prefix to cut at the cursor.
+    let mut db = TestDb::new();
+    let (_, files) = setup_workspace_scripts(&mut db, "w", &[
+        ("w/app.R", "mod_ui()\nshinyApp(ui, server)\n"),
+        ("w/R/mod.R", "mod_ui <- function() NULL\n"),
+    ]);
+
+    let def = resolve_one(&db, files[0], TextSize::from(0));
+    assert_eq!(def.file(&db), files[1]);
 }

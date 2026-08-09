@@ -29,9 +29,12 @@ oak_semantic = { workspace = true, features = ["salsa"] }
 rustc-hash.workspace = true
 salsa.workspace = true
 salsa-macros.workspace = true
+stacker.workspace = true
 stdext.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+annotate-snippets.workspace = true
+insta.workspace = true
 oak_semantic = { workspace = true, features = ["salsa", "testing"] }
 tempfile.workspace = true
