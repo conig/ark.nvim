@@ -474,12 +474,20 @@ local function nvim_console_socket(status)
   return socket
 end
 
+local function nvim_console_status_live(status)
+  return type(status) == "table"
+    and status.nvim_console == true
+    and status.nvim_console_running == true
+    and session_runtime.status_pid_alive(status.nvim_console_pid)
+    and nvim_console_socket(status) ~= nil
+end
+
 local function nvim_console_status(config, session)
   config = config or {}
   local current_session_id = session_id(session)
   local exact_path = startup_status_path(session, config)
   local exact_status = exact_path and session_runtime.read_status_file(exact_path) or nil
-  if nvim_console_socket(exact_status) then
+  if nvim_console_status_live(exact_status) then
     return exact_status
   end
 
@@ -488,7 +496,7 @@ local function nvim_console_status(config, session)
   local live_console_statuses = {}
   for _, path in ipairs(paths) do
     local status = session_runtime.read_status_file(path)
-    if type(status) == "table" and status.nvim_console == true and nvim_console_socket(status) then
+    if nvim_console_status_live(status) then
       if type(current_session_id) == "string"
         and current_session_id ~= ""
         and status.nvim_console_session_id == current_session_id
@@ -503,7 +511,7 @@ local function nvim_console_status(config, session)
     return live_console_statuses[1]
   end
 
-  return exact_status
+  return nil
 end
 
 local function bridge_session(session)
@@ -1317,23 +1325,7 @@ local function nvim_console_send(config, session, text)
     return nil, tostring(result)
   end
 
-  local nvim_bin = vim.env.ARK_NVIM_CONSOLE_NVIM or vim.v.progpath or "nvim"
-  local expr = "v:lua.__ark_console_rpc_send(" .. vim.fn.string(text) .. ")"
-  local output = vim.fn.system({
-    nvim_bin,
-    "--server",
-    socket,
-    "--remote-expr",
-    expr,
-  })
-  if vim.v.shell_error ~= 0 then
-    return nil, vim.trim(output)
-  end
-  if vim.trim(output) ~= "ok" then
-    return nil, "nvim-console RPC send returned unexpected response: " .. vim.trim(output)
-  end
-
-  return true, nil
+  return nil, "managed nvim-console RPC endpoint is not accepting connections"
 end
 
 function M.console_ready(config)

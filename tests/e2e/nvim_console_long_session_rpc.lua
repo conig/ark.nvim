@@ -19,8 +19,9 @@ vim.fn.writefile({
 vim.fn.setfperm(launcher, "rwxr-xr-x")
 
 -- A long tmux session name pushes the pane-specific suffix beyond Linux's
--- 107-byte Unix socket pathname limit. The two managed panes must still get
--- independent RPC listeners instead of aliasing to the same kernel address.
+-- 107-byte Unix socket pathname limit. Neovim 0.12 rejects such addresses;
+-- Ark must instead publish its short process-unique listener rather than a
+-- pane-derived path that could be rejected or aliased by the kernel.
 local encoded_stem = "%2Ftmp%2Ftmux-user%2Fdefault__"
   .. "a_very_long_managed_project_session_name_"
 while #(status_dir .. "/" .. encoded_stem .. "%2540.sock") <= 120 do
@@ -36,7 +37,6 @@ if first_socket:sub(1, 107) ~= second_socket:sub(1, 107) then
   ark_test.fail("long-session fixture does not reproduce the shared Unix socket prefix")
 end
 
-local first_server = vim.fn.serverstart(first_socket)
 local console_bufnr
 local ok, err = xpcall(function()
   vim.env.TMUX = nil
@@ -71,6 +71,14 @@ local ok, err = xpcall(function()
     }))
   end
 
+  if published.nvim_console_rpc_socket == first_socket or published.nvim_console_rpc_socket == second_socket then
+    ark_test.fail("long-session console reused the overlong pane-derived RPC address: " .. vim.inspect({
+      published = published.nvim_console_rpc_socket,
+      first = first_socket,
+      second = second_socket,
+    }))
+  end
+
   local server_list = vim.fn.serverlist()
   if not vim.tbl_contains(server_list, published.nvim_console_rpc_socket) then
     ark_test.fail("published long-session RPC endpoint is not listening: " .. vim.inspect({
@@ -84,7 +92,6 @@ if console_bufnr and vim.api.nvim_buf_is_valid(console_bufnr) then
   pcall(require("ark.console").stop, console_bufnr)
   pcall(vim.api.nvim_buf_delete, console_bufnr, { force = true })
 end
-pcall(vim.fn.serverstop, first_server)
 stop_watchdog()
 
 if not ok then
