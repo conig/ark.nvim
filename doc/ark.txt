@@ -138,6 +138,12 @@ view.display ~
 tmux.pane_layout ~
     `auto`, `side_by_side`, or `stacked`. Layout aliases are accepted.
 
+:Ark console history [query] ~
+    Fuzzy-search console history and select a command to recall, never execute.
+    Without a query, prompts for a filter; empty lists all entries. Uses
+    vim.ui.input/select, with no required picker plugin. Alt-R opens the search
+    from normal/insert mode in a console. Cancellation preserves the draft.
+
 console.history.enabled ~
     Persist submitted console commands by project. Default: true.
     Set false to disable history disk reads/writes, retaining in-memory recall.

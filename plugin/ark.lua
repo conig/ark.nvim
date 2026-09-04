@@ -83,6 +83,7 @@ local ark_command_completions = {
   "build-lsp",
   "console",
   "console eof",
+  "console history",
   "console interrupt",
   "console stop",
   "help",
@@ -231,6 +232,9 @@ local function dispatch_ark_command(args)
     local subcommand = args[2]
     if subcommand == nil or subcommand == "" or subcommand == "open" then
       ark.console()
+    elseif subcommand == "history" then
+      local query = #args > 2 and join_args(args, 3) or nil
+      ark.console_history(0, query)
     elseif subcommand == "interrupt" then
       ark.console_interrupt(0)
     elseif subcommand == "eof" then

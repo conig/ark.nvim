@@ -9,6 +9,9 @@ package.loaded["ark"] = {
   console = function()
     calls[#calls + 1] = { name = "console" }
   end,
+  console_history = function(bufnr, query)
+    calls[#calls + 1] = { name = "console_history", bufnr = bufnr, query = query }
+  end,
   console_eof = function(bufnr)
     calls[#calls + 1] = { name = "console_eof", bufnr = bufnr }
   end,
@@ -141,6 +144,7 @@ end, {})
 
 vim.cmd("Ark")
 vim.cmd("Ark console")
+vim.cmd("Ark console history mean data")
 vim.cmd("Ark console interrupt")
 vim.cmd("Ark console eof")
 vim.cmd("Ark console stop")
@@ -194,6 +198,7 @@ vim.cmd("Ark targets log clean_data")
 local expected = {
   { name = "status", include_lsp = true },
   { name = "console" },
+  { name = "console_history", bufnr = 0, query = "mean data" },
   { name = "console_interrupt", bufnr = 0 },
   { name = "console_eof", bufnr = 0 },
   { name = "console_stop", bufnr = 0 },

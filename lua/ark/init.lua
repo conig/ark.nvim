@@ -800,6 +800,11 @@ function M.console()
   return console.start(options)
 end
 
+function M.console_history(bufnr, query)
+  ensure_setup()
+  return console.history_search(bufnr or 0, query)
+end
+
 function M.console_interrupt(bufnr)
   ensure_setup()
   return console.interrupt(bufnr or 0)

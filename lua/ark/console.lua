@@ -1968,6 +1968,9 @@ local function setup_keymaps(bufnr, opts)
   vim.keymap.set("i", "<M-=>", function()
     return M.append_plus_newline(bufnr)
   end, { buffer = bufnr, desc = "Append '+' and open Ark console continuation line" })
+  vim.keymap.set({ "n", "i" }, "<M-r>", function()
+    M.history_search(bufnr)
+  end, { buffer = bufnr, desc = "Search Ark console history" })
   vim.keymap.set({ "n", "i" }, "<C-p>", function()
     M.history_prev(bufnr)
   end, { buffer = bufnr, desc = "Previous Ark console input" })
@@ -2426,6 +2429,65 @@ function M.send_text(bufnr, text)
   send_to_job(info, text)
   place_prompt(bufnr)
   focus_input(bufnr, info, { insert = true })
+  return true
+end
+
+-- UI callbacks may arrive after output, another search, a draft edit, or closure.
+function M.history_search(bufnr, query)
+  local info, err, resolved_bufnr = console_info(bufnr)
+  if not info then
+    return nil, err
+  end
+  bufnr = resolved_bufnr
+  restore_pending_protected_edit(bufnr, info)
+  local draft = current_input_text(bufnr, info)
+  local token = {}
+  info.history_search_token = token
+  local function active()
+    return state.buffers[bufnr] == info
+      and vim.api.nvim_buf_is_valid(bufnr)
+      and info.history_search_token == token
+      and current_input_text(bufnr, info) == draft
+  end
+  local function select_history(pattern)
+    if pattern == nil or not active() then
+      return
+    end
+    local items = {}
+    for index = #info.history, 1, -1 do
+      items[#items + 1] = { index = index, text = info.history[index] }
+    end
+    if pattern ~= "" then
+      items = vim.fn.matchfuzzy(items, pattern, { key = "text" })
+    end
+    if #items == 0 then
+      vim.notify("No matching Ark console history", vim.log.levels.INFO)
+      return
+    end
+    vim.ui.select(items, {
+      prompt = "Ark console history (recall only)",
+      kind = "ark_console_history",
+      format_item = function(item)
+        return vim.fn.strcharpart(item.text:gsub("\n", " ↵ "), 0, 180)
+      end,
+    }, function(item)
+      if not item or not active() or info.history[item.index] ~= item.text then
+        return
+      end
+      -- Preserve the original draft even when searching from an existing recall.
+      if info.history_index == nil then
+        info.draft_input = draft
+      end
+      info.history_index = item.index
+      set_current_input(bufnr, info, item.text)
+      focus_input(bufnr, info, { insert = true })
+    end)
+  end
+  if query ~= nil then
+    select_history(query)
+  else
+    vim.ui.input({ prompt = "Search Ark history (empty for all): " }, select_history)
+  end
   return true
 end
 

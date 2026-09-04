@@ -760,6 +760,11 @@ pairing works in the REPL. The raw launcher remains the default fallback.
 Console command history survives restarts and is scoped to the project root
 (or startup working directory when no root marker is found). Up/Down and
 Ctrl-P/Ctrl-N recall commands without executing them and preserve your draft.
+Use **Alt-R** in the console or `:Ark console history [query]` for fuzzy
+search. With no query, enter a filter (or leave it blank for all history), then
+choose a command using Neovim's configured selection UI. Selection only fills
+the draft; press Enter separately to run it. Cancelling leaves the draft alone.
+
 Defaults:
 
 ```lua

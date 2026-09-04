@@ -520,6 +520,15 @@ blocking execution. `console.history.enabled = false` disables disk reads and
 writes while retaining in-memory recall; `max_entries` limits recall, not disk
 retention. Logs contain submitted code and remain until explicitly deleted.
 
+`:Ark console history [query]` and console-local Alt-R open searchable recall.
+Without a query, Ark prompts for a fuzzy filter (empty lists all entries),
+then delegates selection to `vim.ui.select` with newest-first input ordering.
+Selection restores the complete command into the editable draft, never executes
+it, and preserves the pre-recall draft for forward history navigation.
+Cancellation, a newer draft, another search, or console closure must not cause
+a stale picker callback to overwrite input. Multiline commands display compactly
+but are restored verbatim. No picker plugin is required.
+
 Its completion key policy uses `Tab` to accept a visible Blink completion,
 uses `Enter` to dismiss any visible completion and submit the current input,
 uses `Alt-Enter` to insert a newline without accepting completion, and uses
