@@ -2076,6 +2076,22 @@ function M.start(opts)
   place_prompt(bufnr)
   refresh_valid_snapshot(bufnr, state.buffers[bufnr])
 
+  -- Observe edits before startup can append errors or synchronously pump events.
+  vim.api.nvim_buf_attach(bufnr, false, {
+    on_lines = function(_, changed_bufnr, _, firstline)
+      protect_transcript_edit(changed_bufnr, firstline)
+    end,
+    on_detach = function()
+      vim.schedule(function()
+        close_resources(bufnr, {
+          closed = true,
+          forget = true,
+          stop_job = true,
+        })
+      end)
+    end,
+  })
+
   -- Full tmux session IDs can exceed the Unix socket pathname limit and alias
   -- distinct panes, so let Neovim generate a short process-unique address.
   local ok_server, server_result = pcall(vim.fn.serverstart, "ark-console")
@@ -2191,21 +2207,6 @@ function M.start(opts)
       maybe_show_signature_help(bufnr)
     end,
     desc = "Show Ark console signature help after argument triggers",
-  })
-
-  vim.api.nvim_buf_attach(bufnr, false, {
-    on_lines = function(_, changed_bufnr, _, firstline)
-      protect_transcript_edit(changed_bufnr, firstline)
-    end,
-    on_detach = function()
-      vim.schedule(function()
-        close_resources(bufnr, {
-          closed = true,
-          forget = true,
-          stop_job = true,
-        })
-      end)
-    end,
   })
 
   vim.cmd("startinsert")
