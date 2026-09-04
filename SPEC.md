@@ -495,6 +495,11 @@ Neovim R buffer for the editable input region so Blink and Neovim's LSP client
 can provide completion UI, while Ark owns the PTY-backed R process and renders
 the prompt virtually. Submitted input is preserved as R code, and R output is
 recorded as transcript comments so the buffer remains a valid R document.
+Output callbacks coalesce into one scheduled render. Appending output decorates
+only the new transcript range, and edit-protection snapshots copy only the
+changed suffix rather than rereading historical output on each draft edit.
+Full conceal rebuilds remain appropriate when changing display modes.
+
 Console history and draft editing are buffer-native interactions on the current
 input region, not terminal escape-sequence emulation. It is selected with
 `session.console_frontend = "nvim-console"` or opened in-process with

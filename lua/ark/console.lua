@@ -534,6 +534,9 @@ local function restore_transcript_prompts(bufnr, prompts)
 end
 
 local function place_transcript_prompts(bufnr, start_line, line_count, first_prompt)
+  if state.buffers[bufnr] then
+    state.buffers[bufnr].snapshot_prompts_dirty = true
+  end
   line_count = tonumber(line_count) or 0
   if line_count <= 0 then
     return
@@ -598,12 +601,13 @@ local function set_input_start(bufnr, info, line)
   info.input_mark_id = vim.api.nvim_buf_set_extmark(bufnr, input_ns, line, 0, opts)
 end
 
-refresh_output_prefix_conceal = function(bufnr, enabled)
+refresh_output_prefix_conceal = function(bufnr, enabled, first_line)
   if type(bufnr) ~= "number" or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
 
-  vim.api.nvim_buf_clear_namespace(bufnr, output_prefix_conceal_ns, 0, -1)
+  first_line = first_line or 0
+  vim.api.nvim_buf_clear_namespace(bufnr, output_prefix_conceal_ns, first_line, -1)
   if enabled ~= true then
     return
   end
@@ -615,10 +619,10 @@ refresh_output_prefix_conceal = function(bufnr, enabled)
   end
 
   local output_prefix = "#> "
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, end_line, false)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, first_line, end_line, false)
   for index, line in ipairs(lines) do
     if type(line) == "string" and line:sub(1, #output_prefix) == output_prefix then
-      vim.api.nvim_buf_set_extmark(bufnr, output_prefix_conceal_ns, index - 1, 0, {
+      vim.api.nvim_buf_set_extmark(bufnr, output_prefix_conceal_ns, first_line + index - 1, 0, {
         end_col = #output_prefix,
         conceal = "",
         hl_group = "ArkConsoleOutputPrefix",
@@ -653,9 +657,26 @@ local function refresh_valid_snapshot(bufnr, info)
     return
   end
 
-  info.valid_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local first = info.snapshot_dirty_from
+  if not info.valid_lines then
+    info.valid_lines = {}
+    first = 0
+  end
+  if first then
+    local lines = vim.api.nvim_buf_get_lines(bufnr, first, -1, false)
+    for index = #info.valid_lines, first + 1, -1 do
+      info.valid_lines[index] = nil
+    end
+    for index, line in ipairs(lines) do
+      info.valid_lines[first + index] = line
+    end
+  end
+  info.snapshot_dirty_from = nil
   info.valid_input_start = tonumber(info.input_start) or input_start_line(bufnr, info)
-  info.valid_transcript_prompts = snapshot_transcript_prompts(bufnr)
+  if info.snapshot_prompts_dirty or not info.valid_transcript_prompts then
+    info.valid_transcript_prompts = snapshot_transcript_prompts(bufnr)
+    info.snapshot_prompts_dirty = nil
+  end
 end
 
 local function restore_valid_snapshot(bufnr, info)
@@ -1409,6 +1430,7 @@ local function append_before_input(bufnr, lines)
   end
 
   local buffer_lines = text_lines(lines)
+  local first_line = input_start_line(bufnr, info)
   with_internal_edit(bufnr, info, function()
     vim.bo[bufnr].modifiable = true
     local start_line = input_start_line(bufnr, info)
@@ -1418,7 +1440,7 @@ local function append_before_input(bufnr, lines)
     vim.bo[bufnr].modified = false
   end)
   place_prompt(bufnr)
-  refresh_output_prefix_conceal(bufnr, output_prefix_conceal_enabled(bufnr))
+  refresh_output_prefix_conceal(bufnr, output_prefix_conceal_enabled(bufnr), first_line)
 end
 
 local function submission_pending(info)
@@ -1529,15 +1551,28 @@ end
 
 local function on_output(bufnr, _, data, _)
   local lines = parse_output(bufnr, data)
-  if #lines == 0 then
-    vim.schedule(function()
-      place_prompt(bufnr)
-    end)
+  local info = state.buffers[bufnr]
+  if not info then
     return
   end
-
+  info.render_lines = info.render_lines or {}
+  vim.list_extend(info.render_lines, lines)
+  if info.render_pending then
+    return
+  end
+  info.render_pending = true
   vim.schedule(function()
-    append_before_input(bufnr, lines)
+    if state.buffers[bufnr] ~= info or not vim.api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+    local pending = info.render_lines
+    info.render_lines = {}
+    info.render_pending = false
+    if #pending > 0 then
+      append_before_input(bufnr, pending)
+    else
+      place_prompt(bufnr)
+    end
   end)
 end
 
@@ -1787,7 +1822,11 @@ local function protect_transcript_edit(bufnr, firstline)
   if type(info) ~= "table" then
     return
   end
-  if (tonumber(info.internal_edit) or 0) > 0 or info.reverting_protected_edit == true then
+  if info.reverting_protected_edit == true then
+    return
+  end
+  if (tonumber(info.internal_edit) or 0) > 0 then
+    info.snapshot_dirty_from = math.min(info.snapshot_dirty_from or firstline, firstline)
     return
   end
   if info.protected_edit_reject_pending == true then
@@ -1798,6 +1837,7 @@ local function protect_transcript_edit(bufnr, firstline)
   if tonumber(firstline) and tonumber(firstline) < input_start then
     reject_protected_edit(bufnr, info)
   else
+    info.snapshot_dirty_from = firstline
     refresh_valid_snapshot(bufnr, info)
   end
 end
