@@ -3,6 +3,7 @@ local repl_keymaps = require("ark.repl_keymaps")
 local session_runtime = require("ark.session_runtime")
 local console_ansi = require("ark.console_ansi")
 local console_transcript = require("ark.console_transcript")
+local console_history = require("ark.console_history")
 
 local M = {}
 
@@ -1462,6 +1463,16 @@ local function record_submission(info, text)
   }
   if info.history[#info.history] ~= text then
     info.history[#info.history + 1] = text
+    if #info.history > info.history_store.max_entries then
+      table.remove(info.history, 1)
+    end
+    local saved = console_history.append(info.history_store, text)
+    if not saved and not info.history_warning then
+      info.history_warning = true
+      vim.schedule(function()
+        vim.notify("Ark console history could not be saved; in-memory recall is still available", vim.log.levels.WARN)
+      end)
+    end
   end
   info.history_index = nil
   info.draft_input = nil
@@ -2029,9 +2040,16 @@ function M.start(opts)
   apply_terminal_ui(bufnr, opts)
   local session_id = session_id_for_buffer(bufnr)
   local runtime = opts.terminal or opts.tmux or {}
+  local history_options = type(opts.console) == "table" and opts.console.history or {}
+  local history_store = console_history.open(vim.fn.getcwd(), history_options, opts.lsp and opts.lsp.root_markers)
+  local history, history_err = console_history.load(history_store)
+  if history_err then
+    vim.notify("Ark console history could not be loaded; starting with empty recall", vim.log.levels.WARN)
+  end
   state.buffers[bufnr] = {
     draft_input = nil,
-    history = {},
+    history = history,
+    history_store = history_store,
     history_index = nil,
     input_mark_id = nil,
     input_start = 0,

@@ -509,6 +509,17 @@ RPC endpoint are live; that transport readiness is independent of bridge
 readiness for language features. A missing RPC endpoint must return an explicit
 not-ready error and must never fall through to raw tmux paste into the console
 UI.
+Submitted commands are persisted immediately in a project-scoped, append-only
+JSONL history under Neovim's state directory, with owner-only file permissions.
+The project root uses the configured LSP root markers, falling back to the
+console's startup working directory; changing directory later does not change
+its history scope. Independent consoles append without overwriting each other.
+Recall loads the latest 1,000 nonblank, consecutively deduplicated entries by
+default, preserving multiline commands. Persistence failures warn without
+blocking execution. `console.history.enabled = false` disables disk reads and
+writes while retaining in-memory recall; `max_entries` limits recall, not disk
+retention. Logs contain submitted code and remain until explicitly deleted.
+
 Its completion key policy uses `Tab` to accept a visible Blink completion,
 uses `Enter` to dismiss any visible completion and submit the current input,
 uses `Alt-Enter` to insert a newline without accepting completion, and uses

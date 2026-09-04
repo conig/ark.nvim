@@ -138,6 +138,19 @@ view.display ~
 tmux.pane_layout ~
     `auto`, `side_by_side`, or `stacked`. Layout aliases are accepted.
 
+console.history.enabled ~
+    Persist submitted console commands by project. Default: true.
+    Set false to disable history disk reads/writes, retaining in-memory recall.
+
+console.history.directory ~
+    Default: stdpath("state") .. "/ark/console-history".
+    Owner-only JSONL files contain submitted code, potentially including secrets.
+    Append-only logs remain until deleted; close consoles to clear memory too.
+
+console.history.max_entries ~
+    Maximum recalled commands per console. Default: 1000.
+    Positive integer. This does not limit disk retention.
+
 terminal.split_direction ~
     `horizontal` or `vertical`.
 

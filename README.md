@@ -757,6 +757,27 @@ records R output as `#>` transcript comments. Its standalone init also loads a
 lazy-installed `nvim-autopairs` when available, so normal quote and bracket
 pairing works in the REPL. The raw launcher remains the default fallback.
 
+Console command history survives restarts and is scoped to the project root
+(or startup working directory when no root marker is found). Up/Down and
+Ctrl-P/Ctrl-N recall commands without executing them and preserve your draft.
+Defaults:
+
+```lua
+console = {
+  history = {
+    enabled = true, -- false disables disk history, but keeps in-memory recall
+    directory = vim.fn.stdpath("state") .. "/ark/console-history",
+    max_entries = 1000, -- recall limit, not disk retention
+  },
+},
+```
+
+History files contain submitted code, including any secrets typed into commands.
+They are created owner-readable/writable only and are append-only so concurrent
+consoles do not overwrite each other's entries. Delete the JSONL files in that
+directory to purge stored history; disable persistence first if consoles are
+still running. Existing consoles retain their in-memory recall until closed.
+
 The standalone REPL sources optional user configuration from
 `~/.config/ark.nvim/ark-repl/init.lua` by default. Ark first makes its optional
 Blink and `nvim-autopairs` installations importable and applies the console UI

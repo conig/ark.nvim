@@ -125,6 +125,13 @@ function M.defaults()
     async_startup = false,
     configure_slime = true,
     filetypes = { "r", "rmd", "qmd", "quarto" },
+    console = {
+      history = {
+        enabled = true,
+        directory = vim.fn.stdpath("state") .. "/ark/console-history",
+        max_entries = 1000,
+      },
+    },
     keymaps = {
       enabled = false,
       prefix = "<leader>r",
@@ -310,6 +317,12 @@ function M.validate(opts)
         )
       end
     end
+  end
+
+  local history = opts.console and opts.console.history or nil
+  local history_limit = history and history.max_entries or nil
+  if type(history_limit) == "number" and (history_limit < 1 or history_limit % 1 ~= 0) then
+    errors[#errors + 1] = "config.console.history.max_entries must be a positive integer"
   end
 
   local split_size = opts.terminal and opts.terminal.split_size or nil
