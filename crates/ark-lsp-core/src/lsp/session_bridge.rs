@@ -1395,7 +1395,13 @@ impl SessionBridge {
             Some(InspectOptions {
                 accessor: request.accessor.clone(),
                 include_member_stats: Some(false),
-                max_members: Some(200),
+                // Namespace lists are returned as complete LSP results. Truncating
+                // them prevents clients from finding omitted internal functions.
+                max_members: Some(if matches!(request.flavor, CompletionFlavor::Namespace) {
+                    0
+                } else {
+                    200
+                }),
                 member_name_prefix: request.prefix.clone(),
                 request_profile: Some(String::from("completion_lean")),
                 ..Default::default()
@@ -3181,6 +3187,19 @@ mod tests {
             request.subset_kind,
             Some(SubsetCompletionKind::StringSubset2)
         );
+    }
+
+    #[test]
+    fn test_internal_namespace_completion_request() {
+        for input in ["dplyr:::@", "list(dplyr:::@)", "dplyr:::check_@"] {
+            let (text, point) = point_from_cursor(input);
+            let document = Document::new(&text, None);
+            let context = DocumentContext::new(&document, point, None);
+            let request = completion_request_from_namespace(&context)
+                .unwrap()
+                .unwrap_or_else(|| panic!("missing namespace request for {input}"));
+            assert_eq!(request.expr, namespace_completion_expr("dplyr", false));
+        }
     }
 
     #[test]

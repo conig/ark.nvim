@@ -932,6 +932,13 @@ are classified by the server document/context layer. Comparison strings,
 package strings, argument strings, string subsets, namespace access, extractors,
 calls, pipes, and generic symbols are likewise decided in Rust.
 
+Namespace completion keeps `pkg::` exports-only. With a live managed session,
+`pkg:::` offers all namespace members, including unexported functions, both
+after the third colon and while typing a member prefix. Namespace results must
+not inherit the inspector's default 200-member cap: the bridge inspect option
+`max_members = 0` explicitly requests the complete set. Without a live session,
+internal namespace completion remains an empty, handled static fallback.
+
 The Blink adapter is editor integration only:
 
 - register Blink's normal LSP provider as the sole automatic Ark source

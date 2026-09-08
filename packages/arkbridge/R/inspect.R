@@ -130,6 +130,7 @@ inspect_object <- function(obj, options = list()) {
   lean_mode <- identical(profile, "completion_lean")
   meta_only_mode <- identical(profile, "meta_only")
   accessor <- .default_accessor(obj, options)
+  # Zero explicitly requests the complete member set (namespace completion).
   max_members <- as.integer(options$max_members %||% 200L)
   include_member_stats <- options$include_member_stats
   if (is.null(include_member_stats)) {
@@ -164,7 +165,7 @@ inspect_object <- function(obj, options = list()) {
     prefix_norm <- tolower(member_name_prefix)
     idx <- startsWith(names_norm, prefix_norm)
     names_all <- names_all[idx]
-  } else if (length(names_all) > max_members) {
+  } else if (max_members > 0L && length(names_all) > max_members) {
     truncated <- TRUE
     summary_note <- sprintf("member list truncated to %d/%d", max_members, length(names_all))
     names_all <- names_all[seq_len(max_members)]

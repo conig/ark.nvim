@@ -37,6 +37,7 @@ pub(super) struct InspectOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) include_member_stats: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    // Zero requests all members; omission uses the bridge default.
     pub(super) max_members: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) member_name_filter: Option<String>,

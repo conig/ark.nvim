@@ -7,13 +7,17 @@ local _, client = ark_test.setup_managed_buffer(test_file, {
   "uti:::",
   "utils::head",
   "utils:::as.bibentry",
+  "dplyr:::",
+  "list(dplyr:::)",
+  "dplyr:::check_",
+  "dplyr::",
 })
 
-local function completion_at(line, column)
+local function completion_at(line, column, trigger)
   local params = {
     textDocument = vim.lsp.util.make_text_document_params(0),
     position = { line = line - 1, character = column },
-    context = { triggerKind = 1 },
+    context = { triggerKind = trigger and 2 or 1, triggerCharacter = trigger },
   }
 
   return ark_test.completion_items(ark_test.request(client, "textDocument/completion", params, 10000))
@@ -51,6 +55,23 @@ assert_namespace_member_completion("pkg::", 3, "head")
 
 -- Internal namespace members are only available through the managed R session.
 assert_namespace_member_completion("pkg:::", 4, "as.bibentry.bibentry")
+
+-- The third colon should offer internals with no prefix, including before an
+-- auto-closed delimiter. A typed prefix must also find internal functions.
+for _, case in ipairs({
+  { line = 5, column = 8, trigger = ":" },
+  { line = 6, column = 13, trigger = ":" },
+  { line = 7, column = 14 },
+}) do
+  local items = completion_at(case.line, case.column, case.trigger)
+  if not ark_test.find_item(items, "check_filter") then
+    ark_test.fail("dplyr::: missing check_filter on line " .. case.line
+      .. ": " .. vim.inspect(ark_test.item_labels(items)))
+  end
+end
+local exports = completion_at(8, 7, ":")
+assert(ark_test.find_item(exports, "mutate"), "dplyr:: missing mutate")
+assert(not ark_test.find_item(exports, "check_filter"), "dplyr:: leaked internals")
 
 vim.print({
   namespace = "utils",

@@ -35,3 +35,17 @@ test_that("IPC dispatch validates decode, identity, and auth before commands", {
     expect_identical(ping$session$session_id, "test-session")
   })
 })
+
+test_that("namespace completion can request all members without changing inspect defaults", {
+  object <- stats::setNames(vector("list", 300L), sprintf("internal_%03d", seq_len(300L)))
+  options <- list(request_profile = "completion_lean")
+  expect_length(arkbridge::inspect_object(object, options)$members, 200L)
+
+  options$max_members <- 0L
+  members <- arkbridge::inspect_object(object, options)$members
+  expect_identical(vapply(members, `[[`, character(1), "name_raw"), names(object))
+
+  options$member_name_prefix <- "internal_29"
+  members <- arkbridge::inspect_object(object, options)$members
+  expect_length(members, 10L)
+})
