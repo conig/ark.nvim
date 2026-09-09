@@ -2,6 +2,8 @@ use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 pub struct ProductMetadata {
+    pub build_id: &'static str,
+    pub source_fingerprint: &'static str,
     pub component: &'static str,
     pub product_version: &'static str,
     pub bridge_schema: &'static str,
@@ -14,6 +16,8 @@ pub struct ProductMetadata {
 
 pub fn metadata() -> ProductMetadata {
     ProductMetadata {
+        build_id: env!("ARK_BUILD_ID"),
+        source_fingerprint: env!("ARK_SOURCE_FINGERPRINT"),
         component: "ark-lsp",
         product_version: env!("ARK_PRODUCT_VERSION"),
         bridge_schema: env!("ARK_BRIDGE_SCHEMA"),

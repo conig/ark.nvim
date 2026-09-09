@@ -501,15 +501,24 @@ overrides are mainly for launchers, test fixtures, and machine-specific paths.
 ==============================================================================
 10. DEVELOPMENT MODE                                                  *ark-dev*
 
-Set `ARK_NVIM_DEV_MODE=1` before requiring Ark to prefer repo-local debug and
-release binaries. In that mode Ark checks source freshness after Neovim becomes
-idle using `rg --files`; concurrent checks and builds are coalesced. If `rg` is
-unavailable, automatic checking is skipped and `:ArkBuildLsp` remains the
-explicit rebuild path. Normal mode never scans Rust sources or invokes Cargo
-during startup. Prepare the complete source product with: >sh
+Source checkouts own their optimized target/release/ark-lsp. Set
+`ARK_NVIM_DEV_MODE=1` before requiring Ark to select target/debug/ark-lsp.
+Both profiles check freshness asynchronously after startup and on focus/buffer
+entry. Unchanged checks use cached file metadata, without Cargo, Git, network
+access or repeated content hashing. Prepare the complete source product with: >sh
 
   ./scripts/ark-setup
 <
+Ark announces "Updating Ark LSP…", rebuilds the selected profile, and reconnects.
+"Updated and active" requires the new server's running build identity. External
+binary overrides are validated, not overwritten. :Ark status includes the
+installation identity and pending runtime/editor restart requirements.
+
+The R bridge records its loaded identity separately from the installed package.
+Ark never silently restarts R: save needed objects before :Ark pane restart
+when a bridge update requires it. Editor integration changes require restarting
+Neovim. Freshness means the local checkout, not an automatic remote Git update.
+
 For LSP-only contributor iteration, build manually with: >sh
 
   cargo build -p ark-lsp

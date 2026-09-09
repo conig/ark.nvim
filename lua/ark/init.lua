@@ -312,8 +312,27 @@ local function notify(message, level)
   notifications.emit(message, level or vim.log.levels.INFO)
 end
 
+local function reconnect_lsp_buffers(result)
+  if not result or not result.ok then return end
+  vim.schedule(function()
+    for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(buffer) and vim.tbl_contains(options.filetypes, vim.bo[buffer].filetype) then
+        lsp.start_async(options, buffer)
+      end
+    end
+  end)
+end
+
 local function merged_opts(base, opts)
   local merged = vim.tbl_deep_extend("force", config.defaults(), base or {}, opts or {})
+  -- The parent owns one selected LSP command. Children inherit that exact
+  -- executable, including setup() overrides applied after defaults were made.
+  if merged.lsp and type(merged.lsp.cmd) == "table" then
+    merged.tmux = merged.tmux or {}
+    merged.terminal = merged.terminal or {}
+    merged.tmux.lsp_bin = merged.lsp.cmd[1]
+    merged.terminal.lsp_bin = merged.lsp.cmd[1]
+  end
   local frontend = type(merged.session) == "table" and merged.session.console_frontend or nil
   if type(frontend) == "string" and frontend ~= "" then
     merged.tmux = merged.tmux or {}
@@ -685,6 +704,12 @@ function M.setup(opts)
     lsp.set_startup_ready_callback(function(bufnr, payload)
       startup:mark_live_hydrated(bufnr, type(payload) == "table" and payload.source or "LspBootstrap")
       drain_all_ready_waiters(bufnr)
+      local runtime = session_backend.runtime_config(options)
+      if runtime and vim.env.ARK_NVIM_MANAGED_PANE ~= "1" then
+        bridge.reconcile(runtime, options.lsp.cmd[1], function()
+          return session_backend.status(options).startup_status
+        end)
+      end
       if type(blink.maybe_show_after_startup) == "function" then
         vim.defer_fn(function()
           blink.maybe_show_after_startup(bufnr)
@@ -709,6 +734,25 @@ function M.setup(opts)
       start_managed_buffer(args.buf)
     end,
     desc = "Start ark.nvim pane and LSP for R-family buffers",
+  })
+
+  vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter" }, {
+    group = group,
+    callback = function(args)
+      if vim.env.ARK_NVIM_MANAGED_PANE == "1" then return end
+      if #vim.lsp.get_clients({ name = options.lsp.name }) == 0 then return end
+      dev.ensure_current_detached_lsp_cmd(options.lsp.cmd, {
+        force_check = args.event == "FocusGained",
+        on_build_complete = reconnect_lsp_buffers,
+      })
+      local runtime = session_backend.runtime_config(options)
+      if runtime then
+        bridge.reconcile(runtime, options.lsp.cmd[1], function()
+          return session_backend.status(options).startup_status
+        end)
+      end
+    end,
+    desc = "Reconcile the selected Ark installation after returning to the editor",
   })
 
   vim.api.nvim_create_autocmd("InsertEnter", {
@@ -770,10 +814,7 @@ function M.setup(opts)
   end
 
   vim.api.nvim_create_user_command("ArkBuildLsp", function()
-    local ok, err = dev.build_detached_lsp({
-      binary_path = options.lsp and options.lsp.cmd and options.lsp.cmd[1] or nil,
-      show_output = true,
-    })
+    local ok, err = M.build_lsp()
     if not ok then
       notify(err, vim.log.levels.ERROR)
     end
@@ -1501,6 +1542,13 @@ function M.build_lsp()
   ensure_setup()
   return dev.build_detached_lsp({
     binary_path = options.lsp and options.lsp.cmd and options.lsp.cmd[1] or nil,
+    on_complete = function(result)
+      if not result.ok then return end
+      dev.ensure_current_detached_lsp_cmd(options.lsp.cmd, {
+        force_check = true,
+        on_build_complete = reconnect_lsp_buffers,
+      })
+    end,
   })
 end
 
@@ -1522,6 +1570,8 @@ function M.status(opts)
     status.startup_status.auth_token = status.startup_status.auth_token and "<redacted>" or nil
   end
   status.startup = startup:status(vim.api.nvim_get_current_buf())
+  status.installation = require("ark.identity").state(options.lsp.cmd[1])
+  status.runtime_update = bridge.status().update
   status.lsp_cmd = options.lsp.cmd
   status.release = release.status()
   status.config_valid = true

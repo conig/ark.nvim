@@ -327,6 +327,9 @@ local({
         status = as.character(status),
         product_version = Sys.getenv("ARK_NVIM_PRODUCT_VERSION", unset = ""),
         bridge_schema = Sys.getenv("ARK_NVIM_BRIDGE_SCHEMA", unset = ""),
+        runtime_identity = if ("arkbridge" %in% loadedNamespaces()) {
+          tryCatch(arkbridge:::.ark_runtime_identity(), error = function(e) NULL)
+        } else NULL,
         ts = as.integer(Sys.time()),
         ts_iso = .timestamp_iso(),
         pid = as.integer(Sys.getpid()),

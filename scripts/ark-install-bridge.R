@@ -5,6 +5,7 @@ lib_path <- if (length(args) >= 2L) args[[2]] else ""
 stamp_path <- if (length(args) >= 3L) args[[3]] else ""
 source_mtime <- suppressWarnings(as.integer(if (length(args) >= 4L) args[[4]] else "0"))
 runtime_revision <- suppressWarnings(as.integer(if (length(args) >= 5L) args[[5]] else "0"))
+source_fingerprint <- Sys.getenv("ARK_BRIDGE_SOURCE_FINGERPRINT", unset = "")
 dependency_repo <- if (length(args) >= 6L) args[[6]] else ""
 
 if (!nzchar(pkg_path) || !dir.exists(pkg_path)) {
@@ -81,6 +82,27 @@ if (!requireNamespace("jsonlite", quietly = TRUE)) {
   stop("jsonlite installation completed but the namespace is unavailable", call. = FALSE)
 }
 
+# The native worker is shared with manual Cargo builds and editor updates.
+# Legacy bootstraps without that worker retain their mtime/revision fallback.
+if (!nzchar(source_fingerprint)) {
+  root <- normalizePath(file.path(pkg_path, "../.."), winslash = "/", mustWork = TRUE)
+  candidates <- c(Sys.getenv("ARK_IDENTITY_BIN", unset = ""),
+                  file.path(root, "target", "release", "ark-lsp"),
+                  file.path(root, "target", "debug", "ark-lsp"))
+  for (binary in candidates[nzchar(candidates)]) {
+    if (!file.exists(binary)) next
+    output <- suppressWarnings(tryCatch(system2(
+      binary, c("--source-identity", shQuote(root), "bridge"),
+      stdout = TRUE, stderr = FALSE
+    ), error = function(e) character()))
+    snapshot <- tryCatch(jsonlite::fromJSON(paste(output, collapse = "\n")), error = function(e) NULL)
+    if (is.list(snapshot) && is.character(snapshot$fingerprint)) {
+      source_fingerprint <- snapshot$fingerprint
+      break
+    }
+  }
+}
+
 if (!is.finite(source_mtime) || source_mtime <= 0L) {
   source_files <- list.files(
     pkg_path,
@@ -107,7 +129,11 @@ if (nzchar(installed_path) && file.exists(stamp_path)) {
   )
   if (
     is.list(installed_stamp) &&
-      identical(as.integer(installed_stamp$source_mtime), as.integer(source_mtime)) &&
+      (if (nzchar(source_fingerprint)) {
+        identical(installed_stamp$source_fingerprint, source_fingerprint)
+      } else {
+        identical(as.integer(installed_stamp$source_mtime), as.integer(source_mtime))
+      }) &&
       identical(as.integer(installed_stamp$runtime_revision), as.integer(runtime_revision))
   ) {
     quit(save = "no", status = 0L, runLast = FALSE)
@@ -136,11 +162,17 @@ stamp_dir <- dirname(stamp_path)
 dir.create(stamp_dir, recursive = TRUE, showWarnings = FALSE)
 
 payload <- list(
+  source_fingerprint = source_fingerprint,
   source_mtime = if (is.finite(source_mtime)) as.integer(source_mtime) else 0L,
   runtime_revision = if (is.finite(runtime_revision)) as.integer(runtime_revision) else 0L,
   installed_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3%z"),
   installed_path = normalizePath(installed_path, winslash = "/", mustWork = FALSE)
 )
+
+# Snapshot installation identity inside the package. R captures this once on
+# namespace load, so replacing files cannot make an old session claim new code.
+writeLines(jsonlite::toJSON(payload, auto_unbox = TRUE, pretty = FALSE),
+           file.path(installed_path, "ark-install-identity.json"), useBytes = TRUE)
 
 tmp_path <- tempfile("arkbridge-install-", tmpdir = stamp_dir, fileext = ".json")
 writeLines(jsonlite::toJSON(payload, auto_unbox = TRUE, pretty = FALSE), tmp_path, useBytes = TRUE)

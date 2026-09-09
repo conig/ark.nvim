@@ -57,7 +57,9 @@ uuid.workspace = true
 yaml-rust2.workspace = true
 
 [build-dependencies]
+blake3.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 assert_matches.workspace = true

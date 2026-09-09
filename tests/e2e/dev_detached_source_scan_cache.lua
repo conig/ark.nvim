@@ -1,58 +1,21 @@
-vim.opt.rtp:prepend(vim.fn.getcwd())
-
-package.loaded["ark.dev"] = nil
-
-local original_executable = vim.fn.executable
-local original_systemlist = vim.fn.systemlist
-
-local rg_calls = 0
-local source_probe = vim.fn.tempname()
-vim.fn.writefile({ "probe" }, source_probe)
-
-vim.fn.executable = function(path)
-  if path == "rg" then
-    return 1
-  end
-  if path == "cargo" then
-    return 0
-  end
-  return original_executable(path)
+-- The native worker hashes once. Repeated/concurrent unchanged checks only stat
+-- its inventory, including directories needed to detect additions/deletions.
+local identity = require("ark.identity")
+local binary = vim.fn.getcwd() .. "/target/debug/ark-lsp"
+local system = vim.system
+local probes = 0
+vim.system = function(cmd, ...)
+  if cmd[2] == "--source-identity" then probes = probes + 1 end
+  return system(cmd, ...)
 end
-
-vim.fn.systemlist = function(command)
-  if type(command) == "table" and command[1] == "rg" then
-    rg_calls = rg_calls + 1
-    return { source_probe }
-  end
-
-  return original_systemlist(command)
+local completed = 0
+local function checked(snapshot, err)
+  assert(snapshot and not err, tostring(err))
+  assert(#snapshot.inputs > 0)
+  completed = completed + 1
 end
-
-local ok, err = pcall(function()
-  local dev = require("ark.dev")
-  local probe_cmd = {
-    vim.fn.getcwd() .. "/target/debug/ark-lsp-cache-probe",
-    "--runtime-mode",
-    "detached",
-  }
-
-  local _, first_err = dev.ensure_current_detached_lsp_cmd(probe_cmd, {})
-  local _, second_err = dev.ensure_current_detached_lsp_cmd(probe_cmd, {})
-  if type(first_err) ~= "string" or type(second_err) ~= "string" then
-    error("expected missing detached binary checks to fail without auto-build, got " .. vim.inspect({
-      first_err = first_err,
-      second_err = second_err,
-    }), 0)
-  end
-
-  if rg_calls ~= 0 then
-    error("missing detached binary checks should not scan sources for auto-build, saw " .. tostring(rg_calls), 0)
-  end
-end)
-
-vim.fn.executable = original_executable
-vim.fn.systemlist = original_systemlist
-
-if not ok then
-  error(err, 0)
-end
+for _ = 1, 10 do identity.snapshot(binary, "lsp", checked) end
+assert(vim.wait(10000, function() return completed == 10 end))
+identity.snapshot(binary, "lsp", checked)
+assert(vim.wait(10000, function() return completed == 11 end))
+assert(probes == 1, "unchanged inputs spawned another hashing worker")

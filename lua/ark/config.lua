@@ -75,25 +75,19 @@ local root = repo_root()
 
 function M.defaults()
   local development_mode = vim.env.ARK_NVIM_DEV_MODE == "1"
+  local identity = require("ark.identity")
   local installed_lsp = release.installed_binary()
+  local override = expand_candidate(vim.env.ARK_NVIM_LSP_BIN)
   local lsp_bin
-  if development_mode then
-    lsp_bin = first_executable(compact(
-      vim.env.ARK_NVIM_LSP_BIN,
-      root .. "/target/debug/ark-lsp",
-      root .. "/target/release/ark-lsp",
-      installed_lsp,
-      "ark-lsp"
-    ))
+  if override then
+    lsp_bin = override
+  elseif identity.source_checkout() then
+    -- A checkout owns its binary even when a separate release is installed.
+    -- Keep the intended path when missing so reconciliation can build it.
+    lsp_bin = root .. (development_mode and "/target/debug/ark-lsp" or "/target/release/ark-lsp")
   else
-    lsp_bin = first_executable(compact(
-      vim.env.ARK_NVIM_LSP_BIN,
-      installed_lsp,
-      "ark-lsp",
-      root .. "/target/release/ark-lsp"
-    ))
+    lsp_bin = installed_lsp or first_executable({ "ark-lsp" }) or "ark-lsp"
   end
-  lsp_bin = lsp_bin or "ark-lsp"
 
   local launcher = first_executable(compact(
     vim.env.ARK_NVIM_LAUNCHER,

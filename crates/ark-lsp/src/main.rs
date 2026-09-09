@@ -11,6 +11,20 @@ fn print_usage() {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // This worker is also used by the editor; it runs off the startup/UI path.
+    let arguments: Vec<String> = std::env::args().collect();
+    if arguments.get(1).map(String::as_str) == Some("--source-identity") {
+        let root = arguments
+            .get(2)
+            .ok_or_else(|| anyhow::anyhow!("missing checkout path"))?;
+        let component = arguments.get(3).map(String::as_str).unwrap_or("lsp");
+        let mut snapshot =
+            ark_lsp::source_identity::snapshot(std::path::Path::new(root), component)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+        snapshot["built"] = serde_json::to_value(product::metadata())?;
+        println!("{}", snapshot);
+        return Ok(());
+    }
     let mut print_version = false;
     let mut json = false;
     let mut args = std::env::args().skip(1);

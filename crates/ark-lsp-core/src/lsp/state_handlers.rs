@@ -472,6 +472,16 @@ pub(crate) fn initialize(
             version: Some(env!("ARK_PRODUCT_VERSION").to_string()),
         }),
         capabilities: ServerCapabilities {
+            experimental: Some(serde_json::json!({
+                "arkBuild": {
+                    "build_id": env!("ARK_BUILD_ID"),
+                    "source_fingerprint": env!("ARK_SOURCE_FINGERPRINT"),
+                    "product_version": env!("ARK_PRODUCT_VERSION"),
+                    "bridge_schema": env!("ARK_BRIDGE_SCHEMA"),
+                    "profile": env!("ARK_BUILD_PROFILE"),
+                    "commit": env!("ARK_BUILD_COMMIT"),
+                }
+            })),
             // Currently hard-coded to UTF-16, but we might want to allow UTF-8 frontends
             // once/if Ark becomes an independent LSP
             position_encoding: Some(lsp_types::PositionEncodingKind::UTF16),

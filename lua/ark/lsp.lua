@@ -1134,6 +1134,9 @@ function M.config(opts, bufnr, _config_opts)
     _ark_lsp_build_fingerprint = dev.detached_lsp_build_fingerprint(cmd[1]),
     name = opts.lsp.name,
     cmd = cmd,
+    on_init = function(client)
+      require("ark.identity").activated(cmd[1], client)
+    end,
     -- LuaSnip-driven placeholder edits can leave Neovim's incremental
     -- changetracker out of sync with Ark, which surfaces bogus syntax
     -- diagnostics after an otherwise valid snippet expansion.
@@ -1343,7 +1346,7 @@ function M.refresh(opts, bufnr)
     forget_client_id(client.id)
   end
 
-  return start_client(opts, bufnr)
+  return start_client(opts, bufnr, { force_check = true })
 end
 
 function M.status(opts, bufnr, status_opts)

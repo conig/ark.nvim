@@ -25,11 +25,22 @@
   },
   "rules": [
     {
+      "names": ["source_install_reconciliation.lua"],
+      "tier": "fast",
+      "layer": "product-e2e",
+      "contract": "normal source install upgrades the selected profile and verifies the running LSP identity",
+      "dependencies": ["neovim", "python", "release-binary"],
+      "typical_runtime": "under 20 seconds",
+      "mutates_shared_session": false
+    },
+    {
       "names": [
         "blink_extractor_provider_policy.lua",
         "blink_hidden_trigger_context_resets_on_keyword.lua",
         "config_validation.lua",
         "dev_source_boundary.lua",
+        "installation_origin_safety.lua",
+        "source_update_failure.lua",
         "dev_source_scan_without_rg.lua",
         "error_taxonomy.lua",
         "help_render_pure.lua",

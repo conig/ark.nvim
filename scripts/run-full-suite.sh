@@ -225,6 +225,14 @@ if [[ "$skip_e2e" -eq 0 ]]; then
     build_ok=0
   fi
 
+  # The normal-install regression publishes a real optimized artifact, not a
+  # debug binary disguised by an environment override.
+  if printf '%s\n' "${e2e_tests[@]}" | grep -q 'source_install_reconciliation.lua'; then
+    if ! run_step "cargo build release ark-lsp" cargo build -p ark-lsp --release; then
+      build_ok=0
+    fi
+  fi
+
   if [[ "$build_ok" -eq 1 ]]; then
     for index in "${!e2e_tests[@]}"; do
       run_e2e_test "$index"

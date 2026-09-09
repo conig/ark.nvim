@@ -657,19 +657,23 @@ require("ark").setup({
 })
 ```
 
-By default the plugin will try these `ark-lsp` locations in order:
+Ark keeps source and release installations separate. An explicit
+`ARK_NVIM_LSP_BIN` or configured command wins; otherwise a source checkout uses
+its own `target/release/ark-lsp`, even if another release is installed. Set
+`ARK_NVIM_DEV_MODE=1` to select the checkout's debug profile. Packaged plugins
+use their managed release or `ark-lsp` on `PATH`.
 
-1. `ARK_NVIM_LSP_BIN`
-2. the current checksummed release under `stdpath("data") .. "/ark"`
-3. `ark-lsp` on your `PATH`
-4. `target/release/ark-lsp` as an explicit source-build fallback
+Source installs check freshness asynchronously in **both** profiles. Ark shows
+**Updating Ark LSP…**, builds the selected binary, and reconnects automatically.
+It confirms the running build identity before reporting success. Unchanged
+checks use cached file metadata; they do not run Cargo, Git, or network checks.
+External binaries are checked for compatibility but never overwritten.
 
-Set `ARK_NVIM_DEV_MODE=1` for a contributor checkout. Only that explicit mode
-allows `target/debug/ark-lsp` to take precedence over the installed release and
-enables an idle, asynchronous source-freshness probe. That probe requires `rg`;
-without it Ark keeps using the existing binary and asks you to run
-`:ArkBuildLsp` explicitly. Normal mode never scans the checkout or invokes
-Cargo during startup.
+Bridge updates are installed automatically, but an existing R session may need
+a restart to load them. Ark reports that explicitly and never restarts R behind
+your back. Save needed R objects before `:Ark pane restart`. Changes to the
+editor integration itself require restarting Neovim. `:Ark status` includes
+installation and loaded-runtime identity information.
 `:Ark rollback` and `:ArkRollback` activate the previous installed binary only
 after the plugin checkout has been pinned to that same release; this prevents a
 mixed-version product.

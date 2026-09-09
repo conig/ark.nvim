@@ -198,30 +198,14 @@ function M.assert_fresh_detached_lsp_binary(binary_path)
     M.fail("detached ark-lsp binary is missing: " .. normalized_binary)
   end
 
-  local binary_mtime = vim.fn.getftime(normalized_binary)
-  if type(binary_mtime) ~= "number" or binary_mtime <= 0 then
-    M.fail("failed to stat detached ark-lsp binary: " .. normalized_binary)
+  local result = vim.system({ normalized_binary, "--source-identity", normalized_root }, { text = true }):wait()
+  local ok, identity = pcall(vim.json.decode, result.stdout or "")
+  if result.code ~= 0 or not ok or type(identity) ~= "table"
+    or identity.fingerprint ~= identity.built.source_fingerprint then
+    local profile = normalized_binary:find("/release/", 1, true) and " --release" or ""
+    M.fail("detached ark-lsp binary does not match its source identity. Rebuild with: cargo build -p ark-lsp" .. profile)
   end
 
-  local source_paths = require("ark.dev").rust_source_paths()
-
-  local newer = {}
-  for _, fullpath in ipairs(source_paths) do
-    if vim.fn.filereadable(fullpath) == 1 then
-      local source_mtime = vim.fn.getftime(fullpath)
-      if type(source_mtime) == "number" and source_mtime > binary_mtime then
-        newer[#newer + 1] = vim.fs.relpath(repo_root, fullpath) or fullpath
-      end
-    end
-  end
-
-  if #newer > 0 then
-    M.fail(
-      "detached ark-lsp binary is older than source files: "
-        .. table.concat(newer, ", ")
-        .. ". Rebuild with: cargo build -p ark-lsp"
-    )
-  end
 end
 
 function M.insert_text(item)

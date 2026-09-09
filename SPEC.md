@@ -92,21 +92,52 @@ The installer serializes updates with an ownership-checked lock, preserves live
 installers, and reclaims orphaned locks after a crash. No elevated privileges
 or global `PATH` mutation are required.
 
-Binary discovery is explicit:
+Installation identity is explicit:
 
-1. `ARK_NVIM_LSP_BIN`
-2. the Ark-managed current release
-3. `ark-lsp` on `PATH`
-4. a repo-local optimized source build
+1. `ARK_NVIM_LSP_BIN` / an explicitly configured command is respected.
+2. A plugin source checkout owns `target/release/ark-lsp`; setting
+   `ARK_NVIM_DEV_MODE=1` selects its debug profile instead. A missing owned
+   binary is built, not replaced by an unrelated installation found elsewhere.
+3. A packaged plugin uses its managed release or an explicitly available
+   `ark-lsp` on `PATH`. External binaries are validated, never overwritten.
 
-A repo-local debug build is considered only when `ARK_NVIM_DEV_MODE=1`.
-Normal startup may use an existing repo-local optimized build, but it never
-scans Rust sources or invokes Cargo. Contributor rebuilds remain explicitly
-available through `:ArkBuildLsp`. In development mode, existing repo-local
-binaries receive one coalesced freshness probe after Neovim becomes idle;
-source discovery uses asynchronous `rg --files`, and a missing `rg` skips the
-automatic probe with an actionable warning instead of recursively globbing the
-checkout.
+Source reconciliation runs asynchronously after startup and on returning focus
+or entering a buffer with an active Ark client. It applies in normal mode too.
+The unchanged path coalesces requests, stats a cached file/directory inventory,
+and never invokes Cargo, Git, the network, or a hashing worker again until
+inputs or the selected executable change. Cold hashing runs in a native worker,
+not on Neovim's UI thread. No periodic repository-wide polling is installed.
+
+`build/source_identity.rs` is the shared input inventory and content fingerprint
+implementation used by ordinary Cargo build scripts and `ark-lsp --source-identity`.
+It follows local Cargo dependencies (including build/target dependencies), tracks
+manifests, build scripts, source/resources, the lockfile, toolchain and Cargo
+configuration. File additions, deletions and uncommitted edits matter; Git commit
+IDs are explanatory metadata, not the freshness authority. Root documentation,
+plugin-only changes and bridge-only changes do not rebuild the LSP.
+
+Builds embed a source fingerprint and a build ID incorporating compiler, target,
+profile and Rust flags. Initialize capabilities expose the running identity under
+`experimental.arkBuild`. "Updating Ark LSP…" precedes a coalesced build of the
+selected profile. Successful builds are rechecked, clients reconnect, and only
+an initialize response matching the intended build permits "updated and active".
+Manual local builds participate in the same checks. Failures stay visible and
+retain the older binary, with retry backoff rather than a build loop. Managed
+terminal children inherit the parent's selected executable and never build.
+
+The R installer records a content fingerprint inside the installed package and
+R captures that identity once at namespace load. Replacing the on-disk package
+cannot make an existing R session report the newer identity. A mismatched live
+session reports "update installed; R session restart required"; Ark never
+silently restarts R or discards its workspace. Legacy unstamped bootstraps retain
+mtime/revision recovery until the native identity worker is available. Editor
+or terminal integration source changes request a Neovim restart rather than
+unsafe hot reloading. `:Ark status` exposes selected, installed and running
+identities plus pending runtime/editor restart requirements.
+
+"Current" for a source installation means the local checkout, not the newest
+remote Git commit. Published-release discovery remains a separate explicit
+install/rollback policy; freshness checking does not initiate network updates.
 
 The canonical source-install entrypoint is `scripts/ark-setup`. It performs a
 complete capability preflight before the product build, including compiling a
@@ -398,8 +429,8 @@ interactive R evaluation is not safe. The late result is discarded.
   status-file data plus bridge bootstrap.
 - Existing detached binaries and pane-side bridge runtimes should not force
   source-tree freshness scans on the immediate startup path. Detached-binary
-  checks run shortly afterward only in explicit development mode; normal mode
-  does no automatic source discovery or compilation.
+  checks run shortly afterward for source installations in either build profile.
+  The unchanged fast path uses cached identity inputs, not Cargo or Git.
 - Startup diagnostics should retain the existing pane and LSP readiness
   milestones, but the user-facing "main buffer unlocked" mark should be
   recorded directly from successful detached session bootstrap when that signal
@@ -421,9 +452,9 @@ interactive R evaluation is not safe. The late result is discarded.
   ladders until the real managed-session bootstrap path takes over.
 - Any automatic detached `ark-lsp` rebuild should be visible to the user. Ark
   should not silently compile while a buffer appears partly ready; it should
-  show the rebuild log, leave the log closable with `q`, and attach or restart
-  the LSP through the existing build-completion listeners when the binary is
-  ready.
+  notify "Updating Ark LSP…" without stealing focus, buffer Cargo output, and
+  attach or restart through build-completion listeners. Explicit builds retain
+  the closable log window. Activation success requires the running build ID.
 - Sync startup must hand off cleanly when Neovim has started `ark-lsp` but the
   client is still initializing: status should surface a pending client instead
   of reporting a false bootstrap failure.

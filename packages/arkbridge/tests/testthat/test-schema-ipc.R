@@ -49,3 +49,17 @@ test_that("namespace completion can request all members without changing inspect
   members <- arkbridge::inspect_object(object, options)$members
   expect_length(members, 10L)
 })
+
+test_that("runtime identity describes loaded code, not a replacement installation", {
+  identity <- arkbridge:::.ark_loaded_identity
+  previous <- identity$value
+  on.exit(identity$value <- previous, add = TRUE)
+  library <- tempfile()
+  dir.create(file.path(library, "arkbridge"), recursive = TRUE)
+  on.exit(unlink(library, recursive = TRUE), add = TRUE)
+  stamp <- file.path(library, "arkbridge", "ark-install-identity.json")
+  writeLines('{"source_fingerprint":"old"}', stamp)
+  arkbridge:::.onLoad(library, "arkbridge")
+  writeLines('{"source_fingerprint":"new"}', stamp)
+  expect_identical(arkbridge:::.ark_runtime_identity()$source_fingerprint, "old")
+})

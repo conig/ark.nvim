@@ -13,6 +13,8 @@ local FRESHNESS_PROBE_DEFER_MS = 250
 local REQUIRED_RUNTIME_REVISION = 2
 local SOURCE_SCAN_CACHE_TTL_MS = 1000
 local checked = {}
+local runtime_update = { phase = "unchecked" }
+local reconciliation = { running = false, checked_ms = 0 }
 local freshness_checks = {}
 local source_scan_cache = {
   checked_ms = 0,
@@ -190,6 +192,12 @@ local function installed_package_dir(lib_path)
   return normalized .. "/arkbridge"
 end
 
+local function package_installed(lib_path)
+  local directory = installed_package_dir(lib_path)
+  return directory and file_exists(directory .. "/DESCRIPTION")
+    and file_exists(directory .. "/Meta/package.rds")
+end
+
 local function read_stamp(lib_path)
   local path = stamp_path(lib_path)
   if not path or vim.fn.filereadable(path) ~= 1 then
@@ -352,6 +360,7 @@ local function start_install(config, opts)
 
   local job_id = vim.fn.jobstart(cmd, {
     cwd = ROOT,
+    env = { ARK_BRIDGE_SOURCE_FINGERPRINT = opts.source_fingerprint or "", ARK_IDENTITY_BIN = config.lsp_bin },
     stdout_buffered = false,
     stderr_buffered = false,
     on_stdout = function(_, data)
@@ -367,7 +376,7 @@ local function start_install(config, opts)
     on_exit = function(_, code)
       vim.schedule(function()
         local ok = code == 0
-          and dir_exists(installed_package_dir(lib_path))
+          and package_installed(lib_path)
           and type(current_install_source_mtime(lib_path)) == "number"
         finish_install({
           ok = ok,
@@ -438,7 +447,7 @@ local function maybe_schedule_freshness_probe(config, opts, installed_source_mti
 
     local newest_mtime, newest_path = newest_source_state()
     local current_installed_source_mtime = current_install_source_mtime(lib_path) or 0
-    local installed_exists = dir_exists(installed_package_dir(lib_path))
+    local installed_exists = package_installed(lib_path)
     local stale = not installed_exists
       or current_installed_source_mtime == 0
       or (type(newest_mtime) == "number" and newest_mtime > current_installed_source_mtime)
@@ -467,6 +476,64 @@ local function maybe_schedule_freshness_probe(config, opts, installed_source_mti
   end, FRESHNESS_PROBE_DEFER_MS)
 end
 
+-- Reconcile installed versus *loaded* runtime identity without restarting R.
+function M.reconcile(config, binary, live_status)
+  if installs_disabled() or reconciliation.running then return end
+  if monotonic_ms() - reconciliation.checked_ms < SOURCE_SCAN_CACHE_TTL_MS then return end
+  local identity = require("ark.identity")
+  if identity.origin(binary) ~= "source" then return end
+  reconciliation.running = true
+  vim.schedule(function()
+    identity.snapshot(binary, "bridge", function(snapshot)
+      reconciliation.checked_ms = monotonic_ms()
+      if not snapshot then reconciliation.running = false; return end
+      local function check_loaded()
+        reconciliation.running = false
+        local installed = read_stamp(runtime_lib_path(config)) or {}
+        if installed.source_fingerprint ~= snapshot.fingerprint then
+          runtime_update = { phase = "failed", error = "installed bridge identity could not be verified" }
+          notify(runtime_update.error, vim.log.levels.ERROR)
+          return
+        end
+        local status = live_status() or {}
+        local loaded = type(status.runtime_identity) == "table" and status.runtime_identity or {}
+        runtime_update = { installed = installed.source_fingerprint, loaded = loaded.source_fingerprint }
+        if not status.pid then runtime_update.phase = "installed"; return end
+        if type(installed.source_fingerprint) == "string" and installed.source_fingerprint ~= ""
+          and installed.source_fingerprint == loaded.source_fingerprint then
+          runtime_update.phase = "current"
+        else
+          runtime_update.phase = "restart_required"
+          local key = tostring(status.pid) .. ":" .. tostring(installed.source_fingerprint)
+          if reconciliation.warned ~= key then
+            reconciliation.warned = key
+            notify("Ark bridge update installed; R session restart required. Save your R objects before :Ark pane restart.", vim.log.levels.WARN)
+          end
+        end
+      end
+      local installed = read_stamp(runtime_lib_path(config)) or {}
+      if installed.source_fingerprint == snapshot.fingerprint then check_loaded(); return end
+      runtime_update.phase = "updating"
+      notify("Updating Ark bridge…", vim.log.levels.INFO)
+      local ok, err = start_install(config, {
+        source_fingerprint = snapshot.fingerprint,
+        background = true,
+        on_complete = function(result)
+          if result.ok then check_loaded() else
+            reconciliation.running = false
+            runtime_update = { phase = "failed", error = result.error }
+          end
+        end,
+      })
+      if not ok then
+        reconciliation.running = false
+        runtime_update = { phase = "failed", error = err }
+        notify("Ark bridge update failed: " .. tostring(err), vim.log.levels.ERROR)
+      end
+    end)
+  end)
+end
+
 function M.runtime_lib_path(config)
   return runtime_lib_path(config)
 end
@@ -478,6 +545,7 @@ function M.status()
     user_initiated = install_state.user_initiated == true,
     elapsed_ms = install_state.started_at and (monotonic_ms() - install_state.started_at) or nil,
     required_runtime_revision = REQUIRED_RUNTIME_REVISION,
+    update = vim.deepcopy(runtime_update),
   }
 end
 
@@ -490,7 +558,7 @@ function M.ensure_current_runtime(config, opts)
   end
 
   local installed_path = installed_package_dir(lib_path)
-  local installed_exists = dir_exists(installed_path)
+  local installed_exists = package_installed(lib_path)
   local installed_source_mtime = current_install_source_mtime(lib_path) or 0
   local installed_revision_current = installed_exists and runtime_revision_current(lib_path)
   local cache_key = table.concat({
@@ -500,6 +568,12 @@ function M.ensure_current_runtime(config, opts)
   }, "::")
 
   if installed_exists and installed_revision_current and opts.force ~= true then
+    local installed_stamp = read_stamp(lib_path) or {}
+    if opts.user_initiated ~= true and type(installed_stamp.source_fingerprint) == "string"
+      and installed_stamp.source_fingerprint ~= "" then
+      -- The parent reconciliation hook owns content checks for identified installs.
+      return true, nil
+    end
     if opts.user_initiated == true then
       local newest_mtime, newest_path = newest_source_state()
       local source_stale = installed_source_mtime == 0

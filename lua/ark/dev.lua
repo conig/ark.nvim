@@ -1,6 +1,7 @@
 local uv = vim.uv or vim.loop
 
 local M = {}
+local identity = require("ark.identity")
 
 local function repo_root()
   local source = debug.getinfo(1, "S").source:sub(2)
@@ -12,30 +13,6 @@ local DEBUG_BUILD_CMD = { "cargo", "build", "-p", "ark-lsp" }
 local RELEASE_BUILD_CMD = { "cargo", "build", "-p", "ark-lsp", "--release" }
 local SPINNER_FRAMES = { "[=   ]", "[==  ]", "[=== ]", "[ ===]", "[  ==]", "[   =]" }
 local SOURCE_SCAN_CACHE_TTL_MS = 1000
-local checked = {}
-local freshness_checks = {}
-local missing_rg_warned = false
-local source_scan_cache = {
-  checked_ms = 0,
-  newest_mtime = nil,
-  newest_path = nil,
-  listeners = {},
-  running = false,
-}
-local PRODUCT_RUST_CRATES = {
-  "aether_path",
-  "ark-lsp",
-  "ark-lsp-core",
-  "ark-lsp-support",
-  "harp",
-  "harp_macros",
-  "libr",
-  "oak_core",
-  "oak_index_vec",
-  "oak_package_metadata",
-  "oak_semantic",
-  "stdext",
-}
 local build_state = {
   binary_path = nil,
   command = nil,
@@ -81,16 +58,8 @@ local function stat_mtime(path)
 end
 
 local function repo_target_binary(path)
-  local normalized = normalize_path(path)
-  if not normalized then
-    return nil
-  end
-
-  if not vim.startswith(normalized, ROOT .. "/target/") then
-    return nil
-  end
-
-  return normalized
+  local origin, binary = identity.origin(path)
+  return origin == "source" and binary or nil
 end
 
 local function build_spec(binary)
@@ -109,137 +78,17 @@ local function build_spec(binary)
   }
 end
 
-local function append_manifest_paths(paths)
-  for _, crate in ipairs(PRODUCT_RUST_CRATES) do
-    paths[#paths + 1] = ROOT .. "/crates/" .. crate .. "/Cargo.toml"
-    local build_script = ROOT .. "/crates/" .. crate .. "/build.rs"
-    if stat_mtime(build_script) then
-      paths[#paths + 1] = build_script
-    end
-  end
-  paths[#paths + 1] = ROOT .. "/Cargo.toml"
-  paths[#paths + 1] = ROOT .. "/Cargo.lock"
-  paths[#paths + 1] = ROOT .. "/rust-toolchain.toml"
-
-  return paths
-end
-
-local function rust_source_command()
-  local command = { "rg", "--files" }
-  for _, crate in ipairs(PRODUCT_RUST_CRATES) do
-    command[#command + 1] = ROOT .. "/crates/" .. crate .. "/src"
-  end
-  return command
-end
-
-local function rust_source_paths()
-  local paths = {}
-  if vim.fn.executable("rg") == 1 then
-    paths = vim.fn.systemlist(rust_source_command())
-    if vim.v.shell_error ~= 0 then
-      paths = {}
-    end
-  end
-
-  return append_manifest_paths(paths)
-end
-
+-- Explicit diagnostic/test helper, never used on the editor startup path.
 function M.rust_source_paths()
-  return vim.deepcopy(rust_source_paths())
-end
-
-local function finish_source_scan(newest_mtime, newest_path, err)
-  local listeners = source_scan_cache.listeners
-  source_scan_cache.listeners = {}
-  source_scan_cache.running = false
-
-  if not err then
-    source_scan_cache.checked_ms = monotonic_ms()
-    source_scan_cache.newest_mtime = newest_mtime
-    source_scan_cache.newest_path = newest_path
+  local binary = ROOT .. "/target/debug/ark-lsp"
+  if vim.fn.executable(binary) ~= 1 then binary = ROOT .. "/target/release/ark-lsp" end
+  local result = vim.system({ binary, "--source-identity", ROOT }, { text = true }):wait()
+  if result.code ~= 0 then error("ark-lsp source inventory unavailable; rebuild the local binary") end
+  local paths = {}
+  for _, entry in ipairs(vim.json.decode(result.stdout).inputs) do
+    if uv.fs_stat(entry.path).type == "file" then paths[#paths + 1] = entry.path end
   end
-
-  for _, listener in ipairs(listeners) do
-    listener(newest_mtime, newest_path, err)
-  end
-end
-
-local function newest_mtime_async(paths, callback)
-  local newest_mtime = 0
-  local newest_path = nil
-  local next_index = 1
-  local active = 0
-  local completed = 0
-  local concurrency = math.min(32, #paths)
-
-  if #paths == 0 then
-    callback(newest_mtime, newest_path)
-    return
-  end
-
-  local launch
-  launch = function()
-    while active < concurrency and next_index <= #paths do
-      local path = paths[next_index]
-      next_index = next_index + 1
-      active = active + 1
-      uv.fs_stat(path, function(_, stat)
-        active = active - 1
-        completed = completed + 1
-        local mtime = stat and stat.mtime and stat.mtime.sec or nil
-        if type(mtime) == "number" and mtime > newest_mtime then
-          newest_mtime = mtime
-          newest_path = path
-        end
-
-        if completed == #paths then
-          vim.schedule(function()
-            callback(newest_mtime, newest_path)
-          end)
-          return
-        end
-        launch()
-      end)
-    end
-  end
-  launch()
-end
-
-local function newest_source_mtime_async(callback)
-  local now = monotonic_ms()
-  if now - (tonumber(source_scan_cache.checked_ms) or 0) < SOURCE_SCAN_CACHE_TTL_MS then
-    callback(source_scan_cache.newest_mtime, source_scan_cache.newest_path)
-    return
-  end
-
-  source_scan_cache.listeners[#source_scan_cache.listeners + 1] = callback
-  if source_scan_cache.running then
-    return
-  end
-
-  if vim.fn.executable("rg") ~= 1 then
-    finish_source_scan(nil, nil, "`rg` is unavailable")
-    return
-  end
-
-  source_scan_cache.running = true
-  local started, system_err = pcall(vim.system, rust_source_command(), { text = true }, function(result)
-    vim.schedule(function()
-      if result.code ~= 0 then
-        finish_source_scan(nil, nil, string.format("`rg --files` exited with status %d", result.code))
-        return
-      end
-
-      local paths = vim.split(result.stdout or "", "\n", { plain = true, trimempty = true })
-      append_manifest_paths(paths)
-      newest_mtime_async(paths, function(newest_mtime, newest_path)
-        finish_source_scan(newest_mtime, newest_path, nil)
-      end)
-    end)
-  end)
-  if not started then
-    finish_source_scan(nil, nil, system_err)
-  end
+  return paths
 end
 
 local function elapsed_ms()
@@ -258,24 +107,6 @@ local function notify(message, level, opts)
   local id = vim.notify(message, level or vim.log.levels.INFO, notify_opts)
   if id ~= nil then
     build_state.notify_id = id
-  end
-end
-
-local function take_freshness_listeners(state)
-  local listeners = state.listeners or {}
-  state.listeners = {}
-  return listeners
-end
-
-local function run_freshness_listeners(listeners, result)
-  for _, listener in ipairs(listeners or {}) do
-    pcall(listener, result)
-  end
-end
-
-local function remember_freshness_listener(state, listener)
-  if type(listener) == "function" then
-    state.listeners[#state.listeners + 1] = listener
   end
 end
 
@@ -486,11 +317,6 @@ local function finish_build(result)
   local user_initiated = build_state.user_initiated == true
 
   if result.ok then
-    checked = {}
-    freshness_checks = {}
-    source_scan_cache.checked_ms = 0
-    source_scan_cache.newest_mtime = nil
-    source_scan_cache.newest_path = nil
     local ms = elapsed_ms()
     local suffix = ms and string.format(" in %d ms", ms) or ""
     append_output_status("detached ark-lsp rebuilt" .. suffix .. "; Ark will attach or restart the LSP for managed R buffers.")
@@ -597,6 +423,7 @@ local function start_build(opts)
   local buffer_output = build_state.background and build_state.show_output ~= true
   local job_id = vim.fn.jobstart(spec.command, {
     cwd = ROOT,
+    env = { CARGO_TARGET_DIR = ROOT .. "/target" },
     -- Hidden background builds must not stream Cargo's repeated lock-wait
     -- chatter through Neovim's event loop. Buffering keeps the editor idle
     -- while retaining the complete output for failure reporting at exit.
@@ -668,136 +495,76 @@ local function schedule_when_idle(callback)
   })
 end
 
-local function warn_freshness_probe_skipped(err)
-  if missing_rg_warned then
+local reconcile_states = {}
+
+local function reconcile(binary, opts)
+  if rebuilds_disabled() then return end
+  local state = reconcile_states[binary] or { listeners = {}, checked_ms = 0 }
+  reconcile_states[binary] = state
+  -- One callback per buffer/config request; consume them on every completed check.
+  if opts.on_build_complete then state.listeners[opts.on_build_complete] = true end
+  if state.running then return end
+  if state.binary_signature == identity.binary_signature(binary)
+    and (not opts.force_check or state.failed)
+    and monotonic_ms() - state.checked_ms < (state.failed and 30000 or SOURCE_SCAN_CACHE_TTL_MS) then
+    state.listeners = {}
     return
   end
-  missing_rg_warned = true
-  notify(
-    string.format(
-      "automatic ark-lsp freshness checking was skipped in development mode (%s); install `rg` or run :ArkBuildLsp explicitly",
-      tostring(err)
-    ),
-    vim.log.levels.WARN
-  )
-end
-
-local function maybe_schedule_freshness_probe(binary, opts)
-  if not (opts and opts.development_mode == true) then
-    return
-  end
-
-  local binary_mtime = stat_mtime(binary) or 0
-  if binary_mtime == 0 then
-    return
-  end
-
-  local state = freshness_checks[binary]
-  if type(state) ~= "table" then
-    state = {
-      binary_mtime = nil,
-      checked_ms = 0,
-      listeners = {},
-      probing = false,
-      scheduled = false,
-    }
-    freshness_checks[binary] = state
-  end
-
-  remember_freshness_listener(state, opts and opts.on_build_complete)
-
-  if build_state.running then
-    local listeners = take_freshness_listeners(state)
-    local ok = start_build({
-      binary_path = binary,
-      on_complete = function(result)
-        run_freshness_listeners(listeners, result)
-      end,
-      background = true,
-      show_output = false,
-      user_initiated = opts and opts.user_initiated == true,
-    })
-    if not ok then
-      run_freshness_listeners(listeners, {
-        ok = false,
-        error = "background detached ark-lsp rebuild is unavailable",
-      })
-    end
-    return
-  end
-
-  local now = monotonic_ms()
-  if state.binary_mtime == binary_mtime and state.scheduled == true then
-    return
-  end
-  if state.binary_mtime == binary_mtime and (now - (tonumber(state.checked_ms) or 0)) < SOURCE_SCAN_CACHE_TTL_MS then
-    return
-  end
-
-  state.binary_mtime = binary_mtime
-  state.scheduled = true
+  state.running = true
   schedule_when_idle(function()
-    local current_state = freshness_checks[binary]
-    if type(current_state) ~= "table" or current_state.binary_mtime ~= binary_mtime then
-      return
-    end
-
-    current_state.scheduled = false
-    if current_state.probing then
-      return
-    end
-    current_state.probing = true
-
-    newest_source_mtime_async(function(newest_mtime, newest_path, scan_err)
-      local latest_state = freshness_checks[binary]
-      if type(latest_state) ~= "table" or latest_state.binary_mtime ~= binary_mtime then
+    identity.check_plugin(binary)
+    identity.state(binary, { phase = "checking" })
+    identity.snapshot(binary, "lsp", function(snapshot, err)
+      local function finish(result)
+        state.running = false
+        state.failed = result and result.ok == false
+        state.checked_ms = monotonic_ms()
+        state.binary_signature = identity.binary_signature(binary)
+        local listeners = state.listeners
+        state.listeners = {}
+        if result then for listener in pairs(listeners) do pcall(listener, result) end end
+      end
+      if snapshot and snapshot.fingerprint == snapshot.built.source_fingerprint
+        and snapshot.built.profile == (binary:find("/release/", 1, true) and "release" or "debug") then
+        local previous = identity.state(binary)
+        identity.state(binary, { expected = snapshot.fingerprint, expected_build_id = snapshot.built.build_id, installed = snapshot.built,
+          phase = previous.running and previous.running.source_fingerprint == snapshot.fingerprint
+            and previous.running.build_id == snapshot.built.build_id and "current" or "available" })
+        -- A build performed outside this editor must replace a still-running old process too.
+        finish((previous.expected ~= snapshot.fingerprint or previous.expected_build_id ~= snapshot.built.build_id)
+          and { ok = true, binary_path = binary } or nil)
         return
       end
-      latest_state.probing = false
-      latest_state.checked_ms = monotonic_ms()
-
-      if scan_err then
-        take_freshness_listeners(latest_state)
-        warn_freshness_probe_skipped(scan_err)
-        return
-      end
-
-      local current_binary_mtime = stat_mtime(binary) or 0
-      if current_binary_mtime == 0 or current_binary_mtime ~= binary_mtime then
-        take_freshness_listeners(latest_state)
-        return
-      end
-
-      local listeners = take_freshness_listeners(latest_state)
-      if type(newest_mtime) ~= "number" or newest_mtime <= current_binary_mtime then
-        return
-      end
-
-      local ok, build_err = start_build({
-        binary_path = binary,
+      identity.state(binary, { phase = "updating", error = err or false })
+      notify("Updating Ark LSP…", vim.log.levels.INFO)
+      local started, build_err = start_build({
+        binary_path = binary, background = true, show_output = false,
         on_complete = function(result)
-          run_freshness_listeners(listeners, result)
+          if not result.ok then
+            identity.state(binary, { phase = "failed", error = result.error })
+            finish(result)
+            return
+          end
+          identity.snapshot(binary, "lsp", function(updated, verify_err)
+            if not updated or updated.fingerprint ~= updated.built.source_fingerprint
+              or updated.built.profile ~= (binary:find("/release/", 1, true) and "release" or "debug") then
+              local message = verify_err or "sources changed during the build; check again after editing finishes"
+              identity.state(binary, { phase = "failed", error = message })
+              notify("Ark update could not be verified: " .. message, vim.log.levels.ERROR)
+              finish({ ok = false, error = message })
+              return
+            end
+            identity.state(binary, { phase = "restarting", expected = updated.fingerprint, expected_build_id = updated.built.build_id,
+              installed = updated.built, announce_activation = true })
+            finish(result)
+          end, true)
         end,
-        background = true,
-        show_output = false,
-        user_initiated = opts and opts.user_initiated == true,
       })
-      if ok then
-        return
+      if not started then
+        identity.state(binary, { phase = "failed", error = build_err })
+        notify("Ark update failed; older binary remains active: " .. tostring(build_err), vim.log.levels.ERROR)
+        finish({ ok = false, error = build_err })
       end
-
-      notify(
-        string.format(
-          "background detached ark-lsp rebuild could not start; using current binary (%s)",
-          tostring(build_err)
-        ),
-        vim.log.levels.WARN
-      )
-      run_freshness_listeners(listeners, {
-        ok = false,
-        error = build_err,
-        newest_path = newest_path,
-      })
     end)
   end)
 end
@@ -809,69 +576,27 @@ function M.ensure_current_detached_lsp_cmd(cmd, opts)
     return cmd, nil
   end
 
-  local binary = repo_target_binary(cmd[1])
-  if not binary then
-    return cmd, nil
-  end
-
-  local binary_mtime = stat_mtime(binary) or 0
-  local development_mode = opts.development_mode == true
-
-  if not development_mode then
-    if binary_mtime == 0 then
-      return nil, "detached ark-lsp binary is missing; run :ArkBuildLsp explicitly or configure an installed binary"
+  local origin, owned_binary = identity.origin(cmd[1])
+  if origin == "source" then
+    if rebuilds_disabled() and not stat_mtime(owned_binary) then return nil, rebuild_disabled_message() end
+    reconcile(owned_binary, opts)
+    if not stat_mtime(owned_binary) then
+      return nil, { kind = "build_pending", message = "Updating Ark LSP…" }
     end
-    return current_binary_cmd(cmd, binary), nil
+    return current_binary_cmd(cmd, owned_binary), nil
   end
-
-  local cache_key = table.concat({
-    binary,
-    tostring(binary_mtime),
-  }, "::")
-
-  if checked[cache_key] then
-    maybe_schedule_freshness_probe(binary, opts)
-    return current_binary_cmd(cmd, binary), nil
+  if not rebuilds_disabled() then
+    schedule_when_idle(function() identity.verify_external(cmd[1], opts.on_build_complete) end)
   end
-
-  if binary_mtime == 0 then
-    if rebuilds_disabled() then
-      return nil, rebuild_disabled_message()
-    end
-
-    local ok, build_err = start_build({
-      binary_path = binary,
-      on_complete = opts.on_build_complete,
-      background = true,
-      show_output = false,
-      user_initiated = opts.user_initiated == true,
-    })
-    if not ok then
-      return nil, string.format("detached ark-lsp binary is missing and rebuild failed to start: %s", build_err)
-    end
-
-    return nil, {
-      kind = "build_pending",
-      message = "Rebuilding detached ark-lsp...",
-    }
-  end
-
-  checked[cache_key] = true
-  maybe_schedule_freshness_probe(binary, opts)
-
-  return current_binary_cmd(cmd, binary), nil
+  return cmd, nil
 end
 
 function M.detached_lsp_build_fingerprint(path)
-  local binary = repo_target_binary(path)
-  if not binary then
-    return nil
-  end
-
-  return table.concat({
-    binary,
-    tostring(stat_mtime(binary) or 0),
-  }, "::")
+  if type(path) ~= "string" or path == "" then return nil end
+  local resolved = vim.fn.exepath(path)
+  if resolved == "" then resolved = normalize_path(path) end
+  if not resolved or not stat_mtime(resolved) then return nil end
+  return resolved .. "::" .. identity.binary_signature(resolved)
 end
 
 function M.build_detached_lsp(opts)
@@ -880,6 +605,9 @@ function M.build_detached_lsp(opts)
     return false, rebuild_disabled_message()
   end
 
+  if opts.binary_path and not repo_target_binary(opts.binary_path) then
+    return false, "the selected external Ark binary is not owned by this checkout; it will not be overwritten"
+  end
   return start_build({
     binary_path = opts.binary_path,
     on_complete = opts.on_complete,

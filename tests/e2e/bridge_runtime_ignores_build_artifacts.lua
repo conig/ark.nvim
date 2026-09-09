@@ -7,7 +7,9 @@ local installed_dir = runtime_root .. "/arkbridge"
 local stamp_path = runtime_root .. "/.arkbridge-install.json"
 local generated_object = runtime_root .. "/ipc.o"
 
-vim.fn.mkdir(installed_dir, "p")
+vim.fn.mkdir(installed_dir .. "/Meta", "p")
+vim.fn.writefile({ "Package: arkbridge" }, installed_dir .. "/DESCRIPTION")
+vim.fn.writefile({ "fixture" }, installed_dir .. "/Meta/package.rds")
 vim.fn.writefile({ "generated" }, generated_object)
 assert((vim.uv or vim.loop).fs_utime(generated_object, 2100000000, 2100000000))
 vim.fn.writefile({

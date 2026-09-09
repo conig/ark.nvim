@@ -62,8 +62,8 @@ local ok, err = xpcall(function()
 
   package.loaded["ark.config"] = nil
   local defaults = require("ark.config").defaults()
-  if defaults.lsp.cmd[1] ~= installed_binary then
-    error("packaged release should win normal binary discovery: " .. vim.inspect(defaults.lsp.cmd), 0)
+  if defaults.lsp.cmd[1] ~= vim.fn.getcwd() .. "/target/release/ark-lsp" then
+    error("source checkout must own normal binary discovery: " .. vim.inspect(defaults.lsp.cmd), 0)
   end
   if defaults.development_mode ~= false then
     error("development mode should be disabled by default", 0)

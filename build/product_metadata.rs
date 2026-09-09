@@ -1,9 +1,20 @@
+#[allow(dead_code)]
+#[path = "source_identity.rs"]
+mod source_identity;
+
 use std::path::PathBuf;
 use std::process::Command;
 
 pub fn emit() {
     let manifest_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
         .join("../../release-manifest.json");
+    let root = manifest_path.parent().unwrap().canonicalize().unwrap();
+    let inputs = source_identity::inputs(&root, "lsp").expect("source input inventory");
+    let identity = source_identity::fingerprint(&root, &inputs).expect("source fingerprint");
+    for path in inputs {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    println!("cargo:rustc-env=ARK_SOURCE_FINGERPRINT={identity}");
     let manifest_text = std::fs::read_to_string(&manifest_path)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", manifest_path.display()));
     let manifest: serde_json::Value = serde_json::from_str(&manifest_text)
@@ -28,6 +39,19 @@ pub fn emit() {
     )
     .unwrap_or_else(|| String::from("unknown"));
 
+    let build_identity = format!(
+        "{}:{}:{}:{}:{}",
+        identity,
+        env_or_unknown("TARGET"),
+        env_or_unknown("PROFILE"),
+        rustc_version,
+        std::env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default()
+    );
+    println!(
+        "cargo:rustc-env=ARK_BUILD_ID={}",
+        blake3::hash(build_identity.as_bytes()).to_hex()
+    );
+    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
     println!("cargo:rerun-if-changed={}", manifest_path.display());
     println!("cargo:rerun-if-env-changed=ARK_BUILD_COMMIT");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
