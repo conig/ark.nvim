@@ -42,7 +42,7 @@ vim.fn.writefile({
   "    printf 'ark_session\\n'",
   "    ;;",
   "  list-clients)",
-  "    printf '/dev/pts/9\\tark_session\\n/dev/pts/10\\tother_session\\n'",
+  "    printf '/dev/pts/9\\tark_session\\tattached,focused\\t100\\n/dev/pts/10\\tother_session\\tattached\\t200\\n'",
   "    ;;",
   "  display-popup)",
   "    exit 0",

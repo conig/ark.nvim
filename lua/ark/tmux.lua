@@ -346,19 +346,42 @@ local function attached_client_for_pane(pane_id)
     return nil
   end
 
-  local clients = run_tmux({ "list-clients", "-F", "#{client_name}\t#{client_session}" })
+  local clients = run_tmux({
+    "list-clients",
+    "-F",
+    "#{client_name}\t#{client_session}\t#{client_flags}\t#{client_activity}",
+  })
   if type(clients) ~= "string" or clients == "" then
     return nil
   end
 
+  local selected
   for line in (clients .. "\n"):gmatch("(.-)\n") do
-    local client_name, client_session = line:match("^([^\t]+)\t([^\t]+)$")
+    local client_name, client_session, flags, activity = line:match("^([^\t]+)\t([^\t]+)\t([^\t]*)\t(%d+)$")
     if client_name and client_session == session_name then
-      return client_name
+      local client_flags = {}
+      for flag in flags:gmatch("[^,]+") do
+        client_flags[flag] = true
+      end
+      -- A session may be visible in several terminals. First-listed is not
+      -- necessarily the one the user is looking at; control clients cannot
+      -- display a popup at all. Prefer focus, then recent terminal activity
+      -- when focus reporting is unavailable (or multiple clients report it).
+      if not client_flags["control-mode"] and not client_flags["read-only"] then
+        local focused = client_flags.focused and 1 or 0
+        local last_activity = tonumber(activity) or 0
+        if
+          not selected
+          or focused > selected.focused
+          or (focused == selected.focused and last_activity > selected.activity)
+        then
+          selected = { name = client_name, focused = focused, activity = last_activity }
+        end
+      end
     end
   end
 
-  return nil
+  return selected and selected.name or nil
 end
 
 local function tmux_context_available()
