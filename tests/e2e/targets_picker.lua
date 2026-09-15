@@ -191,8 +191,6 @@ vim.fn.writefile({
   "name|type|parent|branches|progress",
   "clean_data|stem|||completed",
   "clean_data_group_a|stem|||completed",
-  "default_target|stem|||completed",
-  "report|stem|||completed",
 }, project_root .. "/_targets/meta/progress")
 
 local source_buf = vim.api.nvim_create_buf(true, false)
@@ -236,6 +234,9 @@ local formatted_item = picker_spec.format(picker_spec.items[1])
 if type(formatted_item) ~= "table" or not formatted_item[1] or formatted_item[1][2] ~= "Identifier" then
   error("expected target picker names to use Identifier highlight, got " .. vim.inspect(formatted_item), 0)
 end
+-- Regression: targets rewrites meta/progress incrementally while tar_make() is
+-- running. A newer partial progress file must enrich the picker, not replace
+-- statically discoverable declarations that have not reached progress yet.
 if type(picker_spec.items) ~= "table" or #picker_spec.items ~= 4 then
   error(
     "expected target picker items for cached clean_data, clean_data_group_a, default_target, and report, got "

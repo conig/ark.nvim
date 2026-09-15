@@ -748,6 +748,17 @@ local function progress_manifest(project, files, source_records_list, opts)
     end
   end
 
+  -- meta/progress is rewritten incrementally during tar_make(), so it may only
+  -- contain targets reached by the current run. Keep those rows for dynamic
+  -- branches and status, but do not let a partial file hide source declarations.
+  for _, record in ipairs(source_records_list or {}) do
+    local name = record.name
+    if type(name) == "string" and name ~= "" and not seen[name] then
+      seen[name] = true
+      targets[#targets + 1] = record
+    end
+  end
+
   if #targets == 0 then
     return nil
   end
