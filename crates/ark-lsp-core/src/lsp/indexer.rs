@@ -92,6 +92,8 @@ type WorkspaceIndex = Arc<Mutex<HashMap<FileId, DocumentSymbolIndex>>>;
 static WORKSPACE_INDEX: LazyLock<WorkspaceIndex> = LazyLock::new(Default::default);
 static SOURCED_TARGET_PIPELINE_URIS: LazyLock<Mutex<HashSet<Url>>> =
     LazyLock::new(Default::default);
+static GENERATED_TARGET_PIPELINE_URIS: LazyLock<Mutex<HashSet<Url>>> =
+    LazyLock::new(Default::default);
 #[cfg(test)]
 pub(crate) static INDEXER_TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(Default::default);
 pub static RE_COMMENT_SECTION: LazyLock<Regex> =
@@ -178,6 +180,7 @@ fn index_insert(index: &mut HashMap<String, IndexEntry>, entry: IndexEntry) {
 pub(crate) fn delete(uri: &Url) -> anyhow::Result<()> {
     clear_file_index(uri)?;
     SOURCED_TARGET_PIPELINE_URIS.lock().unwrap().remove(uri);
+    GENERATED_TARGET_PIPELINE_URIS.lock().unwrap().remove(uri);
 
     Ok(())
 }
@@ -205,6 +208,11 @@ pub(crate) fn rename(old_uri: &Url, new_uri: &Url) -> anyhow::Result<()> {
         index.insert(new_file_id, entries);
     }
 
+    let mut generated = GENERATED_TARGET_PIPELINE_URIS.lock().unwrap();
+    if generated.remove(old_uri) {
+        generated.insert(new_uri.clone());
+    }
+
     Ok(())
 }
 
@@ -221,6 +229,10 @@ pub(crate) fn remove_workspace_roots(removed: &[Url], retained: &[Url]) -> usize
     drop(index);
 
     SOURCED_TARGET_PIPELINE_URIS
+        .lock()
+        .unwrap()
+        .retain(|uri| !should_remove(uri));
+    GENERATED_TARGET_PIPELINE_URIS
         .lock()
         .unwrap()
         .retain(|uri| !should_remove(uri));
@@ -245,6 +257,7 @@ pub(crate) fn indexer_clear() {
     let mut index = WORKSPACE_INDEX.lock().unwrap();
     index.clear();
     SOURCED_TARGET_PIPELINE_URIS.lock().unwrap().clear();
+    GENERATED_TARGET_PIPELINE_URIS.lock().unwrap().clear();
 }
 
 #[cfg(test)]
@@ -294,11 +307,44 @@ pub(crate) fn create(uri: &Url) -> anyhow::Result<()> {
 }
 
 fn index_document(doc: &Document, uri: &Url) {
+    let is_targets_pipeline = is_targets_pipeline_uri(uri);
+    let mut generated = GENERATED_TARGET_PIPELINE_URIS.lock().unwrap();
+    generated.remove(uri);
+    if is_targets_pipeline && has_generated_target_calls(doc.ast.root_node(), &doc.contents) {
+        generated.insert(uri.clone());
+    }
+    drop(generated);
+
     for entry in index_document_entries_for_uri(doc, uri) {
         if let Err(err) = insert(uri, entry) {
             lsp::log_error!("Can't insert index entry: {err:?}");
         }
     }
+}
+
+pub(crate) fn has_generated_targets() -> bool {
+    !GENERATED_TARGET_PIPELINE_URIS.lock().unwrap().is_empty()
+}
+
+fn has_generated_target_calls(node: Node, contents: &str) -> bool {
+    if node.is_call() &&
+        node.child_by_field_name("function")
+            .and_then(|callee| callee.node_as_str(contents).ok())
+            .is_some_and(|callee| {
+                matches!(
+                    callee,
+                    "tar_map" | "tarchetypes::tar_map" | "tarchetypes:::tar_map"
+                )
+            })
+    {
+        return true;
+    }
+
+    let mut cursor = node.walk();
+    let found = node
+        .children(&mut cursor)
+        .any(|child| has_generated_target_calls(child, contents));
+    found
 }
 
 #[cfg(test)]

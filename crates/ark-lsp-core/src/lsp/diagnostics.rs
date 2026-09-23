@@ -1081,7 +1081,10 @@ fn handle_target_reference_call(
     context: &mut DiagnosticContext,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> anyhow::Result<()> {
-    if context.target_symbols.is_empty() {
+    // The static index cannot enumerate names produced by tar_map(). An
+    // indexed literal target does not make the index a complete manifest, so
+    // absence is only meaningful when no generated targets are present.
+    if context.target_symbols.is_empty() || indexer::has_generated_targets() {
         return Ok(());
     }
 
@@ -2626,6 +2629,76 @@ tar_make(names = c("clean_data", "missing_report"))
                 .iter()
                 .any(|message| message.contains("No targets target named 'clean_data'.")),
             "unexpected diagnostics: {messages:?}"
+        );
+    }
+
+    #[test]
+    fn test_generated_target_reference_does_not_report_missing_target() {
+        let _lock = indexer::indexer_test_lock();
+        let _guard = indexer::ResetIndexerGuard;
+        let tempdir = tempfile::tempdir().expect("expected tempdir");
+        let targets_path = tempdir.path().join("_targets.R");
+        let pipeline_path = tempdir.path().join("_target_pipelines/models.R");
+        std::fs::create_dir_all(pipeline_path.parent().unwrap()).expect("expected pipeline dir");
+        std::fs::write(
+            &targets_path,
+            "targets::tar_source(\"_target_pipelines\")\nc(generated, fixed)\n",
+        )
+        .expect("expected targets script");
+        std::fs::write(
+            &pipeline_path,
+            r#"
+models <- data.frame(region = c("north", "south"))
+generated <- tarchetypes::tar_map(
+    models,
+    targets::tar_target(fit, region),
+    names = region
+)
+fixed <- targets::tar_target(fixed_target, 1)
+"#,
+        )
+        .expect("expected pipeline script");
+        let uri = Url::from_file_path(&targets_path).expect("expected targets uri");
+        indexer::create(&uri).expect("expected targets indexing");
+
+        // `fit_north` exists in the generated graph, even though its name does
+        // not appear in a literal `tar_target()` declaration.
+        let document = Document::new(
+            "targets::tar_read(fit_north)\ntargets::tar_read(\"fit_south\")\n",
+            None,
+        );
+        let state = WorldState {
+            console_scopes: vec![vec![String::from("tar_read")]],
+            ..Default::default()
+        };
+        let diagnostics = generate_diagnostics(document, state);
+        let messages: Vec<_> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            !messages
+                .iter()
+                .any(|message| message.contains("fit_north") || message.contains("fit_south")),
+            "generated targets must not be reported missing: {messages:?}"
+        );
+
+        // Once the generated declaration is removed, literal targets again
+        // form a complete enough index to report an unknown reference.
+        let pipeline_uri = Url::from_file_path(&pipeline_path).expect("expected pipeline uri");
+        indexer::update(
+            &Document::new("targets::tar_target(fixed_target, 1)\n", None),
+            &pipeline_uri,
+        )
+        .expect("expected pipeline reindex");
+        let document = Document::new("targets::tar_read(fit_north)\n", None);
+        let state = WorldState {
+            console_scopes: vec![vec![String::from("tar_read")]],
+            ..Default::default()
+        };
+        let diagnostics = generate_diagnostics(document, state);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message == "No targets target named 'fit_north'."),
+            "expected missing target after generated declaration removal: {diagnostics:?}"
         );
     }
 
