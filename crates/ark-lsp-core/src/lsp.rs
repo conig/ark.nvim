@@ -41,6 +41,7 @@ pub mod state_handlers;
 pub mod statement_range;
 pub mod symbols;
 pub mod target_context;
+pub(crate) mod targets_manifest;
 pub mod targets_project;
 pub mod util;
 pub(crate) mod workspace_walker;

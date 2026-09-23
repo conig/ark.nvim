@@ -49,6 +49,8 @@ use tower_lsp::lsp_types::ServerInfo;
 use tower_lsp::lsp_types::SignatureHelpOptions;
 use tower_lsp::lsp_types::TextDocumentSyncCapability;
 use tower_lsp::lsp_types::TextDocumentSyncKind;
+use tower_lsp::lsp_types::TextDocumentSyncOptions;
+use tower_lsp::lsp_types::TextDocumentSyncSaveOptions;
 use tower_lsp::lsp_types::WorkDoneProgressOptions;
 use tower_lsp::lsp_types::WorkspaceFoldersServerCapabilities;
 use tower_lsp::lsp_types::WorkspaceServerCapabilities;
@@ -485,8 +487,13 @@ pub(crate) fn initialize(
             // Currently hard-coded to UTF-16, but we might want to allow UTF-8 frontends
             // once/if Ark becomes an independent LSP
             position_encoding: Some(lsp_types::PositionEncodingKind::UTF16),
-            text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                TextDocumentSyncKind::INCREMENTAL,
+            text_document_sync: Some(TextDocumentSyncCapability::Options(
+                TextDocumentSyncOptions {
+                    open_close: Some(true),
+                    change: Some(TextDocumentSyncKind::INCREMENTAL),
+                    save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+                    ..Default::default()
+                },
             )),
             selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
             hover_provider: Some(HoverProviderCapability::from(true)),

@@ -98,6 +98,8 @@ pub(crate) struct WorldState {
 
     pub(crate) session_bridge: Option<SessionBridge>,
 
+    pub(crate) target_manifests: crate::lsp::targets_manifest::TargetManifests,
+
     pub(crate) detached_session_bootstrap_attempted: bool,
     pub(crate) detached_session_update_generation: u64,
     pub(crate) detached_session_pending_generation: Option<u64>,

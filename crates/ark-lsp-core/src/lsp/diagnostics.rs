@@ -31,6 +31,7 @@ use crate::lsp::frontmatter::frontmatter_has_top_level_key;
 use crate::lsp::indexer;
 use crate::lsp::inputs::source_root::SourceRoot;
 use crate::lsp::state::WorldState;
+use crate::lsp::targets_manifest::TargetNames;
 use crate::lsp::traits::node::NodeExt;
 use crate::treesitter::node_has_error_or_missing;
 use crate::treesitter::BinaryOperatorType;
@@ -60,6 +61,8 @@ pub struct DiagnosticContext<'a> {
 
     /// Target names defined in the workspace.
     pub target_symbols: HashSet<String>,
+
+    check_target_references: bool,
 
     // The set of packages that are currently installed.
     pub installed_packages: HashSet<String>,
@@ -95,6 +98,7 @@ impl<'a> DiagnosticContext<'a> {
             session_symbols: HashSet::new(),
             workspace_symbols: HashSet::new(),
             target_symbols: HashSet::new(),
+            check_target_references: false,
             installed_packages: HashSet::new(),
             root,
             library,
@@ -141,6 +145,7 @@ pub(crate) fn generate_diagnostics(
     doc: Document,
     state: WorldState,
     testthat: bool,
+    target_names: TargetNames<'_>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -179,6 +184,19 @@ pub(crate) fn generate_diagnostics(
         },
         _ => {},
     });
+
+    match target_names {
+        TargetNames::Static => {
+            context.check_target_references =
+                !context.target_symbols.is_empty() && !indexer::has_generated_targets();
+        },
+        TargetNames::Unavailable => {},
+        TargetNames::Manifest(names) => {
+            context.target_symbols = names.clone();
+            context.workspace_symbols.extend(names.iter().cloned());
+            context.check_target_references = true;
+        },
+    }
 
     // If this is a package, add imported symbols to workspace
     if let Some(SourceRoot::Package(root)) = &state.root {
@@ -1069,10 +1087,7 @@ fn target_reference_callee(fun: &str) -> bool {
             "targets:::tar_make" |
             "tar_invalidate" |
             "targets::tar_invalidate" |
-            "targets:::tar_invalidate" |
-            "tar_render" |
-            "tarchetypes::tar_render" |
-            "tarchetypes:::tar_render"
+            "targets:::tar_invalidate"
     )
 }
 
@@ -1081,10 +1096,9 @@ fn handle_target_reference_call(
     context: &mut DiagnosticContext,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> anyhow::Result<()> {
-    // The static index cannot enumerate names produced by tar_map(). An
-    // indexed literal target does not make the index a complete manifest, so
-    // absence is only meaningful when no generated targets are present.
-    if context.target_symbols.is_empty() || indexer::has_generated_targets() {
+    // A current evaluated manifest proves absence, including for generated
+    // targets. A pending/failed manifest (or a partial static index) does not.
+    if !context.check_target_references || within_target_template(node, &context.doc.contents)? {
         return Ok(());
     }
 
@@ -1108,6 +1122,27 @@ fn handle_target_reference_call(
     }
 
     Ok(())
+}
+
+fn within_target_template(node: Node, contents: &str) -> anyhow::Result<bool> {
+    let mut ancestor = node.parent();
+    while let Some(parent) = ancestor {
+        if parent.is_call() {
+            if let Some(callee) = parent.child_by_field_name("function") {
+                let callee = target_unqualified_callee(callee.node_as_str(contents)?);
+                if matches!(
+                    callee,
+                    "tar_target" | "tar_target_raw" | "tar_render" | "tar_map"
+                ) {
+                    // Factories can substitute command symbols later, including
+                    // in templates assigned separately from their tar_map call.
+                    return Ok(true);
+                }
+            }
+        }
+        ancestor = parent.parent();
+    }
+    Ok(false)
 }
 
 fn target_reference_nodes<'a>(node: Node<'a>, contents: &str) -> anyhow::Result<Vec<Node<'a>>> {
@@ -1137,7 +1172,7 @@ fn target_reference_nodes<'a>(node: Node<'a>, contents: &str) -> anyhow::Result<
         }
     }
 
-    if values.is_empty() && matches!(callee, "tar_read" | "tar_load" | "tar_render") {
+    if values.is_empty() && matches!(callee, "tar_read" | "tar_load") {
         if let Some(first_unnamed) = first_unnamed {
             collect_target_reference_values(first_unnamed, contents, &mut values)?;
         }
@@ -1396,13 +1431,14 @@ mod tests {
     use crate::lsp::document::DocumentKind;
     use crate::lsp::indexer;
     use crate::lsp::state::WorldState;
+    use crate::lsp::targets_manifest::TargetNames;
     use crate::r_task;
 
     // Default state that includes installed packages and default scopes.
     static DEFAULT_STATE: Lazy<WorldState> = Lazy::new(current_state);
 
     fn generate_diagnostics(doc: Document, state: WorldState) -> Vec<lsp_types::Diagnostic> {
-        super::generate_diagnostics(doc, state, false)
+        super::generate_diagnostics(doc, state, false, TargetNames::Static)
     }
 
     fn current_state() -> WorldState {
@@ -2700,6 +2736,104 @@ fixed <- targets::tar_target(fixed_target, 1)
                 .any(|diagnostic| diagnostic.message == "No targets target named 'fit_north'."),
             "expected missing target after generated declaration removal: {diagnostics:?}"
         );
+    }
+
+    #[test]
+    fn test_manifest_target_names_replace_static_templates_and_allow_empty_graph() {
+        let _lock = indexer::indexer_test_lock();
+        let _guard = indexer::ResetIndexerGuard;
+        let uri = Url::parse("file:///tmp/ark-manifest-diagnostics/_targets.R").unwrap();
+        indexer::update(
+            &Document::new("tar_map(rows, tar_target(template, value))", None),
+            &uri,
+        )
+        .unwrap();
+        let document = Document::new(
+            "tar_read(template_north)\ntar_read(template)\ntar_read(missing_target)\n",
+            None,
+        );
+        let names = std::collections::HashSet::from([String::from("template_north")]);
+        let state = WorldState {
+            console_scopes: vec![vec![String::from("tar_read")]],
+            ..Default::default()
+        };
+        let diagnostics = super::generate_diagnostics(
+            document.clone(),
+            state.clone(),
+            false,
+            TargetNames::Manifest(&names),
+        );
+        let messages: Vec<_> = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert_eq!(messages, vec![
+            "No targets target named 'template'.",
+            "No targets target named 'missing_target'.",
+        ]);
+
+        let empty = std::collections::HashSet::new();
+        let diagnostics = super::generate_diagnostics(
+            document.clone(),
+            state.clone(),
+            false,
+            TargetNames::Manifest(&empty),
+        );
+        assert_eq!(
+            diagnostics.len(),
+            3,
+            "an evaluated empty graph proves all references missing"
+        );
+
+        let diagnostics =
+            super::generate_diagnostics(document, state, false, TargetNames::Unavailable);
+        assert!(
+            diagnostics.is_empty(),
+            "unavailable graph cannot prove absence: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn test_manifest_does_not_check_tar_render_declaration_as_reference() {
+        let document = Document::new("tar_map(rows, tar_render(report, 'report.Rmd'))", None);
+        let names = std::collections::HashSet::from([String::from("report_north")]);
+        let state = WorldState {
+            console_scopes: vec![vec![String::from("tar_map"), String::from("tar_render")]],
+            ..Default::default()
+        };
+        let diagnostics =
+            super::generate_diagnostics(document, state, false, TargetNames::Manifest(&names));
+        assert!(
+            diagnostics.is_empty(),
+            "tar_render defines a target, not a reference: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn test_manifest_does_not_lint_target_template_placeholders() {
+        // The factory substitutes `input` before evaluating the command. A
+        // separately assigned template has no enclosing tar_map syntax node.
+        let document = Document::new(
+            "template <- tar_target(output, tar_read(input))\ntar_map(rows, template)\ntar_read(input)",
+            None,
+        );
+        let names = std::collections::HashSet::from([String::from("output_north")]);
+        let state = WorldState {
+            console_scopes: vec![vec![
+                String::from("tar_target"),
+                String::from("tar_read"),
+                String::from("tar_map"),
+            ]],
+            ..Default::default()
+        };
+        let diagnostics =
+            super::generate_diagnostics(document, state, false, TargetNames::Manifest(&names));
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "only the immediate reference can be checked: {diagnostics:?}"
+        );
+        assert_eq!(diagnostics[0].range.start.line, 2);
     }
 
     #[test]

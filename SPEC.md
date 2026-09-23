@@ -704,6 +704,23 @@ The dynamic tier must refine the static model, not block it. Opening a project
 must not wait for `targets::tar_manifest()` or cache inspection before normal R
 language features become usable.
 
+Target-reference diagnostics consume a project-scoped, background-hydrated
+manifest from the managed-session bridge. `{targets}` evaluates the configured
+script to enumerate actual names, including nested `tar_map()` calls, reused
+templates, and other target factories; Ark must not emulate R evaluation or
+guess these names by concatenating source tokens. This is graph discovery, not
+`tar_make()` or target loading. Generated names have no invented source range.
+
+A successful manifest replaces the previous name set and is authoritative even
+when empty. Unsaved pipeline inputs, saved/watched R-source changes, targets
+configuration changes, and session changes invalidate that authority. Saved
+changes are debounced and reevaluated without blocking static diagnostics or
+typing. Results superseded by edits or session changes are discarded. A failed
+query or the bridge's partial static fallback must never prove a target absent;
+unrelated diagnostics remain available. Offline static analysis remains
+conservative for generated graphs. Cache entries are isolated by targets project
+root, including when several projects share one LSP process.
+
 When a local `{targets}` store is already present, Ark may hydrate the picker
 from the store's manifest/progress metadata instead of recomputing the manifest
 in R. That cache path must stay generic: use `{targets}`-owned metadata, reject

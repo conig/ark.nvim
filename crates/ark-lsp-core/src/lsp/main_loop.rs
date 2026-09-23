@@ -62,6 +62,7 @@ use crate::lsp::session_bridge_runtime::BridgeRequestControl;
 use crate::lsp::state::RuntimeMode;
 use crate::lsp::state::WorldState;
 use crate::lsp::state_handlers;
+use crate::lsp::targets_manifest;
 use crate::lsp::workspace_walker;
 use crate::url::ExtUrl;
 
@@ -126,6 +127,7 @@ pub(crate) enum Event {
 
 #[derive(Debug)]
 pub(crate) enum InternalEvent {
+    ApplyTargetsManifest(targets_manifest::ManifestResult),
     ApplyDetachedBaseline(state_handlers::DetachedBaselineHydrationOutput),
     ApplyDetachedSession(state_handlers::DetachedSessionHydrationOutput),
     FinishSessionBootstrap {
@@ -408,11 +410,13 @@ impl GlobalState {
     ///   the state.
     async fn handle_event(&mut self, event: Event) -> anyhow::Result<()> {
         let loop_tick = std::time::Instant::now();
+        let targets_revision = self.world.target_manifests.revision();
 
         match event {
             Event::Lsp(msg) => match *msg {
                 LspMessage::Notification(sequence, notif) => {
                     log::trace!("LSP notification: {}", notif.method());
+                    self.world.target_manifests.observe(&notif);
 
                     let result = match notif {
                         LspNotification::Initialized(_params) => {
@@ -648,6 +652,9 @@ impl GlobalState {
                 }
             },
             Event::Internal(event) => match *event {
+                InternalEvent::ApplyTargetsManifest(output) => {
+                    self.world.target_manifests.apply(output);
+                },
                 InternalEvent::ApplyDetachedBaseline(output) => {
                     state_handlers::finish_detached_baseline_hydration(output, &mut self.world);
                 },
@@ -729,7 +736,14 @@ impl GlobalState {
             },
         }
 
+        let manifest_requests = targets_manifest::prepare(&mut self.world);
         store_latest_world_state(&self.world);
+        if self.world.target_manifests.revision() != targets_revision {
+            diagnostics_refresh_all_from_state(&self.world);
+        }
+        for request in manifest_requests {
+            self.spawn_targets_manifest(request);
+        }
 
         // TODO Make this threshold configurable by the client
         if loop_tick.elapsed() > std::time::Duration::from_millis(50) {
@@ -836,6 +850,38 @@ impl GlobalState {
         let cancellation_tx = response_tx.clone();
         let control = BridgeRequestControl::new(move || cancellation_tx.is_closed());
         self.world.clone().with_bridge_request_control(control)
+    }
+
+    fn spawn_targets_manifest(&self, request: targets_manifest::ManifestRequest) {
+        let events_tx = self.events_tx.clone();
+        tokio::spawn(async move {
+            // Coalesce saves/watcher events and let normal initialization finish.
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            let freshness = request.clone();
+            let is_current = move || {
+                latest_world_state().is_some_and(|state| {
+                    state.target_manifests.is_current(&freshness) &&
+                        state.detached_session_update_generation ==
+                            freshness.session_generation()
+                })
+            };
+            if !is_current() {
+                return;
+            }
+            let request = request.with_control(BridgeRequestControl::new(move || !is_current()));
+            spawn_blocking(move || {
+                let result = request.run();
+                events_tx
+                    .send(Event::Internal(Box::new(
+                        InternalEvent::ApplyTargetsManifest(targets_manifest::ManifestResult {
+                            request,
+                            result,
+                        }),
+                    )))
+                    .map_err(|err| anyhow!("Failed to queue targets manifest: {err}"))?;
+                Ok(None)
+            });
+        });
     }
 
     fn spawn_detached_hydrations(&self, requests: state_handlers::DetachedHydrationRequests) {
@@ -1520,7 +1566,12 @@ async fn process_diagnostics_batch(batch: Vec<RefreshDiagnosticsTask>) {
                     .components()
                     .any(|c| c.as_os_str() == "testthat");
 
-                let diagnostics = generate_diagnostics(document.clone(), state.clone(), testthat);
+                let diagnostics = generate_diagnostics(
+                    document.clone(),
+                    state.clone(),
+                    testthat,
+                    state.target_manifests.for_uri(&uri),
+                );
                 Some(RefreshDiagnosticsResult {
                     uri,
                     diagnostics,

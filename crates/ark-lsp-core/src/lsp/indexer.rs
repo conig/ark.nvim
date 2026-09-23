@@ -382,7 +382,7 @@ fn index_document_entries_impl(doc: &Document, index_targets_options: bool) -> V
     entries
 }
 
-fn is_targets_pipeline_uri(uri: &Url) -> bool {
+pub(crate) fn is_targets_pipeline_uri(uri: &Url) -> bool {
     if targets_project::is_targets_script_uri(uri) || is_conventional_targets_pipeline_uri(uri) {
         return true;
     }
