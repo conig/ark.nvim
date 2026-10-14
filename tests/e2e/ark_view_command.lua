@@ -1039,6 +1039,12 @@ local ok, err = pcall(function()
   if picker_spec.title ~= "ArkView Values: cyl" then
     error("unexpected ArkView value picker title: " .. vim.inspect(picker_spec.title), 0)
   end
+  if picker_spec.items[1].text ~= "4" then
+    error("value picker search must exclude display-only counts", 0)
+  end
+  if type(picker_spec.format) ~= "function" or picker_spec.format(picker_spec.items[1])[1][1] ~= "4 (1)" then
+    error("value picker must still display the value frequency", 0)
+  end
   if value_calls[1] ~= 2 then
     error("expected exact value picker to request values for cyl, got " .. vim.inspect(value_calls), 0)
   end

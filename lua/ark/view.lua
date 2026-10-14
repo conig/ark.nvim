@@ -1682,6 +1682,13 @@ local function open_value_filter_picker(state)
     snacks.picker.select(items, {
       prompt = title,
       format_item = value_filter_label,
+      snacks = {
+        -- ui_select normally searches "index label (count)". Keep the index
+        -- and frequency in the formatter, but match only the column value.
+        transform = function(item)
+          item.text = item.item.label or ""
+        end,
+      },
     }, choose)
     return
   end
@@ -1691,11 +1698,13 @@ local function open_value_filter_picker(state)
       title = title,
       items = vim.tbl_map(function(item)
         return {
-          text = value_filter_label(item),
+          text = item.label or "",
           item = item,
         }
       end, items),
-      format = "text",
+      format = function(item)
+        return { { value_filter_label(item.item) } }
+      end,
       confirm = function(picker, choice)
         picker:close()
         choose(choice and choice.item or nil)

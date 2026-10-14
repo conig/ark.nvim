@@ -25,6 +25,11 @@
   },
   "rules": [
     {
+      "names": ["ark_view_value_search.lua"],
+      "contract": "real Snacks value picker searches cell contents without row indices or frequency counts",
+      "dependencies": ["neovim", "r", "tmux", "snacks"]
+    },
+    {
       "names": ["target_interaction_completion.lua"],
       "tier": "fast",
       "layer": "product-e2e",
