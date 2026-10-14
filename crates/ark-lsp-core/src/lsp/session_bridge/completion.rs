@@ -11,6 +11,7 @@ use super::SessionBridge;
 use super::TargetCompletionProject;
 use super::TargetNameCompletionContext;
 use crate::lsp::call_context::analyze_call_context;
+use crate::lsp::call_context::analyze_call_context_from_node;
 use crate::lsp::call_context::call_matches_package_argument;
 use crate::lsp::call_context::text_matches_package_argument;
 use crate::lsp::call_context::CallContext;
@@ -761,9 +762,27 @@ pub(super) fn completion_request_from_custom_call(
 pub(crate) fn target_name_completion_context(
     context: &DocumentContext,
 ) -> anyhow::Result<Option<TargetNameCompletionContext>> {
-    let Some(call) = analyze_call_context(context)? else {
+    let Some(mut call) = analyze_call_context(context)? else {
         return Ok(None);
     };
+
+    // A selection vector belongs to the outer target-name argument, not to
+    // c(). Only cross this known wrapper: arbitrary nested calls have their
+    // own argument semantics (for example, store = file.path(...)).
+    let mut call_node = node_find_containing_call(context.node);
+    while matches!(call.callee.as_str(), "c" | "base::c") {
+        let Some(inner) = call_node else {
+            return Ok(None);
+        };
+        let Some(outer) = node_find_parent_call(&inner) else {
+            return Ok(None);
+        };
+        let Some(outer_context) = analyze_call_context_from_node(context, inner)? else {
+            return Ok(None);
+        };
+        call = outer_context;
+        call_node = Some(outer);
+    }
 
     if !target_name_call_callee(call.callee.as_str()) {
         return Ok(None);
@@ -782,10 +801,8 @@ pub(crate) fn target_name_completion_context(
         symbol_prefix(context)?
     };
 
-    if prefix.is_none() && context.trigger.is_none() {
-        return Ok(None);
-    }
-
+    // Empty target selections are meaningful even for Invoked requests (Blink
+    // and manual completion), which do not carry a trigger character.
     Ok(Some(TargetNameCompletionContext {
         prefix,
         close_string: in_string,
@@ -811,6 +828,9 @@ pub(super) fn target_name_call_callee(callee: &str) -> bool {
             "tar_load" |
             "tar_make" |
             "tar_invalidate" |
+            "tar_delete" |
+            "tar_meta" |
+            "tar_progress" |
             "tar_render" |
             "tar_fuzzy_make" |
             "tar_fuzzy_invalidate"

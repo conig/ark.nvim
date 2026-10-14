@@ -3037,6 +3037,52 @@ mod tests {
     }
 
     #[test]
+    fn test_target_interaction_completion_contexts() {
+        for code in [
+            "tar_make(@)",
+            "tar_load(@)",
+            "targets::tar_load(names = @)",
+            "tar_make(names = c(@))",
+            "tar_make(names = c(raw_data, @))",
+            "tar_load(c(raw_data, c(@)))",
+            "tar_delete(@)",
+            "tar_meta(names = @)",
+            "tar_progress(@)",
+            "tar_invalidate(@)",
+            "tar_read(@)",
+        ] {
+            let (text, point) = point_from_cursor(code);
+            let document = Document::new(text.as_str(), None);
+            let context = DocumentContext::new_with_completion(&document, point, None, true);
+            let request = completion_request_from_custom_call(&context, None)
+                .unwrap()
+                .unwrap_or_else(|| panic!("expected target completion in {code}"));
+            assert!(matches!(request.flavor, CompletionFlavor::Target), "{code}");
+            assert_eq!(request.prefix, None, "{code}");
+        }
+
+        for code in [
+            "tar_make(store = @)",
+            "tar_load(analysis_data, @)",
+            "tar_meta(fields = @)",
+            "tar_progress(fields = c(@))",
+            "tar_make(store = c(@))",
+            "tar_make(names = other(@))",
+            "tar_make(names = starts_with(@))",
+            "c(@)",
+            "tar_make()@",
+        ] {
+            let (text, point) = point_from_cursor(code);
+            let document = Document::new(text.as_str(), None);
+            let context = DocumentContext::new_with_completion(&document, point, None, true);
+            assert!(
+                target_name_completion_context(&context).unwrap().is_none(),
+                "unexpected target completion in {code}"
+            );
+        }
+    }
+
+    #[test]
     fn test_target_call_request_scopes_empty_tar_load_to_project() {
         let (text, point) = point_from_cursor("```{r}\ntar_load(@)\n```\n");
         let document = Document::new_with_kind(text.as_str(), None, DocumentKind::LiterateR);

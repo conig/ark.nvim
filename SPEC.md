@@ -619,6 +619,13 @@ The v1.1 user-facing feature set is:
 - complete target names in `tar_read()`, `tar_load()`, `tar_make(names = ...)`,
   `tar_invalidate(names = ...)`, `tarchetypes::tar_render()`, and common
   project helpers that forward to those APIs
+  - also recognize `tar_delete()`, `tar_meta()`, and `tar_progress()` target
+    selections, including namespace-qualified calls
+  - offer names for empty selections as well as typed prefixes, with ordinary
+    completion requests and auto-inserted closing delimiters
+  - support bare/quoted names and nested `c(...)` selections in the target-name
+    argument, without treating unrelated `store` or `fields` arguments as
+    target selections
 - jump from a target reference to the nearest static declaration such as
   `tar_target(clean_data, ...)`, even when that declaration lives in a sourced
   pipeline file

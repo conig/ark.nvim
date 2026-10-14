@@ -25,6 +25,15 @@
   },
   "rules": [
     {
+      "names": ["target_interaction_completion.lua"],
+      "tier": "fast",
+      "layer": "product-e2e",
+      "contract": "target-name completion in empty and nested target selections without a live R session",
+      "dependencies": ["neovim"],
+      "typical_runtime": "under 20 seconds",
+      "mutates_shared_session": false
+    },
+    {
       "names": ["source_install_reconciliation.lua"],
       "tier": "fast",
       "layer": "product-e2e",

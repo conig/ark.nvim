@@ -96,6 +96,15 @@ pub(crate) fn analyze_call_context(
         }
     }
 
+    analyze_call_context_from_node(context, node)
+}
+
+/// Analyze the enclosing call from a selected syntax node. This also lets
+/// completion inspect an outer argument without reparsing or moving the cursor.
+pub(crate) fn analyze_call_context_from_node(
+    context: &DocumentContext,
+    mut node: Node,
+) -> anyhow::Result<Option<CallContext>> {
     let mut parent = match node.parent() {
         Some(parent) => parent,
         None => return Ok(None),
