@@ -2020,6 +2020,13 @@ local function setup_keymaps(bufnr, opts)
   vim.keymap.set("i", "<C-d>", function()
     M.eof(bufnr)
   end, { buffer = bufnr, desc = "Send EOF to Ark console R process" })
+  -- Insert mode keeps the input cursor visible, so its default wheel-up cannot
+  -- scroll past a prompt at the bottom of the console. Enter Normal mode first
+  -- and let Neovim handle the wheel event against the transcript.
+  vim.keymap.set("i", "<ScrollWheelUp>", "<C-\\><C-n><ScrollWheelUp>", {
+    buffer = bufnr,
+    desc = "Scroll Ark console transcript up",
+  })
 end
 
 function M.start(opts)

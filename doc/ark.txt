@@ -403,6 +403,9 @@ tmux ~
     Canonical backend. Neovim must run inside tmux. Supports managed pane
     lifecycle, tmux popups, and Ark's managed R tabs.
 
+    In the `nvim-console` frontend, mouse-wheel up scrolls the transcript and
+    enters Normal mode. Press `i` to return to the editable R prompt.
+
 terminal ~
     Additive built-in Neovim terminal split. It uses the same detached LSP and
     live bridge but intentionally does not implement tmux tab operations.

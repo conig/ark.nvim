@@ -134,6 +134,7 @@
         "native_help.lua",
         "nvim_console_history_store.lua",
         "nvim_console_long_session_rpc.lua",
+        "nvim_console_mouse_wheel.lua",
         "nvim_console_stale_rpc_status.lua",
         "release_manifest_and_discovery.lua",
         "report_command.lua",
@@ -153,6 +154,9 @@
     }
   ],
   "overrides": {
+    "nvim_console_mouse_wheel.lua": {
+      "dependencies": ["neovim", "python"]
+    },
     "ark_view_sticky_header_tui.lua": {
       "open_r_buffer": false
     },
