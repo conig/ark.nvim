@@ -12,6 +12,31 @@
     "rpc.console_view": { "p50_ms": 0.0, "p95_ms": 0.0 },
     "arkview.open": { "p50_ms": 21.001, "p95_ms": 22.529 },
     "arkview.page": { "p50_ms": 0.402, "p95_ms": 0.497 },
-    "arkview.cursor": { "p50_ms": 0.010, "p95_ms": 0.034 }
+    "arkview.cursor": { "p50_ms": 0.010, "p95_ms": 0.034 },
+    "arkview.values.cold": {
+      "p50_ms": 279.770,
+      "p95_ms": 296.001,
+      "source": "2026-10-15 canonical machine; three serial mixed-workload runs, budgets declared before measurement"
+    },
+    "arkview.values.warm": {
+      "p50_ms": 14.073,
+      "p95_ms": 17.154,
+      "source": "2026-10-15 canonical machine; three serial mixed-workload runs, budgets declared before measurement"
+    },
+    "arkview.filter.input": {
+      "p50_ms": 0.255,
+      "p95_ms": 0.448,
+      "source": "2026-10-15 canonical machine; three serial mixed-workload runs, budgets declared before measurement"
+    },
+    "arkview.mixed.completion": {
+      "p50_ms": 16.947,
+      "p95_ms": 314.330,
+      "source": "2026-10-15 canonical machine; three serial mixed-workload runs, budgets declared before measurement"
+    },
+    "arkview.mixed.ui_lag": {
+      "p50_ms": 0.749,
+      "p95_ms": 22.125,
+      "source": "2026-10-15 canonical machine; three serial mixed-workload runs, budgets declared before measurement"
+    }
   }
 }

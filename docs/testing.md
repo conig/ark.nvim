@@ -70,6 +70,12 @@ assertion into a pass. Failed E2Es retain their isolated temporary directory
 and log and print both paths, while successful runs remove them unless
 `--keep-artifacts` is requested.
 
+## High-cardinality mixed-workload coverage
+
+`ark_view_filter_completion_timing.lua` reproduces the full `maps::world.cities` name-column workflow through actual Snacks `f` input, while live runtime-member completion is outstanding. It measures cold/warm value lookup, input dispatch, completion response and UI heartbeat lateness separately. It also verifies the 1,000-value response bound, full-index search beyond the first page, one request per interaction, cache state, semantic completion results and final filter/focus behavior. Sample writes happen after measured interactions, not in the editor's input path.
+
+The canonical benchmark runs this fixture three times: three cold and fifteen warm queries, plus eighteen input/completion/heartbeat samples each. Budgets were declared before the first measurement. The 2026-10-15 additive baseline recorded p95 cold values 296 ms, warm values 17 ms, input dispatch 0.45 ms, overlapping completion 314 ms and UI heartbeat lateness 22 ms. Existing baseline values and limits were not relaxed. These are local reference measurements, not cross-machine guarantees.
+
 ## Reviewed post-sync hardening baseline
 
 The 2026-07-15 baseline covers the tree at `e157fc79` plus the subsequent

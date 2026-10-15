@@ -7,7 +7,8 @@
     "startup_latency_budget.lua": { "runs": 5 },
     "current_env_completion_timing.lua": { "runs": 1 },
     "r_entrypoint_rpc_latency.lua": { "runs": 1 },
-    "ark_view_cursor_movement_responsiveness.lua": { "runs": 5 }
+    "ark_view_cursor_movement_responsiveness.lua": { "runs": 5 },
+    "ark_view_filter_completion_timing.lua": { "runs": 3 }
   },
   "events": {
     "startup.main_buffer_unlock": {
@@ -79,6 +80,41 @@
       "max_budget_ms": 100,
       "noise_tolerance_percent": 20,
       "baseline_noise_floor_ms": 1
+    },
+    "arkview.values.cold": {
+      "minimum_samples": 3,
+      "p95_budget_ms": 750,
+      "max_budget_ms": 1500,
+      "noise_tolerance_percent": 25,
+      "baseline_noise_floor_ms": 50
+    },
+    "arkview.values.warm": {
+      "minimum_samples": 15,
+      "p95_budget_ms": 200,
+      "max_budget_ms": 400,
+      "noise_tolerance_percent": 25,
+      "baseline_noise_floor_ms": 20
+    },
+    "arkview.filter.input": {
+      "minimum_samples": 18,
+      "p95_budget_ms": 16,
+      "max_budget_ms": 50,
+      "noise_tolerance_percent": 25,
+      "baseline_noise_floor_ms": 1
+    },
+    "arkview.mixed.completion": {
+      "minimum_samples": 18,
+      "p95_budget_ms": 500,
+      "max_budget_ms": 1000,
+      "noise_tolerance_percent": 25,
+      "baseline_noise_floor_ms": 50
+    },
+    "arkview.mixed.ui_lag": {
+      "minimum_samples": 18,
+      "p95_budget_ms": 50,
+      "max_budget_ms": 100,
+      "noise_tolerance_percent": 25,
+      "baseline_noise_floor_ms": 5
     },
     "arkview.cursor": {
       "minimum_samples": 400,

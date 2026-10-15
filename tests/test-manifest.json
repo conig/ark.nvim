@@ -25,6 +25,15 @@
   },
   "rules": [
     {
+      "names": ["ark_view_filter_completion_timing.lua"],
+      "tier": "performance",
+      "layer": "performance",
+      "contract": "bounded cold/warm high-cardinality exact-value filtering with overlapping live completion and editor heartbeat latency",
+      "dependencies": ["neovim", "r", "tmux", "snacks", "R:maps", "R:data.table"],
+      "serial": true,
+      "typical_runtime": "under 120 seconds per sample batch"
+    },
+    {
       "names": ["targets_rebuild_preview.lua"],
       "tier": "fast",
       "layer": "product-e2e",

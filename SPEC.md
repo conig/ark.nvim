@@ -1166,6 +1166,8 @@ prepared-fixture `full-tui`, `performance`, and `soak` remain deeper local
 gates, and `just verify` is the canonical pre-release suite. Tests that declare
 no tmux dependency must run without creating a tmux server.
 
+The performance tier includes a real high-cardinality ArkView filter plus concurrent live completion workload, not only isolated RPC timings. It records cold/warm value latency, input dispatch, completion latency and editor heartbeat lateness, while asserting full-index search, bounded results, cache behavior, no duplicate requests, semantic completion and correct final filter/focus. Three serialized runs supply enough cold/warm samples for the declared budgets; measurements never log data cells and write sample files outside the measured intervals. Existing limits and baseline values are preserved when adding this coverage.
+
 Full-TUI verification uses the pinned repo-owned fixture described by
 `tests/e2e/fixture-lock.json`; test execution must not clone plugins. Performance
 governance records schema-versioned samples for named user-visible events and
