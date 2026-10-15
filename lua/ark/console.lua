@@ -178,6 +178,12 @@ local function publish_status(bufnr)
   end
 
   local rpc_socket = info.rpc_running == false and vim.NIL or info.rpc_socket
+  if info.prompt_state == "busy" and info.prompt_pid == nil then
+    local status = session_runtime.read_status_file(info.status_path)
+    info.prompt_pid = status and status.pid or nil
+  elseif info.prompt_state ~= "busy" then
+    info.prompt_pid = nil
+  end
   merge_status_file(info.status_path, {
     nvim_console_last_send = info.last_send,
     nvim_console_last_send_ms = info.last_send_ms,
@@ -187,6 +193,8 @@ local function publish_status(bufnr)
     nvim_console_rpc_socket = rpc_socket,
     nvim_console_running = info.closed ~= true and job_running(info.jobid),
     nvim_console_session_id = info.session_id,
+    nvim_console_prompt_state = info.prompt_state,
+    nvim_console_prompt_pid = info.prompt_pid or vim.NIL,
   })
 end
 
@@ -1506,8 +1514,12 @@ local function send_next_submission_line(info)
   return false
 end
 
-local function send_to_job(info, text)
-  if record_submission(info, text) then
+local function send_to_job(bufnr, info, text)
+  local first = record_submission(info, text)
+  -- Publish before sending, not on a timer: consumers can skip futile probes
+  -- even when R will not service events again until evaluation completes.
+  publish_status(bufnr)
+  if first then
     send_next_submission_line(info)
   end
 end
@@ -1518,6 +1530,7 @@ local function parse_output(bufnr, data)
     return {}
   end
 
+  local previous_prompt = info.prompt_state
   local chunk = table.concat(data or {}, "\n")
   if chunk == "" then
     return {}
@@ -1556,6 +1569,9 @@ local function parse_output(bufnr, data)
         info.pending_echo_lines = {}
       end
     end
+  end
+  if info.prompt_state ~= previous_prompt then
+    publish_status(bufnr)
   end
   return lines
 end
@@ -2361,7 +2377,7 @@ function M.submit(bufnr)
   end
 
   local submitted_prompt = prompt_label(info)
-  send_to_job(info, text)
+  send_to_job(bufnr, info, text)
 
   with_internal_edit(bufnr, info, function()
     vim.bo[bufnr].modifiable = true
@@ -2430,11 +2446,10 @@ function M.send_text(bufnr, text)
 
   info.last_send = text
   info.last_send_ms = math.floor(vim.loop.hrtime() / 1e6)
-  publish_status(bufnr)
   restore_pending_protected_edit(bufnr, info)
   set_current_input(bufnr, info, "")
   append_submitted_input_before_input(bufnr, vim.split(text, "\n", { plain = true }), prompt_label(info))
-  send_to_job(info, text)
+  send_to_job(bufnr, info, text)
   place_prompt(bufnr)
   focus_input(bufnr, info, { insert = true })
   return true

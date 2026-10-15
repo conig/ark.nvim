@@ -1596,6 +1596,7 @@ function M.status(opts)
   end
   status.product_state = product_state.derive(status, options, bridge.status())
   status.product_state_detail = product_state.describe(status.product_state)
+  status.runtime_activity = product_state.activity(status)
   return status
 end
 

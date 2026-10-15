@@ -547,5 +547,17 @@ distinct counts, cache hits, phase durations, and encoded response bytes after
 normal bridge pings. These records contain no values, expressions, or search
 terms. Cancelling/closing a picker discards results; R may still be computing.
 
+Runtime activity ~
+    :Ark status distinguishes live_busy from degraded connectivity. Its
+    runtime_activity describes submitted user code, an active Ark request,
+    an answering bridge, unknown unresponsiveness, or a disconnected process.
+    The console publishes transitions, not periodic heartbeats. Matching busy
+    evidence skips futile live requests while static completions remain usable.
+    A timeout alone never means that R crashed. Interrupt explicitly if needed;
+    Ark does not restart R or discard its workspace automatically.
+
+    :Ark report includes at most eight metadata-only recent requests plus the
+    active operation. It omits request IDs, source, error text and cell values.
+
 ==============================================================================
 vim:tw=78:ts=8:noet:ft=help:norl:

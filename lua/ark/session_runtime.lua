@@ -230,7 +230,22 @@ function M.read_status_file(path, opts)
   return payload
 end
 
+-- A console transition is useful only for the R process it observed and while
+-- its publisher is alive. Old status files must never suppress a new session.
+function M.console_busy(status)
+  return type(status) == "table"
+    and status.nvim_console == true
+    and status.nvim_console_running == true
+    and status.nvim_console_prompt_state == "busy"
+    and tonumber(status.nvim_console_prompt_pid) == tonumber(status.pid)
+    and M.status_pid_alive(status.pid)
+    and M.status_pid_alive(status.nvim_console_pid)
+end
+
 function M.ping_bridge(session, status, timeout_ms)
+  if M.console_busy(status) then
+    return false
+  end
   if not uv or not uv.new_tcp then
     return false
   end

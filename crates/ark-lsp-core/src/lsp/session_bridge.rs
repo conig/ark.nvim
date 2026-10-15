@@ -93,6 +93,7 @@ struct SessionBridgeConnection {
     host: String,
     port: u16,
     auth_token: String,
+    console_busy_owner: Option<(i32, i32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -284,6 +285,7 @@ impl SessionBridge {
                 host: config.host,
                 port: config.port,
                 auth_token: config.auth_token,
+                console_busy_owner: None,
             })
         };
 
@@ -325,8 +327,18 @@ impl SessionBridge {
         T: crate::lsp::session_bridge_runtime::BridgeRequest,
         R: DeserializeOwned,
     {
+        if connection
+            .console_busy_owner
+            .is_some_and(|(console_pid, r_pid)| process_alive(console_pid) && process_alive(r_pid))
+        {
+            return Err(SessionBridgeUnavailableError {
+                message: String::from("R is executing submitted code; live queries are deferred until the prompt returns"),
+            }.into());
+        }
         let mut hasher = DefaultHasher::new();
-        connection.hash(&mut hasher);
+        // Activity is not connection identity: a normal evaluation must not
+        // reset admission/circuit state or trigger a retry on the same socket.
+        (&connection.host, connection.port, &connection.auth_token).hash(&mut hasher);
         self.runtime.request(
             hasher.finish(),
             connection.host.as_str(),
@@ -1654,7 +1666,24 @@ fn connection_from_status(
         host: String::from("127.0.0.1"),
         port,
         auth_token: status.auth_token,
+        console_busy_owner: if status.nvim_console &&
+            status.nvim_console_running &&
+            status.nvim_console_prompt_state == "busy" &&
+            status.pid == status.nvim_console_prompt_pid
+        {
+            status.nvim_console_pid.zip(status.pid)
+        } else {
+            None
+        },
     })
+}
+
+fn process_alive(pid: i32) -> bool {
+    pid > 0 &&
+        matches!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+            Ok(()) | Err(nix::errno::Errno::EPERM)
+        )
 }
 
 fn validate_status_compatibility(
@@ -3782,6 +3811,56 @@ mod tests {
             1,
             "bootstrap command error should not fall back to legacy inspect requests"
         );
+    }
+
+    #[test]
+    fn test_busy_console_defers_transport_without_poisoning_circuit() {
+        let status = tempfile::NamedTempFile::new().unwrap();
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&ready_status(1, "test-token")).unwrap();
+        payload["pid"] = std::process::id().into();
+        payload["nvim_console_pid"] = std::process::id().into();
+        payload["nvim_console_prompt_pid"] = std::process::id().into();
+        payload["nvim_console"] = true.into();
+        payload["nvim_console_running"] = true.into();
+        payload["nvim_console_prompt_state"] = "busy".into();
+        std::fs::write(status.path(), payload.to_string()).unwrap();
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            status_file: Some(status.path().to_path_buf()),
+            timeout_ms: 1000,
+            ..Default::default()
+        })
+        .unwrap();
+        let started = Instant::now();
+        for _ in 0..20 {
+            let error = bridge.inspect("names(globalenv())", None).unwrap_err();
+            assert!(error.to_string().contains("R is executing"), "{error}");
+        }
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert!(!bridge.runtime.debug_info().circuit_open);
+        assert_eq!(bridge.runtime.debug_info().consecutive_failures, 0);
+        // Completion of the submission invalidates the status-file cache.
+        payload["nvim_console_prompt_state"] = "top-level".into();
+        std::fs::write(status.path(), payload.to_string()).unwrap();
+        let error = bridge.inspect("names(globalenv())", None).unwrap_err();
+        assert!(!error.to_string().contains("R is executing"), "{error}");
+        assert_eq!(bridge.runtime.debug_info().consecutive_failures, 1);
+        payload["nvim_console_prompt_state"] = "busy".into();
+        payload["nvim_console_prompt_pid"] = 1.into();
+        std::fs::write(status.path(), payload.to_string()).unwrap();
+        assert!(!bridge
+            .inspect("x", None)
+            .unwrap_err()
+            .to_string()
+            .contains("R is executing"));
+        payload["nvim_console_prompt_pid"] = std::process::id().into();
+        payload["nvim_console_pid"] = 0.into();
+        std::fs::write(status.path(), payload.to_string()).unwrap();
+        assert!(!bridge
+            .inspect("x", None)
+            .unwrap_err()
+            .to_string()
+            .contains("R is executing"));
     }
 
     #[test]

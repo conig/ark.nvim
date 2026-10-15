@@ -61,6 +61,53 @@ local function status_lines(status)
   }
 end
 
+-- Strict allowlists, not string sanitization: even a plausible identifier can
+-- be a private object name. No expressions, request IDs, errors or cell values.
+local function label(value, allowed)
+  return allowed[value] and value or "other"
+end
+
+local operations = {}
+for _, name in ipairs({ "inspect", "bootstrap", "help_text", "package_info", "package_install", "view_open", "view_state", "view_page", "view_values", "view_filter", "view_sort", "view_profile", "view_cell", "view_export", "view_close", "targets_manifest", "targets_network", "targets_meta", "targets_action", "error_traceback" }) do
+  operations[name] = true
+end
+local stages = { connect = true, write_request = true, wait_first_byte = true, read_response = true, decode_response = true, serialize_request = true }
+local activities = { user_code = true, ark_request = true, ready = true, unresponsive = true, disconnected = true, unavailable = true }
+
+local function number(value)
+  return type(value) == "number" and value >= 0 and value < math.huge and string.format("%.1f", value) or "unknown"
+end
+
+local function runtime_lines(status)
+  status = status or {}
+  local activity = type(status.runtime_activity) == "table" and status.runtime_activity or {}
+  local lsp = type(status.lsp_status) == "table" and status.lsp_status or {}
+  local bridge = type(lsp.sessionBridge) == "table" and lsp.sessionBridge or {}
+  local runtime = type(bridge.runtime) == "table" and bridge.runtime or {}
+  local lines = { "", "## Recent runtime evidence", "", "- Activity: `" .. label(activity.kind, activities) .. "`" }
+  local active = runtime.activeOperation
+  if type(active) == "table" then
+    lines[#lines + 1] = "- Active: `" .. label(active.operation, operations) .. "`, age=" .. number(active.ageMs) .. "ms"
+  end
+  local recent = type(runtime.recentRequests) == "table" and runtime.recentRequests or {}
+  for index = math.max(1, #recent - 7), #recent do
+    local request = recent[index]
+    if type(request) == "table" then
+      local exchange = type(request.exchange) == "table" and request.exchange or {}
+      lines[#lines + 1] = string.format("- `%s`: %s; queue=%sms, total=%sms, stage=%s, response=%s bytes",
+        label(request.operation, operations), request.success == true and "completed" or "failed",
+        number(request.queueMs), number(request.totalMs), label(exchange.stage, stages), number(exchange.responseBytes))
+      local handler = exchange.handler
+      if type(handler) == "table" then
+        lines[#lines + 1] = string.format("  - Values: rows=%s, distinct=%s, returned=%s, cache=%s; keys=%sms, counts=%sms, labels=%sms",
+          number(handler.rows), number(handler.distinct), number(handler.returned), bool(handler.cache_hit),
+          number(handler.keys_ms), number(handler.count_ms), number(handler.labels_ms))
+      end
+    end
+  end
+  return lines
+end
+
 function M.generate(opts)
   opts = opts or {}
   local status = opts.status
@@ -98,6 +145,7 @@ function M.generate(opts)
     "",
   }
   vim.list_extend(lines, status_lines(status))
+  vim.list_extend(lines, runtime_lines(status))
   vim.list_extend(lines, { "", "## Read-only health checks", "" })
   for _, check in ipairs(checks) do
     if check.kind ~= "start" then

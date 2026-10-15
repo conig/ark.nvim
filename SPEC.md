@@ -1073,6 +1073,7 @@ High-value regression coverage for this tranche includes:
 Ark exposes one user-facing state classification through `:Ark status`:
 
 - `live_ready`
+- `live_busy`
 - `static_starting`
 - `static_only`
 - `live_degraded`
@@ -1089,6 +1090,10 @@ and the support report.
 Observed readiness takes precedence over startup policy: a manually started
 session with both bridge and REPL ready is `live_ready` even when
 `auto_start_pane = false`; that option controls automatic startup only.
+
+Runtime activity is evidence-based and separate from startup policy: `runtime_activity.kind` distinguishes `user_code`, `ark_request`, `ready`, `unresponsive`, `disconnected`, and `unavailable`. The console publishes busy/prompt transitions only when they change, bound to the observed R PID and live console owner. A matching busy transition suppresses futile bridge probes and IPC requests without incrementing failure circuits; returning to a prompt restores normal querying. Stale owner/process metadata never proves activity. Raw terminals without this evidence remain unknown rather than being guessed busy from a timeout. Static completion remains available, and Ark never automatically interrupts or restarts R because it is busy.
+
+`:Ark report` includes at most eight recent bridge operation summaries and the current operation, with allowlisted operation/stage/activity names and numeric queue, transport, response-size and value-handler metadata. It excludes request IDs, expressions, error text, cell contents and query strings. This reuses the bounded in-memory history; no polling or per-keystroke logging is added. A degraded state asks for inspection rather than assuming that a restart is appropriate.
 
 Configuration is validated before setup mutates editor state. Unknown keys,
 wrong types, and unsupported enum values fail with `E_CONFIG`, the exact dotted

@@ -7,9 +7,10 @@ run `:Ark report` and review the redacted preview before copying it.
 | State | What still works | Recovery |
 |---|---|---|
 | `live_ready` | Static and live features | None |
+| `live_busy` | Static LSP features | Wait for R, or explicitly interrupt in the console |
 | `static_starting` | Static LSP features | Wait for R/bridge hydration |
 | `static_only` | Static LSP features | Enable/start a backend if live features are wanted |
-| `live_degraded` | Static LSP features | `:Ark pane restart`, then `:Ark refresh` |
+| `live_degraded` | Static LSP features | Inspect runtime activity and the console; a timeout does not prove R stopped |
 | `update_in_progress` | Existing static features | Wait for installation to finish |
 | `restart_required` | Static LSP features | `:Ark install`, restart the pane, refresh |
 | `unsupported` | No supported guarantee | Fix `:checkhealth ark` errors |
@@ -36,3 +37,9 @@ recovery action, while the exact state remains in `:Ark status`.
 Support reports never intentionally include buffer contents, R values,
 arbitrary environment values, authentication tokens, cookies, or unrelated
 system logs. They normalize user-specific paths and reference logs by location.
+
+## Busy versus unavailable
+
+`:Ark status` reports `runtime_activity.kind`: submitted user code, an active Ark request, an answering bridge, an unresponsive bridge with unknown cause, a disconnected process/pane, or unavailable evidence. Only a live console publisher bound to the current R PID can suppress requests while user code executes. A raw terminal without that evidence is not guessed busy. Restarting R discards its workspace, so do not restart merely because a probe timed out.
+
+`:Ark report` includes a bounded, metadata-only summary of recent operations and their queue/transport timings. No expressions, call stacks, error messages or R values are included.

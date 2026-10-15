@@ -25,6 +25,30 @@
   },
   "rules": [
     {
+      "names": [
+        "runtime_activity.lua",
+        "report_runtime_evidence.lua"
+      ],
+      "tier": "fast",
+      "layer": "component",
+      "contract": "evidence-based runtime activity and bounded privacy-preserving support metadata",
+      "dependencies": [
+        "neovim"
+      ],
+      "mutates_shared_session": false
+    },
+    {
+      "names": [
+        "nvim_console_busy_completion.lua"
+      ],
+      "contract": "real console busy transitions preserve fast static completion without live IPC failures",
+      "dependencies": [
+        "neovim",
+        "r"
+      ],
+      "mutates_shared_session": false
+    },
+    {
       "names": ["nvim_console_target_completion.lua"],
       "contract": "project-scoped target completion in a standalone console without evaluating a slow manifest",
       "dependencies": ["neovim", "r", "tmux", "R:targets"],

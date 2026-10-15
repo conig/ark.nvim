@@ -838,7 +838,13 @@ pub(crate) fn handle_completion(
                 }
             }
 
-            let detached = detached.unwrap_or_default();
+            // Unavailable/unclaimed is not HandledEmpty. Only a successful
+            // bridge-owned result may suppress the detached static planner.
+            let Some(detached) = detached else {
+                let items = provide_detached_static_completions(&context, state)
+                    .map_err(LspError::Anyhow)?;
+                return Ok(completion_response_from_items(items));
+            };
             if !detached.merge_static || !detached.items.is_empty() {
                 return Ok(completion_response_from_items(detached.items));
             }
@@ -1979,6 +1985,47 @@ list()
             target_project_paths(&console, &state).is_none(),
             "ambiguous console projects must use live R fallback"
         );
+    }
+
+    #[test]
+    fn test_unavailable_bridge_keeps_static_completion() {
+        let directory = tempdir().unwrap();
+        let uri = Url::from_file_path(directory.path().join("busy.R")).unwrap();
+        let (text, point) = point_from_cursor("local_static_fn <- function(x) x\nlocal_sta@");
+        let document = Document::new(&text, None);
+        let position = document.lsp_position_from_tree_sitter_point(point).unwrap();
+        let mut state = WorldState {
+            runtime_mode: RuntimeMode::Detached,
+            session_bridge: Some(
+                SessionBridge::new(SessionBridgeConfig {
+                    status_file: Some(directory.path().join("missing-status.json")),
+                    ..Default::default()
+                })
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        state.documents.insert(uri.clone(), document);
+        let result = handle_completion(
+            CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+                context: Some(LspCompletionContext {
+                    trigger_kind: CompletionTriggerKind::INVOKED,
+                    trigger_character: None,
+                }),
+            },
+            &state,
+        )
+        .unwrap();
+        let Some(CompletionResponse::Array(items)) = result else {
+            panic!("static completion was lost")
+        };
+        assert!(items.iter().any(|item| item.label == "local_static_fn"));
     }
 
     #[test]

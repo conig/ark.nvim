@@ -103,6 +103,18 @@ pub(super) struct BridgeMember {
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(super) struct SessionStatusPayload {
     #[serde(default)]
+    pub(super) pid: Option<i32>,
+    #[serde(default)]
+    pub(super) nvim_console: bool,
+    #[serde(default)]
+    pub(super) nvim_console_running: bool,
+    #[serde(default)]
+    pub(super) nvim_console_pid: Option<i32>,
+    #[serde(default)]
+    pub(super) nvim_console_prompt_pid: Option<i32>,
+    #[serde(default)]
+    pub(super) nvim_console_prompt_state: String,
+    #[serde(default)]
     pub(super) status: String,
     #[serde(default)]
     pub(super) product_version: String,

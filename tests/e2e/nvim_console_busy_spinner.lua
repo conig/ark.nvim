@@ -91,6 +91,9 @@ ark_test.wait_for("busy spinner state", 5000, function()
   return type(current) == "table" and current.prompt_state == "busy"
 end)
 
+local published = require("ark.session_runtime").read_status_file(require("ark.console").status(bufnr).status_path)
+assert(published.nvim_console_prompt_state == "busy", "submission must publish busy before waiting for R")
+
 local delayed_text, delayed_group = active_prompt()
 if delayed_text ~= "* " or delayed_group ~= "ArkConsolePrompt" then
   ark_test.fail("busy prompt should stay static during the spinner grace period: " .. vim.inspect({
@@ -136,6 +139,9 @@ ark_test.wait_for("fake analysis completion", 10000, function()
   local current = require("ark.console").status(bufnr)
   return type(current) == "table" and current.prompt_state == "top-level"
 end)
+
+published = require("ark.session_runtime").read_status_file(require("ark.console").status(bufnr).status_path)
+assert(published.nvim_console_prompt_state == "top-level", "returning prompt must clear published busy state")
 
 local done_text, done_group = active_prompt()
 if done_text ~= "> " or done_group ~= "ArkConsolePrompt" then
