@@ -158,13 +158,24 @@ local ok, err = xpcall(function()
     return false
   end)
 
+  local last_ready_probe_ms = math.floor(vim.uv.hrtime() / 1e6)
   tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceSnapshot ready", "Enter" })
   ark_test.wait_for("ark lsp attached", 15000, function()
     local event = latest_matching(function(candidate)
       return candidate.label == "ArkTraceSnapshot"
         and candidate.args == "ready"
     end)
-    return event ~= nil and tonumber(event.ark_clients or 0) >= 1
+    if event ~= nil and tonumber(event.ark_clients or 0) >= 1 then
+      return true
+    end
+    -- A prompt can precede LSP attachment. Refresh the observation instead of
+    -- repeatedly reading one permanently stale startup snapshot.
+    local now = math.floor(vim.uv.hrtime() / 1e6)
+    if now - last_ready_probe_ms >= 500 then
+      last_ready_probe_ms = now
+      tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceSnapshot ready", "Enter" })
+    end
+    return false
   end)
 
   vim.wait(1500, function()
@@ -202,6 +213,19 @@ local ok, err = xpcall(function()
   end)
 
   tmux({ "send-keys", "-t", nvim_pane, "Enter" })
+
+  -- Blink may temporarily enter a dot-repeat scratch window while accepting.
+  -- Do not inject Escape/Ex commands into that asynchronous edit. Observe the
+  -- actual source-buffer change before asking for a normal-mode snapshot.
+  ark_test.wait_for("frontmatter Enter edit applied", 5000, function()
+    return latest_after(completion_show.ts_ms, function(candidate)
+      return candidate.label == "TextChangedI"
+        and type(candidate.line) == "string"
+        and candidate.line:find("html_document", 1, true) ~= nil
+        and type(candidate.cursor) == "table"
+        and candidate.cursor[1] == 2
+    end) ~= nil
+  end)
 
   local after_enter_snapshot = nil
   ark_test.wait_for("after enter snapshot", 5000, function()

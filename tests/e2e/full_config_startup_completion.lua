@@ -143,16 +143,18 @@ local function type_and_capture_completion(prefix, expected_label)
   local typed_elapsed_ms = elapsed_ms() - phase_begin_ms
 
   local lsp_ready_ms = nil
+  local lsp_labels = {}
   local lsp_ready = vim.wait(15000, function()
-    local labels = completion_labels_at_cursor(prefix)
-    if vim.tbl_contains(labels, expected_label) then
+    lsp_labels = completion_labels_at_cursor(prefix)
+    if vim.tbl_contains(lsp_labels, expected_label) then
       lsp_ready_ms = elapsed_ms() - phase_begin_ms
       return true
     end
     return false
   end, 50, false)
 
-  local lsp_labels = completion_labels_at_cursor(prefix)
+  -- Retain the response that satisfied readiness. A second request can be
+  -- cancelled by Blink and would replace a proven success with an empty sample.
   local cursor = vim.api.nvim_win_get_cursor(0)
   local line = vim.api.nvim_get_current_line()
   stop_insert_mode()

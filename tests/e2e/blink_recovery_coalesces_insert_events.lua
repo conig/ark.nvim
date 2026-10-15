@@ -32,6 +32,8 @@ package.loaded["ark.blink"].maybe_show_after_pair = function()
 end
 
 package.loaded["ark.bridge"] = {
+  -- Runtime identity reconciliation is outside this Blink event contract.
+  reconcile = function() end,
   ensure_current_runtime = function()
     return true
   end,

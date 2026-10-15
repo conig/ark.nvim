@@ -16,15 +16,18 @@ package.loaded["ark.bridge"] = {
   end,
 }
 
+local config_defaults = require("ark.config").defaults
 package.loaded["ark.config"] = {
   assert_valid = function() end,
   defaults = function()
-    return {
+    -- Keep lifecycle observers on a complete production configuration.
+    return vim.tbl_deep_extend("force", config_defaults(), {
       async_startup = false,
       auto_start_lsp = false,
       auto_start_pane = false,
+      configure_slime = false,
       filetypes = { "r" },
-    }
+    })
   end,
 }
 

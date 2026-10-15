@@ -17,6 +17,9 @@ _G.__ark_nvim_state = {}
 package.loaded["ark"] = nil
 package.loaded["ark.tmux"] = nil
 package.loaded["ark.session_runtime"] = {
+  bridge_diagnostics = function()
+    return nil
+  end,
   status_file_path = function()
     return "/tmp/ark-test-status.json"
   end,
