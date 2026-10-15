@@ -764,6 +764,23 @@ fn test_resolve_collated_sequential_redef_resolves_to_last() {
 }
 
 #[test]
+fn test_resolve_later_collation_sibling_shadows_own_top_level() {
+    // `resolve()` assumes package loading has finished, so `b.R`'s later
+    // namespace binding shadows `a.R`'s, as in a function-body `resolve_at()`.
+    let mut db = TestDb::new();
+    let root = workspace_root(&db, "ws");
+    let (pkg, files) = make_package(&mut db, "pkg", Namespace::default(), &[
+        ("ws/pkg/R/a.R", "x <- 1\n"),
+        ("ws/pkg/R/b.R", "x <- 2\n"),
+    ]);
+    root.set_packages(&mut db).to(vec![pkg]);
+    db.workspace_roots().set_roots(&mut db).to(vec![root]);
+
+    let def = resolve_one(&db, files[0], "x");
+    assert_eq!(def.file(&db), files[1]);
+}
+
+#[test]
 fn test_resolve_finds_definition_through_sibling_library_attach() {
     // `a.R` does `library(dep)`; by the time the rest of the package loads, dep
     // is on the search path, so `b.R`'s unbound `dep_fn` resolves to dep's
@@ -976,24 +993,6 @@ fn test_resolve_namespace_import_beats_attached_package() {
 
     let def = resolve_one(&db, files[0], "foo");
     assert_eq!(def.file(&db), dep_a_files[0]);
-}
-
-#[test]
-fn test_sourcing_a_script_replaces_fallback_collation_siblings() {
-    // `main.R` explicitly loads `R/a.R` but not `b.R`, replacing the inferred
-    // `R/`-directory collation context. `helper()` has no definition to resolve.
-    let mut db = TestDb::new();
-    let files = setup_workspace(&mut db, &[
-        ("w/main.R", "source(\"R/a.R\")\n"),
-        ("w/R/a.R", "f <- function() helper()\n"),
-        ("w/R/b.R", "helper <- function() 1\n"),
-    ]);
-
-    assert!(files[1].resolve(&db, name(&db, "helper")).is_empty());
-
-    // Nothing sources `b.R`, so it retains the inferred collation context.
-    let def = resolve_one(&db, files[2], "f");
-    assert_eq!(def.file(&db), files[1]);
 }
 
 #[test]

@@ -34,7 +34,8 @@
     # TODO: Support document IDs
     stopifnot(is.null(id))
 
-    context <- .ps.ui.LastActiveEditorContext()
+    # Like RStudio, never report the console's (empty) path
+    context <- .ps.ui.LastActiveEditorContext(allowConsole = FALSE)
     if (is.null(context)) {
         return()
     }
@@ -43,7 +44,7 @@
 
 #' @export
 .rs.api.getActiveDocumentContext <- function() {
-    .rs.api.getSourceEditorContext(NULL)
+    as_rstudio_context(.ps.ui.LastActiveEditorContext(allowConsole = TRUE))
 }
 
 #' @export
@@ -51,13 +52,18 @@
     # TODO: Support document IDs
     stopifnot(is.null(id))
 
-    context <- .ps.ui.LastActiveEditorContext()
+    # Unlike `getActiveDocumentContext()`, this never reports the console
+    as_rstudio_context(.ps.ui.LastActiveEditorContext(allowConsole = FALSE))
+}
 
+# Positron editor context --> RStudio editor context
+as_rstudio_context <- function(context) {
     if (is.null(context)) {
         return()
     }
 
     list(
+        id = context$id,
         path = context$document$path,
         contents = unlist(context$contents),
         selection = convert_selection(context$selections)

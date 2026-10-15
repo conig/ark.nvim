@@ -1,5 +1,3 @@
-use std::fs;
-
 use aether_path::FilePath;
 use oak_semantic::semantic_index::SemanticDiagnostic;
 use oak_semantic::semantic_index::SemanticIndex;
@@ -8,14 +6,18 @@ use crate::db::root_by_file;
 use crate::diagnostic::lower_semantic_diagnostic;
 use crate::diagnostic::Diagnostic;
 use crate::file_diagnostics::inherited_shadow_diagnostics;
+use crate::file_imports::CollationView;
 use crate::file_revision::report_untracked_if_zero;
 use crate::imports::SalsaImportsResolver;
 use crate::parse::OakParse;
+use crate::recovery::record;
+use crate::recovery::Recovery;
 use crate::Db;
 use crate::FileRevision;
 use crate::Name;
 use crate::Package;
 use crate::Root;
+use crate::SourceDb;
 
 /// A source file tracked by Salsa.
 ///
@@ -78,7 +80,7 @@ impl File {
     ///
     /// A virtual path or an unreadable file yields empty text (matches ty).
     #[salsa::tracked(returns(ref), lru = 128)]
-    pub fn source_text(self, db: &dyn Db) -> String {
+    pub fn source_text(self, db: &dyn SourceDb) -> String {
         if let Some(text) = self.source_text_override(db) {
             return text.clone();
         }
@@ -96,7 +98,7 @@ impl File {
             return String::new();
         };
 
-        match fs::read_to_string(path.as_path().as_std_path()) {
+        match db.read_to_string(path.as_path()) {
             Ok(text) => text,
             Err(err) => {
                 // A file we were asked to analyze but can't read (permissions,
@@ -121,7 +123,7 @@ impl File {
     /// memory cleanly. Derived queries (e.g. `semantic_index`) store
     /// `AstPtr`s rather than tree nodes, so they don't pin an evicted tree.
     #[salsa::tracked(returns(ref), lru = 128)]
-    pub(crate) fn parse(self, db: &dyn Db) -> OakParse {
+    pub(crate) fn parse(self, db: &dyn SourceDb) -> OakParse {
         OakParse::new(aether_parser::parse(
             self.source_text(db).as_str(),
             aether_parser::RParserOptions::default(),
@@ -159,12 +161,10 @@ impl File {
     ///
     /// The two handlers behave differently:
     ///
-    /// - `semantic_index` (this query, custom rebuild): the file is rebuilt
-    ///   with `NoopImportsResolver`. Scopes, use-def maps and function bodies
-    ///   survive, but everything that needs the resolver drops. That includes
-    ///   effect detection: the Noop resolver never resolves the `library()` or
-    ///   `source()` callee, so the rebuilt index records no attaches and no
-    ///   source sites at all.
+    /// - `semantic_index` (this query, custom rebuild): rebuilds the file with
+    ///   `NoopImportsResolver`. Scopes, use-def maps, and function bodies remain
+    ///   available. Resolver-dependent data, including `library()` attachments
+    ///   and `source()` sites, is omitted.
     ///
     /// - `exports` (FallbackImmediate, empty): the file contributes no names
     ///   for the revision.
@@ -192,13 +192,9 @@ impl File {
     /// A `library()` in a function body does not count here; for every attach
     /// regardless of context see [`Self::attached_packages_anywhere`].
     ///
-    /// `cycle_result` is required. In an `R/` directory,
-    /// [`File::cross_file_layers`] reads the `attached_packages` of each
-    /// collation predecessor, and building a predecessor's index resolves that
-    /// file's own `source()` sites, which reaches back into
-    /// `cross_file_layers` and asks for this same file again. Salsa re-enters
-    /// here rather than at `semantic_index`, so this query needs its own
-    /// recovery (#15631).
+    /// In `R/` collation, `cross_file_layers()` queries each predecessor's
+    /// `attached_packages()`. Resolving a predecessor's `source()` can re-enter
+    /// this query through `cross_file_layers()`, so recovery belongs here.
     #[salsa::tracked(returns(ref), cycle_result = attached_packages_cycle_result)]
     pub fn attached_packages(self, db: &dyn Db) -> Vec<Name<'_>> {
         self.semantic_index(db)
@@ -216,12 +212,12 @@ impl File {
     /// dependency discovery, where a package attached only inside a function
     /// still counts as a dependency.
     ///
-    /// `cycle_result` is defensive here, and unreachable today. Nothing inside
-    /// `semantic_index` or `cross_file_layers` reads this query, so it can only
-    /// sit above a cycle head, never between the head and the re-entry. It
-    /// shares [`attached_packages_cycle_result`] so that a future edge into it
-    /// degrades like [`Self::attached_packages`] instead of panicking.
-    #[salsa::tracked(returns(ref), cycle_result = attached_packages_cycle_result)]
+    /// Defensive fallback. [`Self::semantic_index`] and [`Self::cross_file_layers`]
+    /// do not read this query, so it cannot currently be Salsa's repeated key.
+    /// If a future dependency re-enters it,
+    /// [`attached_packages_anywhere_cycle_result`] returns no packages rather
+    /// than panicking.
+    #[salsa::tracked(returns(ref), cycle_result = attached_packages_anywhere_cycle_result)]
     pub fn attached_packages_anywhere(self, db: &dyn Db) -> Vec<Name<'_>> {
         self.semantic_index(db)
             .attached_packages_anywhere()
@@ -279,12 +275,27 @@ impl File {
     /// `attached_packages()` and friends this query can't backdate.
     #[salsa::tracked(returns(ref))]
     pub fn diagnostics(self, db: &dyn Db) -> Vec<Diagnostic> {
-        let mut diagnostics: Vec<Diagnostic> = self
-            .semantic_index(db)
-            .diagnostics()
+        let semantic_diagnostics = self.semantic_index(db).diagnostics();
+        let mut diagnostics: Vec<Diagnostic> = semantic_diagnostics
             .iter()
-            .map(lower_semantic_diagnostic)
+            .map(|diagnostic| lower_semantic_diagnostic(db, self, diagnostic))
             .collect();
+
+        // `cross_file_layers()` records cycle recovery on its result because it cannot
+        // emit a `SemanticDiagnostic`. Report that recovery here unless
+        // `semantic_index()` already reported the same load cycle through its own
+        // recovery handler.
+        if !semantic_diagnostics.contains(&SemanticDiagnostic::SourceCycle) &&
+            self.cross_file_layers(db, CollationView::Eager)
+                .layers
+                .recovered_source_cycle
+        {
+            diagnostics.push(lower_semantic_diagnostic(
+                db,
+                self,
+                &SemanticDiagnostic::SourceCycle,
+            ));
+        }
 
         diagnostics.extend(inherited_shadow_diagnostics(db, self));
         diagnostics
@@ -293,7 +304,7 @@ impl File {
     /// The root containing this file, if any.
     ///
     /// Packaged files ask the db which live root holds the package via
-    /// [`Db::root_by_package`]. That branch covers library files too, which
+    /// [`SourceDb::root_by_package`]. That branch covers library files too, which
     /// normally have a package. It also keeps the common case cheap: it
     /// depends on each root's package list, not its full file set.
     ///
@@ -310,7 +321,7 @@ impl File {
     /// Callers that need to distinguish workspace from library roots
     /// inspect `root.kind(db)`.
     #[salsa::tracked(returns(copy))]
-    pub fn root(self, db: &dyn Db) -> Option<Root> {
+    pub fn root(self, db: &dyn SourceDb) -> Option<Root> {
         if let Some(pkg) = self.package(db) {
             return db.root_by_package(pkg);
         }
@@ -323,7 +334,7 @@ impl File {
 /// every workspace folder. Private helper: the only caller is
 /// [`File::root`], as the fallback for an orphan file no scan has reached
 /// yet (path prefix is all we have until a scan lands).
-fn root_by_path(db: &dyn Db, path: &FilePath) -> Option<Root> {
+fn root_by_path(db: &dyn SourceDb, path: &FilePath) -> Option<Root> {
     // Virtual documents (e.g. untitled scheme) don't have roots
     let path = path.as_path()?;
     db.workspace_roots()
@@ -363,21 +374,30 @@ fn build_semantic_index_inner(file: File, db: &dyn Db) -> SemanticIndex {
     oak_semantic::build_index(&parsed.tree(), resolver)
 }
 
-/// A file caught in an attach cycle contributes no attaches for the revision.
-///
-/// This only restates what the file reports anyway. The cycle always also runs
-/// through `semantic_index`, and its Noop rebuild already records no attaches
-/// (see [`File::semantic_index`]). That recovery raises
-/// [`SemanticDiagnostic::SourceCycle`], so nothing is reported here.
 fn attached_packages_cycle_result<'db>(
-    _db: &'db dyn Db,
+    db: &'db dyn Db,
     _id: salsa::Id,
-    _file: File,
+    file: File,
 ) -> Vec<Name<'db>> {
+    record(db, Recovery::AttachedPackages(file));
+    Vec::new()
+}
+
+fn attached_packages_anywhere_cycle_result<'db>(
+    db: &'db dyn Db,
+    _id: salsa::Id,
+    file: File,
+) -> Vec<Name<'db>> {
+    record(db, Recovery::AttachedPackagesAnywhere(file));
     Vec::new()
 }
 
 fn semantic_index_cycle_result(db: &dyn Db, _id: salsa::Id, file: File) -> SemanticIndex {
+    record(db, Recovery::SemanticIndex(file));
+    semantic_index_fallback(db, file)
+}
+
+fn semantic_index_fallback(db: &dyn SourceDb, file: File) -> SemanticIndex {
     log::warn!(
         "Cyclic `source()` detected at {}. Rebuilding without cross-file resolution.",
         file.path(db),

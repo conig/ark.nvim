@@ -4,12 +4,12 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use aether_path::FilePath;
-use oak_db::Db;
 use oak_db::DbInputs;
 use oak_db::OakDatabase;
 use oak_db::Package;
 use oak_db::Root;
 use oak_db::RootKind;
+use oak_db::SourceDb;
 use oak_package_metadata::namespace::Import;
 use oak_scan::DbScan;
 use oak_scan::RootExt;
@@ -405,7 +405,14 @@ fn file_path(s: &str) -> FilePath {
 }
 
 fn empty_library_root(db: &OakDatabase, path: &str) -> Root {
-    Root::new(db, file_path(path), RootKind::Library, vec![], vec![])
+    Root::new(
+        db,
+        file_path(path),
+        RootKind::Library,
+        vec![],
+        vec![],
+        vec![],
+    )
 }
 
 /// Stash `pkg` in `root.packages` and register `root` on

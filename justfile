@@ -26,7 +26,8 @@ verify-product *ARGS:
 
 # Exercise retained upstream crates without making them part of the product gate
 verify-upstream-compat *ARGS:
-  cargo test --workspace {{ARGS}}
+  cargo nextest run --workspace --no-fail-fast {{ARGS}}
+  cargo test --workspace --doc
 
 # Run the full verification suite
 verify *ARGS:

@@ -1,6 +1,3 @@
-use std::fs;
-
-use aether_path::FilePath;
 use salsa::Setter;
 
 use crate::all_package_dependencies;
@@ -54,13 +51,7 @@ fn workspace_with_script(db: &mut TestDb, contents: &str) {
 
 /// Create a `proj` workspace root with editor overrides for `scripts`.
 /// Paths are relative to `proj`.
-fn workspace_with_scripts(db: &mut TestDb, scripts: &[(&str, &str)]) {
-    workspace_with_scripts_files(db, scripts);
-}
-
-/// Like [`workspace_with_scripts`] but hands back the files so a test can query
-/// a specific one first.
-fn workspace_with_scripts_files(db: &mut TestDb, scripts: &[(&str, &str)]) -> Vec<File> {
+fn workspace_with_scripts(db: &mut TestDb, scripts: &[(&str, &str)]) -> Vec<File> {
     let root = workspace_root(&*db, "proj");
     let files: Vec<File> = scripts
         .iter()
@@ -108,21 +99,17 @@ fn test_collects_internal_namespace_access() {
 
 #[test]
 fn test_collects_imports_and_depends_from_workspace_package() {
-    let dir = tempfile::tempdir().unwrap();
-    let description = dir.path().join("DESCRIPTION");
-    fs::write(
-        &description,
-        "Package: mypkg\nVersion: 1.0.0\nImports: rlang\nDepends: cli\n",
-    )
-    .unwrap();
-
-    let mut db = TestDb::new();
+    let description = file_path("proj/DESCRIPTION");
+    let mut db = TestDb::with_files([(
+        description.as_path().unwrap().to_path_buf(),
+        "Package: mypkg\nVersion: 1.0.0\nImports: rlang\nDepends: cli\n".to_string(),
+    )]);
     register_library(&mut db, &["rlang", "cli", "unused"]);
 
     let root = workspace_root(&db, "proj");
     let pkg = Package::new(
         &db,
-        FilePath::from_path_buf(description).unwrap(),
+        description,
         "mypkg".to_string(),
         FileRevision::zero(),
         FileRevision::zero(),
@@ -218,21 +205,16 @@ fn test_default_search_path_packages_are_always_available_to_workspace_scripts()
 
 #[test]
 fn test_default_search_path_packages_are_always_available_to_workspace_packages() {
-    let mut db = TestDb::new();
+    let description = file_path("proj/DESCRIPTION");
+    let mut db = TestDb::with_files([(
+        description.as_path().unwrap().to_path_buf(),
+        "Package: mypkg\nVersion: 1.0.0\nImports: rlang\n".to_string(),
+    )]);
     register_library(&mut db, &["rlang", "base", "stats"]);
-
-    // Build a workspace package that only imports rlang
-    let dir = tempfile::tempdir().unwrap();
-    let description = dir.path().join("DESCRIPTION");
-    fs::write(
-        &description,
-        "Package: mypkg\nVersion: 1.0.0\nImports: rlang\n",
-    )
-    .unwrap();
 
     let pkg = Package::new(
         &db,
-        FilePath::from_path_buf(description).unwrap(),
+        description,
         "mypkg".to_string(),
         FileRevision::zero(),
         FileRevision::zero(),
@@ -333,48 +315,34 @@ fn test_testthat_file_depends_on_testthat() {
 }
 
 #[test]
-fn test_r_directory_collation_with_a_source_call_does_not_panic() {
-    // Three loose scripts in an `R/` directory, collated alphabetically, where
-    // `a.R` sources `b.R`. Touching `c.R` first is what makes salsa re-enter
-    // `attached_packages` instead of `semantic_index` (#15631).
-    //
-    // The cycling path resolves effects with `CollationView::Eager`, so each
-    // `cross_file_layers` sees only that file's collation predecessors:
-    //
-    //   semantic_index(c)
-    //     -> cross_file_layers(c)             predecessors a, b
-    //       -> attached_packages(a)           1st entry
-    //         -> semantic_index(a)
-    //           -> resolves `source("R/b.R")`
-    //             -> semantic_index(b)
-    //               -> cross_file_layers(b)   predecessor a
-    //                 -> attached_packages(a) 2nd entry, cycle
-    //
-    // `semantic_index` and `exports` carry `cycle_result` recovery, so a cycle
-    // re-entered at either of them degrades gracefully. Without recovery on
-    // `attached_packages` salsa panics, which killed the LSP main loop.
+fn test_source_call_between_loose_r_scripts_collects_every_attach() {
+    // Layout from https://github.com/posit-dev/positron/issues/15631. A loose
+    // `R/` script is standalone, so building `c.R`'s index never reaches `a.R`
+    // or `b.R` and no attach is lost to cycle recovery.
     let mut db = TestDb::new();
     register_library(&mut db, &["pkga", "pkgb", "pkgc"]);
-    let files = workspace_with_scripts_files(&mut db, &[
+    let files = workspace_with_scripts(&mut db, &[
         ("R/a.R", "library(pkga)\nsource(\"R/b.R\")\n"),
         ("R/b.R", "library(pkgb)\n"),
         ("R/c.R", "library(pkgc)\n"),
     ]);
 
-    // `c.R` first.
     let _ = files[2].used_packages(&db);
 
-    // `a.R` and `b.R` drop out of the dependency set, but the empty attach
-    // fallback is not what loses them. `semantic_index_cycle_result` rebuilds
-    // both files with `NoopImportsResolver`, which resolves no callee and so
-    // records no `library()` call at all. The same loss shows up in the
-    // orderings that never panicked.
-    //
-    // This assertion therefore pins down current behaviour, not intended
-    // behaviour. The cycle is a false one: `a.R` sources `b.R` and nothing
-    // sources back, and only `R/` collation puts `attached_packages(a)` on the
-    // stack twice. Breaking the cycle, by giving `predecessor_attach_layers` an
-    // attach query that does not read a sibling's semantic index, would keep
-    // all three packages and drop the spurious `SourceCycle` diagnostic.
-    assert_eq!(all_package_dependencies_names(&db), vec!["pkgc"]);
+    assert_eq!(all_package_dependencies_names(&db), vec![
+        "pkga", "pkgb", "pkgc"
+    ]);
+}
+
+#[test]
+fn test_single_r_file_does_not_panic() {
+    // Smoke test for https://github.com/posit-dev/positron/issues/15631#issuecomment-5437414045
+    // We couldn't reproduce the reported panic but we keep that test as baseline.
+    let mut db = TestDb::new();
+    let files = workspace_with_scripts(&mut db, &[("R/test.R", "x <- 1\n")]);
+
+    let _ = all_package_dependencies_names(&db);
+    let _ = files[0].used_packages(&db);
+    let _ = files[0].imports(&db);
+    let _ = files[0].diagnostics(&db);
 }

@@ -405,3 +405,11 @@ Some upstream conventions remain useful unless and until the code moves:
 - name closure and pattern bindings after what they hold, not by a single letter, while still using short names where clear
 
 If these conventions conflict with a cleaner Neovim-only architecture, choose the cleaner architecture and update this file.
+
+## Salsa queries
+
+Changes to Salsa queries may require cycle handling and an updated `salsa_inventory` snapshot. Follow `doc/oak/salsa.md` when changing a tracked query or code reachable from one.
+
+## Markdown
+
+Do not hard-wrap new Markdown prose. Keep each paragraph and list item on one line and let the editor wrap it visually.

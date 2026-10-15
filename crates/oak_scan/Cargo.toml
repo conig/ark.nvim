@@ -20,6 +20,7 @@ aether_path.workspace = true
 camino.workspace = true
 filetime.workspace = true
 ignore.workspace = true
+indexmap.workspace = true
 log.workspace = true
 oak_core.workspace = true
 oak_db.workspace = true
@@ -31,4 +32,6 @@ url.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
+insta.workspace = true
+oak_tidy.workspace = true
 tempfile.workspace = true

@@ -1,6 +1,6 @@
 # Upstream LSP State Model Decision
 
-Decision date: 2026-06-30; reaffirmed 2026-07-15
+Decision date: 2026-06-30; reaffirmed 2026-10-15
 
 ## Decision
 
@@ -21,6 +21,8 @@ background scan generations, and workspace-folder lifecycle; it must not
 migrate the semantic state model or remove the fork-owned indexer.
 
 ## Evidence
+
+The 2026-10-15 sync through upstream `a719e099` retains Salsa 0.28.2, restricted source-resolution database capabilities, cycle-recovery recording and inventory snapshots, environment-anchored source resolution, watcher reconciliation/coalescing, and static `c()` evaluation in the reusable Oak crates. These are not a migration of the detached LSP to `OakDatabase`. Upstream notebook/cell metadata remains a library capability, not a new Neovim notebook surface. The active LSP receives the help-list formatting and CRLF fixes in its extracted modules; its existing detached request/bridge lifecycle remains intact. Host panic guards are retained in the legacy Ark host, without reintroducing the removed in-host LSP or test harness. Future state-model work must also review upstream's database-access panic boundaries.
 
 Current upstream `upstream/main` stores editor buffers as `OpenFile` keyed by
 normalized `aether_path::FilePath`, keeps an `OakDatabase` in `WorldState`, and

@@ -1,3 +1,4 @@
+use biome_rowan::TextSize;
 use salsa::Setter;
 
 use crate::tests::file_imports::install_packages;
@@ -8,6 +9,7 @@ use crate::tests::test_db::TestDb;
 use crate::DbInputs;
 use crate::File;
 use crate::FileRevision;
+use crate::Name;
 use crate::Package;
 
 fn script_workspace(db: &mut TestDb, scripts: &[(&str, &str)]) -> (crate::Root, Vec<File>) {
@@ -27,6 +29,125 @@ fn script_workspace(db: &mut TestDb, scripts: &[(&str, &str)]) -> (crate::Root, 
     root.set_scripts(db).to(files.clone());
     db.workspace_roots().set_roots(db).to(vec![root]);
     (root, files)
+}
+
+fn last_offset(db: &TestDb, file: File, needle: &str) -> TextSize {
+    TextSize::from(file.source_text(db).rfind(needle).unwrap() as u32)
+}
+
+#[test]
+fn test_case_folded_collation_tie_locates_self_exactly() {
+    // `A.R` and `a.R` share a case-folded key but retain distinct positions
+    // in listing order. A key-based lookup miscounts their successors and
+    // can produce a prefix longer than the sibling layer list.
+    let mut db = TestDb::new();
+    let (_, files) = script_workspace(&mut db, &[
+        ("ws/app.R", "shinyApp(ui, server)\n"),
+        ("ws/R/A.R", "x <- 2\ng <- function() x\n"),
+        ("ws/R/a.R", "x <- 1\nf <- function() x\n"),
+    ]);
+    let big_a = files[1];
+    let small_a = files[2];
+
+    let defs = small_a.resolve_at(&db, last_offset(&db, small_a, "x"));
+    assert_eq!(defs.len(), 1);
+    assert_eq!(defs[0].file(&db), small_a);
+
+    let defs = big_a.resolve_at(&db, last_offset(&db, big_a, "x"));
+    assert_eq!(defs.len(), 1);
+    assert_eq!(defs[0].file(&db), small_a);
+}
+
+#[test]
+fn test_deferred_successor_hit_still_unions_inherited_contexts() {
+    // Both `b.R` and `main.R` contribute because `a.R` binds `x` only
+    // conditionally. `b.R` wins in the Shiny environment, while `main.R`'s
+    // assignment after `source()` wins in the alternative sourcing environment.
+    let mut db = TestDb::new();
+    let (_, files) = script_workspace(&mut db, &[
+        ("ws/app.R", "shinyApp(ui, server)\n"),
+        ("ws/R/a.R", "if (cond) x <- 1\nf <- function() x\n"),
+        ("ws/R/b.R", "x <- 2\n"),
+        ("ws/main.R", "source(\"R/a.R\")\nx <- 3\n"),
+    ]);
+    let a = files[1];
+    let b = files[2];
+    let main = files[3];
+
+    let defs = a.resolve_at(&db, last_offset(&db, a, "x"));
+
+    assert_eq!(defs.len(), 2);
+    assert_eq!(defs[0].file(&db), b);
+    assert_eq!(defs[1].file(&db), main);
+    assert_eq!(a.resolve(&db, Name::new(&db, "x")), defs);
+}
+
+#[test]
+fn test_conditional_successors_keep_parent_and_inherited_candidates() {
+    let mut db = TestDb::new();
+    let (_, files) = script_workspace(&mut db, &[
+        ("ws/app.R", "shinyApp(ui, server)\n"),
+        ("ws/global.R", "x <- 0\n"),
+        ("ws/R/a.R", "if (own) x <- 1\nf <- function() x\n"),
+        ("ws/R/b.R", "if (later) x <- 2\n"),
+        ("ws/main.R", "source(\"R/a.R\")\nx <- 3\n"),
+    ]);
+    let a = files[2];
+    let defs = a.resolve_at(&db, last_offset(&db, a, "x"));
+    let resolved_files: Vec<File> = defs.iter().map(|def| def.file(&db)).collect();
+
+    assert_eq!(resolved_files, vec![files[3], a, files[1], files[4]]);
+    assert_eq!(a.resolve(&db, Name::new(&db, "x")), defs);
+}
+
+#[test]
+fn test_deferred_successor_and_inherited_converge_and_dedupe() {
+    // The successor and the inherited context both reach `shared.R`'s `x`
+    // through different forwards. The converging definition is reported once.
+    let mut db = TestDb::new();
+    let (_, files) = script_workspace(&mut db, &[
+        ("ws/app.R", "shinyApp(ui, server)\n"),
+        ("ws/R/a.R", "if (cond) x <- 1\nf <- function() x\n"),
+        ("ws/R/b.R", "source(\"shared.R\")\n"),
+        ("ws/shared.R", "x <- 2\n"),
+        ("ws/main.R", "source(\"R/a.R\")\nsource(\"shared.R\")\n"),
+    ]);
+    let a = files[1];
+    let shared = files[3];
+
+    let defs = a.resolve_at(&db, last_offset(&db, a, "x"));
+
+    assert_eq!(defs.len(), 1);
+    assert_eq!(defs[0].file(&db), shared);
+}
+
+#[test]
+fn test_shiny_environment_chain_keeps_entry_bindings_out_of_parents() {
+    let mut db = TestDb::new();
+    let (_, files) = script_workspace(&mut db, &[
+        (
+            "ws/app.R",
+            "shinyApp(ui, server)\nif (entry) x <- 3\nentry_only <- 1\nf <- function() x\n",
+        ),
+        ("ws/global.R", "x <- 0\ng <- function() entry_only\n"),
+        (
+            "ws/R/a.R",
+            "if (first) x <- 1\nh <- function() entry_only\n",
+        ),
+        ("ws/R/b.R", "if (second) x <- 2\n"),
+    ]);
+    let entry = files[0];
+    let defs = entry.resolve_at(&db, last_offset(&db, entry, "x"));
+    assert_eq!(
+        defs.iter().map(|def| def.file(&db)).collect::<Vec<_>>(),
+        vec![entry, files[3], files[2], files[1]]
+    );
+    assert_eq!(entry.resolve(&db, Name::new(&db, "x")), defs);
+    for parent in [files[1], files[2]] {
+        assert!(parent
+            .resolve_at(&db, last_offset(&db, parent, "entry_only"))
+            .is_empty());
+    }
 }
 
 #[test]
@@ -102,12 +223,12 @@ fn test_shiny_disable_autoload_drops_the_directory_but_keeps_global() {
         "Package(base)".to_string(),
     ]);
 
-    // Disabled autoload leaves `a.R` on plain `R/` collation, so it inherits
-    // neither `global.R` nor `shiny`.
-    assert_eq!(shape(&db, a.imports(&db)), vec![
-        "File(_disable_autoload.R)".to_string(),
-        "Package(base)".to_string(),
-    ]);
+    // Disabled autoload drops `a.R` from Shiny's loader, so it becomes a
+    // standalone script that inherits neither `global.R` nor `shiny`.
+    assert_eq!(
+        shape(&db, a.imports(&db)),
+        vec!["Package(base)".to_string()]
+    );
 }
 
 #[test]
@@ -155,22 +276,6 @@ fn test_autoloaded_file_sees_global_and_the_implicit_shiny_attach() {
         "File(global.R)".to_string(),
         "Package(dplyr)".to_string(),
         "Package(shiny)".to_string(),
-        "Package(base)".to_string(),
-    ]);
-}
-
-#[test]
-fn test_r_directory_without_an_entry_point_ignores_global() {
-    let mut db = TestDb::new();
-    install_packages(&mut db, &["base", "shiny"]);
-    let (_, files) = script_workspace(&mut db, &[
-        ("ws/global.R", "cfg <- 1\n"),
-        ("ws/R/a.R", "a_val <- 1\n"),
-        ("ws/R/b.R", "b_val <- 2\n"),
-    ]);
-
-    assert_eq!(shape(&db, files[1].imports(&db)), vec![
-        "File(b.R)".to_string(),
         "Package(base)".to_string(),
     ]);
 }
@@ -431,6 +536,100 @@ fn test_app_rooted_at_an_r_directory_is_still_an_entry_point() {
 
     assert_eq!(shape(&db, files[0].imports(&db)), vec![
         "File(util.R)".to_string(),
+        "Package(shiny)".to_string(),
+        "Package(base)".to_string(),
+    ]);
+}
+
+#[test]
+fn test_backward_source_into_collation_successor_cycles() {
+    // `a.R` precedes `b.R` in the autoload collation but also sources it.
+    // Resolving `b.R`'s own `library(pkgb)` reads `a.R`'s
+    // `attached_packages` (a collation predecessor's search-path
+    // contribution), which rebuilds `a.R`'s index, which resolves its
+    // `source("R/b.R")` by reading `b.R`'s `exports`, which needs `b.R`'s
+    // index again: a real salsa cycle, through `cross_file_layers` and
+    // `attached_packages` rather than through two `source()` calls facing
+    // each other.
+    //
+    // `semantic_index`'s `FallbackImmediate` recovery degrades every
+    // participant, not just the file salsa re-entered, so both files rebuild
+    // under `NoopImportsResolver`: neither `library()` call is recognized as
+    // an attach, and `a.R`'s `source()` call is not recognized as effectful
+    // either, so the edge itself disappears.
+    let mut db = TestDb::new();
+    install_packages(&mut db, &["base", "shiny", "pkga", "pkgb"]);
+    let (_, files) = script_workspace(&mut db, &[
+        ("ws/app.R", "shinyApp(ui, server)\n"),
+        ("ws/R/a.R", "library(pkga)\nsource(\"R/b.R\")\n"),
+        ("ws/R/b.R", "library(pkgb)\n"),
+    ]);
+    let (a, b) = (files[1], files[2]);
+
+    assert_eq!(shape(&db, a.imports(&db)), vec![
+        "File(b.R)".to_string(),
+        "Package(shiny)".to_string(),
+        "Package(base)".to_string(),
+    ]);
+    assert_eq!(shape(&db, b.imports(&db)), vec![
+        "File(a.R)".to_string(),
+        "Package(shiny)".to_string(),
+        "Package(base)".to_string(),
+    ]);
+    assert!(a.sourced_by(&db).is_empty());
+    assert!(b.sourced_by(&db).is_empty());
+
+    // Both files carry a `SourceCycle` diagnostic with the same loader-specific
+    // message, even though `b.R` has no `source()` call of its own: it is
+    // degraded collaterally by the recovery, not because it takes part in
+    // mutual sourcing.
+    assert_eq!(a.diagnostics(&db).len(), 1);
+    assert_eq!(b.diagnostics(&db).len(), 1);
+    assert_eq!(
+        a.diagnostics(&db)[0].message(),
+        "This file is part of a cycle in how the project's files load each other.\n\
+         This Shiny app already loads its `global.R` and `R/` files through \
+         `shiny::loadSupport()`.\n\
+         A `source()` call into a file that the loader also loads creates this cycle.\n\
+         Language analysis will be incomplete until the cycle is resolved."
+    );
+    assert_eq!(
+        a.diagnostics(&db)[0].message(),
+        b.diagnostics(&db)[0].message()
+    );
+}
+
+#[test]
+fn test_forward_source_into_collation_predecessor_does_not_cycle() {
+    // `b.R` sources its own predecessor `a.R`, which has already loaded by
+    // the time `b.R` runs, so this is not a back edge and must not cycle.
+    let mut db = TestDb::new();
+    install_packages(&mut db, &["base", "shiny"]);
+    let (_, files) = script_workspace(&mut db, &[
+        ("ws/app.R", "shinyApp(ui, server)\n"),
+        ("ws/R/a.R", "a_val <- 1\n"),
+        ("ws/R/b.R", "b_val <- 2\nsource(\"R/a.R\")\n"),
+    ]);
+    let (a, b) = (files[1], files[2]);
+
+    assert!(a.diagnostics(&db).is_empty());
+    assert!(b.diagnostics(&db).is_empty());
+    assert_eq!(a.sourced_by(&db), &vec![b]);
+
+    // Known gap. `a.R`'s own collation view contributes `File(b.R)`, and the
+    // context inherited from `b.R` contributes `File(b.R)` again plus
+    // `File(a.R)`, since `a.R` is `b.R`'s only sibling. Harmless today because
+    // own bindings resolve before the import list is consulted.
+    assert_eq!(shape(&db, a.imports(&db)), vec![
+        "File(b.R)".to_string(),
+        "File(b.R)".to_string(),
+        "File(a.R)".to_string(),
+        "Package(shiny)".to_string(),
+        "Package(shiny)".to_string(),
+        "Package(base)".to_string(),
+    ]);
+    assert_eq!(shape(&db, b.imports(&db)), vec![
+        "File(a.R)".to_string(),
         "Package(shiny)".to_string(),
         "Package(base)".to_string(),
     ]);

@@ -41,7 +41,10 @@ pub struct EditorContext {
 	pub selection: Selection,
 
 	/// The selections in this text editor.
-	pub selections: Vec<Selection>
+	pub selections: Vec<Selection>,
+
+	/// A stable identifier for the document, e.g. '#console' for the console
+	pub id: Option<String>
 }
 
 /// Document metadata
@@ -368,6 +371,15 @@ pub struct ModifyEditorSelectionsParams {
 	pub values: Vec<String>,
 }
 
+/// Parameters for the LastActiveEditorContext method.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LastActiveEditorContextParams {
+	/// Whether the calling session's console input may be returned when it
+	/// was the last editor focused. Set to false to return only editors in
+	/// the editor area. If omitted, defaults to true.
+	pub allow_console: Option<bool>,
+}
+
 /// Parameters for the ShowUrl method.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ShowUrlParams {
@@ -432,6 +444,7 @@ pub enum UiBackendRequest {
  */
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "method", content = "result")]
+#[allow(clippy::large_enum_variant)]
 pub enum UiBackendReply {
 	/// The method result
 	CallMethodReply(CallMethodResult),
@@ -521,7 +534,7 @@ pub enum UiFrontendRequest {
 	/// Returns metadata such as file path for the last editor selected by the
 	/// user. The result may be undefined if there are no active editors.
 	#[serde(rename = "last_active_editor_context")]
-	LastActiveEditorContext,
+	LastActiveEditorContext(LastActiveEditorContextParams),
 
 }
 
@@ -530,6 +543,7 @@ pub enum UiFrontendRequest {
  */
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "method", content = "result")]
+#[allow(clippy::large_enum_variant)]
 pub enum UiFrontendReply {
 	/// Reply for the new_document method (no result)
 	NewDocumentReply(),
@@ -673,7 +687,7 @@ pub fn ui_frontend_reply_from_value(
 		UiFrontendRequest::ExecuteCode(_) => Ok(UiFrontendReply::ExecuteCodeReply()),
 		UiFrontendRequest::WorkspaceFolder => Ok(UiFrontendReply::WorkspaceFolderReply(serde_json::from_value(reply)?)),
 		UiFrontendRequest::ModifyEditorSelections(_) => Ok(UiFrontendReply::ModifyEditorSelectionsReply()),
-		UiFrontendRequest::LastActiveEditorContext => Ok(UiFrontendReply::LastActiveEditorContextReply(serde_json::from_value(reply)?)),
+		UiFrontendRequest::LastActiveEditorContext(_) => Ok(UiFrontendReply::LastActiveEditorContextReply(serde_json::from_value(reply)?)),
 	}
 }
 

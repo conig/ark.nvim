@@ -3,6 +3,11 @@ use biome_rowan::TextSize;
 use oak_semantic::semantic_index::AmbiguityReason;
 use oak_semantic::semantic_index::SemanticDiagnostic;
 
+use crate::load_context::loader;
+use crate::load_context::LoaderInfo;
+use crate::Db;
+use crate::File;
+
 /// A diagnostic derived from a file's semantic analysis.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -55,7 +60,7 @@ pub struct Annotation {
 /// experimental status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticKind {
-    AmbiguousEffect,
+    AmbiguousCalleeResolution,
     AmbiguousAttachOrder,
     UninstalledPackage,
     SourceCycle,
@@ -66,7 +71,7 @@ impl DiagnosticKind {
     /// The stable string an LSP consumer reports as the diagnostic `code`.
     pub fn as_str(&self) -> &'static str {
         match self {
-            DiagnosticKind::AmbiguousEffect => "ambiguous-effect",
+            DiagnosticKind::AmbiguousCalleeResolution => "ambiguous-callee-resolution",
             DiagnosticKind::AmbiguousAttachOrder => "ambiguous-attach-order",
             DiagnosticKind::UninstalledPackage => "uninstalled-package",
             DiagnosticKind::SourceCycle => "source-cycle",
@@ -76,7 +81,7 @@ impl DiagnosticKind {
 
     pub fn severity(&self) -> Severity {
         match self {
-            DiagnosticKind::AmbiguousEffect => Severity::Info,
+            DiagnosticKind::AmbiguousCalleeResolution => Severity::Info,
             DiagnosticKind::AmbiguousAttachOrder => Severity::Info,
             DiagnosticKind::UninstalledPackage => Severity::Warning,
             DiagnosticKind::SourceCycle => Severity::Warning,
@@ -86,7 +91,7 @@ impl DiagnosticKind {
 
     pub fn is_experimental(&self) -> bool {
         match self {
-            DiagnosticKind::AmbiguousEffect => true,
+            DiagnosticKind::AmbiguousCalleeResolution => true,
             DiagnosticKind::AmbiguousAttachOrder => true,
             DiagnosticKind::UninstalledPackage => true,
             DiagnosticKind::SourceCycle => true,
@@ -104,26 +109,30 @@ pub enum Severity {
 }
 
 /// Lower one of `oak_semantic`'s raw diagnostic records into a `Diagnostic`.
-pub(crate) fn lower_semantic_diagnostic(diagnostic: &SemanticDiagnostic) -> Diagnostic {
+pub(crate) fn lower_semantic_diagnostic(
+    db: &dyn Db,
+    file: File,
+    diagnostic: &SemanticDiagnostic,
+) -> Diagnostic {
     match diagnostic {
-        SemanticDiagnostic::AmbiguousEffect {
+        SemanticDiagnostic::AmbiguousCalleeResolution {
             name,
             call_range,
             reason,
-        } => lower_ambiguous_effect(name, *call_range, reason),
+        } => lower_ambiguous_callee_resolution(name, *call_range, reason),
         SemanticDiagnostic::AmbiguousAttachOrder { packages, range } => {
             lower_ambiguous_attach_order(packages, *range)
         },
         SemanticDiagnostic::UninstalledPackage { package, range } => {
             lower_uninstalled_package(package, *range)
         },
-        SemanticDiagnostic::SourceCycle => lower_source_cycle(),
+        SemanticDiagnostic::SourceCycle => lower_source_cycle(loader(db, file)),
     }
 }
 
 /// The primary range is always the call site. The reason's competing site
 /// becomes a single annotation.
-fn lower_ambiguous_effect(
+fn lower_ambiguous_callee_resolution(
     name: &str,
     call_range: TextRange,
     reason: &AmbiguityReason,
@@ -131,8 +140,8 @@ fn lower_ambiguous_effect(
     let (message, annotation) = match reason {
         AmbiguityReason::LazyShadow { overwrite_range } => (
             format!(
-                "Ambiguous reading of effectful `{name}()`.\nAn assignment to `{name}` in an enclosing \
-                 scope could run before this call and change its effect."
+                "Ambiguous reading of `{name}()`.\nAn assignment to `{name}` in an enclosing \
+                 scope could run before this call and change what it does."
             ),
             Annotation {
                 range: *overwrite_range,
@@ -164,9 +173,12 @@ fn lower_ambiguous_effect(
         ),
     };
 
-    Diagnostic::new(DiagnosticKind::AmbiguousEffect, message, call_range, vec![
-        annotation,
-    ])
+    Diagnostic::new(
+        DiagnosticKind::AmbiguousCalleeResolution,
+        message,
+        call_range,
+        vec![annotation],
+    )
 }
 
 /// The primary range covers the `if`. Both arms are inside it, so there is no
@@ -199,14 +211,30 @@ fn lower_uninstalled_package(package: &str, range: TextRange) -> Diagnostic {
     )
 }
 
-/// Anchored at the start of the file because the record carries no range.
-/// Every file in the cycle gets its own diagnostic.
-fn lower_source_cycle() -> Diagnostic {
+/// Anchor at the file start because cycle records carry no source range.
+///
+/// Report every participant. Recovery rebuilds without cross-file resolution,
+/// so we can't identify the exact source call or effect that formed the cycle.
+fn lower_source_cycle(loader: Option<LoaderInfo>) -> Diagnostic {
+    let cause = match loader {
+        Some(LoaderInfo { name, loads }) => {
+            format!(
+                "{name} already loads {loads}.\n\
+                 A `source()` call into a file that the loader also loads creates this cycle."
+            )
+        },
+        None => "These files may `source()` each other, or `source()` a file that a loader such \
+                 as a Shiny app or testthat suite already loads for them."
+            .to_string(),
+    };
+
     Diagnostic::new(
         DiagnosticKind::SourceCycle,
-        "This file takes part in a cycle of mutual `source()` calls.\n\
-         Language analysis will be incomplete until the cycle is resolved."
-            .to_string(),
+        format!(
+            "This file is part of a cycle in how the project's files load each other.\n\
+             {cause}\n\
+             Language analysis will be incomplete until the cycle is resolved."
+        ),
         TextRange::empty(TextSize::from(0)),
         Vec::new(),
     )

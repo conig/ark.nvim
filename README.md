@@ -566,6 +566,8 @@ Neovim product smokes. `just verify` is the broader serial pre-release suite,
 `just verify-upstream-compat` explicitly exercises the retained upstream
 workspace, and `just benchmark` runs the canonical local performance suite.
 
+The upstream compatibility gate uses `cargo-nextest` for process-isolated unit and integration tests, then runs doctests with Cargo. Upstream's cycle-recovery instrumentation is process-global, so a parallel `cargo test --workspace` is not an equivalent test runner.
+
 For extra ambient-user-config coverage, override the init explicitly:
 
 ```sh
