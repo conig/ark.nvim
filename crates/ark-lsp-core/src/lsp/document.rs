@@ -6,6 +6,7 @@
 //
 
 use std::path::Path;
+use std::path::PathBuf;
 
 use aether_lsp_utils::proto::from_proto;
 use aether_lsp_utils::proto::to_proto;
@@ -50,6 +51,9 @@ impl DocumentKind {
 pub struct Document {
     /// The document's original textual contents as seen by the editor.
     pub source_contents: String,
+
+    /// Local document location, never the R working directory or a virtual URI.
+    pub path: Option<PathBuf>,
 
     /// The document's textual contents.
     /// For literate documents this is a normalized R-only analysis view.
@@ -127,6 +131,7 @@ impl Document {
 
         Self {
             source_contents,
+            path: None,
             contents,
             version,
             ast,

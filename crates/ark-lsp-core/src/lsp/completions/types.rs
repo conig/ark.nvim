@@ -48,6 +48,9 @@ pub(super) enum CompletionData {
     ScopeVariable {
         name: String,
     },
+    /// Budgeted candidates need a fresh request as the client narrows the prefix.
+    /// Like Unknown, this carries no completion-resolution work or private paths.
+    Incomplete,
     Unknown,
 }
 
@@ -55,4 +58,15 @@ pub(super) enum CompletionData {
 pub(crate) enum PromiseStrategy {
     Simple,
     Force,
+}
+
+/// Keep truncation metadata in the standard LSP CompletionList, rather than
+/// asking clients to know individual source budgets or forcing all lists to requery.
+pub(crate) fn completion_items_require_requery(
+    items: &[tower_lsp::lsp_types::CompletionItem],
+) -> bool {
+    let Ok(marker) = serde_json::to_value(CompletionData::Incomplete) else {
+        return false;
+    };
+    items.iter().any(|item| item.data.as_ref() == Some(&marker))
 }

@@ -29,3 +29,4 @@ pub(crate) use sources::composite::dedupe_and_sort_completion_items;
 pub(crate) use sources::composite::find_pipe_root_name;
 pub(crate) use sources::utils::call_node_position_type;
 pub(crate) use sources::utils::CallNodePositionType;
+pub(crate) use types::completion_items_require_requery;

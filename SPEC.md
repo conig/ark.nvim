@@ -983,6 +983,14 @@ crates are excluded from default product builds and release artifacts.
 
 Both paths are user-triggered only. Results are bounded to 128 frames, eight deparse lines and 1,000 characters per frame. Worker inspection has a 15-second deadline, bounded output, private temporary files, cancellation and cleanup; superseded requests cannot reopen a picker. Call text stays in the local explicit UI and is not added to logs or support reports. Source files modified since the failure may no longer match the recorded line; missing files/lines are rejected rather than redirected.
 
+## Static Frontmatter Intelligence
+
+Literate-document frontmatter is handled by the normal Rust LSP completion and diagnostics paths, without live-R requests. R Markdown `output` completion includes built-in and namespaced rmarkdown, papaja and bookdown formats. Quarto `format` uses its own format names and hyphenated options; it does not inherit R Markdown's underscored option schema. Common top-level metadata keys and selected nested renderer options are static suggestions, not a claim that a renderer package is installed or an exhaustive schema.
+
+`bibliography` and `csl` complete `.bib` and `.csl` paths relative to the document, preserving quotes, list punctuation, comments and Unicode positions. Scalar, inline-list and block-list bibliography forms are supported. Completion scans one directory nonrecursively, with at most 4,096 examined entries and 256 results; nonempty truncated results advertise standard LSP `isIncomplete` so narrowing the prefix can retrieve candidates omitted by the 256-result cap. Very large directories beyond the scan budget are intentionally best-effort, not exhaustively indexed.
+
+The existing diagnostics worker checks missing literal bibliography/CSL files, with at most 64 filesystem checks per pass. It skips remote URLs, YAML tags/aliases, malformed headers and unnamed virtual documents. Header processing is limited to 128 KiB and 2,048 lines; YAML value loading rejects anchors, aliases and nesting deeper than 64 before constructing a value tree. No R introspection, renderer execution, whole-project file crawl, custom filesystem watcher or background polling is introduced. Document events refresh diagnostics; external bibliography changes are not independently watched. Generic YAML formatting/linting and complete Quarto schema coverage remain outside this feature.
+
 ## Completion Architecture
 
 Completion intent for Ark filetypes is owned by Rust. Literate-R normalization,

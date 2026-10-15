@@ -274,6 +274,10 @@ pub(crate) fn generate_diagnostics(
         Err(err) => log::error!("Error while generating syntax diagnostics: {err:?}"),
     }
 
+    // File metadata is independent of R/session bootstrap and is checked on this
+    // existing blocking diagnostics worker, never from the editor event loop.
+    diagnostics.extend(crate::lsp::frontmatter::semantic::path_diagnostics(&doc));
+
     // In detached mode, defer semantic diagnostics until Ark has authoritative
     // package/search-path metadata. That can come from a live managed session
     // or from the no-pane baseline bootstrap.

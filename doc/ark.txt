@@ -563,6 +563,22 @@ Error navigation ~
     targets/jsonlite on its normal library paths, not only an activated renv.
     Requests are asynchronous and bounded; traces are never in support reports.
 
+Frontmatter ~
+    Rmd output completion includes namespaced rmarkdown, papaja and bookdown
+    formats. Quarto uses its own format names and hyphenated options. Common
+    metadata keys and selected nested options need no live R session.
+
+    bibliography and csl complete document-relative .bib and .csl paths.
+    Scalar, inline-list and block-list bibliography forms preserve quotes and
+    punctuation. Missing literal files get conservative diagnostics; remote
+    URLs, aliases, tags and malformed YAML are skipped. External file changes
+    are checked on the next document event, not by a background watcher.
+
+    Scanning is bounded and nonrecursive (256 results / 4,096 directory entries;
+    64 diagnostic file checks). Narrow the prefix to refresh truncated results.
+    Very large directories remain best-effort. These static suggestions neither
+    verify package installation nor provide a complete YAML/renderer schema.
+
 Runtime activity ~
     :Ark status distinguishes live_busy from degraded connectivity. Its
     runtime_activity describes submitted user code, an active Ark request,

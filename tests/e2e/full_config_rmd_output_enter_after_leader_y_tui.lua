@@ -7,6 +7,9 @@ local state_home = vim.fs.normalize(ark_test.run_tmpdir() .. "/rmd_output_enter_
 local buffer_path = vim.fs.normalize(ark_test.run_tmpdir() .. "/rmd_output_enter_after_leader_y.Rmd")
 local stop_watchdog = ark_test.start_watchdog(90000, "full_config_rmd_output_enter_after_leader_y_tui")
 local init_path = vim.env.ARK_TEST_NVIM_INIT
+-- The prepared fixture accepts with Enter. Optional ambient-config runs may
+-- select their real accept key (e.g. Tab) without rewriting user mappings.
+local accept_key = vim.env.ARK_TEST_COMPLETION_ACCEPT_KEY or "Enter"
 local expected_output_labels = {
   "html_document",
   "pdf_document",
@@ -14,6 +17,14 @@ local expected_output_labels = {
   "beamer_presentation",
   "ioslides_presentation",
   "slidy_presentation",
+  "rmarkdown::html_document",
+  "rmarkdown::pdf_document",
+  "rmarkdown::word_document",
+  "papaja::apa6_pdf",
+  "papaja::apa6_docx",
+  "bookdown::html_document2",
+  "bookdown::pdf_document2",
+  "bookdown::word_document2",
 }
 
 if type(init_path) ~= "string" or init_path == "" or init_path == "NONE" then
@@ -80,11 +91,6 @@ local function latest_after(ts_ms, predicate)
   end)
 end
 
-local function pane_contains(pane_id, pattern)
-  local capture = tmux({ "capture-pane", "-p", "-t", pane_id })
-  return capture:find(pattern, 1, true) ~= nil
-end
-
 local function matches_expected_output_items(items)
   if #items ~= #expected_output_labels then
     return false
@@ -147,17 +153,8 @@ local ok, err = xpcall(function()
     ark_test.fail("failed to identify active Neovim pane: " .. pane_output)
   end
 
-  ark_test.wait_for("managed R pane", 30000, function()
-    local output = tmux({ "list-panes", "-t", session_name, "-F", "#{pane_id}\t#{pane_current_command}" })
-    for line in output:gmatch("[^\n]+") do
-      local pane_id, command = line:match("^([^\t]+)\t(.+)$")
-      if pane_id and command == "sh" and pane_contains(pane_id, ">") then
-        return true
-      end
-    end
-    return false
-  end)
-
+  -- Frontmatter is static LSP functionality. Do not wait for a managed R pane:
+  -- real configurations may deliberately disable automatic session startup.
   local last_ready_probe_ms = math.floor(vim.uv.hrtime() / 1e6)
   tmux({ "send-keys", "-t", nvim_pane, "Escape", ":ArkTraceSnapshot ready", "Enter" })
   ark_test.wait_for("ark lsp attached", 15000, function()
@@ -168,7 +165,7 @@ local ok, err = xpcall(function()
     if event ~= nil and tonumber(event.ark_clients or 0) >= 1 then
       return true
     end
-    -- A prompt can precede LSP attachment. Refresh the observation instead of
+    -- Editor startup can precede LSP attachment. Refresh the observation instead of
     -- repeatedly reading one permanently stale startup snapshot.
     local now = math.floor(vim.uv.hrtime() / 1e6)
     if now - last_ready_probe_ms >= 500 then
@@ -184,7 +181,7 @@ local ok, err = xpcall(function()
 
   -- Reproduce the user's real flow under the full config: create frontmatter
   -- with <leader>y, type `output:` in the blank YAML line, then press Enter
-  -- as soon as the completion menu appears.
+  -- as soon as the completion menu appears (or the ambient configured key).
   tmux({ "send-keys", "-t", nvim_pane, "Escape", "Space", "y" })
 
   local yaml_insert = nil
@@ -212,7 +209,7 @@ local ok, err = xpcall(function()
     return completion_show ~= nil
   end)
 
-  tmux({ "send-keys", "-t", nvim_pane, "Enter" })
+  tmux({ "send-keys", "-t", nvim_pane, accept_key })
 
   -- Blink may temporarily enter a dot-repeat scratch window while accepting.
   -- Do not inject Escape/Ex commands into that asynchronous edit. Observe the

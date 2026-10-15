@@ -76,6 +76,10 @@ hover, signature help, definitions, references, implementations, document
 symbols, workspace symbols, folding ranges, selection ranges, limited code
 actions, and newline-triggered indentation.
 
+### Edit R Markdown and Quarto Metadata
+
+Frontmatter completion offers common metadata keys, namespaced R Markdown output formats, Quarto formats and selected nested options. `bibliography` and `csl` complete document-relative files and flag missing literal paths. This works without a live R session; suggestions are a bounded static schema, not package-installation checks or a replacement for YAML linting.
+
 ### Inspect Data
 
 `:ArkView` opens a live table explorer for the expression under cursor or an

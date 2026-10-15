@@ -1,16 +1,11 @@
+pub(crate) mod semantic;
+
 use std::ops::Range;
 
 use tree_sitter::Point;
 
 use crate::lsp::document::Document;
 use crate::lsp::document::DocumentKind;
-
-pub(crate) struct FrontmatterOutputValue {
-    pub(crate) start: Point,
-    pub(crate) end: Point,
-    pub(crate) value: String,
-    pub(crate) needs_leading_space: bool,
-}
 
 pub(crate) fn frontmatter_row_range(document: &Document) -> Option<Range<usize>> {
     let first = line_without_newline(document.get_line(0)?).trim();
@@ -62,39 +57,6 @@ pub(crate) fn frontmatter_has_top_level_key(document: &Document, key: &str) -> b
     false
 }
 
-pub(crate) fn frontmatter_output_value_edit_range(
-    document: &Document,
-    point: Point,
-) -> Option<FrontmatterOutputValue> {
-    if document.kind != DocumentKind::LiterateR {
-        return None;
-    }
-
-    let frontmatter_rows = frontmatter_row_range(document)?;
-    if !frontmatter_rows.contains(&point.row) {
-        return None;
-    }
-
-    let line = line_without_newline(document.get_line(point.row)?);
-    let parsed = parse_scalar_output_line(line)?;
-    let value_end = point.column.min(line.len());
-
-    if value_end < parsed.value_start {
-        return None;
-    }
-
-    if line[parsed.value_start..value_end].contains(['[', ']', '{', '}', ',']) {
-        return None;
-    }
-
-    Some(FrontmatterOutputValue {
-        start: Point::new(point.row, parsed.value_start),
-        end: Point::new(point.row, value_end),
-        value: line[parsed.value_start..value_end].to_string(),
-        needs_leading_space: parsed.value_start == parsed.raw_value_start,
-    })
-}
-
 pub(crate) fn frontmatter_output_help_topic(document: &Document, point: Point) -> Option<String> {
     if document.kind != DocumentKind::LiterateR {
         return None;
@@ -121,7 +83,6 @@ pub(crate) fn line_without_newline(line: &str) -> &str {
 }
 
 struct ParsedOutputLine {
-    raw_value_start: usize,
     value_start: usize,
 }
 
@@ -147,10 +108,7 @@ fn parse_scalar_output_line(line: &str) -> Option<ParsedOutputLine> {
         return None;
     }
 
-    Some(ParsedOutputLine {
-        raw_value_start,
-        value_start,
-    })
+    Some(ParsedOutputLine { value_start })
 }
 
 fn scalar_value_end(line: &str, value_start: usize) -> usize {

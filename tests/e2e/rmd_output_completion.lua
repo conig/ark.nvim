@@ -103,6 +103,14 @@ local expected = {
   "beamer_presentation",
   "ioslides_presentation",
   "slidy_presentation",
+  "rmarkdown::html_document",
+  "rmarkdown::pdf_document",
+  "rmarkdown::word_document",
+  "papaja::apa6_pdf",
+  "papaja::apa6_docx",
+  "bookdown::html_document2",
+  "bookdown::pdf_document2",
+  "bookdown::word_document2",
 }
 
 local function request_output_completion(line_text)

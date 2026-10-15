@@ -25,6 +25,14 @@
   },
   "rules": [
     {
+      "names": ["frontmatter_semantics.lua"],
+      "tier": "fast",
+      "layer": "product-e2e",
+      "contract": "static Rmd/Quarto frontmatter paths, formats, options and diagnostics through real stdio LSP without a managed session",
+      "dependencies": ["neovim"],
+      "mutates_shared_session": false
+    },
+    {
       "names": ["error_traceback.lua"],
       "tier": "fast",
       "layer": "component",
@@ -53,6 +61,7 @@
       "names": [
         "nvim_console_busy_completion.lua"
       ],
+      "tier": "fast",
       "contract": "real console busy transitions preserve fast static completion without live IPC failures",
       "dependencies": [
         "neovim",

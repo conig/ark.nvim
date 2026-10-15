@@ -60,6 +60,7 @@ use crate::lsp;
 use crate::lsp::backend::LspError;
 use crate::lsp::backend::LspResult;
 use crate::lsp::code_action::code_actions;
+use crate::lsp::completions::completion_items_require_requery;
 use crate::lsp::completions::dedupe_and_sort_completion_items;
 use crate::lsp::completions::has_detached_static_path_completion_context;
 use crate::lsp::completions::provide_completions;
@@ -883,11 +884,7 @@ pub(crate) fn handle_completion(
 
     let completions = attached::run(|| provide_completions(&context, state))?;
 
-    if !completions.is_empty() {
-        Ok(Some(CompletionResponse::Array(completions)))
-    } else {
-        Ok(None)
-    }
+    Ok(completion_response_from_items(completions))
 }
 
 #[tracing::instrument(level = "info", skip_all)]
@@ -935,6 +932,13 @@ pub(crate) fn handle_completion_resolve(
 fn completion_response_from_items(items: Vec<CompletionItem>) -> Option<CompletionResponse> {
     if items.is_empty() {
         None
+    } else if completion_items_require_requery(&items) {
+        Some(CompletionResponse::List(
+            tower_lsp::lsp_types::CompletionList {
+                is_incomplete: true,
+                items,
+            },
+        ))
     } else {
         Some(CompletionResponse::Array(items))
     }

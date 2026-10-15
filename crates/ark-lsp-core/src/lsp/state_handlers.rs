@@ -679,7 +679,9 @@ pub(crate) fn did_open(
         .unwrap();
 
     let kind = DocumentKind::from_language_id(params.text_document.language_id.as_str());
-    let document = Document::new_with_parser_and_kind(contents, &mut parser, Some(version), kind);
+    let mut document =
+        Document::new_with_parser_and_kind(contents, &mut parser, Some(version), kind);
+    document.path = uri.to_file_path().ok();
 
     lsp_state.parsers.insert(uri.clone(), parser);
     state.documents.insert(uri.clone(), document.clone());
