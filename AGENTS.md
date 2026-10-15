@@ -9,7 +9,7 @@ This file defines the working scope for `ark.nvim` and gives contributors a stab
 The target product is:
 
 - a native Rust LSP server for R, built from Ark's existing language-analysis code where practical
-- a Neovim plugin that starts or attaches to one managed interactive `R` session, with tmux as the primary backend and a narrower built-in Neovim terminal backend
+- a Neovim plugin that starts or attaches to one active managed interactive `R` session, with tmux-owned parked tabs and a narrower built-in Neovim terminal backend
 - a session bridge so the LSP can query the live R session inside that managed backend for completions, hover, signatures, help, and other runtime-aware features
 
 `ark.nvim` is not a Positron integration, not a Jupyter kernel, and not a notebook runtime.
@@ -19,7 +19,9 @@ The target product is:
 The codebase is organized as a Rust workspace containing multiple crates.
 For `ark.nvim`, the most relevant ones are:
 
-- `ark`: the main upstream crate and the source of most reusable language-analysis code
+- `ark-lsp`: the detached stdio product host
+- `ark-lsp-core`: the shared language-analysis implementation, document/indexing state, and explicit session-bridge boundary
+- `ark`: the retained upstream kernel host and reference code, not the Neovim runtime
 - `harp`: Rust wrappers for R objects and interfaces
 - `libr`: bindings to R loaded dynamically
 - `amalthea`: upstream Jupyter / Positron kernel framework retained as reference during refactor
@@ -63,7 +65,7 @@ This separation is deliberate:
 ### In scope for v1
 
 - Neovim plugin setup and session management
-- managed tmux pane lifecycle for a single interactive R session
+- managed tmux pane lifecycle for one active interactive R session, with inactive Ark tabs parked in hidden tmux windows
 - additive Neovim terminal lifecycle for a single interactive R session, without tmux tab semantics
 - standard LSP transport for Neovim, using a stdio server
 - Ark-powered R language features inside Neovim:
@@ -75,7 +77,12 @@ This separation is deliberate:
     - symbols
     - folding and selection ranges
     - code actions already supported by Ark's LSP core
-- graceful fallback from runtime-aware features to static-only behavior when no live R session is attached
+- Neovim-native ArkHelp and ArkView for tabular/object/target inspection, without Positron frontend protocols
+- explicit traceback inspection with genuine source-reference navigation, not a debugger or frame evaluator
+- static R Markdown/Quarto frontmatter completion and file diagnostics, not a general YAML language server
+- `{targets}` project actions and explicit asynchronous rebuild previews in disposable R workers
+- evidence-based busy/unresponsive/disconnected status and bounded metadata-only support diagnostics
+- graceful fallback from runtime-aware features to static-only behavior when no live R session is attached or R cannot currently service live queries
 - local, same-machine operation for tmux-managed R
 - local, same-machine operation for the built-in terminal backend
 
@@ -85,10 +92,11 @@ This separation is deliberate:
 - Jupyter kernel support
 - notebook execution or notebook UI
 - DAP/debug adapter work
-- plots pane, variables pane, data explorer, comms UI, or other Positron frontend surfaces
+- a standalone plots pane
+- Positron plots/variables/data-explorer frontends, comms UI, and notebook surfaces; this does not prohibit the native Neovim ArkView implementation
 - replacing `nvim-slimetree` as the send engine
 - remote tmux / SSH / multi-host session support
-- multi-pane orchestration beyond one managed R pane per Neovim instance
+- general simultaneous multi-pane orchestration beyond one active managed R session and tmux-owned parked Ark tabs
 - Windows support for managed-pane mode
 
 If a change improves Positron or Jupyter but does not move the Neovim product forward, it is outside scope.
@@ -101,10 +109,10 @@ touch Rust code that may be affected by the new lint baseline.
 ### Formatting
 
 ```sh
-cargo +nightly fmt --all
+just format
 ```
 
-This requires the nightly toolchain because `.rustfmt.toml` uses nightly-only options.
+`just format` uses the pinned `nightly-2025-07-18` formatter because `.rustfmt.toml` uses nightly-only options. For a non-mutating check, run `cargo +nightly-2025-07-18 fmt --all -- --check`; do not silently change the build toolchain from `rust-toolchain.toml`.
 
 ### Legacy kernel and DAP code
 
@@ -198,7 +206,7 @@ The bar is not "delete upstream Ark quickly." The bar is "produce a clean Neovim
 - Do not add new Positron-specific behavior.
 - Do not let Jupyter compatibility drive architecture.
 - Prefer a canonical Neovim LSP setup over custom completion plumbing when standard LSP suffices.
-- Prefer a single managed-pane model over multi-session abstractions unless a task explicitly requires more.
+- Preserve one active managed-session contract. Tmux owns its existing inactive-tab parking; do not generalize this into multi-pane orchestration unless a task explicitly requires more.
 - Abstract at the session contract boundary, but keep tmux first-class. Do not flatten tmux-specific capabilities into least-common-denominator UX abstractions just to make alternate backends fit.
 - Keep runtime/session bridging explicit; do not hide it behind ad hoc tmux scraping.
 - If a feature needs the live R session, design the request/response path as a supported bridge API.
@@ -251,7 +259,7 @@ Otherwise detached fallback sources may run afterward and accidentally touch emb
 
 If a completion works through an explicit `textDocument/completion` request but not while typing, inspect:
 
-- `crates/ark-lsp/src/lsp/state_handlers.rs`
+- `crates/ark-lsp-core/src/lsp/state_handlers.rs`
 - the server's advertised `completionProvider.triggerCharacters`
 - the user's Blink trigger configuration
 
@@ -350,7 +358,7 @@ while keeping:
 
 - `vim-slime`
 - `nvim-slimetree`
-- one managed tmux R pane
+- one active managed tmux R pane, with inactive Ark tabs parked by the tmux backend
 - Blink's normal `lsp` source
 
 Future work should preserve that model unless the user explicitly changes product direction.
@@ -363,24 +371,24 @@ Ark now owns:
 
 - `scripts/ark-r-launcher.sh`
 - trusted status files under `ark-status`
-- the vendored bridge runtime in `packages/rscope`
+- the Ark-owned bridge runtime in `packages/arkbridge`
 
 If work touches launcher/bootstrap behavior, verify all three layers together:
 
 - tmux pane startup from `lua/ark/tmux.lua`
 - launcher/bootstrap behavior in `scripts/ark-r-launcher.sh`
-- bridge/runtime behavior in `packages/rscope`
+- bridge/runtime behavior in `packages/arkbridge`
 
 Also keep the readiness split straight:
 
 - `bridge_ready` means the local IPC service is up and answers Ark pings
 - `repl_ready` means the tmux pane also shows a stable R prompt and is safe for send-keys style workflows
 
-These states are related but not interchangeable.
+These states are related but not interchangeable. Busy evidence is separate again: submitted-code activity and an in-flight Ark request can explain temporary live-query unavailability, while a timeout alone does not establish either activity or process death. Preserve that distinction in status and recovery advice.
 
-### 10. Current performance baseline
+### 10. Performance verification
 
-Measured rough timings from the real config:
+Historical rough startup timings from the real config (not current cross-machine budgets):
 
 - cold bridge readiness: about 426 to 427 ms
 - cold pane + live LSP readiness: about 1079 to 1091 ms
@@ -388,7 +396,7 @@ Measured rough timings from the real config:
 
 There may be small wins left, but the current cold path is mostly dominated by tmux split, R startup, bridge readiness, and LSP initialization.
 
-Treat claims of "easy big startup wins" skeptically unless you can measure them.
+Treat claims of "easy big startup wins" skeptically unless you can measure them. Use `just benchmark` for the canonical bounded performance suite, and keep high-cardinality ArkView filtering and simultaneous completion responsive rather than optimizing startup alone.
 
 ## Legacy Notes From Upstream Ark
 

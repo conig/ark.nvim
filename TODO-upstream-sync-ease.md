@@ -1,8 +1,8 @@
-# TODO: Reduce avoidable upstream sync drift
+# Upstream sync drift: completed cleanup and deferred state-model work
 
 Created after the 2026-06-30 upstream sync on `sync/upstream-2026-06-30`.
 
-Status after implementation:
+Status checked against the current tree on 2026-10-15:
 
 - TODO 1 implemented: `crates/ark-lsp-core` is now a real Cargo crate, the
   workspace is back to `members = ["crates/*"]`, and host crates re-export the
@@ -18,10 +18,7 @@ Status after implementation:
 - TODO 4 resolved: upstream automation files are intentionally excluded. This
   fork's authoritative verification and release procedures are local.
 
-This file is for follow-up work that should make future syncs from
-`posit-dev/ark` easier without undoing the Neovim product boundary. Treat these
-as TODOs with discovery notes, not as pre-decided implementations. If the current
-tree has moved, re-run the discovery commands and update the plan before editing.
+This file records cleanup that reduced sync drift without undoing the Neovim product boundary. Sections 1 and 2 below preserve historical pre-extraction discovery and implementation alternatives, not outstanding tasks or current repository topology. Section 3 is deferred by an explicit decision, reaffirmed in the 2026-10-15 sync through `a719e099`; section 4 is policy. Re-check the tree before reopening any of them.
 
 ## Ground Rules
 
@@ -53,15 +50,21 @@ Recommended focused verification after LSP-shape changes:
 cargo metadata --no-deps --format-version 1
 cargo check -p ark-lsp -p ark
 cargo check --workspace
-cargo +nightly fmt --all -- --check
-cargo test -p ark-lsp --lib
-./scripts/run-e2e-test.sh --init NONE tests/e2e/base_diagnostics.lua tests/e2e/detached_parity.lua
+cargo +nightly-2025-07-18 fmt --all -- --check
+cargo test -p ark-lsp-core --lib
+for test in \
+  tests/e2e/base_diagnostics.lua \
+  tests/e2e/detached_parity.lua
+do
+  ./scripts/run-e2e-test.sh --init NONE "$test"
+done
 ```
 
-Broaden the E2E set when touching completion, bridge hydration, indexing, or
-session-specific behavior.
+Broaden the E2E set when touching completion, bridge hydration, indexing, or session-specific behavior. Use `just verify-upstream-compat` for the full retained workspace: Oak cycle-recovery tests require nextest process isolation, followed by the recipe's separate doctest run. `just format` uses the same pinned formatter shown above.
 
-## TODO 1: Promote `ark-lsp-core` from path-shared source tree to a real crate
+## 1. Completed: promote `ark-lsp-core` to a real crate
+
+The current source of truth is `crates/ark-lsp-core/Cargo.toml` and `src/lib.rs`; both host `lsp.rs` modules re-export it, and workspace membership is `crates/*`. The following goals and discovery describe the pre-extraction state.
 
 ### Goal
 
@@ -73,7 +76,7 @@ This is the highest-leverage cleanup because future upstream syncs currently
 have to reconcile upstream's in-crate `crates/ark/src/lsp/...` layout with this
 fork's path-shared `crates/ark-lsp-core/src/lsp/...` layout.
 
-### Current Discovery
+### Historical Discovery
 
 - `crates/ark-lsp-core` currently contains only `README.md` at shallow depth;
   it has no `Cargo.toml`, so it is not a Cargo package.
@@ -175,12 +178,20 @@ Suggested verification:
 ```sh
 cargo metadata --no-deps --format-version 1
 cargo check -p ark-lsp -p ark
-cargo test -p ark-lsp --lib
+cargo test -p ark-lsp-core --lib
 cargo test -p ark --lib --no-run
-./scripts/run-e2e-test.sh --init NONE tests/e2e/static_lsp_surface.lua tests/e2e/base_diagnostics.lua tests/e2e/detached_parity.lua
+for test in \
+  tests/e2e/static_lsp_surface.lua \
+  tests/e2e/base_diagnostics.lua \
+  tests/e2e/detached_parity.lua
+do
+  ./scripts/run-e2e-test.sh --init NONE "$test"
+done
 ```
 
-## TODO 2: Deduplicate the near-identical `state_handlers.rs` host adapters
+## 2. Completed: share the LSP handlers
+
+The current `backend.rs`, `main_loop.rs`, and `state_handlers.rs` live in `crates/ark-lsp-core/src/lsp/`. The retained Ark host has only the attached `handler.rs`/`hooks.rs` adapters under its `src/lsp/`; the deleted host-local files below are historical discovery, not files to recreate.
 
 ### Goal
 
@@ -192,7 +203,7 @@ Reduce drift between:
 These files are currently almost identical. Keeping two copies means upstream
 handler changes and local bug fixes must be reconciled twice.
 
-### Current Discovery
+### Historical Discovery
 
 The current diff is small relative to file size. The main known differences are:
 
@@ -270,17 +281,29 @@ Suggested verification:
 
 ```sh
 cargo check -p ark-lsp -p ark
-cargo test -p ark-lsp --lib state_handlers
-./scripts/run-e2e-test.sh --init NONE tests/e2e/base_diagnostics.lua tests/e2e/detached_parity.lua tests/e2e/home_directory_buffer_uses_scratch_workspace.lua
+cargo test -p ark-lsp-core --lib state_handlers
+for test in \
+  tests/e2e/base_diagnostics.lua \
+  tests/e2e/detached_parity.lua \
+  tests/e2e/home_directory_buffer_uses_scratch_workspace.lua
+do
+  ./scripts/run-e2e-test.sh --init NONE "$test"
+done
 ```
 
 If trigger characters or completion capabilities change, also run:
 
 ```sh
-./scripts/run-e2e-test.sh --init NONE tests/e2e/comparison_string_completion.lua tests/e2e/subset_completion.lua tests/e2e/library_completion.lua
+for test in \
+  tests/e2e/comparison_string_completion.lua \
+  tests/e2e/subset_completion.lua \
+  tests/e2e/library_completion.lua
+do
+  ./scripts/run-e2e-test.sh --init NONE "$test"
+done
 ```
 
-## TODO 3: Evaluate a deliberate port to upstream's `OpenFile` / `OakDatabase` / `oak_scan` LSP state model
+## 3. Deferred: deliberate upstream `OpenFile` / `OakDatabase` / `oak_scan` migration
 
 ### Goal
 
@@ -330,11 +353,10 @@ Relevant current fork files:
 - `crates/ark-lsp-core/src/lsp/state.rs`
 - `crates/ark-lsp-core/src/lsp/document.rs`
 - `crates/ark-lsp-core/src/lsp/indexer.rs`
-- `crates/ark/src/lsp/main_loop.rs`
-- `crates/ark-lsp/src/lsp/main_loop.rs`
-- `crates/ark/src/lsp/state_handlers.rs`
-- `crates/ark-lsp/src/lsp/state_handlers.rs`
+- `crates/ark-lsp-core/src/lsp/main_loop.rs`
+- `crates/ark-lsp-core/src/lsp/state_handlers.rs`
 - `crates/ark-lsp-core/src/lsp/session_bridge.rs`
+- `crates/ark-lsp-core/UPSTREAM_STATE_MODEL.md`
 
 Current fork state still centers on `Document` and its own indexing path. The
 upstream state model stores editor buffers as `OpenFile` keyed by normalized
@@ -411,9 +433,22 @@ Suggested verification:
 
 ```sh
 cargo check -p ark-lsp -p ark
-cargo test -p oak_db -p oak_scan -p oak_ide -p ark-lsp --lib
-./scripts/run-e2e-test.sh --init NONE tests/e2e/base_diagnostics.lua tests/e2e/detached_parity.lua tests/e2e/definition_open_buffer_index.lua tests/e2e/definition_new_targets_file_index.lua
-./scripts/run-e2e-test.sh --init NONE tests/e2e/comparison_string_completion.lua tests/e2e/subset_completion.lua tests/e2e/completion_resolve.lua
+cargo nextest run -p oak_db -p oak_scan -p oak_ide -p ark-lsp-core
+for test in \
+  tests/e2e/base_diagnostics.lua \
+  tests/e2e/detached_parity.lua \
+  tests/e2e/definition_open_buffer_index.lua \
+  tests/e2e/definition_new_targets_file_index.lua
+do
+  ./scripts/run-e2e-test.sh --init NONE "$test"
+done
+for test in \
+  tests/e2e/comparison_string_completion.lua \
+  tests/e2e/subset_completion.lua \
+  tests/e2e/completion_resolve.lua
+do
+  ./scripts/run-e2e-test.sh --init NONE "$test"
+done
 ```
 
 If the change touches live bridge behavior, add focused live/tmux verification
