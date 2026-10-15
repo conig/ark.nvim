@@ -83,8 +83,8 @@ pub(super) fn plan(
     context: &DocumentContext,
     target_project: Option<&TargetCompletionProject>,
 ) -> anyhow::Result<Option<CompletionPlan>> {
-    if context.is_empty_assignment_rhs() {
-        return Ok(None);
+    if context.is_empty_assignment_rhs() || context.is_blank_top_level_line() {
+        return Ok(Some(CompletionPlan::HandledEmpty));
     }
 
     if let Some(request) = completion_request_from_extractor(context)? {

@@ -68,6 +68,10 @@ local client = {
 local original_get_clients = vim.lsp.get_clients
 local original_get_client_by_id = vim.lsp.get_client_by_id
 local original_buf_is_attached = vim.lsp.buf_is_attached
+local original_console = package.loaded["ark.console"]
+local runtime = require("ark.session_runtime")
+local original_ping_bridge = runtime.ping_bridge
+local console_status_path = vim.fn.tempname() .. ".json"
 
 vim.lsp.get_clients = function(filter)
   if filter and filter.name and filter.name ~= client.name then
@@ -139,11 +143,54 @@ local ok, err = pcall(function()
   then
     error("unexpected fast session payload: " .. vim.inspect(payload), 0)
   end
+
+  -- The console has its own snapshot path. Exercise the real LSP snapshot and
+  -- status-file reader, not the tmux adapter above: watcher sync must not enter
+  -- ping_bridge/vim.wait and recursively deliver an older session snapshot.
+  vim.fn.writefile({ vim.json.encode({
+    status = "ready",
+    pid = vim.fn.getpid(),
+    port = 12345,
+    auth_token = "test-token",
+    repl_ready = true,
+    repl_seq = 8,
+  }) }, console_status_path)
+  package.loaded["ark.console"] = {
+    status = function(buffer)
+      assert(buffer == bufnr)
+      return { session_id = "nvim_console__fast_sync", status_path = console_status_path }
+    end,
+  }
+  vim.b[bufnr].ark_console = true
+  local ping_calls = 0
+  runtime.ping_bridge = function()
+    ping_calls = ping_calls + 1
+    return true
+  end
+
+  lsp.sync_sessions(opts, bufnr, { fast = true })
+  assert(ping_calls == 0, "fast console session sync probed live R: " .. ping_calls)
+  assert(#notifications == 2, "expected one console session update")
+  local console_payload = notifications[2].payload
+  assert(console_payload.backend == "nvim-console")
+  assert(console_payload.sessionId == "nvim_console__fast_sync")
+  assert(console_payload.statusFile == console_status_path)
+  assert(console_payload.status == "ready" and console_payload.replReady == true)
+  assert(console_payload.replSeq == 8, "fast console sync lost authoritative sequence")
+
+  -- Explicitly validated/non-fast snapshots still probe, so the cheap watcher
+  -- path does not silently weaken status checks that request live evidence.
+  lsp.sync_sessions(opts, bufnr, { fast = false, validate_bridge = true })
+  assert(ping_calls == 1, "validated console session sync did not probe live R")
 end)
 
 vim.lsp.get_clients = original_get_clients
 vim.lsp.get_client_by_id = original_get_client_by_id
 vim.lsp.buf_is_attached = original_buf_is_attached
+package.loaded["ark.console"] = original_console
+runtime.ping_bridge = original_ping_bridge
+vim.b[bufnr].ark_console = nil
+vim.fn.delete(console_status_path)
 
 if not ok then
   error(err, 0)

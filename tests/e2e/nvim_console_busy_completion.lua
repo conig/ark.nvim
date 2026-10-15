@@ -22,14 +22,27 @@ test.wait_for("hydrated console", 30000, function()
   local response = client:request_sync("ark/internal/status", {}, 1000, buf)
   return response and response.result and response.result.detachedSessionStatus.lastBootstrapSuccessMs ~= vim.NIL
 end)
+local before_definition_seq = assert(tonumber(published().repl_seq), "initial REPL sequence missing")
 assert(console.send_text(buf, "busy_completion_function <- function(x) x"))
-test.wait_for("definition complete", 5000, function() return published().nvim_console_prompt_state == "top-level" end)
--- Measure steady busy behavior, not the preceding definition's asynchronous
--- metadata hydration (startup/session hydration has its own performance gate).
+local definition_seq
+test.wait_for("definition complete", 5000, function()
+  local status = published()
+  local seq = tonumber(status.repl_seq)
+  if seq and seq > before_definition_seq and status.nvim_console_prompt_state == "top-level" then
+    definition_seq = seq
+    return true
+  end
+  return false
+end)
+-- A queued initial prompt can appear after send_text. Require the definition's
+-- actual R task callback and matching successful metadata hydration, not just
+-- top-level state plus an old startup bootstrap. No timing-based settling wait.
 test.wait_for("definition metadata hydration", 10000, function()
   local response = client:request_sync("ark/internal/status", {}, 1000, buf)
   local status = response and response.result and response.result.detachedSessionStatus
-  return status and status.lastBootstrapReplSeq == published().repl_seq
+  return status and status.lastSessionUpdateReplSeq == definition_seq
+    and status.lastBootstrapReplSeq == definition_seq
+    and status.lastBootstrapError == ""
     and type(status.lastBootstrapDurationMs) == "number"
 end)
 assert(console.send_text(buf, "Sys.sleep(4)"))
@@ -38,14 +51,16 @@ local state = require("ark.product_state")
 assert(state.derive({ startup_status = published(), managed = true }, { auto_start_pane = false }) == "live_busy")
 local line = console.status(buf).input_start
 vim.api.nvim_buf_set_lines(buf, line, -1, false, { "busy_completion_f" })
-vim.wait(200, function() return false end, 200)
 local t = vim.uv.hrtime()
-local response = test.request(client, "textDocument/completion", {
+-- The real buffer ID flushes its pending didChange before this request. Do not
+-- hide session-generation churn behind the helper's ContentModified retries.
+local response, request_error = client:request_sync("textDocument/completion", {
   textDocument = vim.lsp.util.make_text_document_params(buf), position = { line = line, character = 17 }, context = { triggerKind = 1 },
-}, 2000)
+}, 2000, buf)
 local elapsed = (vim.uv.hrtime() - t) / 1e6
-assert(elapsed < 250, "busy completion waited for R: " .. elapsed .. "ms")
-assert(test.find_item(test.completion_items(response), "busy_completion_function"), "static completion was lost while R was busy")
+assert(response and not response.err and not response.error, "busy completion failed: " .. vim.inspect(request_error or response))
+assert(elapsed < 250, "busy completion waited for R: " .. elapsed .. "ms (hydrated sequence " .. definition_seq .. ")")
+assert(test.find_item(test.completion_items(response.result), "busy_completion_function"), "static completion was lost while R was busy")
 local debug = test.request(client, "ark/internal/status", {}, 1000)
 assert(debug.sessionBridge.runtime.consecutiveFailures == 0, "normal evaluation poisoned the bridge circuit")
 test.wait_for("R returns", 10000, function() return published().nvim_console_prompt_state == "top-level" end)

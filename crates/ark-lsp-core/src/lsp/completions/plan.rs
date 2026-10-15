@@ -93,7 +93,14 @@ pub(crate) fn plan_completions(
         return Ok(CompletionPlan::Unique(plan));
     }
 
-    if completion_context.document_context.trigger.as_deref() == Some("/") {
+    // Unique sources get first refusal: a blank YAML header line still has
+    // useful keys, but an ordinary blank R statement must not enumerate the
+    // entire cached search path when live completion is unavailable/unclaimed.
+    if completion_context
+        .document_context
+        .is_blank_top_level_line() ||
+        completion_context.document_context.trigger.as_deref() == Some("/")
+    {
         return Ok(CompletionPlan::HandledEmpty);
     }
 
@@ -116,7 +123,11 @@ pub(crate) fn plan_detached_static_completions(
         return Ok(CompletionPlan::Unique(plan));
     }
 
-    if completion_context.document_context.trigger.as_deref() == Some("/") {
+    if completion_context
+        .document_context
+        .is_blank_top_level_line() ||
+        completion_context.document_context.trigger.as_deref() == Some("/")
+    {
         return Ok(CompletionPlan::HandledEmpty);
     }
 
@@ -133,6 +144,68 @@ mod tests {
     use crate::lsp::document::DocumentKind;
     use crate::lsp::document_context::DocumentContext;
     use crate::lsp::state::WorldState;
+
+    #[test]
+    fn test_plans_handle_blank_top_level_lines_without_claiming_argument_slots() {
+        let state = WorldState {
+            runtime_mode: crate::lsp::state::RuntimeMode::Detached,
+            ..Default::default()
+        };
+        for input in ["mtcars\n@", "mtcars\n \t@", "@"] {
+            let (text, point) = point_from_cursor(input);
+            let document = Document::new(&text, None);
+            let context = DocumentContext::new_with_completion(&document, point, None, true);
+            let completion_context = CompletionContext::new(&context, &state);
+
+            assert!(
+                matches!(
+                    plan_completions(&completion_context).unwrap(),
+                    CompletionPlan::HandledEmpty
+                ),
+                "{input:?}"
+            );
+            assert!(
+                matches!(
+                    plan_detached_static_completions(&completion_context).unwrap(),
+                    CompletionPlan::HandledEmpty
+                ),
+                "{input:?}"
+            );
+        }
+        // Whitespace inside a call or subset and an unfinished pipe still
+        // belong to their context-specific completion sources.
+        for input in ["f(\n@\n)", "f(\n@", "x[\n@\n]", "x |>\n@"] {
+            let (text, point) = point_from_cursor(input);
+            let document = Document::new(&text, None);
+            let context = DocumentContext::new_with_completion(&document, point, None, true);
+            let completion_context = CompletionContext::new(&context, &state);
+
+            // The attached planner's custom-call source needs embedded R;
+            // the supported detached planner must stay runtime-independent.
+            assert!(
+                matches!(
+                    plan_detached_static_completions(&completion_context).unwrap(),
+                    CompletionPlan::Composite(_)
+                ),
+                "{input:?}"
+            );
+        }
+
+        let (text, point) = point_from_cursor("---\n@\n---\n");
+        let document = Document::new_with_kind(&text, None, DocumentKind::LiterateR);
+        let context = DocumentContext::new_with_completion(&document, point, None, true);
+        let completion_context = CompletionContext::new(&context, &state);
+        for plan in [
+            plan_completions(&completion_context),
+            plan_detached_static_completions(&completion_context),
+        ] {
+            let CompletionPlan::Unique(plan) = plan.unwrap() else {
+                panic!("blank frontmatter must retain key completions")
+            };
+            assert_eq!(plan.kind, UniqueSourceKind::Frontmatter);
+            assert!(!plan.items.is_empty());
+        }
+    }
 
     #[test]
     fn test_plan_handles_empty_assignment_rhs() {

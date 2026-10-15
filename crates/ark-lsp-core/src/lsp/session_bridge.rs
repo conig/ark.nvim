@@ -3430,6 +3430,44 @@ mod tests {
     }
 
     #[test]
+    fn test_bridge_plan_handles_blank_top_level_lines_without_ipc() {
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port: 1,
+            timeout_ms: 50,
+            ..Default::default()
+        })
+        .unwrap();
+        for input in ["mtcars\n@", "mtcars\n \t@", "@"] {
+            let (text, point) = point_from_cursor(input);
+            let document = Document::new(&text, None);
+            let context = DocumentContext::new_with_completion(&document, point, None, true);
+            assert!(
+                matches!(
+                    completion::plan(&bridge, &context, None).unwrap(),
+                    Some(CompletionPlan::HandledEmpty)
+                ),
+                "{input:?}"
+            );
+            let completion = bridge.completion_items(&context, None).unwrap().unwrap();
+            assert!(completion.items.is_empty());
+            assert!(!completion.merge_static);
+        }
+        for input in ["f(\n@\n)", "x[\n@\n]"] {
+            let (text, point) = point_from_cursor(input);
+            let document = Document::new(&text, None);
+            let context = DocumentContext::new_with_completion(&document, point, None, true);
+            assert!(
+                matches!(
+                    completion::plan(&bridge, &context, None).unwrap(),
+                    Some(CompletionPlan::Unique(_) | CompletionPlan::Composite(_))
+                ),
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_search_path_request_rejects_explicit_empty_completion() {
         let (text, point) = point_from_cursor("@");
         let document = Document::new(text.as_str(), None);

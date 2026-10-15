@@ -10,6 +10,7 @@ use tree_sitter::Point;
 
 use crate::lsp::document::Document;
 use crate::lsp::traits::node::NodeExt;
+use crate::treesitter::node_has_error_or_missing;
 use crate::treesitter::BinaryOperatorType;
 use crate::treesitter::NodeType;
 use crate::treesitter::NodeTypeExt;
@@ -107,6 +108,24 @@ impl<'a> DocumentContext<'a> {
             trigger,
             explicit_completion_request,
         }
+    }
+
+    /// A blank statement position is deliberately silent, even for explicit
+    /// completion. Do not confuse it with whitespace in an argument, subset,
+    /// pipe, or inline R expression, which can have context-specific items.
+    pub fn is_blank_top_level_line(&self) -> bool {
+        self.node.is_program() &&
+            self.document
+                .get_line(self.point.row)
+                .is_some_and(|line| line.trim().is_empty()) &&
+            // With unfinished syntax such as `f(\n`, parser recovery can put
+            // the cursor on `program` too. Leave ambiguous contexts alone;
+            // only inspect the closest expression, not errors elsewhere.
+            !self
+                .closest_node
+                .ancestors()
+                .take_while(|node| !node.is_program())
+                .any(|node| node_has_error_or_missing(&node))
     }
 
     pub fn is_empty_assignment_rhs(&self) -> bool {

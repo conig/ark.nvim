@@ -2030,6 +2030,70 @@ list()
     }
 
     #[test]
+    fn test_blank_top_level_completion_keeps_hydrated_symbols_suppressed() {
+        // Match the full-config regression: a hydrated session, `o` after
+        // `mtcars`, then an explicit completion request on the new blank line.
+        // A listening bridge proves this is suppression, not an IPC failure.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port: listener.local_addr().unwrap().port(),
+            timeout_ms: 50,
+            ..Default::default()
+        })
+        .unwrap();
+        let uri = Url::parse("file:///tmp/ark_blank_completion.R").unwrap();
+
+        for configured_bridge in [Some(bridge.clone()), None] {
+            let mut state = WorldState {
+                runtime_mode: RuntimeMode::Detached,
+                session_bridge: configured_bridge,
+                console_scopes: vec![vec![
+                    String::from("mtcars"),
+                    String::from("mean"),
+                    String::from("cached_session_function"),
+                ]],
+                ..Default::default()
+            };
+
+            for input in ["mtcars\n@", "mtcars\n \t@", "@", "x <- 1\n@\ny <- 2"] {
+                let (text, point) = point_from_cursor(input);
+                let document = Document::new(&text, None);
+                let position = document.lsp_position_from_tree_sitter_point(point).unwrap();
+                state.documents.insert(uri.clone(), document);
+                let result = handle_completion(
+                    CompletionParams {
+                        text_document_position: TextDocumentPositionParams {
+                            text_document: TextDocumentIdentifier { uri: uri.clone() },
+                            position,
+                        },
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                        context: Some(LspCompletionContext {
+                            trigger_kind: CompletionTriggerKind::INVOKED,
+                            trigger_character: None,
+                        }),
+                    },
+                    &state,
+                )
+                .unwrap();
+                assert!(
+                    result.is_none(),
+                    "blank line exposed symbols for {input:?}: {result:?}"
+                );
+            }
+        }
+
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let debug = serde_json::to_value(bridge.debug_info()).unwrap();
+        assert_eq!(debug["runtime"]["recentRequests"], serde_json::json!([]));
+    }
+
+    #[test]
     fn test_unavailable_bridge_keeps_static_completion() {
         let directory = tempdir().unwrap();
         let uri = Url::from_file_path(directory.path().join("busy.R")).unwrap();
@@ -2038,6 +2102,7 @@ list()
         let position = document.lsp_position_from_tree_sitter_point(point).unwrap();
         let mut state = WorldState {
             runtime_mode: RuntimeMode::Detached,
+            console_scopes: vec![vec![String::from("local_static_cached")]],
             session_bridge: Some(
                 SessionBridge::new(SessionBridgeConfig {
                     status_file: Some(directory.path().join("missing-status.json")),
@@ -2068,6 +2133,7 @@ list()
             panic!("static completion was lost")
         };
         assert!(items.iter().any(|item| item.label == "local_static_fn"));
+        assert!(items.iter().any(|item| item.label == "local_static_cached"));
     }
 
     #[test]
