@@ -523,6 +523,7 @@ function M.status(config)
     startup_status = startup_status,
     startup_status_path = snapshot and snapshot.startup_status_path or nil,
     bridge_ready = bridge_ready,
+    bridge_diagnostics = session_runtime.bridge_diagnostics(session),
     repl_ready = bridge_ready and startup_status and startup_status.repl_ready == true or false,
   }
 end

@@ -207,3 +207,36 @@ where
     #[serde(flatten)]
     pub(super) payload: T,
 }
+
+impl super::super::session_bridge_runtime::BridgeRequest for InspectRequest {
+    fn request_id(&self) -> &str {
+        &self.request_id
+    }
+    fn operation(&self) -> &str {
+        "inspect"
+    }
+}
+impl super::super::session_bridge_runtime::BridgeRequest for BootstrapRequest {
+    fn request_id(&self) -> &str {
+        &self.request_id
+    }
+    fn operation(&self) -> &str {
+        &self.command
+    }
+}
+impl super::super::session_bridge_runtime::BridgeRequest for HelpTextRequest {
+    fn request_id(&self) -> &str {
+        &self.request_id
+    }
+    fn operation(&self) -> &str {
+        &self.command
+    }
+}
+impl<T: Serialize> super::super::session_bridge_runtime::BridgeRequest for BridgeCommandRequest<T> {
+    fn request_id(&self) -> &str {
+        &self.request_id
+    }
+    fn operation(&self) -> &str {
+        &self.command
+    }
+}

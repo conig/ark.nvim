@@ -322,7 +322,7 @@ impl SessionBridge {
         request: &T,
     ) -> anyhow::Result<R>
     where
-        T: Serialize,
+        T: crate::lsp::session_bridge_runtime::BridgeRequest,
         R: DeserializeOwned,
     {
         let mut hasher = DefaultHasher::new();
@@ -671,12 +671,18 @@ impl SessionBridge {
         )
     }
 
-    pub(crate) fn view_values(&self, session_id: &str, column_index: u32) -> anyhow::Result<Value> {
+    pub(crate) fn view_values(
+        &self,
+        params: &crate::lsp::handlers::ViewValuesParams,
+    ) -> anyhow::Result<Value> {
         self.view_command(
             "view_values",
             serde_json::json!({
-                "session_id": session_id,
-                "column_index": column_index,
+                "session_id": params.session_id,
+                "column_index": params.column_index,
+                "query": params.query,
+                "offset": params.offset,
+                "limit": params.limit,
             }),
         )
     }

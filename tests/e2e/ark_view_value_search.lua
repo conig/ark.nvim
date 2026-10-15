@@ -14,6 +14,8 @@ end)
 
 -- Use the actual f mapping and Snacks picker/matcher. Numeric IDs must not
 -- match a picker's row index or a value's frequency displayed alongside it.
+local origin_win = vim.api.nvim_get_current_win()
+local origin_cursor = vim.api.nvim_win_get_cursor(origin_win)
 vim.api.nvim_feedkeys("f", "xt", false)
 local picker
 ark_test.wait_for("ArkView value picker", 5000, function()
@@ -71,4 +73,6 @@ ark_test.wait_for("exact ID filter", 5000, function()
     and state.filters[1].query == "789"
     and state.filters[1].mode == "exact"
 end)
+assert(vim.api.nvim_get_current_win() == origin_win, "confirming f moved focus from the grid to Columns")
+assert(vim.deep_equal(vim.api.nvim_win_get_cursor(origin_win), origin_cursor), "confirming f moved the grid cursor")
 require("ark").view_close()

@@ -356,6 +356,24 @@ Responsibilities:
 - support ArkView filtering through free-text contains filters, numeric
   comparison filters driven by the `<` and `>` prompts on numeric columns, and
   exact value filters chosen from bridge-provided unique values with counts
+- load the `f` exact-value picker asynchronously, coalescing duplicate opens and
+  discarding/cancelling obsolete UI requests without claiming to interrupt R;
+  picker confirmation/cancellation returns to the invoking grid/Columns pane
+- bound unique-value responses to 1,000 entries; small columns retain local
+  fuzzy selection, while larger columns use debounced, literal case-insensitive
+  server-side search across the complete index (not just the first page)
+- count values without row sorting or repeated per-key scans; retain one column
+  index per view, invalidated on explicit refresh and keyed by the column and
+  filters on other columns, and format
+  display labels only for distinct values
+- keep a bounded 16-request bridge flight recorder in LSP status: active operation
+  and age, request ID, queue/transport stage timings, response bytes, outcome,
+  and value-handler work counts/timings; retain recent value-handler encoding
+  timings through cached, authenticated bridge ping responses without extra
+  polling or re-encoding unchanged history
+- record bridge degradation/recovery and launcher readiness transitions instead
+  of flushing repetitive healthy status lines; never log cell values, expressions,
+  auth tokens, or search terms in the new diagnostic records
 - render each ArkView column header as a two-row block with the column name
   above its `<class>` label, and keep both rows visible in sticky floating
   headers while scrolling

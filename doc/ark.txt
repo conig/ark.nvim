@@ -531,4 +531,21 @@ Cargo. Product tests and architecture are documented in `docs/testing.md` and
 `SPEC.md`.
 
 ==============================================================================
+ARKVIEW VALUE FILTER DIAGNOSTICS
+
+Press `f` on a table column to load exact values without blocking the editor.
+Repeated presses while loading share one request. Columns with more than 1,000
+values use live literal, case-insensitive search over the full value index;
+small columns retain fuzzy selection. Counts and picker indices are not searched.
+Without Snacks, large columns prompt for a search before bounded selection.
+
+`:Ark status` includes `lsp_status.sessionBridge.runtime.activeOperation` and a
+bounded `recentRequests` history. A timeout identifies the operation, request ID,
+and transport stage (for example `wait_first_byte` versus queue congestion).
+Backend `bridge_diagnostics.recent_view_values` records value-handler row and
+distinct counts, cache hits, phase durations, and encoded response bytes after
+normal bridge pings. These records contain no values, expressions, or search
+terms. Cancelling/closing a picker discards results; R may still be computing.
+
+==============================================================================
 vim:tw=78:ts=8:noet:ft=help:norl:

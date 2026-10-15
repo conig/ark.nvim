@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::io::Read;
 use std::io::Write;
@@ -89,6 +90,70 @@ pub(crate) struct BridgeRuntimeDebugInfo {
     pub consecutive_failures: u32,
     pub circuit_open: bool,
     pub circuit_remaining_ms: u64,
+    active_operation: Option<ActiveOperationDebugInfo>,
+    recent_requests: Vec<BridgeRequestRecord>,
+}
+
+pub(crate) trait BridgeRequest: Serialize {
+    fn request_id(&self) -> &str;
+    fn operation(&self) -> &str;
+}
+
+#[derive(Clone, Debug, Default, serde::Deserialize, Serialize)]
+pub(crate) struct BridgeHandlerDebugInfo {
+    column_index: u32,
+    #[serde(rename = "type")]
+    column_type: String,
+    rows: usize,
+    distinct: usize,
+    returned: usize,
+    cache_hit: bool,
+    filter_ms: f64,
+    keys_ms: f64,
+    count_ms: f64,
+    labels_ms: f64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BridgeExchangeTrace {
+    stage: &'static str,
+    connect_ms: u64,
+    write_ms: u64,
+    first_byte_ms: Option<u64>,
+    response_bytes: usize,
+    handler: Option<BridgeHandlerDebugInfo>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeRequestRecord {
+    request_id: String,
+    operation: String,
+    queue_ms: u64,
+    total_ms: u64,
+    completed_at_ms: u64,
+    success: bool,
+    exchange: BridgeExchangeTrace,
+}
+
+#[derive(Debug)]
+struct ActiveOperation {
+    request_id: String,
+    operation: String,
+    started: Instant,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveOperationDebugInfo {
+    request_id: String,
+    operation: String,
+    age_ms: u64,
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 pub(crate) trait BridgeTransport: Debug + Send + Sync {
@@ -98,6 +163,7 @@ pub(crate) trait BridgeTransport: Debug + Send + Sync {
         port: u16,
         payload: &[u8],
         deadline: Instant,
+        trace: &mut BridgeExchangeTrace,
     ) -> anyhow::Result<Vec<u8>>;
 }
 
@@ -111,7 +177,10 @@ impl BridgeTransport for TcpBridgeTransport {
         port: u16,
         payload: &[u8],
         deadline: Instant,
+        trace: &mut BridgeExchangeTrace,
     ) -> anyhow::Result<Vec<u8>> {
+        trace.stage = "connect";
+        let connect_start = Instant::now();
         let addresses = (host, port).to_socket_addrs()?.collect::<Vec<_>>();
         if addresses.is_empty() {
             return Err(anyhow!("bridge host resolved to no socket addresses"));
@@ -135,12 +204,18 @@ impl BridgeTransport for TcpBridgeTransport {
                 .unwrap_or_else(|| anyhow!("bridge connection failed"))
         })?;
 
+        trace.connect_ms = elapsed_ms(connect_start);
+        trace.stage = "write_request";
+        let write_start = Instant::now();
         let write_timeout = remaining(deadline)?;
         stream.set_write_timeout(Some(write_timeout))?;
         stream.write_all(payload)?;
         stream.write_all(b"\n")?;
         stream.shutdown(Shutdown::Write)?;
 
+        trace.write_ms = elapsed_ms(write_start);
+        trace.stage = "wait_first_byte";
+        let read_start = Instant::now();
         let mut response = Vec::new();
         let mut chunk = [0_u8; 8192];
         loop {
@@ -149,8 +224,16 @@ impl BridgeTransport for TcpBridgeTransport {
             if read == 0 {
                 return Ok(response);
             }
+            if trace.first_byte_ms.is_none() {
+                trace.first_byte_ms = Some(elapsed_ms(read_start));
+            }
+            trace.stage = "read_response";
+            trace.response_bytes += read;
             response.extend_from_slice(&chunk[..read]);
-            if serde_json::from_slice::<serde_json::Value>(&response).is_ok() {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&response) {
+                trace.handler = value
+                    .get("diagnostics")
+                    .and_then(|details| serde_json::from_value(details.clone()).ok());
                 return Ok(response);
             }
         }
@@ -161,6 +244,10 @@ impl BridgeTransport for TcpBridgeTransport {
 struct QueueState {
     active: bool,
     waiting: usize,
+    operation: Option<ActiveOperation>,
+    recent: VecDeque<BridgeRequestRecord>,
+    degraded_since: Option<Instant>,
+    suppressed_failures: u64,
 }
 
 #[derive(Debug, Default)]
@@ -203,22 +290,56 @@ impl BridgeRuntime {
         control: &BridgeRequestControl,
     ) -> anyhow::Result<R>
     where
-        T: Serialize,
+        T: BridgeRequest,
         R: DeserializeOwned,
     {
         if control.is_cancelled() {
             return Err(unavailable("request was cancelled before bridge admission"));
         }
 
+        let started = Instant::now();
         let _permit = self.acquire(deadline, control)?;
+        let queue_ms = elapsed_ms(started);
         self.begin_circuit_attempt(connection_identity)?;
-
+        {
+            let mut queue = self
+                .queue
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            queue.operation = Some(ActiveOperation {
+                request_id: request.request_id().to_string(),
+                operation: request.operation().to_string(),
+                started,
+            });
+        }
+        let mut trace = BridgeExchangeTrace {
+            stage: "serialize_request",
+            ..BridgeExchangeTrace::default()
+        };
         let result = (|| {
             let payload = serde_json::to_vec(request)?;
-            let response = self.transport.exchange(host, port, &payload, deadline)?;
+            let response = self
+                .transport
+                .exchange(host, port, &payload, deadline, &mut trace)?;
+            trace.stage = "decode_response";
             serde_json::from_slice(response.as_slice()).map_err(anyhow::Error::from)
         })();
-
+        let stage = trace.stage;
+        let record = BridgeRequestRecord {
+            request_id: request.request_id().to_string(),
+            operation: request.operation().to_string(),
+            queue_ms,
+            total_ms: elapsed_ms(started),
+            completed_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64,
+            success: result.is_ok(),
+            exchange: trace,
+        };
+        self.record_request(record);
         match result {
             Ok(response) => {
                 self.record_success(connection_identity);
@@ -226,9 +347,42 @@ impl BridgeRuntime {
             },
             Err(err) => {
                 self.record_failure(connection_identity);
-                Err(unavailable(format!("bridge request failed: {err}")))
+                Err(unavailable(format!(
+                    "{} request {} failed at {stage} after {}ms (queue {queue_ms}ms): {err}",
+                    request.operation(),
+                    request.request_id(),
+                    elapsed_ms(started)
+                )))
             },
         }
+    }
+
+    fn record_request(&self, record: BridgeRequestRecord) {
+        let mut queue = self
+            .queue
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if record.success {
+            if let Some(started) = queue.degraded_since.take() {
+                log::info!(
+                    "bridge recovered after {}ms; suppressed_failures={}",
+                    elapsed_ms(started),
+                    queue.suppressed_failures
+                );
+                queue.suppressed_failures = 0;
+            }
+        } else if queue.degraded_since.is_none() {
+            queue.degraded_since = Some(Instant::now());
+            log::warn!("bridge degraded: operation={} request_id={} stage={} queue_ms={} total_ms={} response_bytes={}",
+                record.operation, record.request_id, record.exchange.stage, record.queue_ms, record.total_ms, record.exchange.response_bytes);
+        } else {
+            queue.suppressed_failures = queue.suppressed_failures.saturating_add(1);
+        }
+        if queue.recent.len() == 16 {
+            queue.recent.pop_front();
+        }
+        queue.recent.push_back(record);
     }
 
     pub(crate) fn debug_info(&self) -> BridgeRuntimeDebugInfo {
@@ -251,6 +405,15 @@ impl BridgeRuntime {
             consecutive_failures: circuit.consecutive_failures,
             circuit_open: !remaining.is_zero(),
             circuit_remaining_ms: remaining.as_millis().min(u128::from(u64::MAX)) as u64,
+            active_operation: queue
+                .operation
+                .as_ref()
+                .map(|operation| ActiveOperationDebugInfo {
+                    request_id: operation.request_id.clone(),
+                    operation: operation.operation.clone(),
+                    age_ms: elapsed_ms(operation.started),
+                }),
+            recent_requests: queue.recent.iter().cloned().collect(),
         }
     }
 
@@ -284,7 +447,21 @@ impl BridgeRuntime {
                 Some(remaining) if !remaining.is_zero() => remaining,
                 _ => {
                     queue.waiting -= 1;
-                    return Err(unavailable("bridge request deadline expired in the queue"));
+                    let active = queue
+                        .operation
+                        .as_ref()
+                        .map(|operation| {
+                            format!(
+                                "; active={} request_id={} age={}ms",
+                                operation.operation,
+                                operation.request_id,
+                                elapsed_ms(operation.started)
+                            )
+                        })
+                        .unwrap_or_default();
+                    return Err(unavailable(format!(
+                        "bridge request deadline expired in the queue{active}"
+                    )));
                 },
             };
             let wait_for = remaining.min(CANCEL_POLL_INTERVAL);
@@ -362,6 +539,7 @@ impl BridgeRuntime {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         queue.active = false;
+        queue.operation = None;
         ready.notify_all();
     }
 }
@@ -401,6 +579,20 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+
+    impl BridgeRequest for Value {
+        fn request_id(&self) -> &str {
+            self.get("request_id")
+                .and_then(Value::as_str)
+                .unwrap_or("test")
+        }
+        fn operation(&self) -> &str {
+            self.get("command")
+                .or_else(|| self.get("request"))
+                .and_then(Value::as_str)
+                .unwrap_or("test")
+        }
+    }
 
     #[derive(Debug, Default)]
     struct ControlledTransport {
@@ -446,6 +638,7 @@ mod tests {
             _port: u16,
             _payload: &[u8],
             deadline: Instant,
+            _trace: &mut BridgeExchangeTrace,
         ) -> anyhow::Result<Vec<u8>> {
             self.hits.fetch_add(1, Ordering::SeqCst);
             if self.fail.load(Ordering::SeqCst) {
@@ -469,6 +662,58 @@ mod tests {
 
             Ok(br#"{"ok":true}"#.to_vec())
         }
+    }
+
+    #[test]
+    fn stalled_peer_reports_response_wait_not_an_opaque_os_error() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let port = listener.local_addr().expect("address").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = Vec::new();
+            stream.read_to_end(&mut request).expect("read request");
+            thread::sleep(Duration::from_millis(250));
+        });
+        let runtime = BridgeRuntime::default();
+        let result: anyhow::Result<Value> = runtime.request(
+            1, "127.0.0.1", port,
+            &json!({"command": "view_values", "request_id": "diagnostic-test", "auth_token": "must-not-log"}),
+            Instant::now() + Duration::from_millis(80), &BridgeRequestControl::default(),
+        );
+        let error = result.expect_err("response timeout").to_string();
+        server.join().expect("server");
+        assert!(
+            error.contains("view_values") && error.contains("wait_first_byte"),
+            "{error}"
+        );
+        assert!(!error.contains("must-not-log"));
+        let debug = runtime.debug_info();
+        assert!(debug.active_operation.is_none());
+        let record = debug.recent_requests.last().expect("failure record");
+        assert_eq!(record.operation, "view_values");
+        assert_eq!(record.exchange.stage, "wait_first_byte");
+        assert!(record.exchange.first_byte_ms.is_none());
+        assert_eq!(record.exchange.response_bytes, 0);
+        assert!(!serde_json::to_string(&debug)
+            .expect("debug JSON")
+            .contains("must-not-log"));
+    }
+
+    #[test]
+    fn recent_requests_are_bounded_and_retain_only_metadata() {
+        let runtime = BridgeRuntime::new(Arc::new(ControlledTransport::default()));
+        for _ in 0..20 {
+            let _: Value = runtime.request(1, "127.0.0.1", 1,
+                &json!({"command":"view_values", "request_id":"values-test", "expr":"private data"}),
+                Instant::now() + Duration::from_secs(1), &BridgeRequestControl::default()).expect("response");
+        }
+        let debug = runtime.debug_info();
+        assert_eq!(debug.recent_requests.len(), 16);
+        assert!(debug.recent_requests.iter().all(|record| record.success));
+        assert!(!serde_json::to_string(&debug)
+            .expect("JSON")
+            .contains("private data"));
     }
 
     #[test]
@@ -573,6 +818,23 @@ mod tests {
             assert_eq!(response.get("ok").and_then(Value::as_bool), Some(true));
         });
         transport.wait_for_hit();
+        let active = runtime
+            .debug_info()
+            .active_operation
+            .expect("active operation");
+        assert_eq!(active.operation, "first");
+        let queued: anyhow::Result<Value> = runtime.request(
+            1,
+            "127.0.0.1",
+            1,
+            &json!({"command":"bootstrap"}),
+            Instant::now() + Duration::from_millis(20),
+            &BridgeRequestControl::default(),
+        );
+        assert!(queued
+            .expect_err("queue timeout")
+            .to_string()
+            .contains("active=first"));
 
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel_probe = cancelled.clone();

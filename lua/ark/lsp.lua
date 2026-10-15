@@ -1522,8 +1522,12 @@ function M.view_filter(opts, bufnr, session_id, column_index, query, mode, value
   return requests.view_filter(opts, bufnr, session_id, column_index, query, mode, value_key, label)
 end
 
-function M.view_values(opts, bufnr, session_id, column_index)
-  return requests.view_values(opts, bufnr, session_id, column_index)
+function M.view_values(opts, bufnr, session_id, column_index, query, offset, limit)
+  return requests.view_values(opts, bufnr, session_id, column_index, query, offset, limit)
+end
+
+function M.view_values_async(opts, bufnr, session_id, column_index, query, offset, limit, callback)
+  return requests.view_values_async(opts, bufnr, session_id, column_index, query, offset, limit, callback)
 end
 
 function M.view_schema_search(opts, bufnr, session_id, query)
@@ -1544,6 +1548,10 @@ end
 
 function M.view_cell(opts, bufnr, session_id, row_index, column_index)
   return requests.view_cell(opts, bufnr, session_id, row_index, column_index)
+end
+
+function M.view_close_async(opts, bufnr, session_id, callback)
+  return requests.view_close_async(opts, bufnr, session_id, callback)
 end
 
 function M.view_close(opts, bufnr, session_id)

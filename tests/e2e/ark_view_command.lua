@@ -1,5 +1,11 @@
 vim.opt.rtp:prepend(vim.fn.getcwd())
 
+-- This is a UI component test: runtime installation is covered by live E2Es.
+package.loaded["ark.bridge"] = {
+  ensure_current_runtime = function() return true end,
+  build_session_runtime = function() return true end,
+}
+
 local notifications = {}
 local started_lsp = 0
 local started_pane = 0
@@ -417,6 +423,12 @@ local ok, err = pcall(function()
     }, nil
   end
 
+  lsp.view_values_async = function(opts, bufnr, session_id, column_index, _query, _offset, _limit, callback)
+    local result, err = lsp.view_values(opts, bufnr, session_id, column_index)
+    callback(result, err)
+    return true
+  end
+
   lsp.view_profile = function(_opts, _bufnr, _session_id, column_index)
     profile_calls[#profile_calls + 1] = column_index
     local item = backend.schema[column_index]
@@ -479,6 +491,12 @@ local ok, err = pcall(function()
     return {
       closed = true,
     }, nil
+  end
+
+  lsp.view_close_async = function(opts, bufnr, session_id, callback)
+    local result, err = lsp.view_close(opts, bufnr, session_id)
+    callback(result, err)
+    return true
   end
 
   tmux.start = function()

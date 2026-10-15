@@ -248,6 +248,16 @@ pub(crate) struct ViewValuesParams {
     pub session_id: String,
     #[serde(default)]
     pub column_index: u32,
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    pub offset: u32,
+    #[serde(default = "default_view_values_limit")]
+    pub limit: u32,
+}
+
+fn default_view_values_limit() -> u32 {
+    1000
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -638,9 +648,7 @@ pub(crate) fn handle_view_rpc(params: ViewRpcRequest, state: &WorldState) -> Lsp
             params.value_key.as_str(),
             params.label.as_str(),
         ),
-        ViewRpcRequest::Values(params) => {
-            session_bridge.view_values(params.session_id.as_str(), params.column_index)
-        },
+        ViewRpcRequest::Values(params) => session_bridge.view_values(&params),
         ViewRpcRequest::SchemaSearch(params) => {
             session_bridge.view_schema_search(params.session_id.as_str(), params.query.as_str())
         },

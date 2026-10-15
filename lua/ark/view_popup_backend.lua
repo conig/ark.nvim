@@ -53,6 +53,11 @@ function M.unregister(id)
 
   local backend = backends[id]
   backends[id] = nil
+  if type(backend) == "table" then
+    for _, cancel in pairs(backend.pending or {}) do
+      cancel()
+    end
+  end
   if type(backend) == "table" and type(backend.on_dispose) == "function" then
     pcall(backend.on_dispose)
   end
@@ -89,6 +94,61 @@ function M.dispatch(id, method, args)
   end
 
   return rpc_response(true, result)
+end
+
+function M.cancel(id, request_id)
+  local backend = backends[id]
+  local cancel = backend and backend.pending and backend.pending[request_id]
+  if cancel then
+    backend.pending[request_id] = nil
+    cancel()
+  end
+end
+
+function M.dispatch_async(id, method, args, reply_channel, request_id)
+  local backend = backends[id]
+  local function reply(result, err)
+    if backend and backend.pending then
+      backend.pending[request_id] = nil
+    end
+    pcall(
+      vim.rpcnotify,
+      reply_channel,
+      "nvim_exec_lua",
+      "require('ark.view_popup_client').complete(...)",
+      { request_id, result or vim.NIL, err or vim.NIL }
+    )
+  end
+  if not backend or (method ~= "view_values" and method ~= "view_close") then
+    reply(nil, "unsupported or disposed ArkView async backend")
+    return
+  end
+  local lsp = backend.lsp or require("ark.lsp")
+  local fn = lsp[method .. "_async"]
+  if type(fn) ~= "function" then
+    reply(nil, "ArkView backend has no async values transport")
+    return
+  end
+  backend.pending = backend.pending or {}
+  local complete = false
+  local call_args = { backend.options, backend.source_bufnr }
+  vim.list_extend(call_args, args)
+  call_args[#call_args + 1] = function(result, failure)
+    complete = true
+    reply(result, failure)
+  end
+  local ok, _, err, cancel = pcall(fn, unpack_args(call_args))
+  if not ok then
+    reply(nil, _)
+    return
+  end
+  if err and not complete then
+    reply(nil, err)
+    return
+  end
+  if not complete and method ~= "view_close" then
+    backend.pending[request_id] = cancel or function() end
+  end
 end
 
 function M.ensure_rpc()

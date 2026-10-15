@@ -128,7 +128,16 @@ function M.new(deps)
       end, timeout_ms)
     end
 
-    return true
+    local function cancel()
+      if completed then
+        return
+      end
+      completed = true
+      if request_id and type(client.cancel_request) == "function" then
+        client:cancel_request(request_id)
+      end
+    end
+    return true, nil, cancel
   end
 
   local function buffer_request(opts, bufnr, method, params, timeout_ms)
@@ -260,11 +269,35 @@ function M.new(deps)
     }, VIEW_REQUEST_TIMEOUT_MS)
   end
 
-  function adapter.view_values(opts, bufnr, session_id, column_index)
-    return buffer_request(opts, bufnr, METHODS.view_values, {
+  local function view_values_params(session_id, column_index, query, offset, limit)
+    return {
       sessionId = session_id,
       columnIndex = column_index,
-    }, VIEW_REQUEST_TIMEOUT_MS)
+      query = query or "",
+      offset = offset or 0,
+      limit = limit or 1000,
+    }
+  end
+
+  function adapter.view_values(opts, bufnr, session_id, column_index, query, offset, limit)
+    return buffer_request(
+      opts,
+      bufnr,
+      METHODS.view_values,
+      view_values_params(session_id, column_index, query, offset, limit),
+      VIEW_REQUEST_TIMEOUT_MS
+    )
+  end
+
+  function adapter.view_values_async(opts, bufnr, session_id, column_index, query, offset, limit, callback)
+    return buffer_request_async(
+      opts,
+      bufnr,
+      METHODS.view_values,
+      view_values_params(session_id, column_index, query, offset, limit),
+      VIEW_REQUEST_TIMEOUT_MS,
+      callback
+    )
   end
 
   function adapter.view_schema_search(opts, bufnr, session_id, query)
@@ -302,6 +335,10 @@ function M.new(deps)
 
   function adapter.view_close(opts, bufnr, session_id)
     return buffer_request(opts, bufnr, METHODS.view_close, { sessionId = session_id }, VIEW_REQUEST_TIMEOUT_MS)
+  end
+
+  function adapter.view_close_async(opts, bufnr, session_id, callback)
+    return buffer_request_async(opts, bufnr, METHODS.view_close, { sessionId = session_id }, VIEW_REQUEST_TIMEOUT_MS, callback)
   end
 
   function adapter.object_children(opts, bufnr, session_id, node_id, offset, limit)

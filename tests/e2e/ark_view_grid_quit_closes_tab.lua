@@ -1,5 +1,11 @@
 vim.opt.rtp:prepend(vim.fn.getcwd())
 
+-- This is a UI component test: runtime installation is covered by live E2Es.
+package.loaded["ark.bridge"] = {
+  ensure_current_runtime = function() return true end,
+  build_session_runtime = function() return true end,
+}
+
 local close_calls = 0
 local notifications = {}
 
@@ -86,6 +92,12 @@ local ok, err = pcall(function()
     return {
       closed = true,
     }, nil
+  end
+
+  lsp.view_close_async = function(opts, bufnr, session_id, callback)
+    local result, err = lsp.view_close(opts, bufnr, session_id)
+    callback(result, err)
+    return true
   end
 
   tmux.start = function()

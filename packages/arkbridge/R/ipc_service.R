@@ -103,8 +103,21 @@
     schema_version = .ark_schema_version(),
     product_version = .ark_product_version(),
     status = "ok",
-    session = session
+    session = session,
+    recent_view_values = .ark_ipc_state$recent_view_values %||% list()
   )
+}
+
+# Reuse the encoded health response. History is invalidated by value requests
+# and lifecycle changes, not by polling. Authentication is still checked first.
+.ark_ping_json <- function(session) {
+  cached <- .ark_ipc_state$ping_cache
+  if (!is.null(cached) && identical(cached$session, session)) {
+    return(cached$json)
+  }
+  json <- .emit_json(.ark_ping_payload(session))
+  .ark_ipc_state$ping_cache <- list(session = session, json = json)
+  json
 }
 
 .ark_bootstrap_payload <- function(session) {
@@ -173,8 +186,10 @@
     return(req_meta_err)
   }
 
+  .ark_ipc_state$request_id <- req$request_id
+
   if (identical(req$command %||% "", "ping")) {
-    return(.emit_json(.ark_ping_payload(session)))
+    return(.ark_ping_json(session))
   }
 
   if (identical(req$command %||% "", "bootstrap")) {
@@ -253,7 +268,8 @@
     return(.ark_view_values_payload(
       session,
       req$session_id %||% "",
-      req$column_index %||% 0L
+      req$column_index %||% 0L,
+      req$query %||% "", req$offset %||% 0L, req$limit %||% 1000L
     ))
   }
 
@@ -434,6 +450,7 @@
 }
 
 stop_ipc_service <- function() {
+  .ark_ipc_state$ping_cache <- NULL
   if (isTRUE(.ark_ipc_state$running)) {
     try(.Call("C_ark_ipc_stop"), silent = TRUE)
   }
@@ -450,6 +467,7 @@ stop_ipc_service <- function() {
 }
 
 start_ipc_service <- function(port = NULL, options = list(), force = FALSE) {
+  .ark_ipc_state$ping_cache <- NULL
   session <- options$session %||% .current_session(options)
   auth_token <- options$auth_token %||% ""
   if (!is.character(auth_token) || length(auth_token) != 1L) {

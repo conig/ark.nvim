@@ -5,6 +5,7 @@ local M = {}
 
 local startup_status_cache = {}
 local bridge_ping_cache = {}
+local bridge_observations = {}
 local BRIDGE_PING_CACHE_TTL_MS = 100
 
 local function monotonic_ms()
@@ -266,6 +267,23 @@ function M.ping_bridge(session, status, timeout_ms)
     return cached.result == true
   end
 
+  local started = monotonic_ms()
+  local stage = "connect"
+  local function record(result, failure, recent)
+    local observed = bridge_observations[session_key(session)] or {}
+    observed.checked_ms = monotonic_ms()
+    observed.ready = result
+    observed.stage = stage
+    observed.elapsed_ms = monotonic_ms() - started
+    observed.error = failure
+    if recent then
+      observed.recent_view_values = recent
+    end
+    bridge_observations[session_key(session)] = observed
+    bridge_ping_cache[cache_key] = { checked_ms = observed.checked_ms, result = result }
+    return result
+  end
+
   local client = uv.new_tcp()
   if not client then
     return false
@@ -293,6 +311,7 @@ function M.ping_bridge(session, status, timeout_ms)
       return
     end
 
+    stage = "wait_response"
     client:read_start(function(read_err, chunk)
       if read_err then
         err_msg = tostring(read_err)
@@ -334,41 +353,32 @@ function M.ping_bridge(session, status, timeout_ms)
 
   if not ok or err_msg then
     close_client()
-    bridge_ping_cache[cache_key] = {
-      checked_ms = monotonic_ms(),
-      result = false,
-    }
-    return false
+    return record(false, err_msg or "probe timed out (R may be busy)")
   end
-
+  stage = "decode_response"
   local decoded_ok, payload = pcall(vim.json.decode, table.concat(chunks, ""))
   if not decoded_ok or type(payload) ~= "table" then
-    bridge_ping_cache[cache_key] = {
-      checked_ms = monotonic_ms(),
-      result = false,
-    }
-    return false
+    return record(false, "invalid ping response")
   end
   if payload.status ~= "ok" then
-    bridge_ping_cache[cache_key] = {
-      checked_ms = monotonic_ms(),
-      result = false,
-    }
-    return false
+    return record(false, "bridge rejected ping")
   end
   if payload.session and not same_session(session, payload.session) then
-    bridge_ping_cache[cache_key] = {
-      checked_ms = monotonic_ms(),
-      result = false,
-    }
-    return false
+    return record(false, "bridge session mismatch")
   end
+  stage = "complete"
+  return record(true, nil, payload.recent_view_values)
+end
 
-  bridge_ping_cache[cache_key] = {
-    checked_ms = monotonic_ms(),
-    result = true,
-  }
-  return true
+function M.bridge_diagnostics(session)
+  local observed = bridge_observations[session_key(session)]
+  if not observed then
+    return nil
+  end
+  local result = vim.deepcopy(observed)
+  result.checked_ago_ms = monotonic_ms() - result.checked_ms
+  result.checked_ms = nil
+  return result
 end
 
 return M

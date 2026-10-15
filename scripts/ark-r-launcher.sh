@@ -179,6 +179,7 @@ local({
   .quiet_con <- file(.quiet_log, open = "wt")
   .launcher_started_at <- Sys.time()
   .repl_seq <- 0L
+  .last_logged_status <- NULL
   .bootstrap_cache <- NULL
   .bootstrap_path <- ""
 
@@ -344,15 +345,21 @@ local({
     .payload <- utils::modifyList(.preserved_status_fields(.path), .payload)
     .write_json_file(.path, .payload, "ark-status-")
 
-    .log_line(
-      "[status] status=", .payload\$status,
-      " phase=", .string_field(.payload\$phase),
-      " port=", .string_field(.payload\$port),
-      " auth_token=", if (nzchar(.string_field(.payload\$auth_token))) "<set>" else "",
-      " repl_ready=", if (isTRUE(.payload\$repl_ready)) "true" else "false",
-      " error_code=", .string_field(.payload\$error_code),
-      " message=", .string_field(.payload\$message)
-    )
+    # REPL sequence updates still notify readers, but do not flush an identical
+    # ready line on every command. Log readiness/error transitions only.
+    .log_state <- .payload[c("status", "phase", "port", "repl_ready", "error_code", "message")]
+    if (!identical(.last_logged_status, .log_state)) {
+      .last_logged_status <<- .log_state
+      .log_line(
+        "[status] status=", .payload\$status,
+        " phase=", .string_field(.payload\$phase),
+        " port=", .string_field(.payload\$port),
+        " auth_token=", if (nzchar(.string_field(.payload\$auth_token))) "<set>" else "",
+        " repl_ready=", if (isTRUE(.payload\$repl_ready)) "true" else "false",
+        " error_code=", .string_field(.payload\$error_code),
+        " message=", .string_field(.payload\$message)
+      )
+    }
 
     invisible(NULL)
   }

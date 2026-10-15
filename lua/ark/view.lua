@@ -474,6 +474,9 @@ local function update_grid_summary(state)
     statusline_escape(sort_summary(state)),
     statusline_escape(pin_summary(state)),
   }
+  if state.values_loading then
+    parts[#parts + 1] = "Loading filter values…"
+  end
   local separator = "%#ArkViewSeparator# | %#ArkViewSummary#"
   pcall(function()
     vim.wo[state.grid_win].winbar = "%#ArkViewSummary#" .. table.concat(parts, separator) .. "%*"
@@ -1297,7 +1300,11 @@ local function safe_close_session(state)
     return
   end
 
-  pcall(state.lsp.view_close, state.options, state.source_bufnr, state.session_id)
+  if type(state.lsp.view_close_async) == "function" then
+    pcall(state.lsp.view_close_async, state.options, state.source_bufnr, state.session_id, function() end)
+  else
+    pcall(state.lsp.view_close, state.options, state.source_bufnr, state.session_id)
+  end
   state.session_id = nil
 end
 
@@ -1306,6 +1313,13 @@ local function teardown_state(state)
     return nil
   end
   state.closing = true
+  if state.cancel_values then
+    state.cancel_values()
+    state.cancel_values = nil
+  end
+  if state.value_picker and type(state.value_picker.close) == "function" then
+    state.value_picker:close()
+  end
   local on_close = state.on_close
   state.on_close = nil
   close_float_window(state)
@@ -1646,77 +1660,82 @@ local function apply_filter(state, column_index, query, mode, value_key, label)
   return updated
 end
 
-local function value_filter_label(item)
-  return string.format("%s (%d)", item.label or "", tonumber(item.count or 0) or 0)
-end
-
 local function open_value_filter_picker(state)
+  if state.values_loading then
+    return
+  end
   sync_selected_column(state)
   local column_index = tonumber(state.selected_column)
   local schema_item = schema_by_index(state, column_index)
   if not schema_item then
     return
   end
-
-  local payload = request_or_error(state, "ArkView Error", state.lsp.view_values, state.session_id, column_index)
-  if not payload then
-    return
+  local origin_win = vim.api.nvim_get_current_win()
+  local session_id = state.session_id
+  local filters = vim.deepcopy(state.filters)
+  local function current()
+    return state_is_active(state) and state.session_id == session_id and vim.deep_equal(filters, state.filters)
   end
-
-  local items = payload.values or {}
-  if #items == 0 then
-    notify(state, "ArkView column has no filterable values", vim.log.levels.INFO)
-    return
+  local function fetch(query, callback)
+    local function done(payload, err)
+      if not state_is_active(state) or state.session_id ~= session_id then
+        return
+      end
+      callback(payload, err)
+    end
+    if type(state.lsp.view_values_async) == "function" then
+      return state.lsp.view_values_async(
+        state.options,
+        state.source_bufnr,
+        session_id,
+        column_index,
+        query,
+        0,
+        1000,
+        done
+      )
+    end
+    -- Component/custom backends without an async transport remain supported.
+    local payload, err =
+      state.lsp.view_values(state.options, state.source_bufnr, session_id, column_index, query, 0, 1000)
+    done(payload, err)
+    return payload ~= nil, err
   end
-
-  local function choose(item)
-    if not item then
+  state.values_loading = true
+  update_grid_summary(state)
+  local _, _, cancel = fetch("", function(payload, err)
+    state.values_loading = false
+    state.cancel_values = nil
+    update_grid_summary(state)
+    if not current() then
       return
     end
-    apply_filter(state, column_index, item.label or "", "exact", item.value_key or "", item.label or "")
-  end
-
-  local title = "ArkView Values: " .. (schema_item.name or "column")
-  local ok, snacks = pcall(require, "snacks")
-  if ok and type(snacks) == "table" and type(snacks.picker) == "table" and type(snacks.picker.select) == "function" then
-    snacks.picker.select(items, {
-      prompt = title,
-      format_item = value_filter_label,
-      snacks = {
-        -- ui_select normally searches "index label (count)". Keep the index
-        -- and frequency in the formatter, but match only the column value.
-        transform = function(item)
-          item.text = item.item.label or ""
-        end,
-      },
-    }, choose)
-    return
-  end
-
-  if ok and type(snacks) == "table" and type(snacks.picker) == "table" and type(snacks.picker.pick) == "function" then
-    snacks.picker.pick({
-      title = title,
-      items = vim.tbl_map(function(item)
-        return {
-          text = item.label or "",
-          item = item,
-        }
-      end, items),
-      format = function(item)
-        return { { value_filter_label(item.item) } }
+    if err then
+      show_details(state, "ArkView Error", err)
+      notify(state, err, vim.log.levels.WARN)
+      return
+    end
+    if not payload or #(payload.values or {}) == 0 then
+      notify(state, "ArkView column has no filterable values", vim.log.levels.INFO)
+      return
+    end
+    state.value_picker = require("ark.value_picker").open({
+      title = "ArkView Values: " .. (schema_item.name or "column"),
+      origin_win = origin_win,
+      fetch = fetch,
+      notify = function(message)
+        notify(state, message, vim.log.levels.WARN)
       end,
-      confirm = function(picker, choice)
-        picker:close()
-        choose(choice and choice.item or nil)
+      choose = function(item)
+        if item and current() then
+          apply_filter(state, column_index, item.label or "", "exact", item.value_key or "", item.label or "")
+        end
       end,
-    })
-    return
+    }, payload)
+  end)
+  if state.values_loading then
+    state.cancel_values = cancel
   end
-
-  vim.ui.select(items, {
-    prompt = title,
-    format_item = value_filter_label,
-  }, choose)
 end
 
 local function prompt_numeric_filter(state, mode, symbol, label)

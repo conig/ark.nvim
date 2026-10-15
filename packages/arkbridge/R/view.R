@@ -916,6 +916,9 @@
 .ark_view_state_payload <- function(session, session_id) {
   .ark_view_safe(session, {
     view <- .ark_view_require_session_id(session, session_id)
+    # Explicit refresh is the revision boundary for by-reference data.table edits.
+    view$value_index <- NULL
+    assign(session_id, view, envir = .ark_ipc_state$views)
     .emit_json(utils::modifyList(
       list(schema_version = .ark_schema_version(), status = "ok", session = session),
       .ark_view_state_payload_data(view)
@@ -1025,45 +1028,104 @@
   })
 }
 
-.ark_view_values_payload <- function(session, session_id, column_index) {
+# Only one column index is retained per view, bounding cache growth for wide tables.
+# Its key excludes both row order and this column's own filter.
+.ark_view_value_index <- function(view, column_index) {
+  filters <- view$filters %||% list()
+  filters[[as.character(column_index)]] <- NULL
+  cached <- view$value_index
+  if (!is.null(cached) && identical(cached$column_index, column_index) && identical(cached$filters, filters)) {
+    return(list(index = cached, cache_hit = TRUE, timings = list(filter_ms = 0, keys_ms = 0, count_ms = 0, labels_ms = 0)))
+  }
+
+  now <- function() unname(proc.time()[[3L]])
+  started <- now()
+  # Frequencies do not depend on row order: do not sort/materialize the full table.
+  data <- .ark_view_apply_filters(view$data, filters)
+  column <- data[[column_index]]
+  filtered <- now()
+  if (is.atomic(column) && !is.object(column)) {
+    # Equivalent to the scalar key encoder, without an R callback for every row.
+    keys <- paste0(paste(class(column), collapse = "/"), ":", encodeString(as.character(column), quote = "\""))
+    keys[is.na(column)] <- paste0(paste(class(column), collapse = "/"), ":<NA>")
+  } else {
+    keys <- vapply(column, .ark_view_value_key, character(1))
+  }
+  keyed <- now()
+  first <- which(!duplicated(keys))
+  unique_keys <- keys[first]
+  counts <- tabulate(match(keys, unique_keys), nbins = length(first))
+  counted <- now()
+  if (is.character(column) && !is.object(column)) {
+    labels <- column[first]
+    # Most names need no display escaping. Keep the scalar formatter for empty,
+    # missing, whitespace/control-heavy or truncated strings only.
+    plain <- !is.na(labels) & nzchar(labels) & nchar(labels, type = "bytes") <= 80L &
+      !grepl("(^ | $| {2}|[\\\\\\r\\n\\t])", labels, perl = TRUE)
+    labels[!plain] <- vapply(column[first[!plain]], .ark_view_value_label, character(1))
+  } else {
+    labels <- vapply(first, function(index) .ark_view_value_label(column[[index]]), character(1))
+  }
+  search_text <- if (is.character(column) || is.factor(column)) as.character(column[first]) else labels
+  search_text[is.na(search_text) | !nzchar(search_text)] <- labels[is.na(search_text) | !nzchar(search_text)]
+  ordered <- order(-counts, labels, unique_keys)
+  index <- list(
+    column_index = column_index, filters = filters,
+    rows = length(column), type = typeof(column),
+    keys = unique_keys[ordered], labels = labels[ordered], search_text = search_text[ordered], counts = counts[ordered]
+  )
+  list(index = index, cache_hit = FALSE, timings = list(
+    filter_ms = (filtered - started) * 1000,
+    keys_ms = (keyed - filtered) * 1000,
+    count_ms = (counted - keyed) * 1000,
+    labels_ms = (now() - counted) * 1000
+  ))
+}
+
+.ark_view_values_payload <- function(session, session_id, column_index, query = "", offset = 0L, limit = 1000L) {
   .ark_view_safe(session, {
+    started <- unname(proc.time()[[3L]])
     view <- .ark_view_require_session_id(session, session_id)
     column_index <- suppressWarnings(as.integer(column_index))
     if (is.na(column_index) || column_index < 1L || column_index > ncol(view$data)) {
       .ark_view_fail("E_IPC_REQUEST", "invalid column_index", "ipc_view_values")
     }
-
-    data <- .ark_view_current_data(view, exclude_filter_column = column_index)
-    column <- data[[column_index]]
-    if (!length(column)) {
-      values <- list()
-    } else {
-      keys <- vapply(column, .ark_view_value_key, character(1))
-      labels <- vapply(column, .ark_view_value_label, character(1))
-      counts <- sort(table(keys, useNA = "no"), decreasing = TRUE)
-      values <- lapply(names(counts), function(key) {
-        first <- match(key, keys)
-        list(
-          label = labels[[first]],
-          value_key = key,
-          count = as.integer(counts[[key]])
-        )
-      })
-      values <- values[order(
-        -vapply(values, function(item) item$count %||% 0L, integer(1)),
-        vapply(values, function(item) item$label %||% "", character(1))
-      )]
+    offset <- suppressWarnings(as.integer(offset))
+    limit <- suppressWarnings(as.integer(limit))
+    if (is.na(offset) || offset < 0L || is.na(limit) || limit < 1L) {
+      .ark_view_fail("E_IPC_REQUEST", "invalid value page", "ipc_view_values")
     }
-
-    .emit_json(list(
-      schema_version = .ark_schema_version(),
-      status = "ok",
-      session = session,
-      session_id = session_id,
-      column_index = as.integer(column_index),
-      total_values = as.integer(length(values)),
-      values = values
+    limit <- min(limit, 1000L)
+    result <- .ark_view_value_index(view, column_index)
+    index <- result$index
+    if (!result$cache_hit) {
+      view$value_index <- index
+      assign(session_id, view, envir = .ark_ipc_state$views)
+    }
+    selected <- if (nzchar(query)) which(.ark_view_fixed_search(query, index$search_text)) else seq_along(index$keys)
+    matched <- length(selected)
+    selected <- utils::head(selected[seq_along(selected) > offset], limit)
+    values <- lapply(selected, function(row) list(
+      label = index$labels[[row]], value_key = index$keys[[row]], count = as.integer(index$counts[[row]])
     ))
+    diagnostics <- c(list(column_index = column_index, type = index$type, rows = index$rows,
+      distinct = length(index$keys), returned = length(values), cache_hit = result$cache_hit), result$timings)
+    encode_start <- unname(proc.time()[[3L]])
+    payload <- .emit_json(list(
+      schema_version = .ark_schema_version(), status = "ok", session = session,
+      session_id = session_id, column_index = column_index,
+      total_values = as.integer(length(index$keys)), matched_values = as.integer(matched),
+      offset = offset, limit = limit, values = values, diagnostics = diagnostics
+    ))
+    # Keep small metadata only, never cell values/expressions. Serialize once.
+    diagnostics$encode_ms <- (unname(proc.time()[[3L]]) - encode_start) * 1000
+    diagnostics$total_ms <- (unname(proc.time()[[3L]]) - started) * 1000
+    diagnostics$response_bytes <- nchar(payload, type = "bytes")
+    diagnostics$request_id <- .ark_ipc_state$request_id %||% ""
+    recent <- .ark_ipc_state$recent_view_values %||% list()
+    .ark_ipc_state$recent_view_values <- utils::tail(c(recent, list(diagnostics)), 16L)
+    .ark_ipc_state$ping_cache <- NULL
+    payload
   })
 }
 

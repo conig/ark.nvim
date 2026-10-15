@@ -59,7 +59,7 @@ local function worker_script_lines(session_id)
     "  if (identical(command, 'view_page')) return(.ark_view_page_payload(.ark_target_view_session, req$session_id %||% '', req$offset %||% 0L, req$limit %||% 0L, req$columns %||% integer()))",
     "  if (identical(command, 'view_sort')) return(.ark_view_sort_payload(.ark_target_view_session, req$session_id %||% '', req$column_index %||% 0L, req$direction %||% ''))",
     "  if (identical(command, 'view_filter')) return(.ark_view_filter_payload(.ark_target_view_session, req$session_id %||% '', req$column_index %||% 0L, req$query %||% '', req$mode %||% 'contains', req$value_key %||% '', req$label %||% ''))",
-    "  if (identical(command, 'view_values')) return(.ark_view_values_payload(.ark_target_view_session, req$session_id %||% '', req$column_index %||% 0L))",
+    "  if (identical(command, 'view_values')) return(.ark_view_values_payload(.ark_target_view_session, req$session_id %||% '', req$column_index %||% 0L, req$query %||% '', req$offset %||% 0L, req$limit %||% 1000L))",
     "  if (identical(command, 'view_schema_search')) return(.ark_view_schema_search_payload(.ark_target_view_session, req$session_id %||% '', req$query %||% ''))",
     "  if (identical(command, 'view_profile')) return(.ark_view_profile_payload(.ark_target_view_session, req$session_id %||% '', req$column_index %||% 0L))",
     "  if (identical(command, 'view_code')) return(.ark_view_code_payload(.ark_target_view_session, req$session_id %||% ''))",
@@ -156,6 +156,12 @@ function Worker:start()
     on_exit = function(_, code)
       self.exited = true
       self.exit_code = code
+      local pending = self.pending
+      self.pending = {}
+      for _, callback in pairs(pending) do
+        local suffix = #self.stderr > 0 and (": " .. table.concat(self.stderr, "\n")) or ""
+        callback(nil, "target ArkView R worker exited: " .. tostring(code) .. suffix)
+      end
       if self.script then
         pcall(vim.fn.delete, self.script)
         self.script = nil
@@ -185,44 +191,55 @@ function Worker:handle_line(line)
     return
   end
 
-  self.responses[request_id] = decoded
+  local callback = self.pending[request_id]
+  if callback then
+    self.pending[request_id] = nil
+    if type(decoded.error) == "table" then
+      callback(nil, tostring(decoded.error.message or "target ArkView request failed"))
+    else
+      decoded.request_id = nil
+      callback(decoded, nil)
+    end
+  end
+end
+
+function Worker:request_async(command, payload, timeout_ms, callback)
+  local started, start_err = self:start()
+  if not started then
+    callback(nil, start_err)
+    return nil, start_err
+  end
+  local request_id = new_request_id()
+  self.pending[request_id] = callback
+  payload = vim.tbl_extend("force", payload or {}, { command = command, request_id = request_id })
+  if vim.fn.chansend(self.job_id, vim.json.encode(payload) .. "\n") == 0 then
+    self.pending[request_id] = nil
+    callback(nil, "failed to send target ArkView request")
+    return nil, "failed to send target ArkView request"
+  end
+  vim.defer_fn(function()
+    local cb = self.pending[request_id]
+    if not cb then
+      return
+    end
+    self.pending[request_id] = nil
+    local suffix = #self.stderr > 0 and (": " .. table.concat(self.stderr, "\n")) or ""
+    cb(nil, "target ArkView request timed out (R may still be computing)" .. suffix)
+  end, timeout_ms or 12000)
+  return true, nil, function()
+    self.pending[request_id] = nil
+  end
 end
 
 function Worker:request(command, payload, timeout_ms)
-  local started, start_err = self:start()
-  if not started then
-    return nil, start_err
-  end
-
-  local request_id = new_request_id()
-  payload = vim.tbl_extend("force", payload or {}, {
-    command = command,
-    request_id = request_id,
-  })
-
-  local sent = vim.fn.chansend(self.job_id, vim.json.encode(payload) .. "\n")
-  if sent == 0 then
-    return nil, "failed to send target ArkView request"
-  end
-
-  timeout_ms = timeout_ms or 12000
-  local ready = vim.wait(timeout_ms, function()
-    return self.responses[request_id] ~= nil or self.exited == true
+  local response, failure, complete
+  self:request_async(command, payload, timeout_ms, function(result, err)
+    response, failure, complete = result, err, true
+  end)
+  vim.wait((timeout_ms or 12000) + 100, function()
+    return complete
   end, 10, false)
-
-  local response = self.responses[request_id]
-  self.responses[request_id] = nil
-  if not ready or response == nil then
-    local suffix = #self.stderr > 0 and (": " .. table.concat(self.stderr, "\n")) or ""
-    return nil, "target ArkView request timed out" .. suffix
-  end
-
-  if type(response.error) == "table" then
-    return nil, tostring(response.error.message or "target ArkView request failed")
-  end
-
-  response.request_id = nil
-  return response, nil
+  return response, failure or (not complete and "target ArkView request timed out" or nil)
 end
 
 function Worker:stop()
@@ -256,7 +273,7 @@ function M.create(opts)
     name = name,
     project = project,
     r = opts.r,
-    responses = {},
+    pending = {},
     stderr = {},
     session_id = string.format("target-view-%d-%d", uv.os_getpid(), math.floor(uv.hrtime() / 1000000)),
   }, Worker)
@@ -309,11 +326,27 @@ function M.create(opts)
     })
   end
 
-  proxy.view_values = function(_, _, session_id, column_index)
-    return worker:request("view_values", {
+  local function values_payload(session_id, column_index, query, offset, limit)
+    return {
       session_id = session_id or "",
       column_index = column_index or 0,
-    })
+      query = query or "",
+      offset = offset or 0,
+      limit = limit or 1000,
+    }
+  end
+
+  proxy.view_values = function(_, _, session_id, column_index, query, offset, limit)
+    return worker:request("view_values", values_payload(session_id, column_index, query, offset, limit))
+  end
+
+  proxy.view_values_async = function(_, _, session_id, column_index, query, offset, limit, callback)
+    return worker:request_async(
+      "view_values",
+      values_payload(session_id, column_index, query, offset, limit),
+      nil,
+      callback
+    )
   end
 
   proxy.view_schema_search = function(_, _, session_id, query)
@@ -347,6 +380,15 @@ function M.create(opts)
       row_index = row_index or 0,
       column_index = column_index or 0,
     })
+  end
+
+  proxy.view_close_async = function(_, _, session_id, callback)
+    return worker:request_async("view_close", { session_id = session_id or "" }, nil, function(result, err)
+      if root_session_id == nil or session_id == root_session_id then
+        worker:stop()
+      end
+      callback(result, err)
+    end)
   end
 
   proxy.view_close = function(_, _, session_id)

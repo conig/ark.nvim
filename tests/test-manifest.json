@@ -25,6 +25,45 @@
   },
   "rules": [
     {
+      "names": ["ark_view_value_picker_lifecycle.lua"],
+      "tier": "fast",
+      "layer": "component",
+      "contract": "real Snacks live finder handles synchronous backend failures without hanging",
+      "dependencies": ["neovim", "snacks"],
+      "mutates_shared_session": false
+    },
+    {
+      "names": [
+        "ark_view_values_responsiveness.lua",
+        "ark_view_values_popup_async.lua"
+      ],
+      "contract": "nonblocking, bounded exact-value filtering and live search over the full maps city-name column, including popup RPC",
+      "dependencies": [
+        "neovim",
+        "r",
+        "tmux",
+        "snacks",
+        "R:maps",
+        "R:data.table"
+      ]
+    },
+    {
+      "names": [
+        "ark_view_values_bridge.lua"
+      ],
+      "tier": "fast",
+      "layer": "component",
+      "contract": "bounded value enumeration, linear grouping, cache invalidation, display/key parity and metadata-only timings",
+      "dependencies": [
+        "neovim",
+        "r",
+        "R:jsonlite",
+        "R:maps",
+        "R:data.table"
+      ],
+      "mutates_shared_session": false
+    },
+    {
       "names": ["ark_view_value_search.lua"],
       "contract": "real Snacks value picker searches cell contents without row indices or frequency counts",
       "dependencies": ["neovim", "r", "tmux", "snacks"]
