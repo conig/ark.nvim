@@ -98,6 +98,8 @@ declarations, show references, inspect target metadata, complete cached target
 object members, and run approved local target actions. Ark uses `_targets.R` by
 default and also honors targets script settings from `_targets.yaml`.
 
+`:Ark targets preview [names]` shows outdated targets, upstream dependencies and last recorded durations in an asynchronous read-only view. It needs no managed R session and builds nothing. It inspects saved files in a disposable R worker; pipeline configuration and project-profile code still run, so their side effects apply. Unsaved buffers are warned about, never autosaved. Press `q` to cancel/close.
+
 ## What It Is Not
 
 `ark.nvim` intentionally does not try to be:

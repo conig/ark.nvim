@@ -25,6 +25,15 @@
   },
   "rules": [
     {
+      "names": ["targets_rebuild_preview.lua"],
+      "tier": "fast",
+      "layer": "product-e2e",
+      "contract": "public asynchronous rebuild preview respects custom project paths, saved state, bounds and cancellation without a managed session or target builds",
+      "dependencies": ["neovim", "r", "R:targets"],
+      "typical_runtime": "under 60 seconds",
+      "mutates_shared_session": false
+    },
+    {
       "names": ["frontmatter_semantics.lua"],
       "tier": "fast",
       "layer": "product-e2e",

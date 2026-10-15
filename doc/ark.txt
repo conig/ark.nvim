@@ -321,6 +321,7 @@ Target commands: >vim
   :Ark targets info
   :Ark targets manifest
   :Ark targets graph
+  :Ark targets preview [names]
   :Ark targets status [names]
   :Ark targets meta [names]
   :Ark targets object-meta {name}
@@ -562,6 +563,27 @@ Error navigation ~
     a separate R worker, with no pipeline/profile evaluation. That worker needs
     targets/jsonlite on its normal library paths, not only an activated renv.
     Requests are asynchronous and bounded; traces are never in support reports.
+
+Targets rebuild preview ~
+    :Ark targets preview [names]  Preview outdated targets and dependencies.
+    :ArkTargetsPreview [names]    Alias for the same inspection.
+
+    Names are literal, comma/space-separated target names, not R expressions.
+    No names means the whole pipeline; a selection includes its upstream
+    dependencies. Discovery honors the current buffer's configured script/store.
+    The read-only split shows outdated state and last recorded durations, not
+    predicted build time. Dynamic branches are summarized by their parent.
+
+    No managed R/LSP session is required and no targets are built. A disposable
+    R worker evaluates saved pipeline configuration twice through public targets
+    APIs, honoring project .Rprofile/.Renviron (including renv). Configuration
+    and profile side effects still apply. Unsaved buffers are warned about,
+    never saved. The snapshot is not transactional; rerun after editing.
+
+    Requests have a 30-second default deadline and bounded output/results.
+    Default display: 1,000 targets / 2,000 edges, with full counts and truncation
+    notices. q, buffer removal, supersession or editor exit cancels pending work
+    and its owned process group. No background polling or automatic rebuild.
 
 Frontmatter ~
     Rmd output completion includes namespaced rmarkdown, papaja and bookdown

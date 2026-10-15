@@ -128,6 +128,7 @@ local ark_command_completions = {
   "targets network",
   "targets object-meta",
   "targets pick",
+  "targets preview",
   "targets status",
   "targets view",
   "view",
@@ -177,6 +178,8 @@ local function dispatch_targets_command(args)
     end
   elseif subcommand == "graph" or subcommand == "network" then
     ark.targets_graph(0)
+  elseif subcommand == "preview" then
+    ark.targets_preview(names, 0)
   elseif subcommand == "status" then
     ark.targets_status(names, 0)
   elseif subcommand == "meta" then
@@ -498,6 +501,13 @@ end, { desc = "Open the target graph for the current buffer" })
 vim.api.nvim_create_user_command("ArkTargetsNetwork", function()
   require("ark").targets_graph(0)
 end, { desc = "Open the target graph for the current buffer" })
+
+vim.api.nvim_create_user_command("ArkTargetsPreview", function(args)
+  require("ark").targets_preview(args.args, 0)
+end, {
+  desc = "Preview outdated targets and dependencies without building; accepts literal target names",
+  nargs = "*",
+})
 
 vim.api.nvim_create_user_command("ArkTargetStatus", function(args)
   require("ark").targets_status(args.args, 0)

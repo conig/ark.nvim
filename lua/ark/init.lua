@@ -1497,6 +1497,25 @@ function M.targets_graph(bufnr)
   return target_actions_controller().targets_graph(bufnr)
 end
 
+function M.targets_preview(names, bufnr)
+  ensure_setup()
+  -- Match the existing target commands: names are literal strings, separated
+  -- by commas/whitespace, or supplied as a list. Never evaluate R selection code.
+  local selected = {}
+  if type(names) == "string" then
+    for name in names:gmatch("[^,%s]+") do
+      selected[#selected + 1] = name
+    end
+  elseif type(names) == "table" then
+    for _, name in ipairs(names) do
+      if (type(name) == "string" or type(name) == "number") and tostring(name) ~= "" then
+        selected[#selected + 1] = tostring(name)
+      end
+    end
+  end
+  return require("ark.targets_preview").open(M.targets_project(bufnr), { names = selected })
+end
+
 function M.targets_meta(names, bufnr)
   return target_actions_controller().targets_meta(names, bufnr)
 end
