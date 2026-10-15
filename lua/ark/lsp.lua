@@ -510,9 +510,11 @@ local function console_session_snapshot(opts, snapshot_opts, bufnr)
     and type(authoritative_status.auth_token) == "string"
     and authoritative_status.auth_token ~= ""
   then
-    -- Watcher/session sync reads published metadata only. A synchronous ping
-    -- pumps events and can re-enter the watcher with an older snapshot.
-    if snapshot_opts.fast == true or snapshot_opts.validate_bridge == false then
+    -- Watcher/session sync reads published metadata only unless validation
+    -- is explicit. A synchronous ping pumps events and can re-enter the watcher.
+    if snapshot_opts.validate_bridge == false
+      or (snapshot_opts.fast == true and snapshot_opts.validate_bridge ~= true)
+    then
       bridge_ready = true
     else
       local timeout_ms = tonumber(snapshot_opts.bridge_timeout_ms or snapshot_opts.timeout_ms or 150) or 150

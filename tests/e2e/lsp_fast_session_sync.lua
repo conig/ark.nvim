@@ -178,10 +178,15 @@ local ok, err = pcall(function()
   assert(console_payload.status == "ready" and console_payload.replReady == true)
   assert(console_payload.replSeq == 8, "fast console sync lost authoritative sequence")
 
-  -- Explicitly validated/non-fast snapshots still probe, so the cheap watcher
-  -- path does not silently weaken status checks that request live evidence.
+  -- Explicit validation takes precedence over fast metadata reads, matching
+  -- the backend snapshot contract used by direct LSP configuration.
+  lsp.sync_sessions(opts, bufnr, { fast = true, validate_bridge = true })
+  assert(ping_calls == 1, "fast console session sync ignored explicit bridge validation")
+
+  -- Non-fast snapshots still probe, so the cheap watcher path does not
+  -- silently weaken status checks that request live evidence.
   lsp.sync_sessions(opts, bufnr, { fast = false, validate_bridge = true })
-  assert(ping_calls == 1, "validated console session sync did not probe live R")
+  assert(ping_calls == 2, "validated console session sync did not probe live R")
 end)
 
 vim.lsp.get_clients = original_get_clients
