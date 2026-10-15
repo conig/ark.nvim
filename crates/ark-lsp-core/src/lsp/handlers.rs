@@ -1236,10 +1236,27 @@ fn target_project_paths(
     uri: &tower_lsp::lsp_types::Url,
     state: &WorldState,
 ) -> Option<(String, String, String)> {
-    let path = uri.to_file_path().ok()?;
-    let root = targets_project::find_targets_root_for_path(path.as_path())
-        .or_else(|| find_open_targets_root(state))
-        .or_else(|| path.parent().map(Path::to_path_buf))?;
+    let root = if let Ok(path) = uri.to_file_path() {
+        targets_project::find_targets_root_for_path(path.as_path())
+            .or_else(|| find_open_targets_root(state))
+            .or_else(|| path.parent().map(Path::to_path_buf))?
+    } else if uri.scheme() == "ark-console" {
+        // A console has no file path. Use its declared workspace, not an
+        // arbitrary open document or another project's indexed target names.
+        let roots: BTreeSet<_> = state
+            .workspace
+            .folders
+            .iter()
+            .filter_map(|folder| folder.to_file_path().ok())
+            .filter_map(|path| targets_project::find_targets_root_for_path(&path))
+            .collect();
+        if roots.len() != 1 {
+            return None;
+        }
+        roots.into_iter().next()?
+    } else {
+        return None;
+    };
     let script = targets_project::targets_script_for_root(root.as_path());
     let store = target_store_path(root.as_path()).unwrap_or_else(|| root.join("_targets"));
 
@@ -1932,6 +1949,36 @@ list()
             target_project_paths(&analysis_uri, &state).expect("expected target project paths");
 
         assert_eq!(PathBuf::from(store), tempdir.path().join("_targets"));
+    }
+
+    #[test]
+    fn test_console_target_project_is_scoped_to_its_workspace() {
+        let project = tempdir().expect("expected project");
+        let other = tempdir().expect("expected other project");
+        for root in [project.path(), other.path()] {
+            fs::write(root.join("_targets.R"), "list()\n").expect("expected targets script");
+        }
+        let console = Url::parse("ark-console://session/1").expect("expected console URI");
+        let project_uri = Url::from_directory_path(project.path()).expect("expected project URI");
+        let other_uri = Url::from_directory_path(other.path()).expect("expected other URI");
+        let mut state = WorldState::default();
+        state.documents.insert(
+            Url::from_file_path(other.path().join("_targets.R")).unwrap(),
+            Document::new("list()", None),
+        );
+        assert!(target_project_paths(&console, &state).is_none());
+
+        state.workspace.folders = vec![project_uri.clone(), project_uri];
+        let (root, _, _) =
+            target_project_paths(&console, &state).expect("expected console project");
+        assert_eq!(PathBuf::from(root), project.path());
+        assert!(target_project_paths(&Url::parse("ark://unrelated").unwrap(), &state).is_none());
+
+        state.workspace.folders.push(other_uri);
+        assert!(
+            target_project_paths(&console, &state).is_none(),
+            "ambiguous console projects must use live R fallback"
+        );
     }
 
     #[test]

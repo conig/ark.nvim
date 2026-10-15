@@ -280,6 +280,13 @@ local function root_dir(bufnr, markers)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local cwd = vim.loop.cwd()
   if vim.b[bufnr].ark_console == true or path:match("^ark%-console://") then
+    -- The console lives in a separate Neovim in managed tmux sessions. Its
+    -- virtual URI must not hide the project from the background indexer.
+    local cwd_root = project_root_for_path(cwd, { "_targets.R", "_targets.yaml" })
+      or project_root_for_path(cwd, markers)
+    if cwd_root and not ad_hoc_directory(cwd_root) then
+      return cwd_root
+    end
     return unnamed_workspace_root()
   end
 

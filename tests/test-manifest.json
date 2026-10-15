@@ -25,6 +25,12 @@
   },
   "rules": [
     {
+      "names": ["nvim_console_target_completion.lua"],
+      "contract": "project-scoped target completion in a standalone console without evaluating a slow manifest",
+      "dependencies": ["neovim", "r", "tmux", "R:targets"],
+      "mutates_shared_session": false
+    },
+    {
       "names": ["ark_view_value_picker_lifecycle.lua"],
       "tier": "fast",
       "layer": "component",

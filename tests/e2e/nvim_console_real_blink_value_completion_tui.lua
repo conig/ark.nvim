@@ -5,6 +5,7 @@ local session_name = ark_test.register_tmux_session(ark_test.tmux_session_name("
 local trace_path = vim.fs.normalize(ark_test.run_tmpdir() .. "/nvim_console_real_blink_value_trace.log")
 local state_home = vim.fs.normalize(ark_test.run_tmpdir() .. "/nvim_console_real_blink_value_state")
 local status_dir = vim.fs.normalize(ark_test.run_tmpdir() .. "/nvim_console_real_blink_value_status")
+local project_dir = vim.fs.normalize(ark_test.run_tmpdir() .. "/console-target-project")
 local launcher = vim.fs.normalize(repo_root .. "/scripts/ark-r-launcher.sh")
 local lsp_bin = vim.fs.normalize(repo_root .. "/target/debug/ark-lsp")
 local stop_watchdog = ark_test.start_watchdog(120000, "nvim_console_real_blink_value_completion_tui")
@@ -23,6 +24,15 @@ end
 ark_test.assert_fresh_detached_lsp_binary(lsp_bin)
 
 vim.fn.mkdir(status_dir, "p")
+vim.fn.mkdir(project_dir .. "/_target_pipelines", "p")
+vim.fn.writefile({
+  "Sys.sleep(2)",
+  'targets::tar_source("_target_pipelines")',
+  "manuscript_targets",
+}, project_dir .. "/_targets.R")
+vim.fn.writefile({
+  "manuscript_targets <- list(targets::tar_target(manuscript_pdf, 1), targets::tar_target(manuscript_docx, 2))",
+}, project_dir .. "/_target_pipelines/manuscript.R")
 
 local function tmux(args, allow_failure)
   local command = { "tmux" }
@@ -89,6 +99,8 @@ local ok, err = xpcall(function()
     vim.fn.shellescape(init_path),
     "-c",
     "'set shadafile=NONE'",
+    "-c",
+    vim.fn.shellescape("cd " .. vim.fn.fnameescape(project_dir)),
     "-c",
     "'luafile " .. repo_root .. "/tests/e2e/tui_blink_trace.lua'",
   }, " ")
@@ -203,6 +215,27 @@ local ok, err = xpcall(function()
   vim.print({
     completion_show = completion_show,
   })
+
+  -- The managed console is its own Neovim with only a virtual R buffer. Match
+  -- typing ma before an existing closing delimiter, not an artificial trigger.
+  run_ex_command(":ArkTraceClearInput")
+  tmux({ "send-keys", "-l", "-t", nvim_pane, "tar_make()" })
+  tmux({ "send-keys", "-t", nvim_pane, "Left" })
+  tmux({ "send-keys", "-l", "-t", nvim_pane, "ma" })
+  ark_test.wait_for("automatic console Blink manuscript target completion", 15000, function()
+    return latest_matching(function(candidate)
+      if candidate.label ~= "BlinkCmpShow" or candidate.line ~= "tar_make(ma)" then
+        return false
+      end
+      local names = {}
+      for _, item in ipairs(candidate.items or {}) do
+        if item.client_name == "ark_lsp" then
+          names[item.label] = true
+        end
+      end
+      return names.manuscript_pdf and names.manuscript_docx
+    end) ~= nil
+  end)
 
   -- Regression: in a browser/debug prompt, local frame symbols must be merged
   -- into ordinary console symbol completion. A short prefix such as `da`

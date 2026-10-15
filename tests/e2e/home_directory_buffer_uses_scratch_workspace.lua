@@ -34,6 +34,17 @@ if root_dir ~= scratch_root then
   }))
 end
 
+-- Giving project consoles a real workspace must not make an ad hoc console
+-- launched from HOME scan the user's entire home directory.
+local console_bufnr = vim.api.nvim_create_buf(false, true)
+vim.api.nvim_buf_set_name(console_bufnr, "ark-console://home-scratch-test")
+vim.b[console_bufnr].ark_console = true
+local console_config = require("ark").lsp_config(console_bufnr)
+assert(
+  vim.fs.normalize(console_config.root_dir) == scratch_root,
+  "home-directory console should retain scratch workspace isolation"
+)
+
 vim.print({
   root_dir = root_dir,
   scratch_root = scratch_root,
