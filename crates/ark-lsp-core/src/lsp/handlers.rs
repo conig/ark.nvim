@@ -105,6 +105,7 @@ use crate::treesitter::NodeTypeExt;
 
 pub static ARK_VDOC_REQUEST: &str = "ark/internal/virtualDocument";
 pub static ARK_STATUS_REQUEST: &str = "ark/internal/status";
+pub static ARK_ERROR_TRACEBACK_REQUEST: &str = "ark/internal/errorTraceback";
 pub static ARK_HELP_TEXT_REQUEST: &str = "ark/internal/helpText";
 pub static ARK_PACKAGE_INSTALL_REQUEST: &str = "ark/internal/packageInstall";
 pub static ARK_SESSION_BOOTSTRAP_REQUEST: &str = "ark/internal/bootstrapSession";
@@ -686,6 +687,18 @@ pub(crate) fn handle_view_rpc(params: ViewRpcRequest, state: &WorldState) -> Lsp
     };
 
     response.map_err(LspError::Anyhow)
+}
+
+pub(crate) fn handle_error_traceback(state: &WorldState) -> LspResult<Value> {
+    if state.has_attached_runtime() {
+        return Err(LspError::Anyhow(anyhow!(
+            "Ark error tracebacks are only supported in detached runtime mode"
+        )));
+    }
+    let Some(session_bridge) = state.session_bridge.as_ref() else {
+        return Err(LspError::Anyhow(anyhow!("session bridge missing")));
+    };
+    session_bridge.error_traceback().map_err(LspError::Anyhow)
 }
 
 pub(crate) fn handle_targets_rpc(
@@ -1617,6 +1630,31 @@ mod tests {
     use crate::lsp::session_bridge::SessionBridge;
     use crate::lsp::session_bridge::SessionBridgeConfig;
     use crate::lsp::state::RuntimeMode;
+
+    #[test]
+    fn test_error_traceback_uses_explicit_bridge_command() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener");
+        let port = listener.local_addr().expect("test address").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("traceback request");
+            let mut request = String::new();
+            stream.read_to_string(&mut request).expect("request body");
+            let payload: Value = serde_json::from_str(&request).expect("request JSON");
+            assert_eq!(payload["command"], "error_traceback");
+            assert!(payload.get("expr").is_none(), "must not evaluate user code");
+            stream.write_all(br#"{"status":"ok","available":true,"frames":[{"call":"inner()","path":"/tmp/source.R","line":2}]}"#).expect("response");
+        });
+        let bridge = SessionBridge::new(SessionBridgeConfig {
+            host: String::from("127.0.0.1"),
+            port,
+            timeout_ms: 1000,
+            ..Default::default()
+        })
+        .expect("bridge");
+        let payload = bridge.error_traceback().expect("traceback payload");
+        assert_eq!(payload["frames"][0]["line"], 2);
+        server.join().expect("bridge server");
+    }
 
     fn auth_error_bridge() -> SessionBridge {
         let listener = TcpListener::bind("127.0.0.1:0").expect("expected test listener");

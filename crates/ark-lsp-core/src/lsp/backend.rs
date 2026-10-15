@@ -66,6 +66,7 @@ use crate::lsp::handlers::ViewSortParams;
 use crate::lsp::handlers::ViewValuesParams;
 use crate::lsp::handlers::VirtualDocumentParams;
 use crate::lsp::handlers::VirtualDocumentResponse;
+use crate::lsp::handlers::ARK_ERROR_TRACEBACK_REQUEST;
 use crate::lsp::handlers::ARK_HELP_TEXT_REQUEST;
 use crate::lsp::handlers::ARK_OBJECT_CHILDREN_REQUEST;
 use crate::lsp::handlers::ARK_OBJECT_DETAIL_REQUEST;
@@ -236,6 +237,7 @@ pub(crate) enum LspRequest {
     VirtualDocument(VirtualDocumentParams),
     Status(StatusParams),
     HelpText(HelpTextParams),
+    ErrorTraceback,
     PackageInstall(PackageInstallParams),
     InputBoundaries(InputBoundariesParams),
     SessionBootstrap(SessionUpdateParams),
@@ -266,6 +268,7 @@ impl LspRequest {
             Self::VirtualDocument(_) => ARK_VDOC_REQUEST,
             Self::Status(_) => ARK_STATUS_REQUEST,
             Self::HelpText(_) => ARK_HELP_TEXT_REQUEST,
+            Self::ErrorTraceback => ARK_ERROR_TRACEBACK_REQUEST,
             Self::PackageInstall(_) => ARK_PACKAGE_INSTALL_REQUEST,
             Self::InputBoundaries(_) => input_boundaries::ARK_INPUT_BOUNDARIES_REQUEST,
             Self::SessionBootstrap(_) => ARK_SESSION_BOOTSTRAP_REQUEST,
@@ -323,6 +326,7 @@ pub(crate) enum LspResponse {
     VirtualDocument(VirtualDocumentResponse),
     Status(Value),
     HelpText(Option<HelpPage>),
+    ErrorTraceback(Value),
     PackageInstall(Value),
     InputBoundaries(InputBoundariesResponse),
     SessionBootstrap(SessionBootstrapResponse),
@@ -962,6 +966,14 @@ impl Backend {
         )
     }
 
+    async fn error_traceback(&self, _: StatusParams) -> tower_lsp::jsonrpc::Result<Value> {
+        cast_response!(
+            self,
+            self.request(LspRequest::ErrorTraceback).await,
+            LspResponse::ErrorTraceback
+        )
+    }
+
     async fn targets_meta(&self, params: TargetsMetaParams) -> tower_lsp::jsonrpc::Result<Value> {
         cast_response!(
             self,
@@ -1103,6 +1115,7 @@ pub fn start_lsp(
             .custom_method(help_topic::ARK_HELP_TOPIC_REQUEST, Backend::help_topic)
             .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
             .custom_method(ARK_STATUS_REQUEST, Backend::status)
+            .custom_method(ARK_ERROR_TRACEBACK_REQUEST, Backend::error_traceback)
             .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
             .custom_method(ARK_PACKAGE_INSTALL_REQUEST, Backend::package_install)
             .custom_method(ARK_SESSION_BOOTSTRAP_REQUEST, Backend::bootstrap_session)
@@ -1194,6 +1207,7 @@ pub async fn start_stdio_lsp() -> anyhow::Result<()> {
         .custom_method(help_topic::ARK_HELP_TOPIC_REQUEST, Backend::help_topic)
         .custom_method(ARK_VDOC_REQUEST, Backend::virtual_document)
         .custom_method(ARK_STATUS_REQUEST, Backend::status)
+        .custom_method(ARK_ERROR_TRACEBACK_REQUEST, Backend::error_traceback)
         .custom_method(ARK_HELP_TEXT_REQUEST, Backend::help_text)
         .custom_method(ARK_PACKAGE_INSTALL_REQUEST, Backend::package_install)
         .custom_method(ARK_SESSION_BOOTSTRAP_REQUEST, Backend::bootstrap_session)

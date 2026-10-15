@@ -1283,6 +1283,25 @@ function M.help_topic(topic, bufnr)
   return show_help_page(bufnr, topic)
 end
 
+function M.traceback(name, bufnr)
+  ensure_setup()
+  bufnr = resolve_bufnr(bufnr)
+  local navigator = require("ark.traceback")
+  if type(name) == "string" and name ~= "" then
+    local project, err = M.targets_project(bufnr)
+    if not project then
+      notify(err or "No targets project found", vim.log.levels.WARN)
+      return nil, err
+    end
+    return navigator.open(function(callback)
+      return navigator.target_request(project, name, callback)
+    end)
+  end
+  return navigator.open(function(callback)
+    return lsp.error_traceback_async(options, bufnr, callback)
+  end)
+end
+
 function M.view(expr, bufnr, view_opts)
   ensure_setup()
   bufnr = resolve_bufnr(bufnr)

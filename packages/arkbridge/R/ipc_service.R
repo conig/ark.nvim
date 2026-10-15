@@ -350,6 +350,10 @@
     ))
   }
 
+  if (identical(req$command %||% "", "error_traceback")) {
+    return(.ark_error_traceback_payload(session))
+  }
+
   if (identical(req$command %||% "", "targets_project_info")) {
     return(.ark_targets_project_info_payload(
       session,

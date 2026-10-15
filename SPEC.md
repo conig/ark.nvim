@@ -975,6 +975,14 @@ Continuing to reduce inherited kernel/Jupyter source remains legitimate
 maintenance work, but it is not required for the Neovim product boundary; those
 crates are excluded from default product builds and release artifacts.
 
+## Explicit Error Navigation
+
+`:Ark traceback` / `:ArkTraceback` requests the managed R session's last uncaught traceback through an asynchronous, authenticated bridge API. The picker navigates only genuine file/line source references and otherwise displays call text without inventing a location. It does not replace `options(error)`, install global error hooks, evaluate calls, inspect frame environments, or modify the stored stack. Caught errors do not replace that stack, so the UI labels it explicitly; an unrelated current error message is not paired with it.
+
+`:Ark traceback <target>` inspects a saved target workspace in a separate one-shot R process without starting or modifying the interactive session or sourcing the pipeline. It requires a workspace saved for that failure (for example `workspace_on_error = TRUE` before the build). The public targets API returns text, not navigable source references. The worker deliberately skips startup profiles; `targets` and `jsonlite` must be available on its ordinary R library paths. Missing packages/workspaces are explicit errors, never an implicit install or rebuild.
+
+Both paths are user-triggered only. Results are bounded to 128 frames, eight deparse lines and 1,000 characters per frame. Worker inspection has a 15-second deadline, bounded output, private temporary files, cancellation and cleanup; superseded requests cannot reopen a picker. Call text stays in the local explicit UI and is not added to logs or support reports. Source files modified since the failure may no longer match the recorded line; missing files/lines are rejected rather than redirected.
+
 ## Completion Architecture
 
 Completion intent for Ark filetypes is owned by Rust. Literate-R normalization,

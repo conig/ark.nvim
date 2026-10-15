@@ -1609,6 +1609,10 @@ function M.targets_action(opts, bufnr, project, action, names)
   return requests.targets_action(opts, bufnr, project, action, names)
 end
 
+function M.error_traceback_async(opts, bufnr, callback)
+  return requests.error_traceback_async(opts, bufnr, callback)
+end
+
 function M.targets_action_async(opts, bufnr, project, action, names, callback)
   return requests.targets_action_async(opts, bufnr, project, action, names, callback)
 end

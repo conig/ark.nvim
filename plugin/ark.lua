@@ -101,6 +101,7 @@ local ark_command_completions = {
   "send",
   "snippets",
   "status",
+  "traceback",
   "tab close",
   "tab go",
   "tab list",
@@ -248,6 +249,8 @@ local function dispatch_ark_command(args)
     ark.refresh(0)
   elseif top == "report" then
     require("ark.report").open()
+  elseif top == "traceback" then
+    ark.traceback(join_args(args, 2), 0)
   elseif top == "snippets" then
     ark.snippets(0)
   elseif top == "send" then
@@ -614,3 +617,10 @@ end, { desc = "Preview a redacted Ark support report" })
 vim.api.nvim_create_user_command("ArkPaneCommand", function()
   vim.print(require("ark").pane_command())
 end, { desc = "Print the shell command used for the managed ark.nvim session" })
+
+vim.api.nvim_create_user_command("ArkTraceback", function(args)
+  require("ark").traceback(args.args, 0)
+end, {
+  nargs = "?",
+  desc = "Inspect the last uncaught R traceback, or a saved target traceback",
+})

@@ -3,6 +3,7 @@ local uv = vim.uv or vim.loop
 local M = {}
 
 local METHODS = {
+  error_traceback = "ark/internal/errorTraceback",
   help_text = "ark/internal/helpText",
   help_topic = "ark/textDocument/helpTopic",
   object_children = "ark/internal/objectChildren",
@@ -159,6 +160,10 @@ function M.new(deps)
     end
 
     return adapter.request_async(client, method, params or {}, timeout_ms or 5000, bufnr, callback)
+  end
+
+  function adapter.error_traceback_async(opts, bufnr, callback)
+    return buffer_request_async(opts, bufnr, METHODS.error_traceback, {}, 5000, callback)
   end
 
   function adapter.help_topic(opts, bufnr, position)

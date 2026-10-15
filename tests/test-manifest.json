@@ -25,6 +25,18 @@
   },
   "rules": [
     {
+      "names": ["error_traceback.lua"],
+      "tier": "fast",
+      "layer": "component",
+      "contract": "bounded asynchronous traceback picker, safe source navigation and isolated saved-target inspection",
+      "dependencies": ["neovim", "r", "R:targets"],
+      "mutates_shared_session": false
+    },
+    {
+      "names": ["error_traceback_live.lua"],
+      "contract": "real uncaught R traceback through public command, LSP and authenticated bridge without stack mutation"
+    },
+    {
       "names": [
         "runtime_activity.lua",
         "report_runtime_evidence.lua"

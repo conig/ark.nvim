@@ -597,6 +597,11 @@ impl GlobalState {
                             let world = self.bridge_request_world(&tx);
                             Self::spawn_handler(tx, move || handlers::handle_help_text(params, &world), LspResponse::HelpText, freshness);
                         },
+                        LspRequest::ErrorTraceback => {
+                            let freshness = RequestFreshness::for_session(&self.world);
+                            let world = self.bridge_request_world(&tx);
+                            Self::spawn_handler(tx, move || handlers::handle_error_traceback(&world), LspResponse::ErrorTraceback, freshness);
+                        },
                         LspRequest::PackageInstall(params) => {
                             let freshness = RequestFreshness::for_session(&self.world);
                             let world = self.bridge_request_world(&tx);

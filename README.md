@@ -83,6 +83,10 @@ explicit expression. It can page, sort, filter, inspect cells, show column
 profiles, export the current view, and display the R code behind the active
 view.
 
+### Inspect an Error
+
+`:Ark traceback` opens the last uncaught R call stack. Select a frame to jump to its source when R retained a genuine source reference. `:Ark traceback target_name` inspects a saved failed-target workspace without loading it into your interactive session. Both are explicit, asynchronous inspections, not a debugger; see `:help ark` for source-retention and saved-workspace requirements.
+
 ### Work With `{targets}`
 
 In `{targets}` projects, Ark can complete target names, jump to target

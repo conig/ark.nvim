@@ -547,6 +547,22 @@ distinct counts, cache hits, phase durations, and encoded response bytes after
 normal bridge pings. These records contain no values, expressions, or search
 terms. Cancelling/closing a picker discards results; R may still be computing.
 
+Error navigation ~
+    :Ark traceback              Inspect the last uncaught managed-R stack.
+    :Ark traceback <target>     Inspect a saved failed-target workspace.
+    :ArkTraceback [target]      Equivalent command.
+
+    Select a frame to jump to its genuine source reference. Calls without one
+    remain text-only. Caught errors do not replace the last uncaught stack.
+    Source retention (keep.source) is needed for locations; changed source can
+    differ from the version that failed. The feature installs no error hook.
+
+    Targets must have saved a workspace for the failure, e.g. configure
+    workspace_on_error before the build. Target traces are text-only and run in
+    a separate R worker, with no pipeline/profile evaluation. That worker needs
+    targets/jsonlite on its normal library paths, not only an activated renv.
+    Requests are asynchronous and bounded; traces are never in support reports.
+
 Runtime activity ~
     :Ark status distinguishes live_busy from degraded connectivity. Its
     runtime_activity describes submitted user code, an active Ark request,

@@ -820,6 +820,10 @@ impl SessionBridge {
         )
     }
 
+    pub(crate) fn error_traceback(&self) -> anyhow::Result<Value> {
+        self.bridge_command("error_traceback", serde_json::json!({}))
+    }
+
     pub(crate) fn targets_project_info(
         &self,
         root: String,
