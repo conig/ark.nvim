@@ -1524,6 +1524,28 @@ local function send_to_job(bufnr, info, text)
   end
 end
 
+local function drain_prompt_callbacks(bufnr)
+  local info = state.buffers[bufnr]
+  if type(info) ~= "table" or not info.prompt_callbacks then
+    return
+  end
+
+  vim.schedule(function()
+    if state.buffers[bufnr] ~= info or info.closed or not vim.api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+    if info.prompt_state == "busy" then
+      return
+    end
+
+    local callbacks = info.prompt_callbacks or {}
+    info.prompt_callbacks = nil
+    for _, callback in ipairs(callbacks) do
+      callback()
+    end
+  end)
+end
+
 local function parse_output(bufnr, data)
   local info = state.buffers[bufnr]
   if type(info) ~= "table" then
@@ -1572,6 +1594,7 @@ local function parse_output(bufnr, data)
   end
   if info.prompt_state ~= previous_prompt then
     publish_status(bufnr)
+    drain_prompt_callbacks(bufnr)
   end
   return lines
 end
@@ -1623,6 +1646,7 @@ local function close_resources(bufnr, opts)
 
   stop_busy_spinner(info)
   clear_submission(info)
+  info.prompt_callbacks = nil
 
   if info.status_timer and not info.status_timer:is_closing() then
     info.status_timer:stop()
@@ -2154,8 +2178,16 @@ function M.start(opts)
       error("Ark console help RPC requires a non-empty topic", 0)
     end
 
-    vim.schedule(function()
-      if type(state.buffers[bufnr]) ~= "table" or not vim.api.nvim_buf_is_valid(bufnr) then
+    local info = state.buffers[bufnr]
+    if type(info) ~= "table" then
+      return "ok"
+    end
+    -- Acknowledge the R hook immediately so it can return to the prompt.
+    -- Only then may ArkHelp query the bridge: submitted code is still busy
+    -- while R waits for this RPC, even though the LSP is already hydrated.
+    info.prompt_callbacks = info.prompt_callbacks or {}
+    table.insert(info.prompt_callbacks, function()
+      if state.buffers[bufnr] ~= info or info.closed or not vim.api.nvim_buf_is_valid(bufnr) then
         return
       end
 
@@ -2166,6 +2198,7 @@ function M.start(opts)
         vim.notify(tostring(err), vim.log.levels.WARN, { title = "ark.nvim" })
       end
     end)
+    drain_prompt_callbacks(bufnr)
 
     return "ok"
   end

@@ -9,8 +9,9 @@ vim.fn.mkdir(run_tmpdir, "p")
 local launcher = vim.fs.normalize(run_tmpdir .. "/fake-r")
 vim.fn.writefile({
   "#!/usr/bin/env bash",
-  "printf '> '",
+  "printf 'fake-r-ready\\n> '",
   "while IFS= read -r line; do",
+  '  if [[ "$line" == slow ]]; then sleep 0.3; fi',
   "  printf 'console saw: %s\\n' \"$line\"",
   "  printf '> '",
   "done",
@@ -60,6 +61,32 @@ end)
 if help_calls[1].topic ~= "lm" or help_calls[1].bufnr ~= bufnr then
   ark_test.fail("unexpected ArkHelp RPC dispatch: " .. vim.inspect(help_calls))
 end
+
+local console = require("ark.console")
+ark_test.wait_for("initial console prompt", 5000, function()
+  local text = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+  return text:find("#> fake-r-ready", 1, true) and console.status(bufnr).prompt_state == "top-level"
+end)
+assert(console.send_text(bufnr, "slow"))
+assert(fn("citation") == "ok", "busy help RPC must acknowledge R without waiting for its prompt")
+vim.wait(100, function()
+  return false
+end)
+assert(#help_calls == 1, "busy console must not query help before its prompt returns")
+ark_test.wait_for("queued help after prompt", 5000, function()
+  return #help_calls == 2
+end)
+assert(help_calls[2].topic == "citation" and help_calls[2].bufnr == bufnr)
+assert(console.status(bufnr).prompt_state == "top-level")
+
+-- Closing the session must discard help callbacks that are still waiting.
+assert(console.send_text(bufnr, "slow"))
+assert(fn("mean") == "ok")
+assert(console.stop(bufnr))
+vim.wait(500, function()
+  return false
+end)
+assert(#help_calls == 2, "stopped console must not dispatch queued or duplicate help")
 
 ark.help_topic = original_help_topic
 

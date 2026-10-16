@@ -88,6 +88,13 @@
       "mutates_shared_session": false
     },
     {
+      "names": ["nvim_console_help_first_request.lua"],
+      "tier": "fast",
+      "contract": "first console help RPC waits for the real R prompt before querying live help",
+      "dependencies": ["neovim", "r"],
+      "mutates_shared_session": false
+    },
+    {
       "names": ["nvim_console_target_completion.lua"],
       "contract": "project-scoped target completion in a standalone console without evaluating a slow manifest",
       "dependencies": ["neovim", "r", "tmux", "R:targets"],
