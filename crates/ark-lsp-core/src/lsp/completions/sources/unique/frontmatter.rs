@@ -107,7 +107,10 @@ impl CompletionSource for FrontmatterSource {
         &self,
         completion_context: &CompletionContext,
     ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
-        completions_from_frontmatter_output(completion_context.document_context)
+        completions_from_frontmatter_output(
+            completion_context.document_context,
+            Some(completion_context.state),
+        )
     }
 }
 
@@ -249,10 +252,20 @@ fn option_names(renderer: &str, quarto: bool) -> Vec<&'static str> {
 
 fn completions_from_frontmatter_output(
     context: &DocumentContext,
+    state: Option<&crate::lsp::state::WorldState>,
 ) -> anyhow::Result<Option<Vec<CompletionItem>>> {
     let Some(cursor) = cursor_context(context.document, context.point) else {
         return Ok(None);
     };
+    let outputs = crate::lsp::frontmatter::semantic::selected_outputs(context.document);
+    let schemas: Vec<_> = state
+        .into_iter()
+        .flat_map(|state| {
+            outputs.iter().filter_map(move |output| {
+                state.renderer_schemas.get(context.document, output, state)
+            })
+        })
+        .collect();
     let mut items = Vec::new();
     match &cursor.kind {
         ContextKind::Outputs {
@@ -297,6 +310,9 @@ fn completions_from_frontmatter_output(
             }
         },
         ContextKind::Keys { quarto } => {
+            if !quarto {
+                append_metadata_keys(context, &cursor, &schemas, &[], &mut items)?;
+            }
             for key in if *quarto { QUARTO_KEYS } else { RMD_KEYS } {
                 items.push(make_item(
                     context,
@@ -308,14 +324,82 @@ fn completions_from_frontmatter_output(
                 )?);
             }
         },
+        ContextKind::Metadata { path } => {
+            append_metadata_keys(context, &cursor, &schemas, path, &mut items)?;
+        },
+        ContextKind::Values { renderer, path } => {
+            let fields: Vec<_> = if let Some(renderer) = renderer {
+                state
+                    .and_then(|state| {
+                        state
+                            .renderer_schemas
+                            .get(context.document, renderer, state)
+                    })
+                    .into_iter()
+                    .flat_map(|schema| schema.options.iter())
+                    .collect()
+            } else {
+                schemas
+                    .iter()
+                    .flat_map(|schema| schema.metadata.iter())
+                    .collect()
+            };
+            for field in fields.iter().filter(|field| &field.path == path) {
+                if field.boolean && cursor.quote.is_some() {
+                    continue;
+                }
+                for value in &field.choices {
+                    if items.iter().any(|item| &item.label == value) {
+                        continue;
+                    }
+                    let mut item = make_item(
+                        context,
+                        &cursor,
+                        value,
+                        CompletionItemKind::VALUE,
+                        "YAML value",
+                        false,
+                    )?;
+                    if !field.boolean && cursor.quote.is_none() {
+                        if let Some(CompletionTextEdit::Edit(edit)) = &mut item.text_edit {
+                            edit.new_text = format!(
+                                "{}{}",
+                                if cursor.needs_space { " " } else { "" },
+                                serde_json::to_string(value)?
+                            );
+                        }
+                    }
+                    items.push(item);
+                }
+            }
+        },
         ContextKind::Options { quarto, renderer } => {
-            for option in option_names(renderer, *quarto) {
+            let discovered = (!quarto)
+                .then(|| {
+                    state.and_then(|state| {
+                        state
+                            .renderer_schemas
+                            .get(context.document, renderer, state)
+                    })
+                })
+                .flatten()
+                .filter(|schema| !schema.options.is_empty());
+            let names = discovered
+                .map(|schema| {
+                    schema
+                        .options
+                        .iter()
+                        .filter_map(|field| field.path.first().map(String::as_str))
+                        .collect()
+                })
+                .unwrap_or_else(|| option_names(renderer, *quarto));
+            for name in names {
                 items.push(make_item(
                     context,
                     &cursor,
-                    option,
+                    name,
                     CompletionItemKind::FIELD,
-                    "Static format option",
+                    "Renderer option",
                     true,
                 )?);
             }
@@ -324,7 +408,46 @@ fn completions_from_frontmatter_output(
             return Ok(Some(path_completions(context, &cursor, extension)?))
         },
     }
+    let mut seen = std::collections::HashSet::new();
+    let existing = if matches!(
+        cursor.kind,
+        ContextKind::Keys { .. } | ContextKind::Metadata { .. } | ContextKind::Options { .. }
+    ) {
+        crate::lsp::frontmatter::semantic::existing_keys(context.document, context.point)
+    } else {
+        std::collections::HashSet::new()
+    };
+    items.retain(|item| !existing.contains(&item.label) && seen.insert(item.label.clone()));
+    if state.is_some() && !outputs.is_empty() {
+        for item in &mut items {
+            item.data = Some(serde_json::to_value(CompletionData::Incomplete)?);
+        }
+    }
     Ok(Some(items))
+}
+
+fn append_metadata_keys(
+    context: &DocumentContext,
+    cursor: &CursorContext,
+    schemas: &[&crate::lsp::frontmatter::renderer::Schema],
+    path: &[String],
+    items: &mut Vec<CompletionItem>,
+) -> anyhow::Result<()> {
+    for field in schemas.iter().flat_map(|schema| &schema.metadata) {
+        if field.path.len() == path.len() + 1 && field.path.starts_with(path) {
+            if let Some(name) = field.path.last() {
+                items.push(make_item(
+                    context,
+                    cursor,
+                    name,
+                    CompletionItemKind::FIELD,
+                    "Renderer metadata",
+                    true,
+                )?);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn builtin_output_from_value(value: &str) -> Option<&'static BuiltinOutput> {
@@ -478,7 +601,7 @@ mod tests {
         let (text, point) = point_from_cursor(cursor_text);
         let document = Document::new_with_kind(&text, None, DocumentKind::LiterateR);
         let context = DocumentContext::new(&document, point, None);
-        completions_from_frontmatter_output(&context).unwrap()
+        completions_from_frontmatter_output(&context, None).unwrap()
     }
 
     // The cursor is before delimiters inserted by the editor, not at an unclosed token.
@@ -487,7 +610,7 @@ mod tests {
         let mut document = Document::new_with_kind(&text, None, DocumentKind::LiterateR);
         document.path = Some(path.to_path_buf());
         let context = DocumentContext::new(&document, point, None);
-        completions_from_frontmatter_output(&context)
+        completions_from_frontmatter_output(&context, None)
             .unwrap()
             .unwrap_or_default()
     }
@@ -672,9 +795,11 @@ mod tests {
     }
 
     #[test]
-    fn test_frontmatter_output_completion_ignores_non_output_keys() {
+    fn test_frontmatter_values_do_not_offer_output_names() {
         assert!(
-            frontmatter_output_completions("---\ntitle: @\noutput: html_document\n---\n").is_none()
+            frontmatter_output_completions("---\ntitle: @\noutput: html_document\n---\n")
+                .unwrap()
+                .is_empty()
         );
     }
 

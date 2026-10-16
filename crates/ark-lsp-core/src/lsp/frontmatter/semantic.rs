@@ -25,10 +25,27 @@ const MAX_YAML_NESTING: usize = 64;
 
 #[derive(Debug)]
 pub(crate) enum ContextKind {
-    Keys { quarto: bool },
-    Outputs { quarto: bool, mapping: bool },
-    Options { quarto: bool, renderer: String },
-    Path { extension: &'static str },
+    Keys {
+        quarto: bool,
+    },
+    Outputs {
+        quarto: bool,
+        mapping: bool,
+    },
+    Options {
+        quarto: bool,
+        renderer: String,
+    },
+    Metadata {
+        path: Vec<String>,
+    },
+    Values {
+        renderer: Option<String>,
+        path: Vec<String>,
+    },
+    Path {
+        extension: &'static str,
+    },
 }
 
 #[derive(Debug)]
@@ -126,7 +143,8 @@ fn parents(document: &Document, start: usize, row: usize, indent: usize) -> Vec<
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        let spaces = line.len() - trimmed.len();
+        let spaces = line.len() - trimmed.len() + usize::from(trimmed.starts_with("- ")) * 2;
+        let trimmed = trimmed.strip_prefix("- ").unwrap_or(trimmed);
         while stack.last().is_some_and(|parent| parent.indent >= spaces) {
             stack.pop();
         }
@@ -137,7 +155,10 @@ fn parents(document: &Document, start: usize, row: usize, indent: usize) -> Vec<
             let value = trimmed[colon + 1..].trim();
             stack.push(Parent {
                 indent: spaces,
-                key: trimmed[..colon].trim_matches(['\'', '"']).to_string(),
+                key: trimmed[..colon]
+                    .trim()
+                    .trim_matches(['\'', '"'])
+                    .to_string(),
                 // Only empty mapping values open a supported nested context. This also
                 // prevents literal/folded scalar contents from being treated as metadata.
                 blocked: !value.is_empty() && !value.starts_with('#'),
@@ -247,7 +268,7 @@ pub(crate) fn cursor_context(document: &Document, point: Point) -> Option<Cursor
         return None;
     }
     let trimmed = line.trim_start();
-    let indent = line.len() - trimmed.len();
+    let indent = line.len() - trimmed.len() + usize::from(trimmed.starts_with("- ")) * 2;
     if point.column < indent || trimmed.starts_with('#') || line[..indent].contains('\t') {
         return None;
     }
@@ -262,7 +283,7 @@ pub(crate) fn cursor_context(document: &Document, point: Point) -> Option<Cursor
 
     if parents.is_empty() && indent == 0 {
         if let Some(colon) = mapping_separator(line) {
-            let key = line[..colon].trim_matches(['\'', '"']);
+            let key = line[..colon].trim().trim_matches(['\'', '"']);
             if point.column > colon {
                 let kind = match key {
                     "bibliography" => ContextKind::Path { extension: "bib" },
@@ -271,6 +292,10 @@ pub(crate) fn cursor_context(document: &Document, point: Point) -> Option<Cursor
                         quarto,
                         mapping: false,
                     },
+                    _ if !quarto => ContextKind::Values {
+                        renderer: None,
+                        path: vec![key.to_string()],
+                    },
                     _ => return None,
                 };
                 return scalar_context(line, colon + 1, point, kind);
@@ -278,9 +303,33 @@ pub(crate) fn cursor_context(document: &Document, point: Point) -> Option<Cursor
         }
     }
     if parents.len() == 1 && matches!(root, Some("bibliography")) && trimmed.starts_with("- ") {
-        return scalar_context(line, indent + 2, point, ContextKind::Path {
-            extension: "bib",
-        });
+        return scalar_context(
+            line,
+            line.len() - trimmed.len() + 2,
+            point,
+            ContextKind::Path { extension: "bib" },
+        );
+    }
+    if !quarto {
+        if let Some(colon) = mapping_separator(line) {
+            if point.column > colon {
+                let key = line[indent..colon].trim().to_string();
+                let renderer =
+                    (root == Some("output") && parents.len() == 2).then(|| parents[1].key.clone());
+                if renderer.is_some() || root != Some("output") {
+                    let mut path: Vec<_> = if renderer.is_some() {
+                        Vec::new()
+                    } else {
+                        parents.iter().map(|parent| parent.key.clone()).collect()
+                    };
+                    path.push(key);
+                    return scalar_context(line, colon + 1, point, ContextKind::Values {
+                        renderer,
+                        path,
+                    });
+                }
+            }
+        }
     }
     let kind = if parents.is_empty() && indent == 0 {
         ContextKind::Keys { quarto }
@@ -293,6 +342,10 @@ pub(crate) fn cursor_context(document: &Document, point: Point) -> Option<Cursor
         ContextKind::Options {
             quarto,
             renderer: parents[1].key.clone(),
+        }
+    } else if !quarto && root != Some("output") {
+        ContextKind::Metadata {
+            path: parents.iter().map(|parent| parent.key.clone()).collect(),
         }
     } else {
         return None;
@@ -313,11 +366,140 @@ pub(crate) fn cursor_context(document: &Document, point: Point) -> Option<Cursor
     })
 }
 
+pub(crate) fn existing_keys(document: &Document, point: Point) -> HashSet<String> {
+    let Some(rows) = header_rows(document) else {
+        return HashSet::new();
+    };
+    fn indent(line: &str) -> usize {
+        line.len() - line.trim_start().len() + usize::from(line.trim_start().starts_with("- ")) * 2
+    }
+    let level = indent(line_without_newline(
+        document.get_line(point.row).unwrap_or(""),
+    ));
+    let boundary = |row: usize| {
+        let line = line_without_newline(document.get_line(row).unwrap_or(""));
+        let trimmed = line.trim_start();
+        !trimmed.is_empty() &&
+            !trimmed.starts_with('#') &&
+            (indent(line) < level || (trimmed.starts_with("- ") && indent(line) == level))
+    };
+    let start = (rows.start..point.row)
+        .rev()
+        .find(|row| boundary(*row))
+        .unwrap_or(rows.start);
+    let end = (point.row + 1..rows.end)
+        .find(|row| boundary(*row))
+        .unwrap_or(rows.end);
+    (start..end)
+        .filter(|row| *row != point.row)
+        .filter_map(|row| {
+            let line = line_without_newline(document.get_line(row)?);
+            if indent(line) != level {
+                return None;
+            }
+            let trimmed = line
+                .trim_start()
+                .strip_prefix("- ")
+                .unwrap_or(line.trim_start());
+            let colon = mapping_separator(trimmed)?;
+            Some(
+                trimmed[..colon]
+                    .trim()
+                    .trim_matches(['\'', '"'])
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
+pub(super) fn identifier(value: &str) -> bool {
+    value.len() <= 128 &&
+        value
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'.') &&
+        value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._".contains(&byte))
+}
+
+pub(super) fn yaml_outputs(value: &Yaml) -> Vec<String> {
+    match value {
+        Yaml::String(value) => vec![value.clone()],
+        Yaml::Array(values) => values.iter().take(16).flat_map(yaml_outputs).collect(),
+        Yaml::Hash(mapping) => mapping
+            .keys()
+            .filter_map(|key| key.as_str().map(str::to_string))
+            .take(16)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn selected_outputs(document: &Document) -> Vec<String> {
+    let Some(rows) = header_rows(document) else {
+        return Vec::new();
+    };
+    if quarto_document(document) == Some(true) {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let mut mapping = false;
+    let mut renderer_indent = None;
+    for row in rows {
+        let line = line_without_newline(document.get_line(row).unwrap_or(""));
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+        if indent == 0 {
+            mapping = false;
+            if let Some(colon) = mapping_separator(line) {
+                if line[..colon].trim().trim_matches(['\'', '"']).trim() == "output" {
+                    let value = line[colon + 1..].trim();
+                    mapping = value.is_empty() || value.starts_with('#');
+                    renderer_indent = None;
+                    if !mapping {
+                        if let Some(documents) = load_literal_yaml(value) {
+                            if let Some(value) = documents.first() {
+                                result.extend(yaml_outputs(value));
+                            }
+                        }
+                    }
+                }
+            }
+        } else if mapping {
+            let level = *renderer_indent.get_or_insert(indent);
+            if indent == level {
+                if let Some(colon) = mapping_separator(trimmed) {
+                    result.push(
+                        trimmed[..colon]
+                            .trim()
+                            .trim_matches(['\'', '"'])
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+    result.retain(|value| {
+        value.split_once("::").map_or_else(
+            || identifier(value),
+            |(package, name)| identifier(package) && identifier(name),
+        )
+    });
+    result.truncate(16);
+    result.sort();
+    result.dedup();
+    result
+}
+
 // YamlLoader clones anchored subtrees when processing aliases. Byte/line limits
 // alone therefore do not bound its memory or work. Scan tokens without building
 // a value tree first; quoted '&'/'*' characters remain ordinary scalar tokens.
 // Also cap nesting before the loader can build recursively dropped structures.
-fn load_literal_yaml(text: &str) -> Option<Vec<Yaml>> {
+pub(super) fn load_literal_yaml(text: &str) -> Option<Vec<Yaml>> {
     if text.len() > MAX_HEADER_BYTES {
         return None;
     }
@@ -410,7 +592,7 @@ pub(crate) fn path_diagnostics(document: &Document) -> Vec<Diagnostic> {
                 continue;
             };
             if !matches!(
-                line[..colon].trim_matches(['\'', '"']),
+                line[..colon].trim().trim_matches(['\'', '"']),
                 "bibliography" | "csl"
             ) {
                 continue;
@@ -581,5 +763,29 @@ mod tests {
         assert_eq!(diagnostics.len(), MAX_PATH_DIAGNOSTICS);
         assert_eq!(diagnostics[0].range.start.line, 2);
         assert_eq!(diagnostics[0].range.start.character, 4);
+    }
+}
+
+#[cfg(test)]
+mod renderer_tests {
+    use super::*;
+
+    #[test]
+    fn discovers_scalar_mapping_and_flow_outputs_with_unfinished_metadata() {
+        for (header, expected) in [
+            ("output: example::report\nsho", vec!["example::report"]),
+            ("output:\n  example::report:\n    custom: true\n  bookdown::pdf_document2: default\nsho", vec!["bookdown::pdf_document2", "example::report"]),
+            ("output: [example::report, html_document]\nsho", vec!["example::report", "html_document"]),
+        ] {
+            let document = Document::new_with_kind(&format!("---\n{header}\n---\n"), None, DocumentKind::LiterateR);
+            assert_eq!(selected_outputs(&document), expected);
+        }
+        let mut quarto = Document::new_with_kind(
+            "---\noutput: example::report\n---\n",
+            None,
+            DocumentKind::LiterateR,
+        );
+        quarto.path = Some(std::path::PathBuf::from("/tmp/report.qmd"));
+        assert!(selected_outputs(&quarto).is_empty());
     }
 }

@@ -53,6 +53,7 @@ use crate::lsp::backend::NotificationBarrier;
 use crate::lsp::capabilities::Capabilities;
 use crate::lsp::diagnostics::generate_diagnostics;
 use crate::lsp::document::Document;
+use crate::lsp::frontmatter::renderer;
 use crate::lsp::handlers;
 use crate::lsp::indexer;
 pub use crate::lsp::notifications::DidCloseVirtualDocumentParams;
@@ -127,6 +128,7 @@ pub(crate) enum Event {
 
 #[derive(Debug)]
 pub(crate) enum InternalEvent {
+    ApplyRendererSchema(renderer::Discovery),
     ApplyTargetsManifest(targets_manifest::ManifestResult),
     ApplyDetachedBaseline(state_handlers::DetachedBaselineHydrationOutput),
     ApplyDetachedSession(state_handlers::DetachedSessionHydrationOutput),
@@ -478,14 +480,18 @@ impl GlobalState {
                             state_handlers::did_change_watched_files(params, &self.world)
                         },
                         LspNotification::DidOpenTextDocument(params) => {
+                            let uri = params.text_document.uri.clone();
                             let hydration =
                                 state_handlers::did_open(params, &mut self.lsp_state, &mut self.world)?;
+                            self.world.renderer_schemas.observe(uri.clone(), self.world.documents.get(&uri));
                             self.spawn_detached_hydrations(hydration);
                             Ok(())
                         },
                         LspNotification::DidChangeTextDocument(params) => {
+                            let uri = params.text_document.uri.clone();
                             let hydration =
                                 state_handlers::did_change(params, &mut self.lsp_state, &mut self.world)?;
+                            self.world.renderer_schemas.observe(uri.clone(), self.world.documents.get(&uri));
                             self.spawn_detached_hydrations(hydration);
                             Ok(())
                         },
@@ -494,6 +500,7 @@ impl GlobalState {
                             Ok(())
                         },
                         LspNotification::DidCloseTextDocument(params) => {
+                            self.world.renderer_schemas.observe(params.text_document.uri.clone(), None);
                             state_handlers::did_close(params, &mut self.lsp_state, &mut self.world)
                         },
                         LspNotification::DidCreateFiles(params) => {
@@ -657,6 +664,9 @@ impl GlobalState {
                 }
             },
             Event::Internal(event) => match *event {
+                InternalEvent::ApplyRendererSchema(output) => {
+                    self.world.renderer_schemas.apply(output);
+                },
                 InternalEvent::ApplyTargetsManifest(output) => {
                     self.world.target_manifests.apply(output);
                 },
@@ -741,10 +751,14 @@ impl GlobalState {
             },
         }
 
+        let renderer_request = renderer::prepare(&mut self.world);
         let manifest_requests = targets_manifest::prepare(&mut self.world);
         store_latest_world_state(&self.world);
         if self.world.target_manifests.revision() != targets_revision {
             diagnostics_refresh_all_from_state(&self.world);
+        }
+        if let Some(request) = renderer_request {
+            self.spawn_renderer_schema(request);
         }
         for request in manifest_requests {
             self.spawn_targets_manifest(request);
@@ -855,6 +869,24 @@ impl GlobalState {
         let cancellation_tx = response_tx.clone();
         let control = BridgeRequestControl::new(move || cancellation_tx.is_closed());
         self.world.clone().with_bridge_request_control(control)
+    }
+
+    fn spawn_renderer_schema(&self, request: renderer::Request) {
+        let events = self.events_tx.clone();
+        tokio::spawn(async move {
+            // The queued snapshot is published before this task is spawned.
+            // Coalesce output edits and library hydration, never completion requests.
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            let discovery = if latest_world_state().is_some_and(|state| request.is_selected(&state))
+            {
+                renderer::discover(request).await
+            } else {
+                request.superseded()
+            };
+            let _ = events.send(Event::Internal(Box::new(
+                InternalEvent::ApplyRendererSchema(discovery),
+            )));
+        });
     }
 
     fn spawn_targets_manifest(&self, request: targets_manifest::ManifestRequest) {

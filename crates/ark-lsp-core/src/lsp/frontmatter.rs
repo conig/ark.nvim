@@ -1,3 +1,4 @@
+pub(crate) mod renderer;
 pub(crate) mod semantic;
 
 use std::ops::Range;

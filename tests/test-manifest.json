@@ -52,6 +52,14 @@
       "mutates_shared_session": false
     },
     {
+      "names": ["frontmatter_renderer_discovery.lua"],
+      "tier": "fast",
+      "layer": "product-e2e",
+      "contract": "cached renderer wrapper, metadata and value discovery through real stdio LSP without a managed session",
+      "dependencies": ["neovim", "r", "R:jsonlite"],
+      "mutates_shared_session": false
+    },
+    {
       "names": ["frontmatter_semantics.lua"],
       "tier": "fast",
       "layer": "product-e2e",

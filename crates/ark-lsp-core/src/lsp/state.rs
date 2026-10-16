@@ -98,6 +98,8 @@ pub(crate) struct WorldState {
 
     pub(crate) session_bridge: Option<SessionBridge>,
 
+    pub(crate) renderer_schemas: crate::lsp::frontmatter::renderer::RendererSchemas,
+
     pub(crate) target_manifests: crate::lsp::targets_manifest::TargetManifests,
 
     pub(crate) detached_session_bootstrap_attempted: bool,
