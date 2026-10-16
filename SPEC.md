@@ -549,6 +549,8 @@ only the new transcript range, and edit-protection snapshots copy only the
 changed suffix rather than rereading historical output on each draft edit.
 Full conceal rebuilds remain appropriate when changing display modes.
 
+In the console, ordinary `y` copies the transcript to the system clipboard, including `#> ` output prefixes. Visual `<localleader>y` clean-yanks the selection to the clipboard and leaves Visual mode, removing only the selected portions of Ark-generated prefixes without editing the buffer. Submitted R comments, editable input, literal `#> ` in printed output, indentation, and selected blank lines are preserved. Characterwise, linewise, and blockwise selections are supported. `require("ark.console").get_selection({ format = "clean" })` extracts the active Visual selection as `{ lines, regtype }` without side effects; `yank({ format = "clean", register = "+" })` copies it and leaves Visual mode. Both APIs default to clean text, accept `format = "transcript"` to retain markers, and return `nil, error` for invalid contexts. Existing submitted-line prompt metadata distinguishes code from generated output; copying requires no live R query or global yank hook.
+
 Console history and draft editing are buffer-native interactions on the current
 input region, not terminal escape-sequence emulation. It is selected with
 `session.console_frontend = "nvim-console"` or opened in-process with

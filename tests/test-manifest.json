@@ -25,6 +25,15 @@
   },
   "rules": [
     {
+      "names": ["nvim_console_clean_yank.lua"],
+      "tier": "fast",
+      "layer": "product-e2e",
+      "contract": "Visual clean-yank removes only generated console output prefixes and preserves ordinary yanks and selection types",
+      "dependencies": ["neovim", "bash"],
+      "typical_runtime": "under 20 seconds",
+      "mutates_shared_session": false
+    },
+    {
       "names": ["ark_view_filter_completion_timing.lua"],
       "tier": "performance",
       "layer": "performance",

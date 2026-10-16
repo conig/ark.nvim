@@ -1795,6 +1795,12 @@ local function install_console_clipboard_keymaps(bufnr)
   vim.keymap.set("n", "Y", '"+Y', opts)
   vim.keymap.set("x", "y", '"+y', opts)
   vim.keymap.set("x", "Y", '"+Y', opts)
+  vim.keymap.set("x", "<localleader>y", function()
+    local ok, err = M.yank()
+    if not ok then
+      vim.notify(err, vim.log.levels.WARN, { title = "ark.nvim" })
+    end
+  end, { buffer = bufnr, silent = true, desc = "Yank Ark console selection without output prefixes" })
 end
 
 local function apply_console_window_options(winid, bufnr)
@@ -2267,6 +2273,75 @@ function M.start(opts)
 
   vim.cmd("startinsert")
   return bufnr
+end
+
+-- Extract the active Visual selection without touching registers or the buffer.
+function M.get_selection(opts)
+  opts = opts or {}
+  local info, err, bufnr = console_info(0)
+  if not info then
+    return nil, err
+  end
+  local format = opts.format or "clean"
+  if format ~= "clean" and format ~= "transcript" then
+    return nil, "Ark console selection format must be 'clean' or 'transcript'"
+  end
+  local mode = vim.fn.mode()
+  if mode ~= "v" and mode ~= "V" and mode ~= "\22" then
+    return nil, "Ark console copying requires an active Visual selection"
+  end
+
+  local first, last = vim.fn.getpos("v"), vim.fn.getpos(".")
+  local region_opts = { type = mode, exclusive = vim.o.selection == "exclusive" }
+  local lines = vim.fn.getregion(first, last, region_opts)
+  if format == "clean" then
+    local positions = vim.fn.getregionpos(first, last, region_opts)
+    local first_row, last_row = math.min(first[2], last[2]) - 1, math.max(first[2], last[2]) - 1
+    local submitted_rows = {}
+    -- Every submitted-code line has a prompt mark (including continuations).
+    -- Unmarked transcript rows are output; draft rows are never output.
+    local prompt_marks = vim.api.nvim_buf_get_extmarks(bufnr, transcript_prompt_ns, { first_row, 0 }, { last_row, 0 }, {})
+    for _, mark in ipairs(prompt_marks) do
+      submitted_rows[mark[2]] = true
+    end
+    local source_lines = vim.api.nvim_buf_get_lines(bufnr, first_row, last_row + 1, false)
+    local input_start = input_start_line(bufnr, info)
+    for index, position in ipairs(positions) do
+      local start = position[1]
+      local row, col = start[2] - 1, start[3]
+      local source = source_lines[row - first_row + 1] or ""
+      local is_output = row < input_start and not submitted_rows[row] and source:sub(1, 3) == "#> "
+      if is_output and col > 0 and col <= 3 then
+        -- Remove only the selected part of Ark's prefix, never a literal #>
+        -- in the output itself or text selected after the synthetic prefix.
+        lines[index] = lines[index]:sub(math.min(#lines[index], 4 - col) + 1)
+      end
+    end
+  end
+
+  local regtype = mode
+  if mode == "\22" then
+    local width = 0
+    for _, line in ipairs(lines) do
+      width = math.max(width, vim.fn.strdisplaywidth(line))
+    end
+    regtype = mode .. tostring(math.max(1, width))
+  end
+  return { lines = lines, regtype = regtype }
+end
+
+function M.yank(opts)
+  opts = opts or {}
+  local selection, err = M.get_selection(opts)
+  if not selection then
+    return nil, err
+  end
+  local ok, result = pcall(vim.fn.setreg, opts.register or "+", selection.lines, selection.regtype .. "u")
+  if not ok or result ~= 0 then
+    return nil, "Failed to copy Ark console selection: " .. tostring(result)
+  end
+  vim.cmd.normal({ args = { vim.keycode("<Esc>") }, bang = true })
+  return true
 end
 
 function M.submit_ignoring_completion(bufnr)

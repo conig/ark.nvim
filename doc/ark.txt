@@ -407,6 +407,26 @@ tmux ~
     In the `nvim-console` frontend, mouse-wheel up scrolls the transcript and
     enters Normal mode. Press `i` to return to the editable R prompt.
 
+    Console yanks use the system clipboard. Ordinary `y` includes transcript
+    output markers (`#> `); Visual `<localleader>y` copies clean text without
+    Ark-generated markers and returns to Normal mode. For example, select a
+    printed BibTeX entry with `V`, extend the selection, then press
+    `<localleader>y`. Indentation and literal comments are preserved; the
+    console buffer is not modified. Set `maplocalleader` before opening the
+    console (Neovim's default is backslash).
+
+    Lua APIs (current console, active Visual selection required): >lua
+      local console = require("ark.console")
+      local selection, err = console.get_selection({ format = "clean" })
+      -- selection = { lines = { ... }, regtype = "v", "V", or CTRL-V + width }
+      local ok, err = console.yank({ format = "clean", register = "+" })
+<
+    `get_selection()` does not change registers or leave Visual mode.
+    `yank()` copies the selection, updates the unnamed register to point to
+    the destination, and leaves Visual mode. Both default to `format = "clean"`;
+    use `format = "transcript"` to retain output markers. `yank()` defaults to
+    register `+`. Both return `nil, error` when the context is invalid.
+
 terminal ~
     Additive built-in Neovim terminal split. It uses the same detached LSP and
     live bridge but intentionally does not implement tmux tab operations.
