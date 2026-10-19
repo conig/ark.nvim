@@ -11,6 +11,8 @@ pid_path="$run_tmpdir/detached-child.pid"
 child_pid=""
 
 rm -rf -- "$run_tmpdir"
+# Exercise default (not pre-exported) ownership through the real tmux boundary.
+python3 "$repo_root/tests/test-e2e-tmux-cleanup.py"
 mkdir -p "$run_tmpdir"
 
 cleanup_probe() {

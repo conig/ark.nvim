@@ -109,6 +109,9 @@ fi
 run_id="${ARK_TEST_RUN_ID:-arktest-$(date +%s)-$$}"
 run_id="${run_id//[^[:alnum:]_-]/_}"
 run_tmpdir="${ARK_TEST_TMPDIR:-/tmp/$run_id}"
+# Export before creating tmux: its server, and therefore TUI children, must
+# inherit the same ownership tags as the headless test process.
+export ARK_TEST_RUN_ID="$run_id" ARK_TEST_TMPDIR="$run_tmpdir"
 state_home="$run_tmpdir/state"
 manifest="$run_tmpdir/tmux-sessions.txt"
 log_path="$run_tmpdir/nvim.log"

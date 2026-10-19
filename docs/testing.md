@@ -35,6 +35,10 @@ scripts/prepare-e2e-fixture.py --download
 The test runner never downloads plugins. It validates the prepared cache and
 fails with the preparation command if a dependency is missing or stale.
 
+## Runner process ownership
+
+`scripts/run-e2e-test.sh` exports per-run ownership tags before creating its private tmux server, so embedded editors inherit them even when the caller supplies no test environment. Cleanup terminates tagged descendants after success, assertion failure, or timeout, including editors that survive tmux server shutdown. `tests/test-e2e-runner-cleanup.sh` exercises both direct detached children and real unresponsive tmux-owned Neovim cores; run it when changing runner lifecycle behavior. It never uses the interactive tmux server.
+
 ## Package quality gate
 
 `packages/arkbridge/tests/testthat` covers IPC dispatch and error schemas,
