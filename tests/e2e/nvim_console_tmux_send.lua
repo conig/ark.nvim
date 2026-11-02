@@ -322,8 +322,10 @@ local ok, err = xpcall(function()
       cmdheight = vim.o.cmdheight,
       winbar = vim.wo[0].winbar,
       statusline = vim.wo[0].statusline,
-      number = vim.wo[0].number,
-      relativenumber = vim.wo[0].relativenumber,
+      gutter = vim.api.nvim_eval_statusline(vim.wo[0].statuscolumn, {
+        winid = vim.api.nvim_get_current_win(),
+        use_statuscol_lnum = vim.api.nvim_win_get_cursor(0)[1],
+      }).str,
       signcolumn = vim.wo[0].signcolumn,
       conceallevel = vim.wo[0].conceallevel,
     }
@@ -346,8 +348,7 @@ local ok, err = xpcall(function()
     or tonumber(blink_result.cmdheight) ~= 0
     or blink_result.winbar ~= ""
     or blink_result.statusline ~= " "
-    or blink_result.number ~= false
-    or blink_result.relativenumber ~= false
+    or blink_result.gutter ~= ""
     or blink_result.signcolumn ~= "no"
     or tonumber(blink_result.conceallevel) ~= 2
   then

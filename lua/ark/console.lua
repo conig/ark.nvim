@@ -1723,6 +1723,12 @@ local function apply_console_number_options(winid, enabled)
   end
   vim.wo[winid].number = enabled
   vim.wo[winid].relativenumber = enabled
+  vim.wo[winid].numberwidth = 3
+  -- Align the current absolute number with relative labels, leaving only
+  -- one space before the prompt. Insert mode reclaims the whole gutter.
+  vim.wo[winid].statuscolumn = enabled
+    and "%=%{v:virtnum ? '' : (v:relnum ? v:relnum : v:lnum)} "
+    or ""
 end
 
 local function apply_console_conceal_options(winid, conceal_output_prefixes)
