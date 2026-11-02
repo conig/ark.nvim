@@ -25,6 +25,14 @@
   },
   "rules": [
     {
+      "names": ["workspace_index_batch_diagnostics.lua"],
+      "tier": "fast",
+      "layer": "product-e2e",
+      "contract": "batched workspace file updates clear stale helper scope diagnostics without another edit or live session while preserving genuine unknowns",
+      "dependencies": ["neovim", "r"],
+      "mutates_shared_session": false
+    },
+    {
       "names": ["nvim_console_clean_yank.lua"],
       "tier": "fast",
       "layer": "product-e2e",

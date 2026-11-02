@@ -1486,7 +1486,14 @@ async fn process_indexer_queue(mut rx: mpsc::UnboundedReceiver<IndexerQueueTask>
             process_indexer_batch(current).await;
         }
 
-        if !diagnostics_batch.is_empty() {
+        // Keep refresh intents until every queued index chunk has been applied.
+        // Otherwise a helper in a later chunk can leave a permanent false
+        // "not in scope" warning: draining the refreshes after the first chunk
+        // does not schedule another diagnostic pass for the remaining chunks.
+        if !indexer_batch.is_empty() {
+            // Preserve bounded scheduling without diagnosing a partial index.
+            task::yield_now().await;
+        } else if !diagnostics_batch.is_empty() {
             process_diagnostics_batch(std::mem::take(&mut diagnostics_batch)).await;
         }
     }
