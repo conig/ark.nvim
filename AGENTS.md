@@ -418,6 +418,8 @@ If these conventions conflict with a cleaner Neovim-only architecture, choose th
 
 Place new Rust integration tests under `crates/<crate>/tests/integration/` with a `main.rs` declaring the modules, rather than adding separate top-level test binaries. Prefer exact assertions where ordering and completeness matter.
 
+Use `cargo nextest run` for Rust tests, as `just test` does. R-backed tests and Oak cycle-recovery instrumentation use process-global state and require nextest's per-test process isolation; running them together with `cargo test --lib` can contaminate diagnostics and recovery assertions. Keep assertions intact rather than adding test cleanup to accommodate an incompatible runner. Workspace doctests still use `cargo test --workspace --doc`.
+
 ## Salsa queries
 
 Changes to Salsa queries may require cycle handling and an updated `salsa_inventory` snapshot. Follow `doc/oak/salsa.md` when changing a tracked query or code reachable from one.
