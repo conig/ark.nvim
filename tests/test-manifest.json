@@ -25,6 +25,14 @@
   },
   "rules": [
     {
+      "names": ["lsp_request_burst.lua"],
+      "tier": "fast",
+      "layer": "product-e2e",
+      "contract": "stdio transport continues reading client responses when a request burst exceeds transport admission while configuration is pending",
+      "dependencies": ["neovim", "r"],
+      "mutates_shared_session": false
+    },
+    {
       "names": ["workspace_index_batch_diagnostics.lua"],
       "tier": "fast",
       "layer": "product-e2e",

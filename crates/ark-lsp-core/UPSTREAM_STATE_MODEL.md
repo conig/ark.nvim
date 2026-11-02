@@ -1,6 +1,6 @@
 # Upstream LSP State Model Decision
 
-Decision date: 2026-06-30; reaffirmed 2026-10-15
+Decision date: 2026-06-30; reaffirmed 2026-11-02
 
 ## Decision
 
@@ -21,6 +21,8 @@ background scan generations, and workspace-folder lifecycle; it must not
 migrate the semantic state model or remove the fork-owned indexer.
 
 ## Evidence
+
+The 2026-11-02 sync through upstream `335f46a3` retains the reusable Oak fuzz harness, semantic-oracle tests, package layout classification, superassignment resolution fixes, and symlink-aware library scanning. The active extracted LSP receives deterministic object-completion deduplication, the argument-list indentation fixes, and unlimited transport admission to prevent request bursts deadlocking a client configuration response. The fork's detached completion planner and session-bridge ownership rules remain intact, including the multi-chunk indexing diagnostic-refresh fix. Upstream's Salsa-revision-based diagnostic coalescing, pool metrics, session harness, and associated diagnostics benchmarks remain coupled to its different state model and are not partially transplanted; the supported Neovim path continues using its own queue and `just benchmark` suite. Earlier notebook-cell attachment changes do not introduce a Neovim notebook product surface. The new help-search/object-explorer/frontend features remain retained upstream-host reference code, not new ArkHelp or ArkView APIs.
 
 The 2026-10-15 sync through upstream `a719e099` retains Salsa 0.28.2, restricted source-resolution database capabilities, cycle-recovery recording and inventory snapshots, environment-anchored source resolution, watcher reconciliation/coalescing, and static `c()` evaluation in the reusable Oak crates. These are not a migration of the detached LSP to `OakDatabase`. Upstream notebook/cell metadata remains a library capability, not a new Neovim notebook surface. The active LSP receives the help-list formatting and CRLF fixes in its extracted modules; its existing detached request/bridge lifecycle remains intact. Host panic guards are retained in the legacy Ark host, without reintroducing the removed in-host LSP or test harness. Future state-model work must also review upstream's database-access panic boundaries.
 

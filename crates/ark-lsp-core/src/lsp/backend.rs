@@ -1156,7 +1156,9 @@ pub fn start_lsp(
             .custom_method("ark/notification", Backend::notification)
             .finish();
 
-        let server = Server::new(read, write, socket);
+        // Keep reading client responses even if a burst of requests is waiting
+        // on the serial main loop, which may itself await a configuration reply.
+        let server = Server::new(read, write, socket).concurrency_level(usize::MAX);
 
         tokio::select! {
             _ = server.serve(service) => {
@@ -1247,7 +1249,9 @@ pub async fn start_stdio_lsp() -> anyhow::Result<()> {
         .custom_method("ark/notification", Backend::notification)
         .finish();
 
-    let server = Server::new(stdin, stdout, socket);
+    // Unlimited admission prevents request bursts from blocking the reader
+    // before it reaches a response the serial main loop is waiting for.
+    let server = Server::new(stdin, stdout, socket).concurrency_level(usize::MAX);
 
     tokio::select! {
         _ = server.serve(service) => {},

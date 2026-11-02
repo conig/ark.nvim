@@ -414,6 +414,10 @@ Some upstream conventions remain useful unless and until the code moves:
 
 If these conventions conflict with a cleaner Neovim-only architecture, choose the cleaner architecture and update this file.
 
+### Rust integration tests
+
+Place new Rust integration tests under `crates/<crate>/tests/integration/` with a `main.rs` declaring the modules, rather than adding separate top-level test binaries. Prefer exact assertions where ordering and completeness matter.
+
 ## Salsa queries
 
 Changes to Salsa queries may require cycle handling and an updated `salsa_inventory` snapshot. Follow `doc/oak/salsa.md` when changing a tracked query or code reachable from one.

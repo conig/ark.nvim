@@ -171,11 +171,20 @@ def check_deps(toml_path: Path) -> list[str]:
     return errors
 
 
+def is_nested_workspace_root(toml_path: Path) -> bool:
+    """Skip manifests that define `[workspace]` because they cannot inherit
+    dependencies from the outer workspace."""
+    with open(toml_path, encoding="utf-8") as f:
+        return any(strip_comment(line.strip()) == "[workspace]" for line in f)
+
+
 def main() -> int:
     crate_tomls = [
         p
         for p in REPO_ROOT.rglob("Cargo.toml")
-        if p != REPO_ROOT / "Cargo.toml" and "target" not in p.parts
+        if p != REPO_ROOT / "Cargo.toml"
+        and "target" not in p.parts
+        and not is_nested_workspace_root(p)
     ]
 
     errors = []

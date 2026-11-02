@@ -32,6 +32,7 @@ futures.workspace = true
 harp.workspace = true
 home.workspace = true
 ignore.workspace = true
+indexmap.workspace = true
 libc.workspace = true
 libr.workspace = true
 log.workspace = true

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Focused fixtures for the Python 3.10 Cargo dependency scanner."""
 
+import contextlib
 import importlib.util
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,6 +88,24 @@ direct-git = { git = "https://example.invalid/repo" }
         ):
             self.assertIn(f"'{dependency}' must use workspace inheritance", rendered)
         self.assertEqual(len(errors), 7)
+
+    def test_nested_workspace_root_does_not_inherit_outer_dependencies(self):
+        nested = self.root / "crate/fuzz/Cargo.toml"
+        nested.parent.mkdir(parents=True)
+        nested.write_text(
+            '[package]\nname = "fuzz"\n[dependencies]\nstandalone = "1"\n'
+            '[workspace] # independent cargo-fuzz workspace\n',
+            encoding="utf-8",
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.scanner.main(), 0)
+
+        self.check('[dependencies]\nordinary = "1"\n')
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(self.scanner.main(), 1)
+        self.assertIn("'ordinary' must use workspace inheritance", output.getvalue())
+        self.assertNotIn("'standalone'", output.getvalue())
 
 
 if __name__ == "__main__":

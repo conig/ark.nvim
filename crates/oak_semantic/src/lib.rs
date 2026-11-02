@@ -1,5 +1,7 @@
 pub mod builder;
 pub mod effects;
+#[cfg(feature = "testing")]
+pub mod fuzz;
 pub mod library;
 pub mod package;
 pub mod resolver;

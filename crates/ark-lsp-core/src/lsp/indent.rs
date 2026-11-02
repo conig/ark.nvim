@@ -99,6 +99,95 @@ pub(crate) fn indent_edit(doc: &Document, line: usize) -> LspResult<Option<Vec<T
 
     let (old_indent, old_indent_byte) = line_indent(text, line, config);
 
+    // Whether the first non-blank character of `row` is inside a string that
+    // starts on an earlier row. Its indentation is string content, not code
+    // indentation.
+    let starts_in_string = |within: tree_sitter::Node, row: usize| -> bool {
+        let point = tree_sitter::Point {
+            row,
+            column: line_indent(text, row, config).1,
+        };
+        let Some(node) = within.descendant_for_point_range(point, point) else {
+            return false;
+        };
+        let in_string = node
+            .ancestors()
+            .any(|node| node.is_string() && node.start_position().row < row);
+        in_string
+    };
+
+    // Indentation of a line where an argument or parameter goes. Starts one
+    // level past the line of the opening delimiter, but doesn't add back
+    // indentation removed on a line where the previous argument starts or
+    // ends, as in:
+    //
+    // ```r
+    // fun_call(parameter = (
+    //   stuff
+    // ),
+    // argument)
+    // ```
+    //
+    // The line of the opening delimiter is excluded because it sets the
+    // anchor rather than the indentation of arguments.
+    let argument_line_indent = |parent: tree_sitter::Node, anchor: usize| -> (usize, usize) {
+        let open_row = parent.start_position().row;
+
+        let prev = parent
+            .children(&mut parent.walk())
+            .filter(|child| {
+                (child.is_argument() || child.node_type() == NodeType::Parameter) &&
+                    child.end_position().row < line
+            })
+            .last();
+
+        let prev_indent = prev
+            .into_iter()
+            .flat_map(|prev| {
+                [prev.start_position().row, prev.end_position().row]
+                    .into_iter()
+                    .filter(|row| *row > open_row)
+                    .filter(move |row| !starts_in_string(prev, *row))
+            })
+            .map(|row| line_indent(text, row, config).0)
+            .min();
+
+        let Some(prev_indent) = prev_indent.filter(|indent| *indent < anchor + config.indent_size)
+        else {
+            return (anchor, config.indent_size);
+        };
+
+        (prev_indent, 0)
+    };
+
+    let arguments_indent = |parent: tree_sitter::Node| -> (usize, usize) {
+        let anchor = node_line_indent(parent);
+
+        let line_start = tree_sitter::Point {
+            row: line,
+            column: old_indent_byte,
+        };
+        let Some(close) = parent
+            .child_by_field_name("close")
+            .filter(|close| !close.is_missing() && close.start_position() == line_start)
+        else {
+            return argument_line_indent(parent, anchor);
+        };
+
+        // A closing delimiter preceded by a trailing comma is where the next
+        // argument goes: hitting Enter in `f(x,|)`, with `)` auto-closed by
+        // the frontend, leaves the cursor in front of `)`.
+        let mut prev = close.prev_sibling();
+        while let Some(node) = prev.filter(|node| node.is_comment()) {
+            prev = node.prev_sibling();
+        }
+        if prev.is_some_and(|node| node.node_type() == NodeType::Comma) {
+            return argument_line_indent(parent, anchor);
+        }
+
+        (anchor, 0)
+    };
+
     // Structured in two stages as in Emacs TS rules: first match, then
     // return anchor and indent size. We can add more rules here as needed.
     let (anchor, indent) = match bol_parent {
@@ -119,6 +208,18 @@ pub(crate) fn indent_edit(doc: &Document, line: usize) -> LspResult<Option<Vec<T
 
             (node_line_indent(anchor), config.indent_size)
         },
+
+        // Indentation of arguments in calls and subsets, and of parameters in
+        // function definitions, relative to the line of the opening delimiter:
+        // https://github.com/posit-dev/positron/issues/5754
+        //
+        // Hitting Enter in `function(a,|)` is not covered: R doesn't allow a
+        // trailing comma in parameters, so tree-sitter parses the `)` as an
+        // `ERROR` and there is no `parameters` node to match.
+        parent if parent.is_arguments() || parent.node_type() == NodeType::Parameters => {
+            arguments_indent(parent)
+        },
+
         _ => {
             // Find nearest containing braced expression or top-level node. We'll use
             // that to prevent ever indenting past these in unhandled cases for which we
@@ -480,6 +581,162 @@ mod tests {
         let doc = test_doc(&text);
 
         assert_match!(indent_edit(&doc, 1).unwrap(), None);
+    }
+
+    #[test]
+    fn test_line_indent_arguments() {
+        // https://github.com/posit-dev/positron/issues/5754
+        let mut doc = test_doc("mtcars |>\n  ggplot(aes(x = qsec,\n  y = hp))");
+
+        let edit = indent_edit(&doc, 2).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(
+            doc.contents,
+            "mtcars |>\n  ggplot(aes(x = qsec,\n    y = hp))"
+        );
+    }
+
+    #[test]
+    fn test_line_indent_arguments_closing_after_comma() {
+        // Enter after `x = qsec,` with auto-closed delimiters
+        let mut doc = test_doc("mtcars |>\n  ggplot(aes(x = qsec,\n  ))");
+
+        let edit = indent_edit(&doc, 2).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "mtcars |>\n  ggplot(aes(x = qsec,\n    ))");
+
+        // Also with a comment in between
+        let mut doc = test_doc("foo(x, # comment\n)");
+
+        let edit = indent_edit(&doc, 1).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "foo(x, # comment\n  )");
+    }
+
+    #[test]
+    fn test_line_indent_arguments_after_outdent() {
+        let text = String::from("fun_call(parameter = (\n  stuff\n),\nargument)");
+        let doc = test_doc(&text);
+        assert_match!(indent_edit(&doc, 3), Ok(None));
+
+        let mut doc = test_doc("fun_call(function() {\n  body\n},\n    argument)");
+        let edit = indent_edit(&doc, 3).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "fun_call(function() {\n  body\n},\nargument)");
+
+        // A previous argument at the regular indentation doesn't lower it
+        let mut doc = test_doc("foo(\n  bar(\n    x\n  ),\nbaz)");
+        let edit = indent_edit(&doc, 4).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "foo(\n  bar(\n    x\n  ),\n  baz)");
+
+        // The previous argument starts on an outdented line but ends on a
+        // line at the regular indentation
+        let mut doc = test_doc("foo(\na = bar(\n  x\n  ),\n    b)");
+        let edit = indent_edit(&doc, 4).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "foo(\na = bar(\n  x\n  ),\nb)");
+    }
+
+    #[test]
+    fn test_line_indent_arguments_after_multiline_string() {
+        // The string's last line is content, not an outdent
+        let mut doc = test_doc("foo(\n  \"abc\ndef\",\nx)");
+        let edit = indent_edit(&doc, 3).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "foo(\n  \"abc\ndef\",\n  x)");
+
+        // Raw string
+        let mut doc = test_doc("foo(\n  r\"(abc\ndef)\",\nx)");
+        let edit = indent_edit(&doc, 3).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "foo(\n  r\"(abc\ndef)\",\n  x)");
+
+        // The string starts on an outdented line, which still counts
+        let mut doc = test_doc("foo(\na = \"abc\ndef\",\n  x)");
+        let edit = indent_edit(&doc, 3).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "foo(\na = \"abc\ndef\",\nx)");
+
+        // The string starts on the line of the opening delimiter
+        let mut doc = test_doc("foo(\"abc\ndef\",\nx)");
+        let edit = indent_edit(&doc, 2).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "foo(\"abc\ndef\",\n  x)");
+    }
+
+    #[test]
+    fn test_line_indent_parameters_after_outdent() {
+        let mut doc = test_doc("function(\na = c(\n  1\n  ),\n    b) NULL");
+        let edit = indent_edit(&doc, 4).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "function(\na = c(\n  1\n  ),\nb) NULL");
+    }
+
+    #[test]
+    fn test_line_indent_arguments_tabs() {
+        // The closing delimiter is found by byte column while the anchor is
+        // measured in display width
+        let tab_cfg = IndentationConfig {
+            indent_style: IndentStyle::Tab,
+            indent_size: 2,
+            tab_width: 4,
+        };
+        let mut doc = test_doc("mtcars |>\n\tggplot(aes(x = qsec,\n\t))");
+        doc.config.indent = tab_cfg;
+        let edit = indent_edit(&doc, 2).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "mtcars |>\n\tggplot(aes(x = qsec,\n\t  ))");
+    }
+
+    #[test]
+    fn test_line_indent_subset2() {
+        let mut doc = test_doc("  x[[1,\n  ]]");
+        let edit = indent_edit(&doc, 1).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "  x[[1,\n    ]]");
+
+        let mut doc = test_doc("  x[[1\n    ]]");
+        let edit = indent_edit(&doc, 1).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "  x[[1\n  ]]");
+    }
+
+    #[test]
+    fn test_line_indent_arguments_omitted() {
+        // No argument node precedes the closing delimiter, only a comma
+        let mut doc = test_doc("x[,\n]");
+        let edit = indent_edit(&doc, 1).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "x[,\n  ]");
+    }
+
+    #[test]
+    fn test_line_indent_parameters() {
+        let mut doc = test_doc("  f <- function(a,\nb) {\n  }");
+        let edit = indent_edit(&doc, 1).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "  f <- function(a,\n    b) {\n  }");
+
+        let mut doc = test_doc("function(\n  a\n    ) {\n}");
+        let edit = indent_edit(&doc, 2).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "function(\n  a\n) {\n}");
+    }
+
+    #[test]
+    fn test_line_indent_arguments_closing() {
+        let mut doc = test_doc("  foo(\n    x\n    )");
+
+        let edit = indent_edit(&doc, 2).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "  foo(\n    x\n  )");
+
+        let mut doc = test_doc("x[\n  1\n  ]");
+
+        let edit = indent_edit(&doc, 2).unwrap().unwrap();
+        apply_text_edits(edit, &mut doc);
+        assert_eq!(doc.contents, "x[\n  1\n]");
     }
 
     #[test]

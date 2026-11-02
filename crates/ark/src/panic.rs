@@ -112,6 +112,14 @@ fn in_catch_boundary() -> bool {
     BOUNDARY.get().is_some()
 }
 
+/// Declare a synchronous recovery boundary for panic-hook unit tests.
+/// Never hold this thread-local guard across an await point.
+#[cfg(test)]
+#[must_use]
+fn test_boundary() -> CatchBoundary {
+    catch_boundary(Recovery::Always)
+}
+
 /// Runs `f` inside a `catch_unwind()` boundary. `Err` carries the panic message, and
 /// unwind safety is asserted on the caller's behalf.
 pub(crate) fn catch_unwind<T>(recovery: Recovery, f: impl FnOnce() -> T) -> Result<T, String> {
@@ -189,7 +197,7 @@ fn message(payload: &PanicPayload) -> String {
 ///
 /// Restores the preceding flag in `Drop::drop()` so a nested boundary cannot disable an
 /// outer boundary.
-struct CatchBoundary {
+pub(crate) struct CatchBoundary {
     previous: Option<Recovery>,
 }
 
@@ -246,6 +254,42 @@ mod tests {
 
         let _boundary = catch_boundary(Recovery::ReleaseOnly);
         assert!(in_catch_boundary());
+    }
+
+    #[test]
+    fn test_test_boundary_restores_scope() {
+        assert!(!in_catch_boundary());
+        {
+            let _boundary = test_boundary();
+            assert!(recovers_panic());
+        }
+        assert!(!in_catch_boundary());
+    }
+
+    #[test]
+    fn test_test_boundary_restores_outer_boundary() {
+        let _outer = catch_boundary(Recovery::ReleaseOnly);
+        {
+            let _boundary = test_boundary();
+            assert!(recovers_panic());
+        }
+        assert!(matches!(BOUNDARY.get(), Some(Recovery::ReleaseOnly)));
+    }
+
+    #[test]
+    #[expect(clippy::disallowed_methods)]
+    fn test_test_boundary_propagates_panic_and_restores_outer_boundary() {
+        let _outer = catch_boundary(Recovery::ReleaseOnly);
+        let result = std::panic::catch_unwind(|| {
+            let _boundary = test_boundary();
+            assert!(recovers_panic());
+            panic!("harness panic");
+        });
+        let Err(payload) = result else {
+            panic!("Expected a panic payload");
+        };
+        assert_eq!(message(&payload), "harness panic");
+        assert!(matches!(BOUNDARY.get(), Some(Recovery::ReleaseOnly)));
     }
 
     #[test]
