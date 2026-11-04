@@ -45,6 +45,11 @@ end
 local sentinel_path = vim.fs.normalize(lib_path .. "/arkbridge/ark-setup-idempotent")
 vim.fn.writefile({ "preserved" }, sentinel_path)
 
+-- A timestamp-only source change (for example, a new test) need not change
+-- the bridge content fingerprint. The no-op install must still acknowledge
+-- that freshness timestamp, otherwise explicit startup loops on build_pending.
+local stamp = vim.json.decode(table.concat(vim.fn.readfile(stamp_path), "\n"))
+local newer_mtime = stamp.source_mtime + 1
 local repeat_output = vim.fn.system({
   "R",
   "--slave",
@@ -58,7 +63,7 @@ local repeat_output = vim.fn.system({
   vim.fs.normalize(vim.fn.getcwd() .. "/packages/arkbridge"),
   lib_path,
   stamp_path,
-  "0",
+  tostring(newer_mtime),
   "2",
 })
 
@@ -69,6 +74,10 @@ end
 if vim.fn.filereadable(sentinel_path) ~= 1 then
   error("expected a current arkbridge install to be skipped instead of replaced", 0)
 end
+
+local refreshed = vim.json.decode(table.concat(vim.fn.readfile(stamp_path), "\n"))
+assert(refreshed.source_mtime == newer_mtime, "idempotent install did not acknowledge source freshness")
+assert(refreshed.source_fingerprint == stamp.source_fingerprint, "no-op install changed runtime identity")
 
 vim.print({
   bridge_runtime_install_recovers_fresh_lock = "ok",

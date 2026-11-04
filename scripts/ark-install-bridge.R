@@ -121,6 +121,16 @@ if (!is.finite(source_mtime) || source_mtime <= 0L) {
   }
 }
 
+publish_stamp <- function(payload) {
+  stamp_dir <- dirname(stamp_path)
+  dir.create(stamp_dir, recursive = TRUE, showWarnings = FALSE)
+  tmp_path <- tempfile("arkbridge-install-", tmpdir = stamp_dir, fileext = ".json")
+  writeLines(jsonlite::toJSON(payload, auto_unbox = TRUE, pretty = FALSE), tmp_path, useBytes = TRUE)
+  if (!file.rename(tmp_path, stamp_path)) {
+    stop("failed to publish arkbridge install stamp", call. = FALSE)
+  }
+}
+
 installed_path <- tryCatch(find.package("arkbridge", lib.loc = lib_path), error = function(e) "")
 if (nzchar(installed_path) && file.exists(stamp_path)) {
   installed_stamp <- tryCatch(
@@ -136,6 +146,14 @@ if (nzchar(installed_path) && file.exists(stamp_path)) {
       }) &&
       identical(as.integer(installed_stamp$runtime_revision), as.integer(runtime_revision))
   ) {
+    # Content identity can remain unchanged after a timestamp-only update.
+    # Acknowledge the scan so Lua does not repeatedly queue this no-op install.
+    installed_mtime <- suppressWarnings(as.numeric(installed_stamp$source_mtime))
+    if (is.finite(source_mtime) &&
+        (length(installed_mtime) != 1L || !is.finite(installed_mtime) || source_mtime > installed_mtime)) {
+      installed_stamp$source_mtime <- source_mtime
+      publish_stamp(installed_stamp)
+    }
     quit(save = "no", status = 0L, runLast = FALSE)
   }
 }
@@ -158,9 +176,6 @@ if (!nzchar(installed_path)) {
   stop("arkbridge install completed without an installed package path", call. = FALSE)
 }
 
-stamp_dir <- dirname(stamp_path)
-dir.create(stamp_dir, recursive = TRUE, showWarnings = FALSE)
-
 payload <- list(
   source_fingerprint = source_fingerprint,
   source_mtime = if (is.finite(source_mtime)) as.integer(source_mtime) else 0L,
@@ -174,8 +189,4 @@ payload <- list(
 writeLines(jsonlite::toJSON(payload, auto_unbox = TRUE, pretty = FALSE),
            file.path(installed_path, "ark-install-identity.json"), useBytes = TRUE)
 
-tmp_path <- tempfile("arkbridge-install-", tmpdir = stamp_dir, fileext = ".json")
-writeLines(jsonlite::toJSON(payload, auto_unbox = TRUE, pretty = FALSE), tmp_path, useBytes = TRUE)
-if (!file.rename(tmp_path, stamp_path)) {
-  stop("failed to publish arkbridge install stamp", call. = FALSE)
-}
+publish_stamp(payload)
