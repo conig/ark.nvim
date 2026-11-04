@@ -242,7 +242,9 @@ help.popup.pager.bin ~
     Pager executable. Default: less.
 
 help.popup.nvim.bin, help.popup.nvim.init ~
-    Neovim executable and optional init for help popups.
+    Neovim executable and optional init for help popups. By default the reader
+    skips editor initialization/plugins and inherits the source editor's colours
+    and syntax runtime paths. Set an explicit init to override this reader.
 
 view.popup.width, view.popup.height ~
     Tmux ArkView popup dimensions. Defaults: 90% and 90%.

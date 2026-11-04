@@ -7,6 +7,7 @@
     "startup_latency_budget.lua": { "runs": 5 },
     "current_env_completion_timing.lua": { "runs": 1 },
     "r_entrypoint_rpc_latency.lua": { "runs": 1 },
+    "ark_help_latency.lua": { "runs": 3 },
     "ark_view_cursor_movement_responsiveness.lua": { "runs": 5 },
     "ark_view_filter_completion_timing.lua": { "runs": 3 }
   },
@@ -38,6 +39,20 @@
       "max_budget_ms": 700,
       "noise_tolerance_percent": 20,
       "baseline_noise_floor_ms": 5
+    },
+    "help.static.visible": {
+      "minimum_samples": 18,
+      "p95_budget_ms": 150,
+      "max_budget_ms": 200,
+      "noise_tolerance_percent": 15,
+      "baseline_noise_floor_ms": 10
+    },
+    "help.live.visible": {
+      "minimum_samples": 18,
+      "p95_budget_ms": 150,
+      "max_budget_ms": 200,
+      "noise_tolerance_percent": 15,
+      "baseline_noise_floor_ms": 10
     },
     "rpc.parent_help": {
       "minimum_samples": 7,

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Instant;
 
 use anyhow::anyhow;
@@ -9,6 +8,8 @@ use crate::lsp::session_bridge::HelpPage;
 use crate::lsp::session_bridge::SessionBootstrap;
 use crate::lsp::session_bridge::SessionBootstrapTimings;
 
+mod worker;
+
 const LIBRARY_PATHS_MARKER: &str = "__ARK_LIBRARY_PATHS__";
 const INSTALLED_PACKAGES_MARKER: &str = "__ARK_INSTALLED_PACKAGES__";
 const SEARCH_PATH_SYMBOLS_MARKER: &str = "__ARK_SEARCH_PATH_SYMBOLS__";
@@ -16,7 +17,7 @@ const STATIC_OBJECT_MEMBERS_MARKER: &str = "__ARK_STATIC_OBJECT_MEMBERS__";
 
 pub(crate) fn bootstrap() -> anyhow::Result<SessionBootstrap> {
     let started = Instant::now();
-    let output = run_rscript(BASELINE_SCRIPT, &[])?;
+    let output = worker::request("bootstrap")?;
     let parsed = parse_baseline_output(&output)?;
     let total_ms = millis(started);
 
@@ -43,7 +44,19 @@ pub(crate) fn help_text(topic: &str) -> anyhow::Result<Option<HelpPage>> {
         return Ok(None);
     }
 
-    match run_rscript(HELP_TEXT_SCRIPT, &[topic]) {
+    // Keep an encoded request smaller than a pipe buffer, even if a broken
+    // helper never reads stdin, so the response deadline still bounds it.
+    if topic.len() > 1024 {
+        return Err(anyhow!("help topic is too long"));
+    }
+
+    // Hex encoding is data-only, unlike interpolating an R expression.
+    let encoded: String = topic
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    match worker::request(&format!("help {encoded}")) {
         Ok(text) => {
             let text = clean_rd2txt_output(text.as_str()).trim().to_string();
             if text.is_empty() {
@@ -58,37 +71,6 @@ pub(crate) fn help_text(topic: &str) -> anyhow::Result<Option<HelpPage>> {
         Err(err) if err.to_string().contains("ARK_HELP_NOT_FOUND") => Ok(None),
         Err(err) => Err(err),
     }
-}
-
-fn run_rscript(script: &str, args: &[&str]) -> anyhow::Result<String> {
-    let rscript = std::env::var("ARK_NVIM_RSCRIPT")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| String::from("Rscript"));
-
-    let output = Command::new(&rscript)
-        .arg("--vanilla")
-        .arg("-e")
-        .arg(script)
-        .args(args)
-        .output()
-        .map_err(|err| anyhow!("failed to run `{rscript}` for detached R metadata: {err}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let message = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("Rscript exited with status {}", output.status)
-        };
-        return Err(anyhow!("detached R metadata helper failed: {message}"));
-    }
-
-    String::from_utf8(output.stdout)
-        .map_err(|err| anyhow!("detached R metadata helper returned non-UTF8 output: {err}"))
 }
 
 fn clean_rd2txt_output(text: &str) -> String {
@@ -235,8 +217,6 @@ local({
 
 const HELP_TEXT_SCRIPT: &str = r#"
 local({
-  args <- base::commandArgs(trailingOnly = TRUE)
-  topic <- args[[1]]
   pkg_name <- NULL
 
   if (base::grepl("::", topic, fixed = TRUE)) {
@@ -246,7 +226,7 @@ local({
   }
 
   help <- if (is.null(pkg_name)) {
-    utils::help(topic)
+    base::do.call(utils::help, base::list(topic = topic, package = help_packages))
   } else {
     base::do.call(utils::help, base::list(topic = topic, package = pkg_name))
   }
@@ -256,15 +236,14 @@ local({
   }
 
   rd <- utils:::.getHelpFile(help)
-  out <- base::tempfile()
-  tools::Rd2txt(rd, out = out)
-  text <- base::readLines(out, warn = FALSE)
-  writeLines(text)
+  tools::Rd2txt(rd)
 })
 "#;
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use super::*;
 
     #[test]
@@ -320,6 +299,26 @@ mtcars	mpg
 
         assert!(help.text.contains("head"));
         assert!(!help.text.contains('\x08'));
+    }
+
+    #[test]
+    fn help_worker_survives_missing_and_source_like_topics() {
+        if Command::new("Rscript").arg("--version").output().is_err() {
+            return;
+        }
+        assert!(help_text("Rd2txt").unwrap().is_none());
+        let before = help_text("base::mean").unwrap().unwrap();
+        // Rd rendering loads tools, but must not widen vanilla topic lookup.
+        assert!(help_text("Rd2txt").unwrap().is_none());
+        assert!(help_text("ark_missing_help_topic_982374")
+            .unwrap()
+            .is_none());
+        assert!(help_text("\"; stop('not R source'); #\nλ")
+            .unwrap()
+            .is_none());
+        let after = help_text("base::mean").unwrap().unwrap();
+        assert_eq!(before.text, after.text);
+        assert!(help_text(&"x".repeat(1025)).is_err());
     }
 
     #[test]

@@ -1649,13 +1649,23 @@ function M.help_popup(_config, text, opts)
 
   if viewer == "nvim" then
     bootstrap = popup_temp_path(".arkhelp.lua")
-    local bootstrap_ok, bootstrap_err = pcall(vim.fn.writefile, help_popup_bootstrap_lines(opts.help), bootstrap, "b")
+    local nvim = type(opts.nvim) == "table" and opts.nvim or {}
+    local custom_init = type(nvim.init) == "string" and nvim.init ~= ""
+    local bootstrap_lines = help_popup_bootstrap_lines(opts.help)
+    if not custom_init then
+      -- The reader needs syntax and the parent's colours, not another editor
+      -- startup (plugin manager, LSPs, watchers, and user startup autocmds).
+      table.insert(bootstrap_lines, 1, "for name, hl in pairs(vim.json.decode("
+        .. lua_literal(vim.json.encode(vim.api.nvim_get_hl(0, {})))
+        .. ")) do pcall(vim.api.nvim_set_hl, 0, name, hl) end")
+      table.insert(bootstrap_lines, 1, "vim.opt.termguicolors = true")
+    end
+    local bootstrap_ok, bootstrap_err = pcall(vim.fn.writefile, bootstrap_lines, bootstrap, "b")
     if not bootstrap_ok then
       pcall(vim.fn.delete, path)
       return nil, "failed to write ArkHelp popup bootstrap: " .. tostring(bootstrap_err)
     end
 
-    local nvim = type(opts.nvim) == "table" and opts.nvim or {}
     local nvim_bin = type(nvim.bin) == "string" and nvim.bin ~= "" and nvim.bin or vim.v.progpath or "nvim"
     local hide_chrome = "set laststatus=0 showtabline=0 noshowmode noruler noshowcmd | silent! set cmdheight=0"
     local close_popup_lua = table.concat({
@@ -1714,9 +1724,14 @@ function M.help_popup(_config, text, opts)
       "-c",
       "normal! gg0",
     }
-    if type(nvim.init) == "string" and nvim.init ~= "" then
+    if custom_init then
       table.insert(popup_command_args, 2, nvim.init)
       table.insert(popup_command_args, 2, "-u")
+    else
+      vim.list_extend(popup_command_args, {
+        "-u", "NONE", "--noplugin", "-i", "NONE",
+        "--cmd", "lua vim.opt.runtimepath = " .. lua_literal(vim.opt.runtimepath:get()),
+      })
     end
     popup_env[#popup_env + 1] = "TERM=ansi"
   elseif viewer == "pager" or viewer == "less" then

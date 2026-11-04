@@ -794,13 +794,18 @@
   length(help_page) >= 1L
 }
 
-.ark_resolve_implicit_help_package <- function(topic, default_package = NULL) {
+.ark_resolve_implicit_help_package <- function(topic, default_package = NULL, package_topics = NULL) {
   default_package <- trimws(as.character(default_package %||% ""))
   if (!nzchar(default_package)) {
     return(NULL)
   }
 
-  if (.ark_help_topic_exists_in_package(topic, default_package)) {
+  exists <- if (is.null(package_topics)) {
+    .ark_help_topic_exists_in_package(topic, default_package)
+  } else {
+    topic %in% package_topics
+  }
+  if (exists) {
     return(default_package)
   }
 
@@ -824,7 +829,7 @@
   paste(pieces, collapse = "")
 }
 
-.ark_link_target <- function(label, rd_option = NULL, default_package = NULL) {
+.ark_link_target <- function(label, rd_option = NULL, default_package = NULL, package_topics = NULL) {
   option <- trimws(as.character(rd_option %||% ""))
   label <- trimws(as.character(label %||% ""))
 
@@ -833,7 +838,7 @@
       topic <- substring(option, 2L)
       return(list(
         topic = topic,
-        package = .ark_resolve_implicit_help_package(topic, default_package)
+        package = .ark_resolve_implicit_help_package(topic, default_package, package_topics)
       ))
     }
 
@@ -849,7 +854,7 @@
 
     return(list(
       topic = option,
-      package = .ark_resolve_implicit_help_package(option, default_package)
+      package = .ark_resolve_implicit_help_package(option, default_package, package_topics)
     ))
   }
 
@@ -865,11 +870,24 @@
 
   list(
     topic = topic,
-    package = .ark_resolve_implicit_help_package(topic, default_package)
+    package = .ark_resolve_implicit_help_package(topic, default_package, package_topics)
   )
 }
 
-.ark_collect_help_links <- function(node, default_package = NULL) {
+.ark_collect_help_links <- function(node, default_package = NULL, use_index = TRUE) {
+  # utils::help() rereads aliases.rds on every call. Resolve all implicit
+  # links against one index snapshot, while retaining the fallback for
+  # development packages or R installations without an alias index.
+  index <- if (isTRUE(use_index) && nzchar(default_package %||% "")) {
+    system.file("help", "aliases.rds", package = default_package)
+  } else ""
+  package_topics <- if (nzchar(index)) {
+    tryCatch(names(readRDS(index)), error = function(e) NULL)
+  } else NULL
+  .ark_collect_help_links_indexed(node, default_package, package_topics)
+}
+
+.ark_collect_help_links_indexed <- function(node, default_package, package_topics) {
   if (is.null(node) || !is.list(node)) {
     return(list())
   }
@@ -878,7 +896,7 @@
   tag <- attr(node, "Rd_tag", exact = TRUE)
   if (identical(tag, "\\link")) {
     label <- trimws(.ark_flatten_rd_text(node))
-    target <- .ark_link_target(label, attr(node, "Rd_option", exact = TRUE), default_package)
+    target <- .ark_link_target(label, attr(node, "Rd_option", exact = TRUE), default_package, package_topics)
     if (!is.null(target) && nzchar(target$topic %||% "") && nzchar(label)) {
       links[[length(links) + 1L]] <- list(
         label = label,
@@ -889,7 +907,7 @@
   }
 
   for (child in node) {
-    child_links <- .ark_collect_help_links(child, default_package)
+    child_links <- .ark_collect_help_links_indexed(child, default_package, package_topics)
     if (length(child_links)) {
       links <- c(links, child_links)
     }
@@ -931,7 +949,7 @@
 
   list(
     text = .ark_strip_overstrike(paste(capture.output(tools::Rd2txt(rd_obj)), collapse = "\n")),
-    references = .ark_collect_help_links(rd_obj, default_package)
+    references = .ark_collect_help_links(rd_obj, default_package, use_index = !inherits(target_page, "dev_topic"))
   )
 }
 

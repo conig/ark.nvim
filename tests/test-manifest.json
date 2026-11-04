@@ -239,6 +239,7 @@
         "ark_view_cursor_movement_responsiveness.lua",
         "current_env_completion_timing.lua",
         "r_entrypoint_rpc_latency.lua",
+        "ark_help_latency.lua",
         "startup_latency_budget.lua"
       ],
       "tier": "performance",

@@ -241,6 +241,10 @@ Responsibilities:
   references are styled as links and pressing Enter on a reference keeps the
   user inside ArkHelp while navigating to the linked help topic; `H` and `L`
   move backward and forward through ArkHelp page history
+- Default ArkHelp popup readers skip full editor initialization and plugin startup, inherit the parent highlights and syntax runtime paths, and retain explicit `help.popup.nvim.init` overrides.
+- Detached baseline hydration and static help share one vanilla R metadata helper per LSP process, with data-only requests, bounded responses/timeouts, restart after transport failure, and stdin-EOF shutdown. Unqualified fallback topics retain the initial vanilla namespace search rather than inheriting namespaces loaded by earlier help rendering.
+- Live help resolves implicit link packages from one per-page alias-index snapshot rather than performing a help lookup for each link; development-page resolution retains the existing help-function fallback.
+- Real-PTY help-key-to-visible benchmarks cover first/distinct/repeated topics both without a managed session and with the live bridge.
 - build tmux popup surfaces for ArkHelp, ArkView, and source-Neovim UI attach
   through one shared popup envelope helper; each invocation supplies width,
   height, target pane/client, optional environment, command payload, top-border
