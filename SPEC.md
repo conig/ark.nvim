@@ -904,6 +904,8 @@ target through the direct target-store backend. Compatibility calls that use a
 simple `targets::tar_read(name = ...)` ArkView expression should be routed to
 the same backend instead of forcing the managed R pane.
 
+Snacks target pickers must rank target-name matches ahead of command and source-location matches, using the normal matcher syntax and fuzzy scoring within each group. Creation metadata remains searchable as a fallback and visible in the preview; an empty query preserves the alphabetical target list. This applies to active-target, ArkView, and target-action pickers.
+
 ### Cache And Invalidation
 
 Target project state should be cached with explicit invalidation:

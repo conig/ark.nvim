@@ -741,6 +741,15 @@ function M.new(deps)
         format = format_target_picker_item,
         preview = "preview",
         layout = target_picker_layout(),
+        matcher = {
+          on_match = function(matcher, item)
+            -- Keep metadata searchable, but rank matches against the target
+            -- identity before matches against commands or source locations.
+            local name = target_name(item)
+            item.target_name_score = matcher:match({ text = name, name = name })
+          end,
+        },
+        sort = { fields = { "target_name_score:desc", "score:desc", "#text", "idx" } },
         confirm = function(picker, item)
           picker:close()
           on_choice(item)

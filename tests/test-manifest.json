@@ -25,6 +25,14 @@
   },
   "rules": [
     {
+      "names": ["targets_picker_matching.lua"],
+      "tier": "fast",
+      "layer": "product-e2e",
+      "contract": "real Snacks target matching ranks target names ahead of creation metadata while retaining metadata-only matches",
+      "dependencies": ["neovim", "snacks"],
+      "mutates_shared_session": false
+    },
+    {
       "names": ["lsp_request_burst.lua"],
       "tier": "fast",
       "layer": "product-e2e",
