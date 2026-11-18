@@ -366,10 +366,33 @@ impl Document {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Fence {
+pub(crate) struct Fence {
     marker: char,
     width: usize,
-    is_r: bool,
+}
+
+impl Fence {
+    pub(crate) fn markdown_opening(line: &str) -> Option<Self> {
+        let (fence, info) = Self::marker_and_info(line)?;
+        (fence.marker != '`' || !info.contains('`')).then_some(fence)
+    }
+
+    fn marker_and_info(line: &str) -> Option<(Self, &str)> {
+        let trimmed = line.trim_start();
+        let marker = trimmed.chars().next()?;
+        if marker != '`' && marker != '~' {
+            return None;
+        }
+
+        let width = trimmed.chars().take_while(|ch| *ch == marker).count();
+        (width >= 3).then(|| (Self { marker, width }, trimmed[width..].trim()))
+    }
+
+    pub(crate) fn closes(self, line: &str) -> bool {
+        let trimmed = line.trim_start();
+        let width = trimmed.chars().take_while(|ch| *ch == self.marker).count();
+        width >= self.width && trimmed[width..].trim().is_empty()
+    }
 }
 
 fn normalize_contents(contents: &str, kind: DocumentKind) -> String {
@@ -381,20 +404,20 @@ fn normalize_contents(contents: &str, kind: DocumentKind) -> String {
 
 fn normalize_literate_r(contents: &str) -> String {
     let mut normalized = String::with_capacity(contents.len());
-    let mut active_fence: Option<Fence> = None;
+    let mut active_fence: Option<(Fence, bool)> = None;
 
     for segment in contents.split_inclusive('\n') {
         let (line, newline) = strip_trailing_newline(segment);
 
-        if let Some(fence) = active_fence {
-            if is_closing_fence(line, fence) {
+        if let Some((fence, is_r)) = active_fence {
+            if fence.closes(line) {
                 normalized.push_str(mask_non_r_line(line).as_str());
                 normalized.push_str(newline);
                 active_fence = None;
                 continue;
             }
 
-            if fence.is_r {
+            if is_r {
                 normalized.push_str(line);
             } else {
                 normalized.push_str(mask_non_r_line(line).as_str());
@@ -498,19 +521,8 @@ fn normalize_inline_r_line(line: &str) -> Option<String> {
     Some(String::from_utf8(normalized).expect("inline R normalization should stay UTF-8"))
 }
 
-fn parse_fence(line: &str) -> Option<Fence> {
-    let trimmed = line.trim_start();
-    let marker = trimmed.chars().next()?;
-    if marker != '`' && marker != '~' {
-        return None;
-    }
-
-    let width = trimmed.chars().take_while(|ch| *ch == marker).count();
-    if width < 3 {
-        return None;
-    }
-
-    let rest = trimmed[width..].trim();
+fn parse_fence(line: &str) -> Option<(Fence, bool)> {
+    let (fence, rest) = Fence::marker_and_info(line)?;
     if !rest.starts_with('{') || !rest.ends_with('}') {
         return None;
     }
@@ -522,17 +534,7 @@ fn parse_fence(line: &str) -> Option<Fence> {
         .next()
         .unwrap_or_default();
 
-    Some(Fence {
-        marker,
-        width,
-        is_r: engine.eq_ignore_ascii_case("r"),
-    })
-}
-
-fn is_closing_fence(line: &str, fence: Fence) -> bool {
-    let trimmed = line.trim_start();
-    let width = trimmed.chars().take_while(|ch| *ch == fence.marker).count();
-    width >= fence.width && trimmed[width..].trim().is_empty()
+    Some((fence, engine.eq_ignore_ascii_case("r")))
 }
 
 #[cfg(test)]

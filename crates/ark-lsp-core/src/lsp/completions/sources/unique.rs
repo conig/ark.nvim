@@ -11,6 +11,7 @@ mod custom;
 mod extractor;
 mod file_path;
 mod frontmatter;
+mod math;
 mod namespace;
 mod string;
 mod subset;
@@ -25,6 +26,7 @@ use crate::lsp::completions::sources::unique::custom::CustomSource;
 use crate::lsp::completions::sources::unique::extractor::AtSource;
 use crate::lsp::completions::sources::unique::extractor::DollarSource;
 use crate::lsp::completions::sources::unique::frontmatter::FrontmatterSource;
+use crate::lsp::completions::sources::unique::math::MathSource;
 use crate::lsp::completions::sources::unique::namespace::NamespaceSource;
 use crate::lsp::completions::sources::unique::string::StringSource;
 use crate::lsp::completions::sources::CompletionSource;
@@ -46,6 +48,11 @@ pub(crate) fn first_matching_source_plan(
     completion_context: &CompletionContext,
 ) -> anyhow::Result<Option<UniqueSourcePlan>> {
     log::info!("Getting completions from unique sources");
+
+    if let Some(plan) = collect_source_plan(UniqueSourceKind::Math, MathSource, completion_context)?
+    {
+        return Ok(Some(plan));
+    }
 
     // Try to detect a single colon first, which is a special case where we
     // don't provide any completions
@@ -114,6 +121,11 @@ pub(crate) fn first_matching_source_plan(
 pub(crate) fn first_detached_static_source_plan(
     completion_context: &CompletionContext,
 ) -> anyhow::Result<Option<UniqueSourcePlan>> {
+    if let Some(plan) = collect_source_plan(UniqueSourceKind::Math, MathSource, completion_context)?
+    {
+        return Ok(Some(plan));
+    }
+
     if let Some(plan) = collect_source_plan(
         UniqueSourceKind::SingleColon,
         SingleColonSource,

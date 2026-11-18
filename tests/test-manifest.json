@@ -92,6 +92,14 @@
       "mutates_shared_session": false
     },
     {
+      "names": ["literate_math_completion.lua"],
+      "tier": "fast",
+      "layer": "product-e2e",
+      "contract": "static Rmd/Quarto TeX commands through stdio LSP, with source-preserving edits and no math suggestions in code, metadata or ordinary prose",
+      "dependencies": ["neovim"],
+      "mutates_shared_session": false
+    },
+    {
       "names": ["error_traceback.lua"],
       "tier": "fast",
       "layer": "component",
@@ -351,6 +359,9 @@
       "open_r_buffer": false
     },
     "full_config_extractor_rapid_select_tui.lua": {
+      "open_r_buffer": false
+    },
+    "full_config_literate_math_completion_tui.lua": {
       "open_r_buffer": false
     },
     "full_config_rmd_inline_completion_tui.lua": {

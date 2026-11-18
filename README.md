@@ -76,9 +76,11 @@ hover, signature help, definitions, references, implementations, document
 symbols, workspace symbols, folding ranges, selection ranges, limited code
 actions, and newline-triggered indentation.
 
-### Edit R Markdown and Quarto Metadata
+### Edit R Markdown and Quarto
 
 Frontmatter completion offers common metadata keys, namespaced R Markdown output formats, Quarto formats and selected nested options. `bibliography` and `csl` complete document-relative files and flag missing literal paths. This works without a live R session; suggestions are a bounded static schema, not package-installation checks or a replacement for YAML linting.
+
+Inside `$…$` or `$$…$$` math, typing a TeX command like `\kap` suggests `\kappa`. Accepting at the end of an unfinished inline equation adds the missing closing `$`; it never adds a second one when the delimiter is already there. Common symbols and commands complete without a live R session or TeX installation.
 
 ### Inspect Data
 

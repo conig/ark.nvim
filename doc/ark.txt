@@ -630,6 +630,13 @@ Frontmatter ~
     Typing only reads cached results, with built-in suggestions available
     immediately. Package/library changes use event-driven cache revalidation.
 
+Math commands ~
+    In R Markdown and Quarto, type \kap in $…$ or $$…$$ math to get \kappa
+    and other common TeX commands from the normal LSP completion source.
+    Accepting at the end of an unfinished inline equation adds the closing $;
+    existing delimiters are kept. No live R session or TeX installation is
+    needed.
+
 Runtime activity ~
     :Ark status distinguishes live_busy from degraded connectivity. Its
     runtime_activity describes submitted user code, an active Ark request,

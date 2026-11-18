@@ -29,6 +29,7 @@ pub mod indent;
 pub mod indexer;
 pub mod input_boundaries;
 pub mod inputs;
+mod literate_math;
 pub mod main_loop;
 pub mod markdown;
 pub mod references;

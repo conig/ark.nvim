@@ -8,6 +8,7 @@ use crate::lsp::completions::sources::unique;
 pub(crate) enum UniqueSourceKind {
     SingleColon,
     Frontmatter,
+    Math,
     Comment,
     String,
     Namespace,
@@ -20,7 +21,12 @@ impl UniqueSourceKind {
     pub(crate) fn is_detached_pre_bridge(self) -> bool {
         matches!(
             self,
-            Self::SingleColon | Self::Frontmatter | Self::Comment | Self::Namespace | Self::Dollar
+            Self::SingleColon |
+                Self::Frontmatter |
+                Self::Math |
+                Self::Comment |
+                Self::Namespace |
+                Self::Dollar
         )
     }
 
@@ -235,6 +241,25 @@ mod tests {
 
         assert_eq!(plan.kind, UniqueSourceKind::Frontmatter);
         assert!(plan.kind.is_detached_pre_bridge());
+    }
+
+    #[test]
+    fn test_math_is_exclusive_before_the_bridge() {
+        let state = WorldState::default();
+        for (input, expected_item_count) in [(r"$\kap@", 1), (r"$\unknown@", 0)] {
+            let (text, point) = point_from_cursor(input);
+            let document = Document::new_with_kind(&text, None, DocumentKind::LiterateR);
+            let context = DocumentContext::new(&document, point, None);
+            let completion_context = CompletionContext::new(&context, &state);
+            for plan in [plan_completions, plan_detached_static_completions] {
+                let CompletionPlan::Unique(plan) = plan(&completion_context).unwrap() else {
+                    panic!("TeX command must not fall through to R completion");
+                };
+                assert_eq!(plan.kind, UniqueSourceKind::Math);
+                assert!(plan.kind.is_detached_pre_bridge());
+                assert_eq!(plan.items.len(), expected_item_count);
+            }
+        }
     }
 
     #[test]

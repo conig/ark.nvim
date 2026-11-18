@@ -60,7 +60,7 @@ pub(crate) struct CursorContext {
 }
 
 /// Closing delimiters may be absent while typing, but stop at a Markdown fence.
-fn header_rows(document: &Document) -> Option<Range<usize>> {
+pub(crate) fn header_rows(document: &Document) -> Option<Range<usize>> {
     if document.kind != DocumentKind::LiterateR || document.get_line(0)?.trim() != "---" {
         return None;
     }

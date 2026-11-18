@@ -1036,10 +1036,9 @@ pre-bridge contexts, path preemption, live bridge planning, post-bridge string
 fallback, then mergeable static sources. A handled empty bridge plan remains
 handled, so attached-runtime fallbacks cannot run afterward.
 
-For literate documents, fenced R, inline `` `r ...` ``, frontmatter, and prose
-are classified by the server document/context layer. Comparison strings,
-package strings, argument strings, string subsets, namespace access, extractors,
-calls, pipes, and generic symbols are likewise decided in Rust.
+For literate documents, fenced R, inline `` `r ...` ``, frontmatter, prose, and dollar-delimited math are classified by the server document/context layer. Comparison strings, package strings, argument strings, string subsets, namespace access, extractors, calls, pipes, and generic symbols are likewise decided in Rust.
+
+In R Markdown and Quarto, the detached pre-bridge math source offers a static list of common TeX commands after a backslash within inline `$…$` or display `$$…$$` math, including while the equation is unfinished. It excludes code, frontmatter and ordinary prose, and replaces only the command name. Accepting at the end of an unpaired inline equation adds a missing closing dollar; existing delimiters and surrounding math are preserved. This is not general LaTeX completion or project macro discovery.
 
 Namespace completion keeps `pkg::` exports-only. With a live managed session,
 `pkg:::` offers all namespace members, including unexported functions, both
@@ -1099,6 +1098,7 @@ High-value regression coverage for this tranche includes:
 - path-string completion, including slash-triggered paths inside quoted strings
 - package-string and argument-string completion
 - frontmatter output completion
+- static math commands in unfinished and paired R Markdown / Quarto equations, including acceptance and no suggestions in prose and code
 - inline `` `r ` `` empty-prefix completion
 - completion edits after multibyte text on the same line
 - prose `.Rmd` cases where non-semantic completion must not leave stale Blink
